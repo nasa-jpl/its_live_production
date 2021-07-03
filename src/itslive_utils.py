@@ -11,6 +11,7 @@ def transform_coord(proj1, proj2, lon, lat):
     return pyproj.transform(proj1, proj2, lon, lat)
 
 def get_granule_urls(params):
-    base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+    # base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+    base_url = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
     resp = requests.get(base_url, params=params, verify=False)
     return resp.json()

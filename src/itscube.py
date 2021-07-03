@@ -701,9 +701,12 @@ class ITSCube:
         elif DataVars.POLAR_STEREOGRAPHIC in ds:
             ds_projection = ds.Polar_Stereographic.spatial_epsg
 
+        elif DataVars.MAPPING in ds:
+            ds_projection = ds.mapping.spatial_epsg
+
         else:
             # Unknown type of granule is provided
-            raise RuntimeError("Unsupported projection is detected for {ds_url}. One of [{ITSCube.UTM_PROJECTION}, {ITSCube.POLAR_STEREOGRAPHIC}] is supported.")
+            raise RuntimeError(f"Unsupported projection is detected for {ds_url}. One of [{DataVars.UTM_PROJECTION}, {DataVars.POLAR_STEREOGRAPHIC}, {DataVars.MAPPING}] is supported.")
 
         # Consider granules with data only within target projection
         if str(int(ds_projection)) == self.projection:
@@ -759,7 +762,20 @@ class ITSCube:
             'vr_error': ("range_velocity_error", "error for velocity in radar range direction"),
             'vxp_error': ("projected_x_velocity_error", "error for x-direction velocity determined by projecting radar range measurements onto an a priori flow vector"),
             'vyp_error': ("projected_y_velocity_error", "error for y-direction velocity determined by projecting radar range measurements onto an a priori flow vector")
+            # TODO: define all new vx_error_* names
         }
+
+        # Possible attributes for the velocity data variable
+        _v_comp_attrs = [
+            DataVars.ERROR,
+            DataVars.ERROR_MASK,
+            DataVars.ERROR_MODELED,
+            DataVars.ERROR_SLOW
+        ]
+
+        # Names of new data variables - to be included into "encoding" settings
+        # for writing to the file store.
+        return_vars = []
 
         # Process attributes
         if DataVars.STABLE_APPLY_DATE in self.layers[var_name].attrs:
@@ -770,48 +786,56 @@ class ITSCube:
         # These attributes were collected based on 'v' data variable
         if DataVars.MAP_SCALE_CORRECTED in self.layers[var_name].attrs:
             del self.layers[var_name].attrs[DataVars.MAP_SCALE_CORRECTED]
+
         if DataVars.STABLE_SHIFT_APPLIED in self.layers[var_name].attrs:
             del self.layers[var_name].attrs[DataVars.STABLE_SHIFT_APPLIED]
 
         _name_sep = '_'
-        error_name = _name_sep.join([var_name, 'error'])
 
-        # Special care must be taken of v[xy].stable_rmse in
-        # optical legacy format vs. v[xy].v[xy]_error in radar format as these
-        # are the same
-        error_data = None
-        if var_name in _stable_rmse_vars:
-            error_data = [
-                ITSCube.get_data_var_attr(ds, url, var_name, error_name, DataVars.MISSING_VALUE) if error_name in ds[var_name].attrs else
-                ITSCube.get_data_var_attr(ds, url, var_name, DataVars.STABLE_RMSE, DataVars.MISSING_VALUE)
-                for ds, url in zip(self.ds, self.urls)
-            ]
+        for each_prefix in _v_comp_attrs:
+            error_name = f'{var_name}{_name_sep}{each_prefix}'
+            return_vars.append(error_name)
+
+            # Special care must be taken of v[xy].stable_rmse in
+            # optical legacy format vs. v[xy].v[xy]_error in radar format as these
+            # are the same
+            error_data = None
+            if var_name in _stable_rmse_vars:
+                error_data = [
+                    ITSCube.get_data_var_attr(ds, url, var_name, error_name, DataVars.MISSING_VALUE) if error_name in ds[var_name].attrs else
+                    ITSCube.get_data_var_attr(ds, url, var_name, DataVars.STABLE_RMSE, DataVars.MISSING_VALUE)
+                    for ds, url in zip(self.ds, self.urls)
+                ]
+
+                # If attribute is propagated as cube's data var attribute, delete it
+                if DataVars.STABLE_RMSE in self.layers[var_name].attrs:
+                    del self.layers[var_name].attrs[DataVars.STABLE_RMSE]
+
+            else:
+                error_data = [ITSCube.get_data_var_attr(ds, url, var_name, error_name, DataVars.MISSING_VALUE)
+                              for ds, url in zip(self.ds, self.urls)]
+
+            error_name_desc = f'{error_name}{_name_sep}{DataVars.ERROR_DESCRIPTION}'
+            self.layers[error_name] = xr.DataArray(
+                data=error_data,
+                coords=[mid_date_coord],
+                dims=[Coords.MID_DATE],
+                attrs={
+                    DataVars.UNITS: DataVars.M_Y_UNITS,
+                    DataVars.STD_NAME: error_name,
+                    DataVars.DESCRIPTION_ATTR: _attrs[error_name][1] if error_name_desc not in self.ds[0][var_name].attrs else
+                        self.ds[0][var_name].attrs[error_name_desc]
+                }
+            )
 
             # If attribute is propagated as cube's data var attribute, delete it
-            if DataVars.STABLE_RMSE in self.layers[var_name].attrs:
-                del self.layers[var_name].attrs[DataVars.STABLE_RMSE]
+            if error_name in self.layers[var_name].attrs:
+                del self.layers[var_name].attrs[error_name]
 
-        else:
-            error_data = [ITSCube.get_data_var_attr(ds, url, var_name, error_name, DataVars.MISSING_VALUE)
-                          for ds, url in zip(self.ds, self.urls)]
-
-        self.layers[error_name] = xr.DataArray(
-            data=error_data,
-            coords=[mid_date_coord],
-            dims=[Coords.MID_DATE],
-            attrs={
-                DataVars.UNITS: DataVars.M_Y_UNITS,
-                DataVars.STD_NAME: _attrs[error_name][0],
-                DataVars.DESCRIPTION_ATTR: _attrs[error_name][1]
-            }
-        )
-
-        # If attribute is propagated as cube's data var attribute, delete it
-        if error_name in self.layers[var_name].attrs:
-            del self.layers[var_name].attrs[error_name]
-
-        # This attribute appears for all v* data variables, capture it only once
-        if DataVars.STABLE_COUNT not in self.layers:
+        # This attribute appears for all v* data variables of old granule format,
+        # capture it only once if it exists
+        if DataVars.STABLE_COUNT not in self.layers and \
+           DataVars.STABLE_COUNT in self.ds[0][var_name].attrs:
             self.layers[DataVars.STABLE_COUNT] = xr.DataArray(
                 data=[ITSCube.get_data_var_attr(ds, url, var_name, DataVars.STABLE_COUNT)
                       for ds, url in zip(self.ds, self.urls)],
@@ -819,17 +843,55 @@ class ITSCube:
                 dims=[Coords.MID_DATE],
                 attrs={
                     DataVars.UNITS: DataVars.COUNT_UNITS,
-                    DataVars.STD_NAME: 'stable_count',
-                    DataVars.DESCRIPTION_ATTR: f'number of stable points used to determine {var_name} shift'
+                    DataVars.STD_NAME: DataVars.STABLE_COUNT,
+                    DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.STABLE_COUNT].format(var_name)
             }
         )
-
         if DataVars.STABLE_COUNT in self.layers[var_name].attrs:
             del self.layers[var_name].attrs[DataVars.STABLE_COUNT]
 
-        # This flag appears for vx and vy data variables, capture it only once.
+        # This attribute appears for all v* data variables of new granule format,
+        # capture it only once if it exists
+        # Per Yang: generally yes, though for vxp and vyp it was calculated again
+        # but the number should not change quite a bit. so it should be okay to
+        # use a single value for all variables
+        if DataVars.STABLE_COUNT_SLOW not in self.layers and \
+           DataVars.STABLE_COUNT_SLOW in self.ds[0][var_name].attrs:
+            self.layers[DataVars.STABLE_COUNT_SLOW] = xr.DataArray(
+                data=[ITSCube.get_data_var_attr(ds, url, var_name, DataVars.STABLE_COUNT_SLOW)
+                      for ds, url in zip(self.ds, self.urls)],
+                coords=[mid_date_coord],
+                dims=[Coords.MID_DATE],
+                attrs={
+                    DataVars.UNITS: DataVars.COUNT_UNITS,
+                    DataVars.STD_NAME: DataVars.STABLE_COUNT_SLOW,
+                    DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.STABLE_COUNT_SLOW]
+            }
+        )
+        if DataVars.STABLE_COUNT_SLOW in self.layers[var_name].attrs:
+            del self.layers[var_name].attrs[DataVars.STABLE_COUNT_SLOW]
+
+        # This attribute appears for all v* data variables, capture it only once
+        # if it exists
+        if DataVars.STABLE_COUNT_MASK not in self.layers and \
+           DataVars.STABLE_COUNT_MASK in self.ds[0][var_name].attrs:
+            self.layers[DataVars.STABLE_COUNT_MASK] = xr.DataArray(
+                data=[ITSCube.get_data_var_attr(ds, url, var_name, DataVars.STABLE_COUNT_MASK)
+                      for ds, url in zip(self.ds, self.urls)],
+                coords=[mid_date_coord],
+                dims=[Coords.MID_DATE],
+                attrs={
+                    DataVars.UNITS: DataVars.COUNT_UNITS,
+                    DataVars.STD_NAME: DataVars.STABLE_COUNT_MASK,
+                    DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.STABLE_COUNT_MASK]
+            }
+        )
+        if DataVars.STABLE_COUNT_MASK in self.layers[var_name].attrs:
+            del self.layers[var_name].attrs[DataVars.STABLE_COUNT_MASK]
+
+        # This attribute appears for vx and vy data variables, capture it only once.
         # "stable_shift_applied" was incorrectly set in the optical legacy dataset
-        # and should be set to the no data value
+        # and should be set to "no data" value
         if DataVars.FLAG_STABLE_SHIFT not in self.layers:
             missing_stable_shift_value = 0.0
             self.layers[DataVars.FLAG_STABLE_SHIFT] = xr.DataArray(
@@ -839,7 +901,7 @@ class ITSCube:
                 dims=[Coords.MID_DATE],
                 attrs={
                     DataVars.STD_NAME: DataVars.FLAG_STABLE_SHIFT,
-                    DataVars.FLAG_STABLE_SHIFT_MEANINGS: DataVars.DESCRIPTION[DataVars.FLAG_STABLE_SHIFT_MEANINGS]
+                    DataVars.FLAG_STABLE_SHIFT_DESCRIPTION: DataVars.DESCRIPTION[DataVars.FLAG_STABLE_SHIFT_DESCRIPTION]
                 }
             )
 
@@ -853,18 +915,55 @@ class ITSCube:
             dims=[Coords.MID_DATE],
             attrs={
                 DataVars.UNITS: DataVars.M_Y_UNITS,
-                DataVars.STD_NAME: f'{var_name}_stable_shift',
+                DataVars.STD_NAME: shift_var_name,
                 DataVars.DESCRIPTION_ATTR: f'applied {var_name} shift'
             }
         )
+        return_vars.append(shift_var_name)
+
+        # Create 'stable_shift_slow' specific to the data variable,
+        # for example, 'vx_stable_shift_slow' for 'vx' data variable
+        shift_var_name = _name_sep.join([var_name, DataVars.STABLE_SHIFT_SLOW])
+        self.layers[shift_var_name] = xr.DataArray(
+            data=[ITSCube.get_data_var_attr(ds, url, var_name, DataVars.STABLE_SHIFT_SLOW, DataVars.MISSING_VALUE)
+                  for ds, url in zip(self.ds, self.urls)],
+            coords=[mid_date_coord],
+            dims=[Coords.MID_DATE],
+            attrs={
+                DataVars.UNITS: DataVars.M_Y_UNITS,
+                DataVars.STD_NAME: shift_var_name,
+                DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.STABLE_SHIFT_SLOW].format(var_name)
+            }
+        )
+        return_vars.append(shift_var_name)
 
         # If attribute is propagated as cube's vx attribute, delete it
-        if DataVars.STABLE_SHIFT in self.layers[var_name].attrs:
-            del self.layers[var_name].attrs[DataVars.STABLE_SHIFT]
+        if DataVars.STABLE_SHIFT_SLOW in self.layers[var_name].attrs:
+            del self.layers[var_name].attrs[DataVars.STABLE_SHIFT_SLOW]
+
+        # Create 'stable_shift_mask' specific to the data variable,
+        # for example, 'vx_stable_shift_mask' for 'vx' data variable
+        shift_var_name = _name_sep.join([var_name, DataVars.STABLE_SHIFT_MASK])
+        self.layers[shift_var_name] = xr.DataArray(
+            data=[ITSCube.get_data_var_attr(ds, url, var_name, DataVars.STABLE_SHIFT_MASK, DataVars.MISSING_VALUE)
+                  for ds, url in zip(self.ds, self.urls)],
+            coords=[mid_date_coord],
+            dims=[Coords.MID_DATE],
+            attrs={
+                DataVars.UNITS: DataVars.M_Y_UNITS,
+                DataVars.STD_NAME: shift_var_name,
+                DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.STABLE_SHIFT_MASK].format(var_name)
+            }
+        )
+        return_vars.append(shift_var_name)
+
+        # If attribute is propagated as cube's vx attribute, delete it
+        if DataVars.STABLE_SHIFT_MASK in self.layers[var_name].attrs:
+            del self.layers[var_name].attrs[DataVars.STABLE_SHIFT_MASK]
 
         # Return names of new data variables - to be included into "encoding" settings
         # for writing to the file store.
-        return [error_name, shift_var_name]
+        return return_vars
 
     def set_grid_mapping_attr(self, var_name: str, ds_grid_mapping_value: str):
         """
@@ -873,6 +972,10 @@ class ITSCube:
         """
         if DataVars.GRID_MAPPING in self.layers[var_name]:
             # Attribute is already set, nothing to do
+            return
+
+        if ds_grid_mapping_value == DataVars.MAPPING:
+            # New format granules, nothing to do
             return
 
         grid_mapping_values = []
@@ -921,7 +1024,6 @@ class ITSCube:
 
         # for each in self.ds:
         #     self.logger.info(f'Layer v: {each.v.values}')
-
         v_layers = xr.concat([each_ds.v for each_ds in self.ds], mid_date_coord)
 
         now_date = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
@@ -978,13 +1080,17 @@ class ITSCube:
             elif DataVars.UTM_PROJECTION in self.ds[0]:
                 proj_data = DataVars.UTM_PROJECTION
 
+            elif DataVars.MAPPING in self.ds[0]:
+                proj_data = DataVars.MAPPING
+
             # Should never happen - just in case :)
             if proj_data is None:
-                raise RuntimeError(f"Missing {DataVars.POLAR_STEREOGRAPHIC} or {DataVars.UTM_PROJECTION} in {self.urls[0]}")
+                raise RuntimeError(f"Missing one of [{DataVars.POLAR_STEREOGRAPHIC}, {DataVars.UTM_PROJECTION}, {DataVars.MAPPING}] in {self.urls[0]}")
 
             # Can't copy the whole data variable, as it introduces obscure coordinates.
             # Just copy all attributes for the scalar type of the xr.DataArray.
-            self.layers[proj_data] = xr.DataArray(
+            # Use latest granule format: 'mapping' data variable for projection info.
+            self.layers[DataVars.MAPPING] = xr.DataArray(
                 data='',
                 attrs=self.ds[0][proj_data].attrs,
                 coords={},
@@ -1002,30 +1108,45 @@ class ITSCube:
         new_v_vars = [DataVars.V]
 
         # Make sure grid_mapping attribute has the same value for all layers
-        grid_mapping_values = [ds.v.attrs[DataVars.GRID_MAPPING] for ds in self.ds]
-        unique_values = list(set(grid_mapping_values))
-        if len(unique_values) > 1:
-            raise RuntimeError("Multiple 'grid_mapping' ('v' attribute) values are detected for current {len(self.ds)} layers: {unique_values}")
-
+        unique_values = None
         # Remember the value as all 3D data variables need to have this attribute
         # set with the same value
-        ds_grid_mapping_value = unique_values[0]
-        del grid_mapping_values
+        ds_grid_mapping_value = None
+        if self.ds[0].v.attrs[DataVars.GRID_MAPPING] == DataVars.MAPPING:
+            # New format granules
+            grid_mapping_values = [ds.mapping.attrs[DataVars.GRID_MAPPING_NAME] for ds in self.ds]
+            unique_values = list(set(grid_mapping_values))
+            if len(unique_values) > 1:
+                raise RuntimeError("Multiple '{DataVars.MAPPING}' values are detected for current {len(self.ds)} layers: {unique_values}")
+            ds_grid_mapping_value = DataVars.MAPPING
 
-        # Collect 'v' attributes: these repeat for v* variables, keep only one copy
+        else:
+            # Old format granules
+            grid_mapping_values = [ds.v.attrs[DataVars.GRID_MAPPING] for ds in self.ds]
+            unique_values = list(set(grid_mapping_values))
+            if len(unique_values) > 1:
+                raise RuntimeError("Multiple 'grid_mapping' ('v' attribute) values are detected for current {len(self.ds)} layers: {unique_values}")
+            ds_grid_mapping_value = unique_values[0]
+
+        # For old format collect 'v' attributes: these repeat for v* variables, keep only one copy
         # per datacube
-
         # Create new data var to store map_scale_corrected v's attribute
-        self.layers[DataVars.MAP_SCALE_CORRECTED] = xr.DataArray(
-            data=[ITSCube.get_data_var_attr(ds, url, DataVars.V, DataVars.MAP_SCALE_CORRECTED, DataVars.MISSING_BYTE)
-                  for ds, url in zip(self.ds, self.urls)],
-            coords=[mid_date_coord],
-            dims=[Coords.MID_DATE]
-        )
+        if DataVars.MAP_SCALE_CORRECTED in self.ds[0].v.attrs:
+            self.layers[DataVars.MAP_SCALE_CORRECTED] = xr.DataArray(
+                data = [ITSCube.get_data_var_attr(
+                            ds,
+                            url,
+                            DataVars.V,
+                            DataVars.MAP_SCALE_CORRECTED,
+                            DataVars.MISSING_BYTE
+                        ) for ds, url in zip(self.ds, self.urls)],
+                coords=[mid_date_coord],
+                dims=[Coords.MID_DATE]
+            )
 
-        # If attribute is propagated as cube's v attribute, delete it
-        if DataVars.MAP_SCALE_CORRECTED in self.layers[DataVars.V].attrs:
-            del self.layers[DataVars.V].attrs[DataVars.MAP_SCALE_CORRECTED]
+            # If attribute is propagated as cube's v attribute, delete it
+            if DataVars.MAP_SCALE_CORRECTED in self.layers[DataVars.V].attrs:
+                del self.layers[DataVars.V].attrs[DataVars.MAP_SCALE_CORRECTED]
 
         # Drop data variable as we don't need it anymore - free up memory
         self.ds = [each.drop_vars(DataVars.V) for each in self.ds]
@@ -1033,7 +1154,10 @@ class ITSCube:
         gc.collect()
 
         # Process 'v_error'
-        self.layers[DataVars.V_ERROR] = xr.concat([self.get_data_var(ds, DataVars.V_ERROR) for ds in self.ds] , mid_date_coord)
+        self.layers[DataVars.V_ERROR] = xr.concat(
+            [self.get_data_var(ds, DataVars.V_ERROR) for ds in self.ds],
+            mid_date_coord
+        )
         self.layers[DataVars.V_ERROR].attrs[DataVars.DESCRIPTION_ATTR] = DataVars.DESCRIPTION[DataVars.V_ERROR]
         self.layers[DataVars.V_ERROR].attrs[DataVars.STD_NAME] = DataVars.NAME[DataVars.V_ERROR]
         self.layers[DataVars.V_ERROR].attrs[DataVars.UNITS] = DataVars.M_Y_UNITS
@@ -1139,12 +1263,15 @@ class ITSCube:
         # Optical legacy granules might not have chip_size_height set, use
         # chip_size_width instead
         self.layers[DataVars.CHIP_SIZE_HEIGHT] = xr.concat([
-            ds.chip_size_height if
-            np.ma.masked_equal(ds.chip_size_height.values, ITSCube.CHIP_SIZE_HEIGHT_NO_VALUE).count() != 0 else
-            ds.chip_size_width for ds in self.ds ],
+               ds.chip_size_height if
+                  np.ma.masked_equal(ds.chip_size_height.values, ITSCube.CHIP_SIZE_HEIGHT_NO_VALUE).count() != 0 else
+               ds.chip_size_width for ds in self.ds
+            ],
             mid_date_coord)
-        self.layers[DataVars.CHIP_SIZE_HEIGHT].attrs[DataVars.CHIP_SIZE_COORDS] = DataVars.DESCRIPTION[DataVars.CHIP_SIZE_COORDS]
-        self.layers[DataVars.CHIP_SIZE_HEIGHT].attrs[DataVars.DESCRIPTION_ATTR] = DataVars.DESCRIPTION[DataVars.CHIP_SIZE_HEIGHT]
+        self.layers[DataVars.CHIP_SIZE_HEIGHT].attrs[DataVars.CHIP_SIZE_COORDS] = \
+            DataVars.DESCRIPTION[DataVars.CHIP_SIZE_COORDS]
+        self.layers[DataVars.CHIP_SIZE_HEIGHT].attrs[DataVars.DESCRIPTION_ATTR] = \
+            DataVars.DESCRIPTION[DataVars.CHIP_SIZE_HEIGHT]
 
         self.set_grid_mapping_attr(DataVars.CHIP_SIZE_HEIGHT, ds_grid_mapping_value)
 
@@ -1270,21 +1397,29 @@ class ITSCube:
         if is_first_write:
             # Set missing_value only on first write to the disk store, otherwise
             # will get "ValueError: failed to prevent overwriting existing key missing_value in attrs."
-            for each in [DataVars.MAP_SCALE_CORRECTED,
-                         DataVars.CHIP_SIZE_HEIGHT,
-                         DataVars.CHIP_SIZE_WIDTH,
-                         DataVars.INTERP_MASK]:
-                self.layers[each].attrs[DataVars.MISSING_VALUE_ATTR] = DataVars.MISSING_BYTE
+            # "missing_value" attribute is depricated
+            # for each in [DataVars.MAP_SCALE_CORRECTED,
+            #              DataVars.CHIP_SIZE_HEIGHT,
+            #              DataVars.CHIP_SIZE_WIDTH,
+            #              DataVars.INTERP_MASK]:
+            #     if each in self.layers:
+            #         # Since MAP_SCALE_CORRECTED is present only in old granule format
+            #         self.layers[each].attrs[DataVars.MISSING_VALUE_ATTR] = DataVars.MISSING_BYTE
 
             # ATTN: Must set '_FillValue' for each data variable that has
             #       its missing_value attribute set
             encoding_settings = {}
-            for each in [DataVars.MAP_SCALE_CORRECTED,
-                         DataVars.INTERP_MASK,
+            for each in [DataVars.INTERP_MASK,
                          DataVars.CHIP_SIZE_HEIGHT,
                          DataVars.CHIP_SIZE_WIDTH,
                          DataVars.FLAG_STABLE_SHIFT]:
                 encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE}
+
+            # Treat it outside of "for" loop
+            if DataVars.MAP_SCALE_CORRECTED in self.layers:
+                # Since MAP_SCALE_CORRECTED is present only in old granule format
+                encoding_settings[DataVars.MAP_SCALE_CORRECTED] = {DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE}
+                encoding_settings[DataVars.MAP_SCALE_CORRECTED]['dtype'] = 'byte'
 
             # Explicitly set dtype to 'byte' for some data variables
             for each in [DataVars.CHIP_SIZE_HEIGHT,
@@ -1292,9 +1427,16 @@ class ITSCube:
                 encoding_settings[each]['dtype'] = 'ushort'
 
             # Explicitly set dtype for some variables
-            encoding_settings[DataVars.MAP_SCALE_CORRECTED]['dtype'] = 'byte'
             encoding_settings[DataVars.INTERP_MASK]['dtype'] = 'ubyte'
-            encoding_settings[DataVars.FLAG_STABLE_SHIFT]['dtype'] = 'long'
+            for each in [
+                DataVars.FLAG_STABLE_SHIFT,
+                DataVars.STABLE_COUNT_SLOW,
+                DataVars.STABLE_COUNT_MASK
+                ]:
+                encoding_settings[each]['dtype'] = 'long'
+            # Old format granules
+            if DataVars.STABLE_COUNT in self.layers:
+                encoding_settings[DataVars.STABLE_COUNT]['dtype'] = 'long'
 
             for each in new_v_vars:
                 encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE}
@@ -1320,11 +1462,15 @@ class ITSCube:
 
             # Explicitly desable _FillValue for some variables
             for each in [Coords.MID_DATE,
-                         DataVars.STABLE_COUNT,
+                         DataVars.STABLE_COUNT_SLOW,
+                         DataVars.STABLE_COUNT_MASK,
                          DataVars.ImgPairInfo.AUTORIFT_SOFTWARE_VERSION,
                          DataVars.ImgPairInfo.DATE_DT,
                          DataVars.ImgPairInfo.DATE_CENTER]:
                 encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
+            # If old format granule
+            if DataVars.STABLE_COUNT in self.layers:
+                encoding_settings.setdefault(DataVars.STABLE_COUNT, {}).update({DataVars.FILL_VALUE_ATTR: None})
 
             # Set units for all datetime objects
             for each in [DataVars.ImgPairInfo.ACQUISITION_IMG1,
@@ -1465,12 +1611,24 @@ if __name__ == '__main__':
                         help="UTM target projection.")
     parser.add_argument('--dimSize', type=float, default=100000,
                         help="Cube dimension in meters [%(default)d].")
-    parser.add_argument('--centroid', type=str,
-                        action='store',
-                        help="Centroid point (x, y) for the datacube in target EPSG code projection.")
     parser.add_argument('-r', '--reportDir', type=str, default='logs',
                         help="Directory to store skipped granules information (no data, wrong projection, double middle date) [%(default)s].")
 
+    # One of --centroid or --polygon options is allowed for the datacube coordinates
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        '--centroid',
+        type=str,
+        action='store',
+        help="JSON 2-element list for centroid point (x, y) of the datacube in target EPSG code projection. "
+        "Polygon vertices are calculated based on the centroid and cube dimension arguments."
+    )
+    group.add_argument(
+        '--polygon',
+        type=str,
+        action='store',
+        help="JSON list of polygon points ((x1, y1), (x2, y2),... (x1, y1)) to define datacube in target EPSG code projection."
+    )
 
     args = parser.parse_args()
     ITSCube.NUM_THREADS = args.threads
@@ -1485,19 +1643,24 @@ if __name__ == '__main__':
     # projection = '32628'
     projection = args.targetProjection
 
-    # Centroid for the tile in target projection
-    # c_x, c_y = (487462, 9016243)
-    c_x, c_y = list(map(int, json.loads(args.centroid)))
+    polygon = None
+    if args.centroid:
+        # Centroid for the tile is provided in target projection
+        # c_x, c_y = (487462, 9016243)
+        c_x, c_y = list(map(float, json.loads(args.centroid)))
 
-    # Offset in meters (1 pixel=240m): 100 km square (with offset=50km)
-    # off = 50000
-    off = args.dimSize / 2.0
-    polygon = (
-        (c_x - off, c_y + off),
-        (c_x + off, c_y + off),
-        (c_x + off, c_y - off),
-        (c_x - off, c_y - off),
-        (c_x - off, c_y + off))
+        # Offset in meters (1 pixel=240m): 100 km square (with offset=50km)
+        # off = 50000
+        off = args.dimSize / 2.0
+        polygon = (
+            (c_x - off, c_y + off),
+            (c_x + off, c_y + off),
+            (c_x + off, c_y - off),
+            (c_x - off, c_y - off),
+            (c_x - off, c_y + off))
+    else:
+        # Polygon for the cube definition is provided
+        polygon = json.loads(args.polygon)
 
     # Create cube object
     cube = ITSCube(polygon, projection)
@@ -1538,7 +1701,11 @@ if __name__ == '__main__':
         # to copy
 
         env_copy = os.environ.copy()
-        command_line = ["aws", "s3", "cp", "--recursive", args.outputStore, os.path.join(args.outputBucket, os.path.basename(args.outputStore))]
+        command_line = [
+            "aws", "s3", "cp", "--recursive",
+            args.outputStore,
+            os.path.join(args.outputBucket, os.path.basename(args.outputStore))
+        ]
         cube.logger.info(' '.join(command_line))
 
         command_return = subprocess.run(

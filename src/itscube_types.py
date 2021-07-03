@@ -34,16 +34,27 @@ class DataVars:
     MISSING_VALUE_ATTR         = 'missing_value'
     FILL_VALUE_ATTR            = '_FillValue'
     DESCRIPTION_ATTR           = 'description'  # v, vx, vy
-    GRID_MAPPING               = 'grid_mapping' # v, vx, vy - store only one
-    STABLE_COUNT               = 'stable_count' # vx, vy    - store only one
-    STABLE_SHIFT               = 'stable_shift' # vx, vy, vxp, vyp
-    STABLE_SHIFT_MASK          = 'stable_shift_mask' # vx, vy, vxp, vyp
-    STABLE_SHIFT_SLOW          = 'stable_shift_slow' # vx, vy, vxp, vyp
-    FLAG_STABLE_SHIFT_MEANINGS = 'flag_stable_shift_meanings' # vx, vy
+    GRID_MAPPING               = 'grid_mapping' # v, vx, vy - store only one per cube
+    GRID_MAPPING_NAME          = 'grid_mapping_name' # New format: attribute to store grid mapping
+
+    # Store only one per cube (attributes in vx, vy)
+    # Per Yang: generally yes, though for vxp and vyp it was calculated again
+    # but the number should not change quite a bit. so it should be okay to
+    # use a single value for all variables
+    STABLE_COUNT               = 'stable_count'
+    STABLE_COUNT_SLOW          = 'stable_count_slow' # New format
+    STABLE_COUNT_MASK          = 'stable_count_mask' # New format
+
+    # Attributes for vx, vy, vxp, vyp, vr, va
+    FLAG_STABLE_SHIFT             = 'flag_stable_shift' # In Radar and updated Optical formats
+    FLAG_STABLE_SHIFT_DESCRIPTION = 'flag_stable_shift_description'
+    STABLE_SHIFT                  = 'stable_shift'
+    STABLE_SHIFT_SLOW             = 'stable_shift_slow' # New format
+    STABLE_SHIFT_MASK             = 'stable_shift_mask' # New format
 
     # Optical Legacy format only:
     STABLE_SHIFT_APPLIED = 'stable_shift_applied' # vx, vy - remove from attributes
-    STABLE_APPLY_DATE    = 'stable_apply_date' # vx, vy - remove from attributes
+    STABLE_APPLY_DATE    = 'stable_apply_date' # vx, vy    - remove from attributes
 
     STD_NAME    = 'standard_name'
     UNITS       = 'units'
@@ -59,8 +70,17 @@ class DataVars:
     VX = 'vx'
     # Attributes
     VX_ERROR          = 'vx_error'          # In Radar and updated Optical formats
-    FLAG_STABLE_SHIFT = 'flag_stable_shift' # In Radar and updated Optical formats
     STABLE_RMSE       = 'stable_rmse'       # In Optical legacy format only
+
+    # New format: postfix to format velocity specific attributes, such as
+    # vx_error, vx_error_mask, vx_error_modeled, vx_error_slow,
+    # vx_error_description, vx_error_mask_description, vx_error_modeled_description,
+    # vx_error_slow_description
+    ERROR_DESCRIPTION = 'description'
+    ERROR             = 'error'
+    ERROR_MASK        = 'error_mask'
+    ERROR_MODELED     = 'error_modeled'
+    ERROR_SLOW        = 'error_slow'
 
     VY                = 'vy'
     # Attributes
@@ -92,6 +112,7 @@ class DataVars:
     # * UTM_Projection when epsg code of 326** or 327**
     POLAR_STEREOGRAPHIC = 'Polar_Stereographic'
     UTM_PROJECTION = 'UTM_Projection'
+    MAPPING = 'mapping' # New format
 
     # Missing values for data variables
     MISSING_BYTE      = 0.0
@@ -117,6 +138,13 @@ class DataVars:
         V: "velocity magnitude",
         VX: "velocity component in x direction",
         VY: "velocity component in y direction",
+
+        STABLE_COUNT: "number of stable points used to determine {} shift",
+        STABLE_COUNT_SLOW: "number of valid pixels over slowest 25% of ice",
+        STABLE_COUNT_MASK: "number of valid pixels over stationary or slow-flowing surfaces",
+
+        STABLE_SHIFT_SLOW: "applied {} shift calibrated using valid pixels over slowest 25% of ice",
+        STABLE_SHIFT_MASK: "applied {} shift calibrated using valid pixels over stationary or slow-flowing surfaces",
 
         # These descriptions are based on Radar granule format. Have to set them
         # manually since there are no Radar format granules are available for
@@ -147,11 +175,11 @@ class DataVars:
             "chip_size_coordinates = 'radar geometry: width = range, height = azimuth'",
         CHIP_SIZE_HEIGHT: "height of search window",
         CHIP_SIZE_WIDTH: "width of search window",
-        FLAG_STABLE_SHIFT_MEANINGS: "flag for applying velocity bias correction " \
-            " over stable surfaces " \
-            "(stationary or slow-flowing surfaces with velocity < 15 m/yr): " \
-            "0 = there is no stable surface available and no correction is applied; " \
-            "1 = there are stable surfaces and velocity bias is corrected;",
+        FLAG_STABLE_SHIFT_DESCRIPTION: "flag for applying velocity bias correction: " \
+            "0 = no correction; " \
+            "1 = correction from overlapping stable surface mask (stationary or " \
+            " slow-flowing surfaces with velocity < 15 m/yr)(top priority); " \
+            "2 = correction from slowest 25% of overlapping velocities (second priority)",
         URL: "original granule URL"
     }
 
