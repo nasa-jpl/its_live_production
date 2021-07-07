@@ -2,6 +2,13 @@
 Classes that define data variables and attributes for the ITS_LIVE datacube.
 """
 
+class Output:
+    """
+    Attributes specific to the output store format (Zarr or NetCDF)
+    """
+    DTYPE_ATTR      = 'dtype'
+    FILL_VALUE_ATTR = '_FillValue'
+
 
 class Coords:
     """
@@ -30,6 +37,10 @@ class DataVars:
     """
     Data variables for the data cube.
     """
+    # Granule attributes
+    AUTORIFT_SOFTWARE_VERSION = 'autoRIFT_software_version'
+    AUTORIFT_PARAMETER_FILE   = 'autoRIFT_parameter_file'
+
     # Attributes that appear for multiple data variables
     MISSING_VALUE_ATTR         = 'missing_value'
     FILL_VALUE_ATTR            = '_FillValue'
@@ -180,7 +191,8 @@ class DataVars:
             "1 = correction from overlapping stable surface mask (stationary or " \
             " slow-flowing surfaces with velocity < 15 m/yr)(top priority); " \
             "2 = correction from slowest 25% of overlapping velocities (second priority)",
-        URL: "original granule URL"
+        URL: "original granule URL",
+        AUTORIFT_SOFTWARE_VERSION: "version of autoRIFT software"
     }
 
 
@@ -207,11 +219,18 @@ class DataVars:
         # Rename mid_date to date_center as they are the same, don't collect this
         DATE_CENTER               = 'date_center'
         ROI_VALID_PERCENTAGE      = 'roi_valid_percentage'
-        AUTORIFT_SOFTWARE_VERSION = 'autoRIFT_software_version'
+
+        # New format defines these attributes, make them datacube attributes
+        TIME_STANDARD_IMG1 = 'time_standard_img1'
+        TIME_STANDARD_IMG2 = 'time_standard_img2'
 
         # Optical and optical legacy formats define them as:
-        AQUISITION_DATE_IMG1 = 'aquisition_date_img1'
-        AQUISITION_DATE_IMG2 = 'aquisition_date_img2'
+        # AQUISITION_DATE_IMG1 = 'aquisition_date_img1'
+        # AQUISITION_DATE_IMG2 = 'aquisition_date_img2'
+        # New granule format (has correct spelling)
+        ACQUISITION_DATE_IMG1 = 'acquisition_date_img1'
+        ACQUISITION_DATE_IMG2 = 'acquisition_date_img2'
+
         ALL = [
             MISSION_IMG1,
             SENSOR_IMG1,
@@ -222,57 +241,53 @@ class DataVars:
             DATE_DT,
             DATE_CENTER,
             ROI_VALID_PERCENTAGE,
-            AUTORIFT_SOFTWARE_VERSION
         ]
 
         # Description strings for data variables.
         DESCRIPTION = {
-            MISSION_IMG1: "id of the mission that acquired image 1",
-            SENSOR_IMG1:  "id of the sensor that acquired image 1",
-            SATELLITE_IMG1: "id of the satellite that acquired image 1",
-            ACQUISITION_IMG1: "acquisition date and time of image 1",
-            MISSION_IMG2: "id of the mission that acquired image 2",
-            SENSOR_IMG2:  "id of the sensor that acquired image 2",
-            SATELLITE_IMG2: "id of the satellite that acquired image 2",
-            ACQUISITION_IMG2: "acquisition date and time of image 2",
-            DATE_DT: "time separation between acquisition of image 1 and image 2",
-            DATE_CENTER: "midpoint of image 1 and image 2 acquisition date",
-            ROI_VALID_PERCENTAGE: "percentage of pixels with a valid velocity " \
+            MISSION_IMG1:          "id of the mission that acquired image 1",
+            SENSOR_IMG1:           "id of the sensor that acquired image 1",
+            SATELLITE_IMG1:        "id of the satellite that acquired image 1",
+            ACQUISITION_DATE_IMG1: "acquisition date and time of image 1",
+            MISSION_IMG2:          "id of the mission that acquired image 2",
+            SENSOR_IMG2:           "id of the sensor that acquired image 2",
+            SATELLITE_IMG2:        "id of the satellite that acquired image 2",
+            ACQUISITION_DATE_IMG2: "acquisition date and time of image 2",
+            DATE_DT:                "time separation between acquisition of image 1 and image 2",
+            DATE_CENTER:            "midpoint of image 1 and image 2 acquisition date",
+            ROI_VALID_PERCENTAGE:  "percentage of pixels with a valid velocity " \
                 "estimate determined for the intersection of the full image " \
                 "pair footprint and the region of interest (roi) that defines " \
                 "where autoRIFT tried to estimate a velocity",
-            AUTORIFT_SOFTWARE_VERSION: "version of autoRIFT software"
         }
 
         # Flag if data variable values are to be converted to the date objects
         CONVERT_TO_DATE = {
-            MISSION_IMG1: False,
-            SENSOR_IMG1:  False,
-            SATELLITE_IMG1: False,
-            ACQUISITION_IMG1: True,
-            MISSION_IMG2: False,
-            SENSOR_IMG2:  False,
-            SATELLITE_IMG2: False,
-            ACQUISITION_IMG2: True,
-            DATE_DT: False,
-            DATE_CENTER: True,
-            ROI_VALID_PERCENTAGE: False,
-            AUTORIFT_SOFTWARE_VERSION: False
+            MISSION_IMG1:          False,
+            SENSOR_IMG1:           False,
+            SATELLITE_IMG1:        False,
+            ACQUISITION_DATE_IMG1: True,
+            MISSION_IMG2:          False,
+            SENSOR_IMG2:           False,
+            SATELLITE_IMG2:        False,
+            ACQUISITION_DATE_IMG2: True,
+            DATE_DT:               False,
+            DATE_CENTER:           True,
+            ROI_VALID_PERCENTAGE:  False,
         }
 
         STD_NAME = {
-            MISSION_IMG1: "image1_mission",
-            SENSOR_IMG1: "image1_sensor",
-            SATELLITE_IMG1: "image1_satellite",
-            ACQUISITION_IMG1: "image1_acquition_date",
-            MISSION_IMG2: "image2_mission",
-            SENSOR_IMG2: "image2_sensor",
-            SATELLITE_IMG2: "image2_satellite",
-            ACQUISITION_IMG2: "image2_acquition_date",
-            DATE_DT: "image_pair_time_separation",
-            DATE_CENTER: "image_pair_center_date",
-            ROI_VALID_PERCENTAGE: "region_of_interest_valid_pixel_percentage",
-            AUTORIFT_SOFTWARE_VERSION: "autoRIFT_software_version"
+            MISSION_IMG1:          "image1_mission",
+            SENSOR_IMG1:           "image1_sensor",
+            SATELLITE_IMG1:        "image1_satellite",
+            ACQUISITION_DATE_IMG1: "image1_acquition_date",
+            MISSION_IMG2:          "image2_mission",
+            SENSOR_IMG2:           "image2_sensor",
+            SATELLITE_IMG2:        "image2_satellite",
+            ACQUISITION_DATE_IMG2: "image2_acquition_date",
+            DATE_DT:               "image_pair_time_separation",
+            DATE_CENTER:           "image_pair_center_date",
+            ROI_VALID_PERCENTAGE:  "region_of_interest_valid_pixel_percentage",
         }
 
         UNITS = {
