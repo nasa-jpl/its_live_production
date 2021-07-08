@@ -296,3 +296,17 @@ class DataVars:
             # ACQUISITION_IMG2: DATE_UNITS,
             # DATE_CENTER: DATE_UNITS
         }
+
+
+MID_DATE_ATTRS = {
+    DataVars.STD_NAME: Coords.STD_NAME[Coords.MID_DATE],
+    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.MID_DATE]
+}
+X_ATTRS = {
+    DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
+    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X]
+}
+Y_ATTRS = {
+    DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
+    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
+}

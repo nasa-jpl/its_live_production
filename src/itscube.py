@@ -35,6 +35,20 @@ logging.basicConfig(
     datefmt = '%Y-%m-%d %H:%M:%S'
 )
 
+# Coordinates attributes for the output store
+MID_DATE_ATTRS = {
+    DataVars.STD_NAME: Coords.STD_NAME[Coords.MID_DATE],
+    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.MID_DATE]
+}
+X_ATTRS = {
+    DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
+    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X]
+}
+Y_ATTRS = {
+    DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
+    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
+}
+
 
 class ITSCube:
     """
@@ -987,7 +1001,7 @@ class ITSCube:
         Check on existence of "grid_mapping" attribute for the variable, set it
         if not present.
         """
-        if DataVars.GRID_MAPPING in self.layers[var_name]:
+        if DataVars.GRID_MAPPING in self.layers[var_name].attrs:
             # Attribute is already set, nothing to do
             return
 
@@ -1087,8 +1101,8 @@ class ITSCube:
                 'datacube_software_version': ITSCube.Version,
                 'GDAL_AREA_OR_POINT': 'Area',
                 'projection': str(self.projection),
-                'longitude': f"center_lon_lat[0]:.2f",
-                'latitude':  f"center_lon_lat[1]:.2f"
+                'longitude': f"{center_lon_lat[0]:.2f}",
+                'latitude':  f"{center_lon_lat[1]:.2f}"
             }
         )
 
@@ -1451,6 +1465,13 @@ class ITSCube:
             unique_values = list(set(all_values))
             if len(unique_values) > 1:
                 raise RuntimeError(f"Multiple values for '{var_name}' are detected for current {len(self.ds)} layers: {unique_values}")
+
+        # ATTN: Set attributes for the Dataset coordinates as the very last step:
+        # when adding data variables that don't have the same attributes for the
+        # coordinates, originally set Dataset coordinates will be wiped out
+        self.layers[Coords.MID_DATE].attrs = MID_DATE_ATTRS
+        self.layers[Coords.X].attrs = X_ATTRS
+        self.layers[Coords.Y].attrs = Y_ATTRS
 
         time_delta = timeit.default_timer() - start_time
         self.logger.info(f"Combined {len(self.urls)} layers (took {time_delta} seconds)")
