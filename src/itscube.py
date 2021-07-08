@@ -398,9 +398,12 @@ class ITSCube:
             s3_path = each_url.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
             s3_path = s3_path.replace(ITSCube.PATH_URL, '')
 
+            self.logger.info(f"Reading {s3_path}...")
             with s3.open(s3_path, mode='rb') as fhandle:
                 with xr.open_dataset(fhandle, engine=ITSCube.NC_ENGINE) as ds:
+                    self.logger.info(f"Preprocess dataset from {s3_path}...")
                     results = self.preprocess_dataset(ds, each_url)
+                    self.logger.info(f"Add layer for {s3_path}...")
                     self.add_layer(*results)
 
                     # Check if need to write to the file accumulated number of granules
@@ -709,13 +712,13 @@ class ITSCube:
 
         # Detect projection
         ds_projection = None
-        if DataVars.UTM_PROJECTION in ds:
-            ds_projection = ds.UTM_Projection.spatial_epsg
+        # if DataVars.UTM_PROJECTION in ds:
+        #     ds_projection = ds.UTM_Projection.spatial_epsg
+        #
+        # elif DataVars.POLAR_STEREOGRAPHIC in ds:
+        #     ds_projection = ds.Polar_Stereographic.spatial_epsg
 
-        elif DataVars.POLAR_STEREOGRAPHIC in ds:
-            ds_projection = ds.Polar_Stereographic.spatial_epsg
-
-        elif DataVars.MAPPING in ds:
+        if DataVars.MAPPING in ds:
             ds_projection = ds.mapping.spatial_epsg
 
         else:
