@@ -27,7 +27,7 @@ class FixGranules:
     from ASF to ITS_LIVE bucket).
     """
 
-    def __init__(self, bucket: str, bucket_dir: str, glob_pattern: dir):
+    def __init__(self, bucket: str, bucket_dir: str, glob_pattern: dir, prefix: str):
         """
         Initialize object.
         """
@@ -37,6 +37,10 @@ class FixGranules:
         logging.info(f"Reading {bucket_dir}")
         self.all_granules = self.s3.glob(f'{os.path.join(bucket, bucket_dir)}/{glob_pattern}')
         logging.info(f"Number of granules: {len(self.all_granules)}")
+
+        if prefix is not None:
+            self.all_granules = [each for each in self.all_granules if prefix in each]
+            logging.info(f"Number of {prefix} granules: {len(self.all_granules)}")
 
         self.bucket = bucket
 
@@ -146,6 +150,10 @@ def main():
         default=0,
         help='Index for the start granule to process (if previous processing terminated) [%(default)d]'
     )
+    parser.add_argument('-i', '--include-prefix', type=str,
+        default=None,
+        help='Path prefix to include for processing[%(default)s]'
+    )
 
     args = parser.parse_args()
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
@@ -153,7 +161,7 @@ def main():
 
     logging.info(f"Args: {args}")
 
-    fix_compression = FixGranules(args.bucket, args.bucket_dir, args.glob,)
+    fix_compression = FixGranules(args.bucket, args.bucket_dir, args.glob, args.include_prefix)
     fix_compression(
         args.local_dir,
         args.chunk_size,
