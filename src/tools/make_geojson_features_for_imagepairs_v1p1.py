@@ -3,6 +3,7 @@ from datetime import datetime
 import geojson
 import h5py
 import json
+import logging
 import numpy as np
 import os
 import psutil
@@ -67,18 +68,17 @@ def finddirstring(lat,lon):
     dirstring = f'{NShemi_str}{outlat:02d}{EWhemi_str}{outlon:03d}'
     return(dirstring)
 
-def image_pair_feature_from_path(infilewithpath, five_points_per_side = False):
-    # from s3.ls:
-    #     infilewithpath = 'https://s3/its-live-data.jpl.nasa.gov/velocity_image_pair/landsat/v00.0/32609/LC08_L1TP_050024_20180713_20180730_01_T1_X_LE07_L1TP_050024_20180315_20180316_01_RT_G0240V01_P072.nc'
-
-
-    # base URL from S3 directory listing has file path for s3fs access, not what you need for http directly,
-    #  so that is hard coded here. (or not used - don't need it in every feature)
-    # base_URL = 'http://its-live-data.jpl.nasa.gov.s3.amazonaws.com/velocity_image_pair/landsat/v00.0'
-
+def image_pair_feature_from_path(
+    infilewithpath: str,
+    five_points_per_side: bool = False,
+    data_version: str = None
+):
     filename_tokens = infilewithpath.split('/')
     directory = '/'.join(filename_tokens[1:-1])
     filename = filename_tokens[-1]
+
+    if data_version is None:
+        data_version = filename_tokens[-2]
 
     with s3.open(f"s3://{infilewithpath}", "rb") as ins3:
         inh5 = h5py.File(ins3, mode = 'r')
@@ -191,6 +191,7 @@ def image_pair_feature_from_path(infilewithpath, five_points_per_side = False):
                                         # date_deldays_strrep is a string version of center date and time interval that will sort by date and then by interval length (shorter intervals first) - relies on "string" comparisons by byte
                                         'date_deldays_strrep': img_pair_info_dict['date_center'] + f"{img_pair_info_dict['date_dt']:07.1f}".replace('.',''),
                                         'img_pair_info_dict': img_pair_info_dict,
+                                        'version': data_version
                                         }
                             )
     return(feat)
@@ -288,7 +289,7 @@ def skip_duplicate_granules(found_urls: list, skipped_granules_filename: str):
             if not is_optical:
                 # Radar format granule, just issue a warning
                 all_urls = ' '.join(keep_urls[granule_id])
-                print(f"WARNING: multiple granules are detected for {each_url}: {all_urls}")
+                logging.info(f"WARNING: multiple granules are detected for {each_url}: {all_urls}")
                 keep_urls[granule_id].append(each_url)
                 continue
 
@@ -336,7 +337,7 @@ def skip_duplicate_granules(found_urls: list, skipped_granules_filename: str):
                 if len(remove_urls):
                     # Some of the URLs need to be removed due to newer
                     # processed granule
-                    print(f"Skipping {remove_urls} in favor of new {each_url}")
+                    logging.info(f"Skipping {remove_urls} in favor of new {each_url}")
                     skipped_double_granules.extend(remove_urls)
 
                     # Remove older processed granules based on dates for "each_url"
@@ -346,7 +347,7 @@ def skip_duplicate_granules(found_urls: list, skipped_granules_filename: str):
 
                 else:
                     # New granule has older processing date, don't include
-                    print(f"Skipping new {each_url} in favor of {keep_urls[granule_id]}")
+                    logging.info(f"Skipping new {each_url} in favor of {keep_urls[granule_id]}")
                     skipped_double_granules.append(each_url)
 
         else:
@@ -357,27 +358,23 @@ def skip_duplicate_granules(found_urls: list, skipped_granules_filename: str):
     for each in keep_urls.values():
         granules.extend(each)
 
-    print(f"Keeping {len(granules)} unique granules")
+    logging.info(f"Keeping {len(granules)} unique granules")
 
     with s3_out.open(skipped_granules_filename, 'w') as outf:
         geojson.dump(skipped_double_granules, outf)
 
-    # with open(skipped_granules_filename, 'w') as out_fhandle:
-    #     for each_granule in skipped_double_granules:
-    #         out_fhandle.write(each_granule+os.linesep)
-    #
-    print(f"Wrote skipped granules to '{skipped_granules_filename}'")
+    logging.info(f"Wrote skipped granules to '{skipped_granules_filename}'")
     return granules
 
 
 parser = argparse.ArgumentParser( \
     description="""make_geojson_features_for_imagepairs_v1.py
 
-                   produces output geojson FeatureCollection for each nn image_pairs from a directory.
-                   v1 adds 5 points per side to geom (so 3 interior and the two corners from v0)
-                   and the ability to stop the chunks (in addition to the start allowed in v0)
-                   so that the code can be run on a range of chunks.
-                """,
+       produces output geojson FeatureCollection for each nn image_pairs from a directory.
+       v1 adds 5 points per side to geom (so 3 interior and the two corners from v0)
+       and the ability to stop the chunks (in addition to the start allowed in v0)
+       so that the code can be run on a range of chunks.
+    """,
     epilog="""
 There are two steps to create geojson catalogs:
 1. Create a list of granules to be used for catalog generation. The file that stores
@@ -438,21 +435,34 @@ parser.add_argument('-glob',
                     default='*/*.nc',
                     help='glob pattern for the granule search under "base_dir_s3fs" [%(default)s]')
 
+parser.add_argument('-five_points_per_side', action='store_true',
+                    help='Define 5 points per side before re-projecting granule polygon to longitude/latitude coordinates')
+
+parser.add_argument('-data_version', default=None, type = str,
+                    help='Data version to be recorded for each granule. If none is provided, immediate parent directory of the granule is used as its version.')
+
 
 args = parser.parse_args()
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
+                    datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
+
+logging.info(f'Command-line args: {args}')
 
 inzonesdir = args.base_dir_s3fs
 
 if not args.create_catalog_list:
     # read in infiles from S3 file
+    logging.info(f"Opening granule file: {args.catalog_granules_file}")
     with s3.open(args.catalog_granules_file, 'r') as ins3file:
         infiles = json.load(ins3file)
 
-    print(f"Loaded granule list from '{args.catalog_granules_file}'")
+    logging.info(f"Loaded granule list from '{args.catalog_granules_file}'")
 
 else:
     # use a glob to list directory
+    logging.info(f"Glob {inzonesdir}/{args.glob}")
     infilelist = s3.glob(f'{inzonesdir}/{args.glob}')
+    logging.info(f"Got {len(infilelist)} granules")
 
     # check for '_P' in filename - filters out temp.nc files that can be left by bad transfers
     # also skips txt file placeholders for 000 Pct (all invalid) pairs
@@ -466,7 +476,7 @@ else:
     with s3_out.open(args.catalog_granules_file, 'w') as outf:
         geojson.dump(infiles, outf)
 
-    print(f"Wrote catalog granules to '{args.catalog_granules_file}'")
+    logging.info(f"Wrote catalog granules to '{args.catalog_granules_file}'")
     sys.exit(0)
 
 totalnumfiles = len(infiles)
@@ -494,7 +504,7 @@ if args.start_chunks_at_file != 0:
     if new_chunks_startstop[0][0] == args.start_chunks_at_file:
         chunks_startstop = new_chunks_startstop
     else:
-        print(f'-start_chunks_at_file {args.start_chunks_at_file} not in {chunks_startstop}, quitting...')
+        logging.error(f'-start_chunks_at_file {args.start_chunks_at_file} not in {chunks_startstop}, quitting...')
         sys.exit(0)
 
 if args.stop_chunks_at_file != 0:
@@ -502,14 +512,14 @@ if args.stop_chunks_at_file != 0:
     if new_chunks_startstop[-1][0] + args.chunk_by == args.stop_chunks_at_file:
         chunks_startstop = new_chunks_startstop
     else:
-        print(f'-stop_chunks_at_file {args.stop_chunks_at_file} not in {chunks_startstop}, quitting...')
+        logging.error(f'-stop_chunks_at_file {args.stop_chunks_at_file} not in {chunks_startstop}, quitting...')
         sys.exit(0)
 
 # Use sub-directory name of input path as base for output filename
 base_dir = os.path.basename(inzonesdir)
 
 for num,(start,stop) in enumerate(chunks_startstop):
-    print(f'working on chunk {start},{stop}', flush = True)
+    logging.info(f'working on chunk {start},{stop}', flush = True)
     featurelist = []
     count = start
     for infilewithpath in infiles[start:stop+1]:
@@ -519,7 +529,7 @@ for num,(start,stop) in enumerate(chunks_startstop):
                 mt.meminfo(f'{count:6d}/{stop:6d}')
             else:
                 print(f'{count:6d}/{stop:6d}', end = '\r', flush = True)
-        feature = image_pair_feature_from_path(infilewithpath, five_points_per_side = True)
+        feature = image_pair_feature_from_path(infilewithpath, args.five_points_per_side, args.data_version)
         featurelist.append(feature)
 
     featureColl = geojson.FeatureCollection(featurelist)
