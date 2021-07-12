@@ -838,11 +838,19 @@ class ITSCube:
 
             error_name_desc = f'{error_name}{_name_sep}{DataVars.ERROR_DESCRIPTION}'
             desc_str = None
-            if error_name in _attrs:
+            if var_name in self.ds[0] and error_name_desc in self.ds[0][var_name].attrs:
+                desc_str = self.ds[0][var_name].attrs[error_name_desc]
+
+            elif each_prefix in _attrs:
+                # If generic description is provided
+                desc_str = _attrs[each_prefix][1]
+
+            elif error_name in _attrs:
+                # If variable specific description is provided
                 desc_str = _attrs[error_name][1]
 
             else:
-                desc_str = _attrs[each_prefix][1] if var_name not in self.ds[0] or error_name_desc not in self.ds[0][var_name].attrs else self.ds[0][var_name].attrs[error_name_desc]
+                raise RuntimeError(f"Unknown description for {error_name} of {var_name}")
 
             self.layers[error_name] = xr.DataArray(
                 data=error_data,
@@ -858,6 +866,10 @@ class ITSCube:
             # If attribute is propagated as cube's data var attribute, delete it
             if error_name in self.layers[var_name].attrs:
                 del self.layers[var_name].attrs[error_name]
+
+            # If attribute description is in the var's attributes, remove it
+            if error_name_desc in self.layers[var_name].attrs:
+                del self.layers[var_name].attrs[error_name_desc]
 
         # This attribute appears for all v* data variables of old granule format,
         # capture it only once if it exists
@@ -939,6 +951,14 @@ class ITSCube:
                 }
             )
 
+        # Remove DataVars.FLAG_STABLE_SHIFT from velocity variable of the datacube
+        # if present
+        if DataVars.FLAG_STABLE_SHIFT in self.layers[var_name].attrs:
+            del self.layers[var_name].attrs[DataVars.FLAG_STABLE_SHIFT]
+
+        if DataVars.FLAG_STABLE_SHIFT_DESCRIPTION in self.layers[var_name].attrs:
+            del self.layers[var_name].attrs[DataVars.FLAG_STABLE_SHIFT_DESCRIPTION]
+
         # Create 'stable_shift' specific to the data variable,
         # for example, 'vx_stable_shift' for 'vx' data variable
         shift_var_name = _name_sep.join([var_name, DataVars.STABLE_SHIFT])
@@ -954,6 +974,9 @@ class ITSCube:
             }
         )
         return_vars.append(shift_var_name)
+
+        if DataVars.STABLE_SHIFT in self.layers[var_name].attrs:
+            del self.layers[var_name].attrs[DataVars.STABLE_SHIFT]
 
         # Create 'stable_shift_slow' specific to the data variable,
         # for example, 'vx_stable_shift_slow' for 'vx' data variable
@@ -1554,7 +1577,15 @@ class ITSCube:
                          DataVars.STABLE_COUNT_MASK,
                          DataVars.AUTORIFT_SOFTWARE_VERSION,
                          DataVars.ImgPairInfo.DATE_DT,
-                         DataVars.ImgPairInfo.DATE_CENTER]:
+                         DataVars.ImgPairInfo.DATE_CENTER,
+                         DataVars.ImgPairInfo.SATELLITE_IMG1,
+                         DataVars.ImgPairInfo.SATELLITE_IMG2,
+                         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
+                         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
+                         DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE,
+                         DataVars.ImgPairInfo.MISSION_IMG1,
+                         DataVars.ImgPairInfo.SENSOR_IMG1,
+                         DataVars.ImgPairInfo.SENSOR_IMG2]:
                 encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
             # If old format granule
             if DataVars.STABLE_COUNT in self.layers:
@@ -1565,7 +1596,7 @@ class ITSCube:
                          DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
                          DataVars.ImgPairInfo.DATE_CENTER,
                          Coords.MID_DATE]:
-                encoding_settings[each] = {DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS}
+                encoding_settings.setdefault(each, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
             self.logger.info(f"Encoding writing to Zarr: {json.dumps(encoding_settings, indent=4)}")
             self.logger.info(f"Data variables to Zarr:   {json.dumps(list(self.layers.keys()), indent=4)}")
