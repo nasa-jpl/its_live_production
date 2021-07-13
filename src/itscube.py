@@ -1731,6 +1731,8 @@ if __name__ == '__main__':
                         help="UTM target projection.")
     parser.add_argument('--dimSize', type=float, default=100000,
                         help="Cube dimension in meters [%(default)d].")
+    parser.add_argument('-g', '--gridCellSize', type=int, default=240,
+                        help="Grid cell size of input ITS_LIVE granules [%(default)d].")
     parser.add_argument('-r', '--reportDir', type=str, default='logs',
                         help="Directory to store skipped granules information (no data, wrong projection, double middle date) [%(default)s].")
 
@@ -1755,6 +1757,7 @@ if __name__ == '__main__':
     ITSCube.DASK_SCHEDULER = args.scheduler
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.GRANULE_REPORT_DIR = args.reportDir
+    ITSCube.CELL_SIZE = args.gridCellSize
 
     # Test Case from itscube.ipynb:
     # =============================
