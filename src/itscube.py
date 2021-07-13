@@ -754,6 +754,12 @@ class ITSCube:
                 if np.any(mask_data.v.notnull()):
                     mask_data.load()
 
+                    # Verify that granule is defined on the same grid cell size as
+                    # expected output datacube.
+                    cell_x_size = np.abs(mask_data.x.values[0] - mask_data.x.values[1])
+                    if cell_x_size != ITSCube.CELL_SIZE:
+                        raise RuntimeError(f"Unexpected grid cell size ({cell_x_size}) is detected for {ds_url} vs. expected {ITSCube.CELL_SIZE}")
+
                 else:
                     # Reset cube back to None as it does not contain any valid data
                     mask_data = None
