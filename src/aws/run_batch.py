@@ -44,18 +44,22 @@ class DataCubeBatch:
     # then generate all ROI!=0 datacubes.
     EPSG_TO_GENERATE = []
 
-    def __init__(self, job_name: str, grid_size: int, batch_job: str, batch_queue: str):
+    PARALLEL_GRANULES = 250
+
+    def __init__(self, job_name: str, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
         Initialize object.
         """
         self.job_name = job_name
-        self.grid_size = f'{grid_size:04d}'
+        self.grid_size_str = f'{grid_size:04d}'
+        self.grid_size = grid_size
         self.batch_job = batch_job
         self.batch_queue = batch_queue
+        self.is_dry_run = is_dry_run
 
-    def __call__(self, cube_file: str, s3_bucket: str, job_file: str):
+    def __call__(self, cube_file: str, s3_bucket: str, job_file: str, num_cubes: int):
         """
-        Submit job to AWS.
+        Submit Batch jobs to AWS.
         """
         # List of submitted datacube Batch jobs and AWS response
         jobs = []
@@ -65,8 +69,13 @@ class DataCubeBatch:
 
             # Number of cubes to generate
             num_jobs = 0
-            logging.info(f'Total number of cubes: {len(cubes["features"])}')
+            logging.info(f'Total number of datacubes: {len(cubes["features"])}')
             for each_cube in cubes[CubeJson.FEATURES]:
+                if num_cubes is not None and num_jobs == num_cubes:
+                    # Number of datacubes to generate is provided,
+                    # stop if they have been generated
+                    break
+
                 # "properties": {
                 #     "fill-opacity": 1.0,
                 #     "fill": "red",
@@ -138,8 +147,12 @@ class DataCubeBatch:
                         mid_x, mid_y
                     )
                     bucket_dir = itslive_utils.point_to_prefix(epsg, mid_lon_lat[1], mid_lon_lat[0])
+                    if 'N60W010' not in bucket_dir:
+                        # A hack to pick specific 10x10 grid cell for the datacube
+                        logging.info(f"Skipping non-N60W010")
+                        continue
 
-                    cube_filename = f"{DataCubeBatch.FILENAME_PREFIX}_{epsg}_G{self.grid_size}_X{mid_x}_Y{mid_y}.zarr"
+                    cube_filename = f"{DataCubeBatch.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
                     logging.info(f'Cube name: {cube_filename}')
 
                     cube_params = {
@@ -147,56 +160,62 @@ class DataCubeBatch:
                         'outputBucket': os.path.join(s3_bucket, bucket_dir),
                         # 'outputBucket': 's3://its-live-data.jpl.nasa.gov/test_datacube/batch/',
                         'targetProjection': epsg_code,
-                        'polygon': json.dumps(coords)
+                        'polygon': json.dumps(coords),
+                        'gridCellSize': str(self.grid_size),
+                        'chunks': str(DataCubeBatch.PARALLEL_GRANULES)
                     }
                     logging.info(f'Cube params: {cube_params}')
 
                     # Submit AWS Batch job
                     response = None
-                    # ATTN: Uncomment once ready to submit AWS Batch jobs
-                    # response = DataCubeBatch.CLIENT.submit_job(
-                    #     jobName=self.job_name,
-                    #     jobQueue=self.batch_queue,
-                    #     jobDefinition=self.batch_job,
-                    #     # jobDefinition='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-s3-function:2',
-                    #     parameters=cube_params,
-                    #     # {
-                    #     #     'numberGranules': '100',
-                    #     #     'outputStore': 'batch_testcube.zarr',
-                    #     #     # 'outputBucket': 's3://kh9-1/test_datacube',
-                    #     #     'outputBucket': 's3://its-live-data.jpl.nasa.gov/test_datacube/batch/',
-                    #     #     'targetProjection': '32628',
-                    #     #     'centroid': '[487462, 9016243]'
-                    #     # },
-                    #     # containerOverrides={
-                    #     #     'vcpus': 123,
-                    #     #     'memory': ,
-                    #     #     'command': [
-                    #     #         'string',
-                    #     #     ],
-                    #     #     'environment': [
-                    #     #         {
-                    #     #             'name': 'string',
-                    #     #             'value': 'string'
-                    #     #         },
-                    #     #     ]
-                    #     # },
-                    #     retryStrategy={
-                    #         'attempts': 1
-                    #     },
-                    #     timeout={
-                    #         'attemptDurationSeconds': 60
-                    #     }
-                    # )
-                    #
-                    # logging.info(f"Response: {response}")
+                    if self.is_dry_run is False:
+                        response = DataCubeBatch.CLIENT.submit_job(
+                            jobName=self.job_name,
+                            jobQueue=self.batch_queue,
+                            jobDefinition=self.batch_job,
+                            # jobDefinition='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-s3-function:2',
+                            parameters=cube_params,
+                            # {
+                            #     'numberGranules': '100',
+                            #     'outputStore': 'batch_testcube.zarr',
+                            #     # 'outputBucket': 's3://kh9-1/test_datacube',
+                            #     'outputBucket': 's3://its-live-data.jpl.nasa.gov/test_datacube/batch/',
+                            #     'targetProjection': '32628',
+                            #     'centroid': '[487462, 9016243]'
+                            #     'gridCellSize': 120
+                            # },
+                            # containerOverrides={
+                            #     'vcpus': 123,
+                            #     'memory': ,
+                            #     'command': [
+                            #         'string',
+                            #     ],
+                            #     'environment': [
+                            #         {
+                            #             'name': 'string',
+                            #             'value': 'string'
+                            #         },
+                            #     ]
+                            # },
+                            retryStrategy={
+                                'attempts': 1
+                            },
+                            timeout={
+                                'attemptDurationSeconds': 7200
+                            }
+                        )
+
+                        logging.info(f"Response: {response}")
 
                     num_jobs += 1
                     jobs.append({
                         'filename': cube_filename,
                         'roi_percent': roi,
                         'aws_params': cube_params,
-                        'aws_response': response
+                        'aws': {'queue': self.batch_queue,
+                                'job_definition': self.batch_job,
+                                'response': response
+                                }
                     })
 
             logging.info(f"Number of batch jobs submitted: {num_jobs}")
@@ -209,18 +228,26 @@ class DataCubeBatch:
             return
 
 def main(
+    dry_run: bool,
     cube_definition_file: str,
     grid_size: int,
     batch_job: str,
     batch_queue: str,
     s3_bucket: str,
-    output_job_file: str):
+    output_job_file: str,
+    number_of_cubes: int):
     """
     Driver to submit multiple Batch jobs to AWS.
     """
     # Submit Batch job to AWS for each datacube which has ROI!=0
-    batch = DataCubeBatch('itslive_cube_batch', grid_size, batch_job, batch_queue)
-    batch(cube_definition_file, s3_bucket, output_job_file)
+    run_batch = DataCubeBatch(
+        'itslive_cube_batch',
+        grid_size,
+        batch_job,
+        batch_queue,
+        dry_run
+    )
+    run_batch(cube_definition_file, s3_bucket, output_job_file, number_of_cubes)
 
 
 if __name__ == '__main__':
@@ -264,17 +291,19 @@ if __name__ == '__main__':
         help="Grid size for the data cube [%(default)d]"
     )
     parser.add_argument(
-        '-d', '--batchJobDefinition',
+        '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-subprocess:2',
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-subprocess:2',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-i3en:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='masha-dave-test',
+        # default='masha-dave-test',
+        default='datacube-i3en',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
@@ -291,6 +320,24 @@ if __name__ == '__main__':
         default=None,
         help="JSON list to specify EPSG codes of interest for the datacubes to generate [%(default)s]"
     )
+    parser.add_argument(
+        '-d', '--dry',
+        action='store_true',
+        help='Dry run, do not actually submit any AWS Batch jobs'
+    )
+    parser.add_argument(
+        '-n', '--numberOfCubes',
+        type=int,
+        action='store',
+        default=-1,
+        help="Number of datacubes to generate [%(default)d]. If left at default value, then generate all qualifying datacubes."
+    )
+    parser.add_argument(
+        '-p', '--parallelGranules',
+        type=int,
+        default=500,
+        help="Number of granules to process in parallel on one time [%(default)d]."
+    )
 
     args = parser.parse_args()
 
@@ -299,13 +346,17 @@ if __name__ == '__main__':
         logging.info(f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes")
         DataCubeBatch.EPSG_TO_GENERATE = epsg_codes
 
+    DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
+
     main(
+        args.dry,
         args.cubeDefinitionFile,
         args.gridSize,
         args.batchJobDefinition,
         args.batchJobQueue,
         args.bucket,
-        args.outputJobFile
+        args.outputJobFile,
+        args.numberOfCubes
     )
 
     logging.info(f"Done")
