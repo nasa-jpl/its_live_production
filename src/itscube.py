@@ -27,7 +27,7 @@ import xarray as xr
 import itslive_utils
 from grid import Bounds, Grid
 from itscube_types import Coords, DataVars
-
+import zarr_to_netcdf
 
 # Set up logging
 logging.basicConfig(
@@ -1734,8 +1734,8 @@ if __name__ == '__main__':
                         help='Local path that stores ITS_LIVE granules.')
     parser.add_argument('-o', '--outputStore', type=str, default="cubedata.zarr",
                         help="Zarr output directory to write cube data to [%(default)s].")
-    parser.add_argument('-b', '--outputBucket', type=str, default="s3://its-live-data.jpl.nasa.gov/test_datacube/production",
-                        help="S3 bucket to copy datacube to at the end of the run [%(default)s].")
+    parser.add_argument('-b', '--outputBucket', type=str, default="",
+                        help="S3 bucket to copy datacube in Zarr, NetCDF formats and granule logs to [%(default)s].")
     parser.add_argument('-c', '--chunks', type=int, default=500,
                         help="Number of granules to write at a time [%(default)d].")
     parser.add_argument('--targetProjection', type=str, required=True,
@@ -1834,25 +1834,41 @@ if __name__ == '__main__':
         # resulting in as many error messages as there are files in Zarr store
         # to copy
 
-        env_copy = os.environ.copy()
-        command_line = [
-            "aws", "s3", "cp", "--recursive",
-            args.outputStore,
-            os.path.join(args.outputBucket, os.path.basename(args.outputStore))
-        ]
-        cube.logger.info(' '.join(command_line))
+        # Convert Zarr to NetCDF and copy to the bucket
+        nc_filename = args.outputStore.replace('.zarr', '.nc')
+        zarr_to_netcdf.main(args.outputStore, nc_filename, ITSCube.NC_ENGINE)
 
-        command_return = subprocess.run(
-            command_line,
-            env=env_copy,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT
-        )
-        if command_return.returncode != 0:
-            cube.logger.error(f"Failed to copy {args.outputStore} to {args.outputBucket}: {command_return.stdout}")
+        for each_input, each_output, recursive_option in zip(
+            [nc_filename, args.outputStore, args.reportDir],
+            [nc_filename, args.outputStore, f"{args.outputStore}.{args.reportDir}"],
+            [None,  "--recursive",  "--recursive"]
+            ):
+            env_copy = os.environ.copy()
+            if recursive_option is not None:
+                command_line = [
+                    "aws", "s3", "cp", recursive_option,
+                    each_input,
+                    os.path.join(args.outputBucket, os.path.basename(each_output))
+                ]
 
-        # TODO: Copy granule logs to the bucket
+            else:
+                command_line = [
+                    "aws", "s3", "cp",
+                    each_input,
+                    os.path.join(args.outputBucket, os.path.basename(each_output))
+                ]
+
+            cube.logger.info(' '.join(command_line))
+
+            command_return = subprocess.run(
+                command_line,
+                env=env_copy,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
+            if command_return.returncode != 0:
+                cube.logger.error(f"Failed to copy {each_input} to {args.outputBucket}: {command_return.stdout}")
 
     # Write cube data to the NetCDF file
     # cube.to_netcdf('test_v_cube.nc')
