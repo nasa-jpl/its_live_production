@@ -9,6 +9,7 @@ import glob
 import json
 import logging
 import os
+import psutil
 import shutil
 import timeit
 
@@ -375,7 +376,7 @@ class ITSCube:
 
     def create(self, api_params: dict, output_dir: str, num_granules=None):
         """
-        Create velocity cube.
+        Create velocity pair cube.
 
         api_params: dict
             Search API required parameters.
@@ -422,7 +423,7 @@ class ITSCube:
 
     def create_parallel(self, api_params: dict, output_dir: str, num_granules=None):
         """
-        Create velocity cube by reading and pre-processing cube layers in parallel.
+        Create velocity pair cube by reading and pre-processing cube layers in parallel.
 
         api_params: dict
             Search API required parameters.
@@ -1069,6 +1070,18 @@ class ITSCube:
         # if set_grid_mapping:
         #     self.layers[var_name].attrs[DataVars.GRID_MAPPING] = ds_grid_mapping_value
 
+    def show_memory_usage(self, msg: str=''):
+        """
+        Display current memory usage.
+        """
+        _GB = 1024 * 1024 * 1024
+        usage = psutil.virtual_memory()
+        if len(msg):
+            self.logger.info(f"Memory {msg}: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
+
+        else:
+            self.logger.info(f"Memory: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
+
     def combine_layers(self, output_dir, is_first_write=False):
         """
         Combine selected layers into one xr.Dataset object and write (append) it
@@ -1081,13 +1094,10 @@ class ITSCube:
         if len(self.ds) == 0:
             self.logger.info('No layers to combine, continue')
             return
+        self.show_memory_usage('before combining layers')
 
         start_time = timeit.default_timer()
         mid_date_coord = pd.Index(self.dates, name=Coords.MID_DATE)
-
-        # for each in self.ds:
-        #     self.logger.info(f'Layer v: {each.v.values}')
-        v_layers = xr.concat([each_ds.v for each_ds in self.ds], mid_date_coord)
 
         now_date = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
 
@@ -1174,6 +1184,8 @@ class ITSCube:
 
         # Process 'v' (all formats have v variable - its attributes are inherited,
         # so no need to set them manually)
+        v_layers = xr.concat([each_ds.v for each_ds in self.ds], mid_date_coord)
+
         self.layers[DataVars.V] = v_layers
         self.layers[DataVars.V].attrs[DataVars.DESCRIPTION_ATTR] = DataVars.DESCRIPTION[DataVars.V]
         new_v_vars = [DataVars.V]
@@ -1351,7 +1363,6 @@ class ITSCube:
         for each in concat_ind:
             self.logger.warning(f'Using chip_size_width in place of chip_size_height for {self.urls[each]}')
 
-
         # Drop data variable as we don't need it anymore - free up memory
         self.ds = [ds.drop_vars(DataVars.CHIP_SIZE_HEIGHT) for ds in self.ds]
         gc.collect()
@@ -1507,6 +1518,7 @@ class ITSCube:
 
         time_delta = timeit.default_timer() - start_time
         self.logger.info(f"Combined {len(self.urls)} layers (took {time_delta} seconds)")
+        self.show_memory_usage('after combining layers')
 
         start_time = timeit.default_timer()
         # Write to the Zarr store
@@ -1604,8 +1616,8 @@ class ITSCube:
                          Coords.MID_DATE]:
                 encoding_settings.setdefault(each, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
-            self.logger.info(f"Encoding writing to Zarr: {json.dumps(encoding_settings, indent=4)}")
-            self.logger.info(f"Data variables to Zarr:   {json.dumps(list(self.layers.keys()), indent=4)}")
+            # self.logger.info(f"Encoding writing to Zarr: {json.dumps(encoding_settings, indent=4)}")
+            # self.logger.info(f"Data variables to Zarr:   {json.dumps(list(self.layers.keys()), indent=4)}")
 
             # This is first write, create Zarr store
             # self.layers.to_zarr(output_dir, encoding=encoding_settings, consolidated=True)
@@ -1632,10 +1644,6 @@ class ITSCube:
         # Total number of skipped granules due to wrong projection
         sum_projs = sum([len(each) for each in self.skipped_proj_granules.values()])
 
-        all_projs = []
-        for each in self.skipped_proj_granules.values():
-            all_projs.extend(each)
-
         print("Skipped granules:")
         print(f"      empty data       : {len(self.skipped_empty_granules)} ({100.0 * len(self.skipped_empty_granules)/num_urls}%)")
         print(f"      wrong projection : {sum_projs} ({100.0 * sum_projs/num_urls}%)")
@@ -1643,22 +1651,19 @@ class ITSCube:
         if len(self.skipped_proj_granules):
             print(f"      wrong projections: {sorted(self.skipped_proj_granules.keys())}")
 
-        self.logger.info(f"Writing skipped granule informaton to {ITSCube.GRANULE_REPORT_DIR}")
+        self.logger.info(f"Writing skipped granule informaton to '{ITSCube.GRANULE_REPORT_DIR}'")
 
         # Write skipped granules due to double middle date to the file
         with open(os.path.join(ITSCube.GRANULE_REPORT_DIR, 'double_middle_date.txt'), 'w') as fh:
-            fh.write(f"# Skipped granules due to double middle date: {len(self.skipped_double_granules)}\n")
-            fh.write('\n'.join(self.skipped_double_granules))
+            json.dump(self.skipped_double_granules, fh, indent=4)
 
         # Write skipped granules due to no spacial coverage to the file
         with open(os.path.join(ITSCube.GRANULE_REPORT_DIR, 'empty_granules.txt'), 'w') as fh:
-            fh.write(f"# Skipped granules due to no data: {len(self.skipped_empty_granules)}\n")
-            fh.write('\n'.join(self.skipped_empty_granules))
+            json.dump(self.skipped_empty_granules, fh, indent=4)
 
         # Write skipped granules due to the wrong projection to the file
         with open(os.path.join(ITSCube.GRANULE_REPORT_DIR, 'wrong_proj_granules.txt'), 'w') as fh:
-            fh.write(f"# Skipped granules due to wrong projection: {len(all_projs)}\n")
-            fh.write('\n'.join(all_projs))
+            json.dump(self.skipped_proj_granules, fh, indent=4)
 
     def read_dataset(self, url: str):
         """
@@ -1731,7 +1736,7 @@ if __name__ == '__main__':
                         help="Zarr output directory to write cube data to [%(default)s].")
     parser.add_argument('-b', '--outputBucket', type=str, default="s3://its-live-data.jpl.nasa.gov/test_datacube/production",
                         help="S3 bucket to copy datacube to at the end of the run [%(default)s].")
-    parser.add_argument('-c', '--chunks', type=int, default=1000,
+    parser.add_argument('-c', '--chunks', type=int, default=500,
                         help="Number of granules to write at a time [%(default)d].")
     parser.add_argument('--targetProjection', type=str, required=True,
                         help="UTM target projection.")
