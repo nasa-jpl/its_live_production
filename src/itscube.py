@@ -1070,17 +1070,20 @@ class ITSCube:
         # if set_grid_mapping:
         #     self.layers[var_name].attrs[DataVars.GRID_MAPPING] = ds_grid_mapping_value
 
+    @staticmethod
     def show_memory_usage(self, msg: str=''):
         """
         Display current memory usage.
         """
         _GB = 1024 * 1024 * 1024
         usage = psutil.virtual_memory()
+
+        # Use standard logging to be able to use the method without ITSCube object
         if len(msg):
-            self.logger.info(f"Memory {msg}: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
+            logging.info(f"Memory {msg}: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
 
         else:
-            self.logger.info(f"Memory: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
+            logging.info(f"Memory: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
 
     def combine_layers(self, output_dir, is_first_write=False):
         """
@@ -1094,7 +1097,7 @@ class ITSCube:
         if len(self.ds) == 0:
             self.logger.info('No layers to combine, continue')
             return
-        self.show_memory_usage('before combining layers')
+        ITSCube.show_memory_usage('before combining layers')
 
         start_time = timeit.default_timer()
         mid_date_coord = pd.Index(self.dates, name=Coords.MID_DATE)
@@ -1144,7 +1147,10 @@ class ITSCube:
                 'GDAL_AREA_OR_POINT': 'Area',
                 'projection': str(self.projection),
                 'longitude': f"{center_lon_lat[0]:.2f}",
-                'latitude':  f"{center_lon_lat[1]:.2f}"
+                'latitude':  f"{center_lon_lat[1]:.2f}",
+                'skipped_empty_data': json.dumps(self.skipped_empty_granules),
+                'skipped_double_middle_date': json.dumps(self.skipped_double_granules),
+                'skipped_wrong_projection': json.dumps(self.skipped_proj_granules)
             }
         )
 
@@ -1518,7 +1524,7 @@ class ITSCube:
 
         time_delta = timeit.default_timer() - start_time
         self.logger.info(f"Combined {len(self.urls)} layers (took {time_delta} seconds)")
-        self.show_memory_usage('after combining layers')
+        ITSCube.show_memory_usage('after combining layers')
 
         start_time = timeit.default_timer()
         # Write to the Zarr store
@@ -1644,26 +1650,11 @@ class ITSCube:
         # Total number of skipped granules due to wrong projection
         sum_projs = sum([len(each) for each in self.skipped_proj_granules.values()])
 
-        print("Skipped granules:")
-        print(f"      empty data       : {len(self.skipped_empty_granules)} ({100.0 * len(self.skipped_empty_granules)/num_urls}%)")
-        print(f"      wrong projection : {sum_projs} ({100.0 * sum_projs/num_urls}%)")
-        print(f"      double mid_date  : {len(self.skipped_double_granules)} ({100.0 * len(self.skipped_double_granules)/num_urls}%)")
+        self.logger.info(f"Skipped granules due to empty data: {len(self.skipped_empty_granules)} ({100.0 * len(self.skipped_empty_granules)/num_urls}%)")
+        self.logger.info(f"Skipped granules due to double mid_date: {len(self.skipped_double_granules)} ({100.0 * len(self.skipped_double_granules)/num_urls}%)")
+        self.logger.info(f"Skipped granules due to wrong projection: {sum_projs} ({100.0 * sum_projs/num_urls}%)")
         if len(self.skipped_proj_granules):
-            print(f"      wrong projections: {sorted(self.skipped_proj_granules.keys())}")
-
-        self.logger.info(f"Writing skipped granule informaton to '{ITSCube.GRANULE_REPORT_DIR}'")
-
-        # Write skipped granules due to double middle date to the file
-        with open(os.path.join(ITSCube.GRANULE_REPORT_DIR, 'double_middle_date.txt'), 'w') as fh:
-            json.dump(self.skipped_double_granules, fh, indent=4)
-
-        # Write skipped granules due to no spacial coverage to the file
-        with open(os.path.join(ITSCube.GRANULE_REPORT_DIR, 'empty_granules.txt'), 'w') as fh:
-            json.dump(self.skipped_empty_granules, fh, indent=4)
-
-        # Write skipped granules due to the wrong projection to the file
-        with open(os.path.join(ITSCube.GRANULE_REPORT_DIR, 'wrong_proj_granules.txt'), 'w') as fh:
-            json.dump(self.skipped_proj_granules, fh, indent=4)
+            self.logger.info(f"Skipped wrong projections: {sorted(self.skipped_proj_granules.keys())}")
 
     def read_dataset(self, url: str):
         """
@@ -1767,7 +1758,6 @@ if __name__ == '__main__':
     ITSCube.NUM_THREADS = args.threads
     ITSCube.DASK_SCHEDULER = args.scheduler
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
-    ITSCube.GRANULE_REPORT_DIR = args.reportDir
     ITSCube.CELL_SIZE = args.gridCellSize
 
     # Test Case from itscube.ipynb:
@@ -1829,19 +1819,28 @@ if __name__ == '__main__':
         else:
             cube.create_parallel(API_params, args.outputStore, args.numberGranules)
 
+    del cube
+    gc.collect()
+    ITSCube.show_memory_usage('at the end of datacube generation')
+
     if os.path.exists(args.outputStore) and len(args.outputBucket):
         # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
         # resulting in as many error messages as there are files in Zarr store
         # to copy
 
+        # Enable conversion to NetCDF when the cube is created
         # Convert Zarr to NetCDF and copy to the bucket
-        nc_filename = args.outputStore.replace('.zarr', '.nc')
-        zarr_to_netcdf.main(args.outputStore, nc_filename, ITSCube.NC_ENGINE)
+        # nc_filename = args.outputStore.replace('.zarr', '.nc')
+        # zarr_to_netcdf.main(args.outputStore, nc_filename, ITSCube.NC_ENGINE)
+        # ITSCube.show_memory_usage('after Zarr to NetCDF conversion')
 
         for each_input, each_output, recursive_option in zip(
-            [nc_filename, args.outputStore, args.reportDir],
-            [nc_filename, args.outputStore, f"{args.outputStore}.{args.reportDir}"],
-            [None,  "--recursive",  "--recursive"]
+            # [nc_filename, args.outputStore],
+            # [nc_filename, args.outputStore],
+            # [None,  "--recursive"]
+            [args.outputStore],
+            [args.outputStore],
+            ["--recursive"]
             ):
             env_copy = os.environ.copy()
             if recursive_option is not None:
@@ -1858,7 +1857,7 @@ if __name__ == '__main__':
                     os.path.join(args.outputBucket, os.path.basename(each_output))
                 ]
 
-            cube.logger.info(' '.join(command_line))
+            logging.info(' '.join(command_line))
 
             command_return = subprocess.run(
                 command_line,
@@ -1868,8 +1867,8 @@ if __name__ == '__main__':
                 stderr=subprocess.STDOUT
             )
             if command_return.returncode != 0:
-                cube.logger.error(f"Failed to copy {each_input} to {args.outputBucket}: {command_return.stdout}")
+                logging.error(f"Failed to copy {each_input} to {args.outputBucket}: {command_return.stdout}")
 
     # Write cube data to the NetCDF file
     # cube.to_netcdf('test_v_cube.nc')
-    cube.logger.info(f"Done.")
+    logging.info(f"Done.")
