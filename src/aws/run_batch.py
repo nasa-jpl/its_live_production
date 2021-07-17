@@ -34,6 +34,9 @@ class DataCubeBatch:
     """
     CLIENT = boto3.client('batch', region_name='us-west-2')
 
+    # HTTP URL for the datacube full path
+    HTTP_PREFIX = ''
+
     FILENAME_PREFIX = 'ITS_LIVE_vel'
     MID_POINT_RESOLUTION = 50.0
 
@@ -44,7 +47,13 @@ class DataCubeBatch:
     # then generate all ROI!=0 datacubes.
     EPSG_TO_GENERATE = []
 
+    # Number of granules to process in parallel at a time (to avoid out of memory
+    # failures)
     PARALLEL_GRANULES = 250
+
+    # Number of Dask threads/processes to use for parallel processing
+    # NUM_THREADS = 16  # For i3.2xlarge
+    NUM_THREADS = 8
 
     def __init__(self, job_name: str, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
@@ -135,8 +144,8 @@ class DataCubeBatch:
 
                     # TODO: Get mid point to the nearest 50
                     logging.info(f"Mid point: x={mid_x} y={mid_y}")
-                    mid_x = math.floor(mid_x/DataCubeBatch.MID_POINT_RESOLUTION)*DataCubeBatch.MID_POINT_RESOLUTION
-                    mid_y = math.floor(mid_y/DataCubeBatch.MID_POINT_RESOLUTION)*DataCubeBatch.MID_POINT_RESOLUTION
+                    mid_x = int(math.floor(mid_x/DataCubeBatch.MID_POINT_RESOLUTION)*DataCubeBatch.MID_POINT_RESOLUTION)
+                    mid_y = int(math.floor(mid_y/DataCubeBatch.MID_POINT_RESOLUTION)*DataCubeBatch.MID_POINT_RESOLUTION)
                     logging.info(f"Mid point at {DataCubeBatch.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
 
                     # Convert to lon/lat coordinates to format s3 bucket path
@@ -147,9 +156,9 @@ class DataCubeBatch:
                         mid_x, mid_y
                     )
                     bucket_dir = itslive_utils.point_to_prefix(epsg, mid_lon_lat[1], mid_lon_lat[0])
-                    if 'N60W010' not in bucket_dir:
-                        # A hack to pick specific 10x10 grid cell for the datacube
-                        logging.info(f"Skipping non-N60W010")
+                    if len(DataCubeBatch.PATH_TOKEN) and DataCubeBatch.PATH_TOKEN not in bucket_dir:
+                        # A way to pick specific 10x10 grid cell for the datacube
+                        logging.info(f"Skipping non-{DataCubeBatch.PATH_TOKEN}")
                         continue
 
                     cube_filename = f"{DataCubeBatch.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
@@ -162,7 +171,8 @@ class DataCubeBatch:
                         'targetProjection': epsg_code,
                         'polygon': json.dumps(coords),
                         'gridCellSize': str(self.grid_size),
-                        'chunks': str(DataCubeBatch.PARALLEL_GRANULES)
+                        'chunks': str(DataCubeBatch.PARALLEL_GRANULES),
+                        'threads': str(DataCubeBatch.NUM_THREADS)
                     }
                     logging.info(f'Cube params: {cube_params}')
 
@@ -208,8 +218,10 @@ class DataCubeBatch:
                         logging.info(f"Response: {response}")
 
                     num_jobs += 1
+                    cube_filepath = os.path.join(DataCubeBatch.HTTP_PREFIX, bucket_dir, cube_filename)
                     jobs.append({
-                        'filename': cube_filename,
+                        'filename_Zarr': cube_filepath,
+                        # 'filename_NetCDF': cube_filepath.replace('.zarr', '.nc'),
                         'roi_percent': roi,
                         'aws_params': cube_params,
                         'aws': {'queue': self.batch_queue,
@@ -241,7 +253,7 @@ def main(
     """
     # Submit Batch job to AWS for each datacube which has ROI!=0
     run_batch = DataCubeBatch(
-        'itslive_cube_batch',
+        'datacube_batch',
         grid_size,
         batch_job,
         batch_queue,
@@ -282,6 +294,13 @@ if __name__ == '__main__':
         action='store',
         default='s3://its-live-data.jpl.nasa.gov/datacubes',
         help="Destination S3 bucket for the datacubes [%(default)s]"
+    )
+    parser.add_argument(
+        '-u', '--urlPath',
+        type=str,
+        action='store',
+        default='http://its-live-data.jpl.nasa.gov.s3.amazonaws.com/datacubes',
+        help="URL for the datacube store in S3 bucket (to provide for easier download option) [%(default)s]"
     )
     parser.add_argument(
         '-g', '--gridSize',
@@ -338,6 +357,12 @@ if __name__ == '__main__':
         default=500,
         help="Number of granules to process in parallel on one time [%(default)d]."
     )
+    parser.add_argument(
+        '-t', '--pathToken',
+        type=str,
+        default='',
+        help="Path token to be present in datacube S3 target path in order for the datacube to be generated [%(default)d]."
+    )
 
     args = parser.parse_args()
 
@@ -347,6 +372,8 @@ if __name__ == '__main__':
         DataCubeBatch.EPSG_TO_GENERATE = epsg_codes
 
     DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
+    DataCubeBatch.HTTP_PREFIX       = args.urlPath
+    DataCubeBatch.PATH_TOKEN        = args.pathToken
 
     main(
         args.dry,
