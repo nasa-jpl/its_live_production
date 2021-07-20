@@ -15,10 +15,10 @@ channels:
   - conda-forge
 
 dependencies:
-  - python=3.9
-  - boto3
+  - python==3.9.6
   - dask
   - pandas
+  - numpy
   - h5py
   - h5netcdf
   - requests
@@ -26,7 +26,8 @@ dependencies:
   - xarray
   - netcdf4
   - flake8
-  - s3fs
+  - s3fs==0.4.2
+  - fsspec==0.8.3
   - tqdm
   - utm
   - zarr
