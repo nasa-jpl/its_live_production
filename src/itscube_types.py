@@ -116,7 +116,7 @@ class DataVars:
     VYP_ERROR        = 'vyp_error'
 
     # Specific to the datacube
-    URL = 'original_url_path'
+    URL = 'granule_url'
 
     # Data variable specific to the epsg code:
     # * Polar_Stereographic when epsg code of 3031 or 3413
@@ -146,16 +146,19 @@ class DataVars:
     # Description strings for all data variables and some
     # of their attributes.
     DESCRIPTION = {
-        V: "velocity magnitude",
+        V:  "velocity magnitude",
         VX: "velocity component in x direction",
         VY: "velocity component in y direction",
 
-        STABLE_COUNT: "number of stable points used to determine {} shift",
+        STABLE_COUNT:      "number of stable points used to determine {} shift",
         STABLE_COUNT_SLOW: "number of valid pixels over slowest 25% of ice",
         STABLE_COUNT_MASK: "number of valid pixels over stationary or slow-flowing surfaces",
 
-        STABLE_SHIFT_SLOW: "applied {} shift calibrated using valid pixels over slowest 25% of ice",
-        STABLE_SHIFT_MASK: "applied {} shift calibrated using valid pixels over stationary or slow-flowing surfaces",
+        STABLE_SHIFT_SLOW: \
+            "{} shift calibrated using valid pixels over slowest 25% of retrieved velocities",
+        STABLE_SHIFT_MASK: \
+            "{} shift calibrated using valid pixels over stable surfaces, " \
+            " stationary or slow-flowing surfaces with velocity < 15 m/yr identified from an external mask",
 
         # These descriptions are based on Radar granule format. Have to set them
         # manually since there are no Radar format granules are available for
@@ -168,28 +171,30 @@ class DataVars:
             "errors are larger than those determined from range and azimuth " \
             "measurements, unprojected v estimates are used",
         VXP: "x-direction velocity determined by projecting radar " \
-            "range measurements onto an a priori flow vector. Where projected " \
-            "errors are larger than those determined from range and azimuth " \
-            "measurements, unprojected vx estimates are used",
+             "range measurements onto an a priori flow vector. Where projected " \
+             "errors are larger than those determined from range and azimuth " \
+             "measurements, unprojected vx estimates are used",
         VYP: "y-direction velocity determined by projecting radar " \
-            "range measurements onto an a priori flow vector. Where projected " \
-            "errors are larger than those determined from range and azimuth " \
-            "measurements, unprojected vy estimates are used",
+             "range measurements onto an a priori flow vector. Where projected " \
+             "errors are larger than those determined from range and azimuth " \
+             "measurements, unprojected vy estimates are used",
         V_ERROR: "velocity magnitude error",
         VP_ERROR: "velocity magnitude error determined by projecting " \
-            "radar range measurements onto an a priori flow vector. " \
-            "Where projected errors are larger than those determined from range " \
-            "and azimuth measurements, unprojected v_error estimates are used",
+                  "radar range measurements onto an a priori flow vector. " \
+                  "Where projected errors are larger than those determined from range " \
+                  "and azimuth measurements, unprojected v_error estimates are used",
         INTERP_MASK: "light interpolation mask",
-        CHIP_SIZE_COORDS: "Optical data: chip_size_coordinates = " \
+        CHIP_SIZE_COORDS: \
+            "Optical data: chip_size_coordinates = " \
             "'image projection geometry: width = x, height = y'. Radar data: " \
             "chip_size_coordinates = 'radar geometry: width = range, height = azimuth'",
-        CHIP_SIZE_HEIGHT: "height of search window",
-        CHIP_SIZE_WIDTH: "width of search window",
-        FLAG_STABLE_SHIFT_DESCRIPTION: "flag for applying velocity bias correction: " \
+        CHIP_SIZE_HEIGHT: "height of search template (chip)",
+        CHIP_SIZE_WIDTH:  "width of search template (chip)",
+        FLAG_STABLE_SHIFT_DESCRIPTION: \
+            "flag for applying velocity bias correction: " \
             "0 = no correction; " \
             "1 = correction from overlapping stable surface mask (stationary or " \
-            " slow-flowing surfaces with velocity < 15 m/yr)(top priority); " \
+            "slow-flowing surfaces with velocity < 15 m/yr)(top priority); " \
             "2 = correction from slowest 25% of overlapping velocities (second priority)",
         URL: "original granule URL",
         AUTORIFT_SOFTWARE_VERSION: "version of autoRIFT software"
@@ -296,17 +301,3 @@ class DataVars:
             # ACQUISITION_IMG2: DATE_UNITS,
             # DATE_CENTER: DATE_UNITS
         }
-
-
-MID_DATE_ATTRS = {
-    DataVars.STD_NAME: Coords.STD_NAME[Coords.MID_DATE],
-    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.MID_DATE]
-}
-X_ATTRS = {
-    DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
-    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X]
-}
-Y_ATTRS = {
-    DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
-    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
-}

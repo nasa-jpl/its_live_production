@@ -202,7 +202,9 @@ class ITSCube:
         self.logger.info(f"Number of found by API granules: {total_num} (took {time_delta} seconds)")
 
         if len(found_urls) == 0:
-            raise RuntimeError(f"No granules are found for the search API parameters: {params}")
+            self.logger.info(f"No granules are found for the search API parameters: {params}, " \
+                              "skipping datacube generation")
+            return found_urls
 
         # Number of granules to examine is specified
         # TODO: just a workaround for now as it's very slow to examine all granules
@@ -385,32 +387,44 @@ class ITSCube:
             TODO: This is a temporary solution to a very long time to open remote granules.
                   Should not be used when running the code in production mode.
         """
+        ITSCube.show_memory_usage('in create()')
         s3_out, cube_store = ITSCube.init_output_store(output_dir)
 
         self.clear()
 
         found_urls = self.request_granules(api_params, num_granules)
+        if len(found_urls) == 0:
+            return found_urls
 
         # Open S3FS access to public S3 bucket with input granules
         s3 = s3fs.S3FileSystem(anon=True)
 
         is_first_write = True
         for each_url in tqdm(found_urls, ascii=True, desc='Reading and processing S3 granules'):
+
             s3_path = each_url.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
             s3_path = s3_path.replace(ITSCube.PATH_URL, '')
 
             self.logger.info(f"Reading {s3_path}...")
+            ITSCube.show_memory_usage(f'before reading {s3_path}')
+            # Attempt to fix locked up s3fs==0.5.1 on Linux (AWS Batch processing)
+            # s3 = s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
+
             with s3.open(s3_path, mode='rb') as fhandle:
                 with xr.open_dataset(fhandle, engine=ITSCube.NC_ENGINE) as ds:
                     self.logger.info(f"Preprocess dataset from {s3_path}...")
                     results = self.preprocess_dataset(ds, each_url)
+                    ITSCube.show_memory_usage('after reading {s3_path}')
+
                     self.logger.info(f"Add layer for {s3_path}...")
                     self.add_layer(*results)
 
-                    # Check if need to write to the file accumulated number of granules
-                    if len(self.urls) == ITSCube.NUM_GRANULES_TO_WRITE:
-                        self.combine_layers(cube_store, is_first_write)
-                        is_first_write = False
+            ITSCube.show_memory_usage(f'after adding layer for {s3_path}')
+
+            # Check if need to write to the file accumulated number of granules
+            if len(self.urls) == ITSCube.NUM_GRANULES_TO_WRITE:
+                self.combine_layers(cube_store, is_first_write)
+                is_first_write = False
 
         # Check if there are remaining layers to be written to the file
         if len(self.urls):
@@ -432,24 +446,12 @@ class ITSCube:
             TODO: This is a temporary solution to a very long time to open remote granules. Should not be used
                   when running the code at AWS.
         """
-        # s3_out, cube_store = ITSCube.init_output_store(output_dir)
-
-        cube_store = output_dir
-        s3_out = None
-        if ITSCube.S3_PREFIX not in output_dir:
-            # If writing to the local directory, remove datacube store if it exists
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
-
-        else:
-            # When writing to the AWS S3 bucket, assume it's a new datacube.
-            # Open S3FS access to S3 bucket with output granules
-            s3_out = s3fs.S3FileSystem()
-            cube_store = s3fs.S3Map(root=output_dir, s3=s3_out, check=False)
-            # cube_store = s3_out.open(output_dir, mode='wb')
+        s3_out, cube_store = ITSCube.init_output_store(output_dir)
 
         self.clear()
         found_urls = self.request_granules(api_params, num_granules)
+        if len(found_urls) == 0:
+            return found_urls
 
         # Parallelize layer collection
         s3 = s3fs.S3FileSystem(anon=True)
@@ -468,10 +470,10 @@ class ITSCube:
             # How many tasks to process at a time
             num_tasks = ITSCube.NUM_GRANULES_TO_WRITE if num_to_process > ITSCube.NUM_GRANULES_TO_WRITE else num_to_process
             tasks = [dask.delayed(self.read_s3_dataset)(each_file, s3) for each_file in found_urls[start:start+num_tasks]]
-            self.logger.info(f"Processing {len(tasks)} tasks")
+            self.logger.info(f"Processing {len(tasks)} tasks out of {num_to_process} remaining")
 
             results = None
-            with ProgressBar():
+            with ProgressBar():  # Does not work with Client() scheduler
                 # If to collect performance report (need to define global Client - see above)
                 # with performance_report(filename=f"dask-report-{num_granules}.html"):
                 #     results = dask.compute(tasks)
@@ -525,6 +527,10 @@ class ITSCube:
         self.clear()
 
         found_urls = glob.glob(dirpath + os.sep + '*.nc')
+        if len(found_urls) == 0:
+            self.logger.info(f"No granules found in {dirpath}, skipping datacube generation")
+            return found_urls
+
         if num_granules is not None:
             found_urls = found_urls[0: num_granules]
 
@@ -563,6 +569,10 @@ class ITSCube:
 
         self.clear()
         found_urls = glob.glob(dirpath + os.sep + '*.nc')
+        if len(found_urls) == 0:
+            self.logger.info(f"No granules found in {dirpath}, skipping datacube generation")
+            return found_urls
+
         if num_granules is not None:
             found_urls = found_urls[0: num_granules]
 
@@ -790,7 +800,6 @@ class ITSCube:
             'error_mask': (None, "RMSE over stable surfaces, stationary or slow-flowing surfaces with velocity < 15 m/yr identified from an external mask"),
             'error_slow': (None, "RMSE over slowest 25% of retrieved velocities"),
             'error_modeled': (None, "1-sigma error calculated using a modeled error-dt relationship"),
-            # TODO: define all new v*_error_* standard names
         }
 
         # Possible attributes for the velocity data variable
@@ -954,7 +963,7 @@ class ITSCube:
                 dims=[Coords.MID_DATE],
                 attrs={
                     DataVars.STD_NAME: DataVars.FLAG_STABLE_SHIFT,
-                    DataVars.FLAG_STABLE_SHIFT_DESCRIPTION: DataVars.DESCRIPTION[DataVars.FLAG_STABLE_SHIFT_DESCRIPTION]
+                    DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.FLAG_STABLE_SHIFT_DESCRIPTION]
                 }
             )
 
@@ -977,7 +986,7 @@ class ITSCube:
             attrs={
                 DataVars.UNITS: DataVars.M_Y_UNITS,
                 DataVars.STD_NAME: shift_var_name,
-                DataVars.DESCRIPTION_ATTR: f'applied {var_name} shift'
+                DataVars.DESCRIPTION_ATTR: f'applied {var_name} shift calibrated using pixels over stable or slow surfaces'
             }
         )
         return_vars.append(shift_var_name)
@@ -1149,7 +1158,7 @@ class ITSCube:
                 'longitude': f"{center_lon_lat[0]:.2f}",
                 'latitude':  f"{center_lon_lat[1]:.2f}",
                 'skipped_empty_data': json.dumps(self.skipped_empty_granules),
-                'skipped_double_middle_date': json.dumps(self.skipped_double_granules),
+                'skipped_duplicate_middle_date': json.dumps(self.skipped_double_granules),
                 'skipped_wrong_projection': json.dumps(self.skipped_proj_granules)
             }
         )
@@ -1713,7 +1722,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=ITSCube.__doc__.split('\n')[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('-t', '--threads', type=int, default=4,
-                        help='number of threads to use for parallel processing [%(default)d].')
+                        help='number of Dask workers to use for parallel processing [%(default)d].')
     parser.add_argument('-s', '--scheduler', type=str, default="processes",
                         help="Dask scheduler to use. One of ['threads', 'processes'] (effective only when -p option is specified) [%(default)s].")
     parser.add_argument('-p', '--parallel', action='store_true',
@@ -1760,17 +1769,11 @@ if __name__ == '__main__':
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
 
-    # Test Case from itscube.ipynb:
-    # =============================
-    # Create polygon as a square around the centroid in target '32628' UTM projection
-    # Projection for the polygon coordinates
-    # projection = '32628'
     projection = args.targetProjection
 
     polygon = None
     if args.centroid:
         # Centroid for the tile is provided in target projection
-        # c_x, c_y = (487462, 9016243)
         c_x, c_y = list(map(float, json.loads(args.centroid)))
 
         # Offset in meters (1 pixel=240m): 100 km square (with offset=50km)
@@ -1790,11 +1793,13 @@ if __name__ == '__main__':
     cube = ITSCube(polygon, projection)
 
     cube.logger.info(f"Command: {sys.argv}")
+    cube.logger.info(f"{xr.show_versions()}")
+    cube.logger.info(f"s3fs: {s3fs.__version__}")
 
     # Parameters for the search granule API
     API_params = {
         'start'               : '1984-01-01',
-        'end'                 : '2021-06-01',
+        'end'                 : '2021-07-01',
         'percent_valid_pixels': 1
     }
     cube.logger.info("ITS_LIVE API parameters: %s" %API_params)
