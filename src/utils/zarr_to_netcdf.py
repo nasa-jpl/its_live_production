@@ -17,19 +17,10 @@ import xarray as xr
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                     datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
-
-def main(input_file: str, output_file: str, nc_engine: str):
+def convert(ds_zarr: xr.Dataset, output_file: str, nc_engine: str):
     """
-    Convert datacube Zarr store to NetCDF format.
+    Store datacube to NetCDF format file.
     """
-    start_time = timeit.default_timer()
-    # Don't decode time delta's as it does some internal conversion based on
-    # provided units
-    ds_zarr = xr.open_zarr(input_file, decode_timedelta=False)
-
-    time_delta = timeit.default_timer() - start_time
-    logging.info(f"Read Zarr {input_file} (took {time_delta} seconds)")
-
     compression = {"zlib": True, "complevel": 2, "shuffle": True}
     encoding = {}
 
@@ -200,6 +191,20 @@ def main(input_file: str, output_file: str, nc_engine: str):
     time_delta = timeit.default_timer() - start_time
     logging.info(f"Wrote dataset to NetCDF file {output_file} (took {time_delta} seconds)")
 
+def main(input_file: str, output_file: str, nc_engine: str):
+    """
+    Convert datacube Zarr store to NetCDF format file.
+    """
+    start_time = timeit.default_timer()
+    # Don't decode time delta's as it does some internal conversion based on
+    # provided units
+    ds_zarr = xr.open_zarr(input_file, decode_timedelta=False)
+
+    time_delta = timeit.default_timer() - start_time
+    logging.info(f"Read Zarr {input_file} (took {time_delta} seconds)")
+
+    convert(ds_zarr, output_file, nc_engine)
+
 
 if __name__ == '__main__':
     warnings.filterwarnings('ignore')
@@ -216,3 +221,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     main(args.input, args.output, args.engine)
+    logging.info("Done.")
