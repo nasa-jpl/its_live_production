@@ -23,6 +23,7 @@ from tqdm import tqdm
 import xarray as xr
 
 from mission_info import Encoding
+from itscube_types import DataVars
 
 
 class LandSat:
@@ -73,16 +74,153 @@ def get_granule_acquisition_times(filename):
     # TODO: handle other missions granules
     # elif mission_instrument == 'Sxxx'
 
+def acquisition_datetime(bucket_name: str, granule_url: str, local_dir: str, s3):
+    """
+    Fix acquisition datetime attribute for image1 and image2 of the granule
+    """
+    msgs = [f'Processing {granule_url}']
+
+    # get center lat lon
+    with s3.open(granule_url) as fhandle:
+        with xr.open_dataset(fhandle) as ds:
+            img1_datetime = ds['img_pair_info'].attrs['acquisition_date_img1']
+            img2_datetime = ds['img_pair_info'].attrs['acquisition_date_img2']
+
+            granule_basename = os.path.basename(granule_url)
+            time1, time2 = get_granule_acquisition_times(granule_basename)
+
+            if time1 is None or time2 is None:
+                msgs.append(f"CRITICAL: unexpected filename format for {granule_basename}")
+                return msgs
+
+            if datetime.strptime(img1_datetime, FixGranulesAttributes.DATETIME_FORMAT).date() != \
+               datetime.strptime(time1, '%Y-%m-%dT%H:%M:%S.%fZ').date():
+                msgs.append(f"ERROR: Inconsistent img1 date: {img1_datetime} vs. {time1}")
+                return msgs
+
+            if datetime.strptime(img2_datetime, FixGranulesAttributes.DATETIME_FORMAT).date() != \
+               datetime.strptime(time2, '%Y-%m-%dT%H:%M:%S.%fZ').date():
+                msgs.append(f"ERROR: Inconsistent img2 date: {img2_datetime} vs. {time2}")
+                return msgs
+
+            # msgs.append(f'Replace time: {img1_datetime} vs. {time1}; {img2_datetime} vs. {time2}' )
+            msgs.append(f'Replace img1 time: {img1_datetime} vs. {time1}')
+            msgs.append(f'Replace img2 time: {img2_datetime} vs. {time2}' )
+
+            time1 = datetime.strptime(time1, '%Y-%m-%dT%H:%M:%S.%fZ')
+            time2 = datetime.strptime(time2, '%Y-%m-%dT%H:%M:%S.%fZ')
+
+            ds['img_pair_info'].attrs['acquisition_date_img1'] = time1.strftime(FixGranulesAttributes.DATETIME_FORMAT)
+            ds['img_pair_info'].attrs['acquisition_date_img2'] = time2.strftime(FixGranulesAttributes.DATETIME_FORMAT)
+
+            if FixGranulesAttributes.DRY_RUN:
+                msgs.append(f"(dryrun): fix {granule_url}")
+
+            else:
+                # Write the granule locally, upload it to the bucket, remove file
+                fixed_file = os.path.join(local_dir, granule_basename)
+                ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.LANDSAT)
+
+                # Upload corrected granule to the bucket
+                s3_client = boto3.client('s3')
+                try:
+                    bucket_granule = granule_url.replace(bucket_name+'/', '')
+                    msgs.append(f"Uploading {bucket_granule} to {bucket_name}")
+
+                    s3_client.upload_file(fixed_file, bucket_name, bucket_granule)
+
+                    msgs.append(f"Removing local {fixed_file}")
+                    os.unlink(fixed_file)
+
+                except ClientError as exc:
+                    msgs.append(f"ERROR: {exc}")
+
+            return msgs
+
+def chip_size(bucket_name: str, granule_url: str, local_dir: str, s3):
+    """
+    Fix description attributes for chip_size_width and chip_size_height of the granule
+    """
+    msgs = [f'Processing {granule_url}']
+
+    # get center lat lon
+    with s3.open(granule_url) as fhandle:
+        with xr.open_dataset(fhandle) as ds:
+            granule_basename = os.path.basename(granule_url)
+            chip_size_width_desc = ds.chip_size_width.attrs[DataVars.DESCRIPTION_ATTR]
+            chip_size_height_desc = ds.chip_size_height.attrs[DataVars.DESCRIPTION_ATTR]
+
+            if chip_size_width_desc != DataVars.DESCRIPTION[DataVars.CHIP_SIZE_WIDTH] or \
+               chip_size_height_desc != DataVars.DESCRIPTION[DataVars.CHIP_SIZE_HEIGHT]:
+                # Fix attributes
+                ds[DataVars.CHIP_SIZE_WIDTH].attrs[DataVars.DESCRIPTION_ATTR] = DataVars.DESCRIPTION[DataVars.CHIP_SIZE_WIDTH]
+                ds[DataVars.CHIP_SIZE_HEIGHT].attrs[DataVars.DESCRIPTION_ATTR] = DataVars.DESCRIPTION[DataVars.CHIP_SIZE_HEIGHT]
+
+                if FixGranulesAttributes.DRY_RUN:
+                    msgs.append(f"(dryrun): fix {granule_url}")
+
+                else:
+                    # Write the granule locally, upload it to the bucket, remove file
+                    fixed_file = os.path.join(local_dir, granule_basename)
+                    ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.LANDSAT)
+
+                    # Upload corrected granule to the bucket
+                    s3_client = boto3.client('s3')
+                    try:
+                        bucket_granule = granule_url.replace(bucket_name+'/', '')
+                        msgs.append(f"Uploading {bucket_granule} to {bucket_name}")
+
+                        s3_client.upload_file(fixed_file, bucket_name, bucket_granule)
+
+                        msgs.append(f"Removing local {fixed_file}")
+                        os.unlink(fixed_file)
+
+                    except ClientError as exc:
+                        msgs.append(f"ERROR: {exc}")
+
+            else:
+                msgs.append(f'Skipping chip_size_* description update as attributes are up-to-date for {granule_url}')
+
+            return msgs
+
 
 class FixGranulesAttributes:
     """
     Class to fix some attributes of ITS_LIVE granules (that were transferred
     from ASF to ITS_LIVE bucket).
     """
+    # Flag if dry run is requested - print information about to be done actions
+    # without actually invoking commands.
+    DRY_RUN = False
+
     # Date and time format used by ITS_LIVE granules
     DATETIME_FORMAT = '%Y%m%dT%H:%M:%S'
 
-    def __init__(self, bucket: str, bucket_dir: str, glob_pattern: dir, exclude_granule_file: str=None, granule_prefix: str=None):
+    # Map of possible functions to fix various granule attributes.
+    # ATTN: all functions signutures are assumed to be the same (taking the
+    # same number of input parameters)
+    FUNCTION_MAP = {
+        'acquisition_datetime': acquisition_datetime,
+        'chip_size':            chip_size
+    }
+
+    def __init__(self,
+        function: str,
+        bucket: str,
+        bucket_dir: str,
+        glob_pattern: dir,
+        exclude_granule_file: str=None,
+        granule_prefix: str=None
+    ):
+        """
+        Initialize functor-like object to fix granule attributes.
+        """
+        if function not in FixGranulesAttributes.FUNCTION_MAP:
+            raise RuntimeError(f"Unknown function is requested '{function}'. " \
+                "One of {list(FixGranulesAttributes.FUNCTION_MAP.keys())} is available")
+
+        self.function = FixGranulesAttributes.FUNCTION_MAP[function]
+
         self.s3 = s3fs.S3FileSystem()
 
         # use a glob to list directory
@@ -107,8 +245,8 @@ class FixGranulesAttributes:
 
     def __call__(self, local_dir: str, chunk_size: int, num_dask_workers: int, start_index: int):
         """
-        Fix acquisition date and time attributes of ITS_LIVE granules stored
-        in the bucket.
+        Fix attributes (according to the selected function) of ITS_LIVE granules
+        which are stored in AWS S3 bucket.
         """
         num_to_fix = len(self.all_granules) - start_index
 
@@ -119,88 +257,29 @@ class FixGranulesAttributes:
             logging.info(f"Nothing to fix, exiting.")
             return
 
-        if not os.path.exists(local_dir):
+        if not FixGranulesAttributes.DRY_RUN and not os.path.exists(local_dir):
             os.mkdir(local_dir)
 
         while num_to_fix > 0:
             num_tasks = chunk_size if num_to_fix > chunk_size else num_to_fix
 
             logging.info(f"Starting tasks {start}:{start+num_tasks}")
-            tasks = [dask.delayed(FixGranulesAttributes.acquisition_datetime)(self.bucket, each, local_dir, self.s3) for each in self.all_granules[start:start+num_tasks]]
+            tasks = [dask.delayed(self.function)(self.bucket, each, local_dir, self.s3) for each in self.all_granules[start:start+num_tasks]]
             results = None
 
             with ProgressBar():
                 # Display progress bar
-                results = dask.compute(tasks,
-                                       scheduler="processes",
-                                       num_workers=num_dask_workers)
+                results = dask.compute(
+                    tasks,
+                    scheduler="processes",
+                    num_workers=num_dask_workers
+                )
 
             for each_result in results[0]:
                 logging.info("-->".join(each_result))
 
             num_to_fix -= num_tasks
             start += num_tasks
-
-    @staticmethod
-    def acquisition_datetime(bucket_name: str, granule_url: str, local_dir: str, s3):
-        """
-        Fix acquisition datetime attribute for image1 and image2 of the granule
-        """
-        msgs = [f'Processing {granule_url}']
-
-        # get center lat lon
-        with s3.open(granule_url) as fhandle:
-            with xr.open_dataset(fhandle) as ds:
-                img1_datetime = ds['img_pair_info'].attrs['acquisition_date_img1']
-                img2_datetime = ds['img_pair_info'].attrs['acquisition_date_img2']
-
-                granule_basename = os.path.basename(granule_url)
-                time1, time2 = get_granule_acquisition_times(granule_basename)
-
-                if time1 is None or time2 is None:
-                    msgs.append(f"CRITICAL: unexpected filename format for {granule_basename}")
-                    return msgs
-
-                if datetime.strptime(img1_datetime, FixGranulesAttributes.DATETIME_FORMAT).date() != \
-                   datetime.strptime(time1, '%Y-%m-%dT%H:%M:%S.%fZ').date():
-                    msgs.append(f"ERROR: Inconsistent img1 date: {img1_datetime} vs. {time1}")
-                    return msgs
-
-                if datetime.strptime(img2_datetime, FixGranulesAttributes.DATETIME_FORMAT).date() != \
-                   datetime.strptime(time2, '%Y-%m-%dT%H:%M:%S.%fZ').date():
-                    msgs.append(f"ERROR: Inconsistent img2 date: {img2_datetime} vs. {time2}")
-                    return msgs
-
-                # msgs.append(f'Replace time: {img1_datetime} vs. {time1}; {img2_datetime} vs. {time2}' )
-                msgs.append(f'Replace img1 time: {img1_datetime} vs. {time1}')
-                msgs.append(f'Replace img2 time: {img2_datetime} vs. {time2}' )
-
-                time1 = datetime.strptime(time1, '%Y-%m-%dT%H:%M:%S.%fZ')
-                time2 = datetime.strptime(time2, '%Y-%m-%dT%H:%M:%S.%fZ')
-
-                ds['img_pair_info'].attrs['acquisition_date_img1'] = time1.strftime(FixGranulesAttributes.DATETIME_FORMAT)
-                ds['img_pair_info'].attrs['acquisition_date_img2'] = time2.strftime(FixGranulesAttributes.DATETIME_FORMAT)
-
-                # Write the granule locally, upload it to the bucket, remove file
-                fixed_file = os.path.join(local_dir, granule_basename)
-                ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.LANDSAT)
-
-                # Upload corrected granule to the bucket
-                s3_client = boto3.client('s3')
-                try:
-                    bucket_granule = granule_url.replace(bucket_name+'/', '')
-                    msgs.append(f"Uploading {bucket_granule} to {bucket_name}")
-
-                    s3_client.upload_file(fixed_file, bucket_name, bucket_granule)
-
-                    msgs.append(f"Removing local {fixed_file}")
-                    os.unlink(fixed_file)
-
-                except ClientError as exc:
-                    msgs.append(f"ERROR: {exc}")
-
-                return msgs
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -209,50 +288,85 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        '-c', '--chunk_size', type=int,
+        '-c', '--chunk_size',
+        type=int,
         default=100, help='Number of granules to fix in parallel [%(default)d]'
     )
     parser.add_argument(
-        '-b', '--bucket', type=str,
+        '-b', '--bucket',
+        type=str,
         default='its-live-data.jpl.nasa.gov',
         help='AWS S3 that stores ITS_LIVE granules to fix attributes for'
     )
     parser.add_argument(
-        '-d', '--bucket_dir', type=str,
+        '-d', '--bucket_dir',
+        type=str,
         default='velocity_image_pair/landsat/v02',
         help='AWS S3 bucket and directory that store the granules'
     )
     parser.add_argument(
-        '-l', '--local_dir', type=str,
+        '-l', '--local_dir',
+        type=str,
         default='sandbox',
         help='Directory to store fixed granules before uploading them to the S3 bucket'
     )
     parser.add_argument(
-        '-glob', action='store', type=str, default='*/*.nc',
+        '-glob', action='store',
+        type=str,
+        default='*/*.nc',
         help='Glob pattern for the granule search under "s3://bucket/dir/" [%(default)s]')
 
-    parser.add_argument('-w', '--dask-workers', type=int,
+    parser.add_argument(
+        '-w', '--dask-workers',
+        type=int,
         default=8,
         help='Number of Dask parallel workers [%(default)d]'
     )
-    parser.add_argument('-s', '--start-granule', type=int,
+    parser.add_argument(
+        '-s', '--start-granule',
+        type=int,
         default=0,
         help='Index for the start granule to process (if previous processing terminated) [%(default)d]'
     )
-    parser.add_argument('-e', '--exclude-granule-file', type=Path,
+    parser.add_argument(
+        '-e', '--exclude-granule-file',
+        type=Path,
         default=None,
-        help='JSON list of granules (previously processed) to exclude from processing [%(default)s]')
-    parser.add_argument('-i', '--granule-prefix', type=str,
+        help='JSON list of granules (previously processed) to exclude from processing [%(default)s]'
+    )
+    parser.add_argument(
+        '-i', '--granule-prefix',
+        type=str,
         default=None,
-        help='Granule prefix to include into processing [%(default)s]')
-
+        help='Granule prefix to include into processing [%(default)s]'
+    )
+    parser.add_argument(
+        '--dry',
+        action='store_true',
+        help='Dry run, do not apply any fixes to the granules stored in AWS S3 bucket'
+    )
+    parser.add_argument(
+        '-f', '--function',
+        action='store',
+        default='acquisition_datetime',
+        help=f'Function to invoke to fix required granules attributes [%(default)s]. One of {list(FixGranulesAttributes.FUNCTION_MAP.keys())}')
     args = parser.parse_args()
+
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
     logging.info(f"Args: {args}")
 
-    fix_attributes = FixGranulesAttributes(args.bucket, args.bucket_dir, args.glob, args.exclude_granule_file, args.granule_prefix)
+    FixGranulesAttributes.DRY_RUN = args.dry
+
+    fix_attributes = FixGranulesAttributes(
+        args.function,
+        args.bucket,
+        args.bucket_dir,
+        args.glob,
+        args.exclude_granule_file,
+        args.granule_prefix
+    )
     fix_attributes(args.local_dir, args.chunk_size, args.dask_workers, args.start_granule)
 
 
