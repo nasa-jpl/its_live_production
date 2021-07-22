@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import psutil
+import pyproj
 import shutil
 import timeit
 
@@ -66,7 +67,7 @@ class ITSCube:
     DASK_SCHEDULER = "processes"
 
     # String representation of longitude/latitude projection
-    LON_LAT_PROJECTION = '4326'
+    LON_LAT_PROJECTION = 'EPSG:4326'
 
     S3_PREFIX = 's3://'
     HTTP_PREFIX = 'http://'
@@ -117,16 +118,24 @@ class ITSCube:
         # Grid for the datacube based on its bounding polygon
         self.grid_x, self.grid_y = Grid.create(self.x, self.y, ITSCube.CELL_SIZE)
 
+        # Ensure lonlat output order
+        to_lon_lat_transformer = pyproj.Transformer.from_crs(
+            f"EPSG:{projection}",
+            ITSCube.LON_LAT_PROJECTION,
+            always_xy=True)
+
+        center_x = (self.grid_x.min() + self.grid_x.max())/2
+        center_y = (self.grid_y.min() + self.grid_y.max())/2
+
+        # Convert to lon/lat coordinates
+        self.center_lon_lat = to_lon_lat_transformer.transform(center_x, center_y)
+
         # Convert polygon from its target projection to longitude/latitude coordinates
         # which are used by granule search API
         self.polygon_coords = []
 
         for each in polygon:
-            coords = itslive_utils.transform_coord(
-                projection,
-                ITSCube.LON_LAT_PROJECTION,
-                each[0], each[1]
-            )
+            coords = to_lon_lat_transformer.transform(each[0], each[1])
             self.polygon_coords.extend(coords)
 
         self.logger.info(f"Polygon's longitude/latitude coordinates: {self.polygon_coords}")
@@ -375,6 +384,37 @@ class ITSCube:
         # Don't use s3_out, keep it in scope only to guarantee valid file system
         # like access.
         return s3_out, cube_store
+
+    def init_input_store(self, output_dir: str):
+        """
+        Read datacube from provided store. The method detects if S3 bucket
+        store or local Zarr archive is provided. It reads xarray.Dataset from
+        provided the Zarr store from local filesystem or S3 bucket.
+        """
+        ds_from_zarr = None
+        s3_in = None
+
+        if ITSCube.S3_PREFIX not in output_dir:
+            # If writing to the local directory, check if datacube store exists
+            if os.path.exists(output_dir):
+                # Read dataset in
+                ds_from_zarr = xr.open_zarr(output_dir, decode_timedelta=False)
+
+        else:
+            # When datacube is in the AWS S3 bucket, check if it exists.
+            file_list = s3.glob(output_dir)
+            if len(file_list) != 0:
+                # Open S3FS access to S3 bucket with output granules
+                s3_in = s3fs.S3FileSystem(anon=True)
+                cube_store = s3fs.S3Map(root=output_dir, s3=s3_out, check=False)
+                ds_from_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr')
+
+        if ds_from_zarr is not None:
+            self.updated_datacube_filename = 'local_' + os.path.basename(output_dir)
+
+        # Don't use s3_in, keep it in scope only to guarantee valid file system
+        # like access.
+        return s3_in, ds_from_zarr
 
     def create(self, api_params: dict, output_dir: str, num_granules=None):
         """
@@ -1113,11 +1153,6 @@ class ITSCube:
 
         now_date = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
 
-        center_x = (self.grid_x.min() + self.grid_x.max())/2
-        center_y = (self.grid_y.min() + self.grid_y.max())/2
-        # Convert to lon/lat coordinates
-        center_lon_lat = itslive_utils.transform_coord(self.projection, ITSCube.LON_LAT_PROJECTION, center_x, center_y)
-
         self.layers = xr.Dataset(
             data_vars = {DataVars.URL: ([Coords.MID_DATE], self.urls)},
             coords = {
@@ -1155,8 +1190,8 @@ class ITSCube:
                 'datacube_software_version': ITSCube.Version,
                 'GDAL_AREA_OR_POINT': 'Area',
                 'projection': str(self.projection),
-                'longitude': f"{center_lon_lat[0]:.2f}",
-                'latitude':  f"{center_lon_lat[1]:.2f}",
+                'longitude': f"{self.center_lon_lat[0]:.2f}",
+                'latitude':  f"{self.center_lon_lat[1]:.2f}",
                 'skipped_empty_data': json.dumps(self.skipped_empty_granules),
                 'skipped_duplicate_middle_date': json.dumps(self.skipped_double_granules),
                 'skipped_wrong_projection': json.dumps(self.skipped_proj_granules)
@@ -1744,8 +1779,8 @@ if __name__ == '__main__':
                         help="Cube dimension in meters [%(default)d].")
     parser.add_argument('-g', '--gridCellSize', type=int, default=240,
                         help="Grid cell size of input ITS_LIVE granules [%(default)d].")
-    parser.add_argument('-r', '--reportDir', type=str, default='logs',
-                        help="Directory to store skipped granules information (no data, wrong projection, double middle date) [%(default)s].")
+    parser.add_argument('--fivePointsPerPolygonSide', action='store_true',
+                        help='Define 5 points per side before re-projecting granule polygon to longitude/latitude coordinates')
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
     group = parser.add_mutually_exclusive_group()
@@ -1788,6 +1823,10 @@ if __name__ == '__main__':
     else:
         # Polygon for the cube definition is provided
         polygon = json.loads(args.polygon)
+
+    if args.fivePointsPerPolygonSide:
+        # Introduce 5 points per each polygon side
+        polygon = itslive_utils.add_five_points_to_polygon_side(polygon)
 
     # Create cube object
     cube = ITSCube(polygon, projection)
