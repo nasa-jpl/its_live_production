@@ -1877,6 +1877,7 @@ if __name__ == '__main__':
         # nc_filename = args.outputStore.replace('.zarr', '.nc')
         # zarr_to_netcdf.main(args.outputStore, nc_filename, ITSCube.NC_ENGINE)
         # ITSCube.show_memory_usage('after Zarr to NetCDF conversion')
+        acl_option = '--'
 
         for each_input, each_output, recursive_option in zip(
             # [nc_filename, args.outputStore],
@@ -1891,14 +1892,16 @@ if __name__ == '__main__':
                 command_line = [
                     "aws", "s3", "cp", recursive_option,
                     each_input,
-                    os.path.join(args.outputBucket, os.path.basename(each_output))
+                    os.path.join(args.outputBucket, os.path.basename(each_output)),
+                    "--acl", "bucket-owner-full-control"
                 ]
 
             else:
                 command_line = [
                     "aws", "s3", "cp",
                     each_input,
-                    os.path.join(args.outputBucket, os.path.basename(each_output))
+                    os.path.join(args.outputBucket, os.path.basename(each_output)),
+                    "--acl", "bucket-owner-full-control"
                 ]
 
             logging.info(' '.join(command_line))
