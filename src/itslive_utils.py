@@ -3,6 +3,8 @@ import pyproj
 import numpy as np
 import os
 
+from grid import Bounds
+
 
 def transform_coord(proj1, proj2, lon, lat):
     """Transform coordinates from proj1 to proj2 (EPSG num)."""
@@ -43,3 +45,51 @@ def point_to_prefix(lat: float, lon: float, dir_path: str = None) -> str:
         dirstring = os.path.join(dir_path, dirstring)
 
     return dirstring
+
+#
+# Author: Mark Fahnestock, Masha Liukis
+#
+def add_five_points_to_polygon_side(polygon):
+    """
+    Define 5 points per each polygon side. This is done before re-projecting
+    polygon to longitude/latitude coordinates.
+    This function assumes rectangular polygon where min/max x/y define all
+    4 polygon vertices.
+
+    polygon: list of lists
+        List of polygon vertices.
+    """
+    fracs = [0.25, 0.5, 0.75]
+    polylist = [] # closed ring of polygon points
+
+    # Determine min/max x/y values for the polygon
+    x = Bounds([each[0] for each in polygon])
+    y = Bounds([each[1] for each in polygon])
+
+    polylist.append((x.min, y.min))
+    dx = x.max - x.min
+    dy = y.min - y.min
+    for frac in fracs:
+        polylist.append((x.min + frac * dx, y.min + frac * dy))
+
+    polylist.append((x.max, y.min))
+    dx = x.max - x.max
+    dy = y.max - y.min
+    for frac in fracs:
+        polylist.append((x.max + frac * dx, y.min + frac * dy))
+
+    polylist.append((x.max, y.max))
+    dx = x.min - x.max
+    dy = y.max - y.max
+    for frac in fracs:
+        polylist.append((x.max + frac * dx, y.max + frac * dy))
+
+    polylist.append((x.min, y.max))
+    dx = x.min - x.min
+    dy = y.min - y.max
+    for frac in fracs:
+        polylist.append((x.min + frac * dx, y.max + frac * dy))
+
+    polylist.append((x.min, y.min))
+
+    return polylist
