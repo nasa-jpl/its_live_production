@@ -13,6 +13,7 @@ import psutil
 import pyproj
 import shutil
 import timeit
+import zarr
 
 # Extra installed packages
 import dask
@@ -1570,6 +1571,9 @@ class ITSCube:
         self.logger.info(f"Combined {len(self.urls)} layers (took {time_delta} seconds)")
         ITSCube.show_memory_usage('after combining layers')
 
+        compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
+        compression = {"compressor": compressor}
+
         start_time = timeit.default_timer()
         # Write to the Zarr store
         if is_first_write:
@@ -1619,6 +1623,7 @@ class ITSCube:
 
             for each in new_v_vars:
                 encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE}
+                encoding_settings[each].update(compression)
 
                 # Set missing_value only on first write to the disk store, otherwise
                 # will get "ValueError: failed to prevent overwriting existing key
@@ -1671,12 +1676,12 @@ class ITSCube:
 
             # This is first write, create Zarr store
             # self.layers.to_zarr(output_dir, encoding=encoding_settings, consolidated=True)
-            self.layers.to_zarr(output_dir, encoding=encoding_settings)
+            self.layers.to_zarr(output_dir, encoding=encoding_settings, consolidated=True)
 
         else:
             # Append layers to existing Zarr store
             # self.layers.to_zarr(output_dir, append_dim=Coords.MID_DATE, consolidated=True)
-            self.layers.to_zarr(output_dir, append_dim=Coords.MID_DATE)
+            self.layers.to_zarr(output_dir, append_dim=Coords.MID_DATE, consolidated=True)
 
         time_delta = timeit.default_timer() - start_time
         self.logger.info(f"Wrote {len(self.urls)} layers to {output_dir} (took {time_delta} seconds)")
