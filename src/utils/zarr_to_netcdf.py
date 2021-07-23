@@ -198,13 +198,12 @@ def main(input_file: str, output_file: str, nc_engine: str):
     start_time = timeit.default_timer()
     # Don't decode time delta's as it does some internal conversion based on
     # provided units
-    ds_zarr = xr.open_zarr(input_file, decode_timedelta=False)
+    ds_zarr = xr.open_zarr(input_file, decode_timedelta=False, consolidated=True)
 
     time_delta = timeit.default_timer() - start_time
     logging.info(f"Read Zarr {input_file} (took {time_delta} seconds)")
 
     convert(ds_zarr, output_file, nc_engine)
-
 
 if __name__ == '__main__':
     warnings.filterwarnings('ignore')
