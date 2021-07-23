@@ -81,6 +81,7 @@ class DataCubeBatch:
                     # stop if they have been generated
                     break
 
+                # Example of data cube definition in json file
                 # "properties": {
                 #     "fill-opacity": 1.0,
                 #     "fill": "red",
@@ -307,7 +308,7 @@ if __name__ == '__main__':
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-v01:1',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-v01:3',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
@@ -347,13 +348,13 @@ if __name__ == '__main__':
         '-p', '--parallelGranules',
         type=int,
         default=250,
-        help="Number of granules to process in parallel on one time [%(default)d]."
+        help="Number of granules to process in parallel at one time [%(default)d]."
     )
     parser.add_argument(
         '-t', '--pathToken',
         type=str,
         default='',
-        help="Path token to be present in datacube S3 target path in order for the datacube to be generated [%(default)d]."
+        help="Path token to be present in datacube S3 target path in order for the datacube to be generated [%(default)s]."
     )
 
     args = parser.parse_args()
