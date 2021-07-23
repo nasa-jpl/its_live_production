@@ -464,8 +464,9 @@ class ITSCube:
 
             # Check if need to write to the file accumulated number of granules
             if len(self.urls) == ITSCube.NUM_GRANULES_TO_WRITE:
-                self.combine_layers(cube_store, is_first_write)
-                is_first_write = False
+                wrote_layers = self.combine_layers(cube_store, is_first_write)
+                if is_first_write and wrote_layers:
+                    is_first_write = False
 
         # Check if there are remaining layers to be written to the file
         if len(self.urls):
@@ -533,11 +534,11 @@ class ITSCube:
             del results
             gc.collect()
 
-            self.combine_layers(cube_store, is_first_write)
-            self.format_stats()
-
-            if start == 0:
+            wrote_layers = self.combine_layers(cube_store, is_first_write)
+            if is_first_write and wrote_layers:
                 is_first_write = False
+
+            self.format_stats()
 
             num_to_process -= num_tasks
             start += num_tasks
@@ -587,8 +588,9 @@ class ITSCube:
 
                 # Check if need to write to the file accumulated number of granules
                 if len(self.urls) == ITSCube.NUM_GRANULES_TO_WRITE:
-                    self.combine_layers(cube_store, is_first_write)
-                    is_first_write = False
+                    wrote_layers = self.combine_layers(cube_store, is_first_write)
+                    if is_first_write and wrote_layers:
+                        is_first_write = False
 
         # Check if there are remaining layers to be written to the file
         if len(self.urls):
@@ -642,9 +644,8 @@ class ITSCube:
             for each_ds in results[0]:
                 self.add_layer(*each_ds)
 
-            self.combine_layers(cube_store, is_first_write)
-
-            if start == 0:
+            wrote_layers = self.combine_layers(cube_store, is_first_write)
+            if is_first_write and wrote_layers:
                 is_first_write = False
 
             num_to_process -= num_tasks
@@ -1141,13 +1142,16 @@ class ITSCube:
         to the Zarr store.
         """
         self.layers = {}
+        wrote_layers = False
 
         # Construct xarray to hold layers by concatenating layer objects along 'mid_date' dimension
         self.logger.info(f'Combine {len(self.urls)} layers to the {output_dir}...')
         if len(self.ds) == 0:
             self.logger.info('No layers to combine, continue')
-            return
+            return wrote_layers
+
         ITSCube.show_memory_usage('before combining layers')
+        wrote_layers = True
 
         start_time = timeit.default_timer()
         mid_date_coord = pd.Index(self.dates, name=Coords.MID_DATE)
@@ -1690,6 +1694,9 @@ class ITSCube:
         self.clear_vars()
 
         # No need to sort data by date as we will be appending layers to the datacubes
+
+        # Return a flag if any layers were written to the store
+        return wrote_layers
 
     def format_stats(self):
         """
