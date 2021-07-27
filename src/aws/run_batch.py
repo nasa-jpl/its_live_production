@@ -51,11 +51,10 @@ class DataCubeBatch:
     # failures)
     PARALLEL_GRANULES = 250
 
-    def __init__(self, job_name: str, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
+    def __init__(self, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
         Initialize object.
         """
-        self.job_name = job_name
         self.grid_size_str = f'{grid_size:04d}'
         self.grid_size = grid_size
         self.batch_job = batch_job
@@ -178,7 +177,7 @@ class DataCubeBatch:
                     response = None
                     if self.is_dry_run is False:
                         response = DataCubeBatch.CLIENT.submit_job(
-                            jobName=self.job_name,
+                            jobName=cube_filename,
                             jobQueue=self.batch_queue,
                             jobDefinition=self.batch_job,
                             parameters=cube_params,
@@ -199,16 +198,16 @@ class DataCubeBatch:
                                 'attempts': 1
                             },
                             timeout={
-                                'attemptDurationSeconds': 10800
+                                'attemptDurationSeconds': 21600
                             }
                         )
 
                         logging.info(f"Response: {response}")
 
                     num_jobs += 1
-                    cube_filepath = os.path.join(DataCubeBatch.HTTP_PREFIX, bucket_dir, cube_filename)
                     jobs.append({
-                        'filename': cube_filepath,
+                        'filename': os.path.join(DataCubeBatch.HTTP_PREFIX, bucket_dir, cube_filename),
+                        's3_filename': os.path.join(s3_bucket, bucket_dir, cube_filename),
                         'roi_percent': roi,
                         'aws_params': cube_params,
                         'aws': {'queue': self.batch_queue,
@@ -241,7 +240,6 @@ def main(
     """
     # Submit Batch job to AWS for each datacube which has ROI!=0
     run_batch = DataCubeBatch(
-        'datacube_v01',
         grid_size,
         batch_job,
         batch_queue,
