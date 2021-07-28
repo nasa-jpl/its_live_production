@@ -306,14 +306,14 @@ if __name__ == '__main__':
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-v01:3',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-terraform:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-r5d',
+        default='datacube-terraform',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
