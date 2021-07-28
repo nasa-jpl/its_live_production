@@ -68,8 +68,8 @@ class DataCubeConversionBatch:
             # Local name for the NetCDF format datacube
             cube_path, cube_filename = os.path.split(each_cube)
 
-            # Hack to create long running job - to test s3fs issue
-            # if cube_filename != 'ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr':
+            # Hack to test one job
+            # if cube_filename != 'ITS_LIVE_vel_EPSG3413_G0120_X-50000_Y-3350000.zarr':
             #     continue
 
             if DataCubeConversionBatch.S3_PREFIX not in each_cube:
@@ -86,8 +86,9 @@ class DataCubeConversionBatch:
             # Submit AWS Batch job
             response = None
             if self.is_dry_run is False:
+                cube_filename = cube_filename.replace('.zarr', '')
                 response = DataCubeConversionBatch.CLIENT.submit_job(
-                    jobName='toNetCDF_' * cube_filename,
+                    jobName='toNetCDF_' + cube_filename,
                     jobQueue=self.batch_queue,
                     jobDefinition=self.batch_job,
                     parameters=cube_params,
@@ -181,14 +182,14 @@ if __name__ == '__main__':
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-terraform:1',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-convert-terraform:2',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-terraform',
+        default='datacube-convert-terraform',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
