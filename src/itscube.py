@@ -89,9 +89,6 @@ class ITSCube:
     # Number of granules to write to the file at a time.
     NUM_GRANULES_TO_WRITE = 1000
 
-    # Directory to write verbose information about skipped granules
-    GRANULE_REPORT_DIR = 'logs'
-
     # Grid cell size for the datacube.
     CELL_SIZE = 240.0
 
@@ -160,9 +157,6 @@ class ITSCube:
 
         # Constructed cube
         self.layers = None
-
-        # Create log directory
-        os.makedirs(ITSCube.GRANULE_REPORT_DIR, exist_ok=True)
 
     def clear_vars(self):
         """
