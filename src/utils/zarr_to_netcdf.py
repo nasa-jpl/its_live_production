@@ -12,6 +12,7 @@ import logging
 import os
 import psutil
 import s3fs
+import sys
 import subprocess
 import timeit
 import warnings
@@ -212,7 +213,7 @@ def convert(ds_zarr: xr.Dataset, output_file: str, nc_engine: str):
     time_delta = timeit.default_timer() - start_time
     logging.info(f"Wrote dataset to NetCDF file {output_file} (took {time_delta} seconds)")
 
-def main(input_file: str, output_file: str, nc_engine: str):
+def main(input_file: str, output_file: str, nc_engine: str, chunks_size: int):
     """
     Convert datacube Zarr store to NetCDF format file.
     """
@@ -220,13 +221,16 @@ def main(input_file: str, output_file: str, nc_engine: str):
 
     ds_zarr = None
     s3_in = None
+    # Open Zarr store as Dask array to allow for stream write to NetCDF
+    dask_chunks = {'mid_date': chunks_size}
+
     show_memory_usage('before open Zarr()')
 
     if 's3:' not in input_file:
         # If reading local Zarr store, check if datacube store exists
         if os.path.exists(input_file):
             # Read dataset in
-            ds_zarr = xr.open_zarr(input_file, decode_timedelta=False, consolidated=True)
+            ds_zarr = xr.open_zarr(input_file, decode_timedelta=False, consolidated=True, chunks=dask_chunks)
 
         else:
             raise RuntimeError(f"Input datacube {input_file} does not exist.")
@@ -239,7 +243,7 @@ def main(input_file: str, output_file: str, nc_engine: str):
         if len(file_list) != 0:
             # Access datacube in S3 bucket
             cube_store = s3fs.S3Map(root=input_file, s3=s3_in, check=False)
-            ds_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True)
+            ds_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True, chunks=dask_chunks)
 
         else:
             raise RuntimeError(f"Input datacube {input_file} does not exist.")
@@ -268,9 +272,13 @@ if __name__ == '__main__':
                         help="NetCDF engine to use to store NetCDF data to the file.")
     parser.add_argument('-b', '--outputBucket', type=str, default="",
                         help="S3 bucket to copy datacube in NetCDF format to [%(default)s].")
+    parser.add_argument('-c', '--chunks', type=int, default=100,
+                        help="Dask chunk size for mid_date coordinate [%(default)d]. " \
+                        "This is to handle datacubes that can't fit in memory, and should be read as Dask arrays.")
 
     args = parser.parse_args()
-    main(args.input, args.output, args.engine)
+    logging.info(f"Args: {sys.argv}")
+    main(args.input, args.output, args.engine, args.chunks)
 
     if os.path.exists(args.output) and len(args.outputBucket):
         # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
