@@ -9,6 +9,10 @@ Convert Zarr data stored in ZarrStoreName to the NetCDF file NetCDFFileName.
 
 import argparse
 import logging
+import os
+import psutil
+import s3fs
+import subprocess
 import timeit
 import warnings
 import xarray as xr
@@ -16,6 +20,20 @@ import xarray as xr
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                     datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
+
+def show_memory_usage(msg: str=''):
+    """
+    Display current memory usage.
+    """
+    _GB = 1024 * 1024 * 1024
+    usage = psutil.virtual_memory()
+
+    # Use standard logging to be able to use the method without ITSCube object
+    memory_msg = 'Memory '
+    if len(msg):
+        memory_msg += msg
+
+    logging.info(f"{memory_msg}: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
 
 def convert(ds_zarr: xr.Dataset, output_file: str, nc_engine: str):
     """
@@ -183,11 +201,14 @@ def convert(ds_zarr: xr.Dataset, output_file: str, nc_engine: str):
         encoding.setdefault(each, {}).update(compression)
 
     start_time = timeit.default_timer()
+    show_memory_usage('before to_netcdf()')
     ds_zarr.to_netcdf(
         output_file,
         engine=nc_engine,
         encoding=encoding
     )
+    show_memory_usage('after to_netcdf()')
+
     time_delta = timeit.default_timer() - start_time
     logging.info(f"Wrote dataset to NetCDF file {output_file} (took {time_delta} seconds)")
 
@@ -196,9 +217,37 @@ def main(input_file: str, output_file: str, nc_engine: str):
     Convert datacube Zarr store to NetCDF format file.
     """
     start_time = timeit.default_timer()
+
+    ds_zarr = None
+    s3_in = None
+    show_memory_usage('before open Zarr()')
+
+    if 's3:' not in input_file:
+        # If reading local Zarr store, check if datacube store exists
+        if os.path.exists(input_file):
+            # Read dataset in
+            ds_zarr = xr.open_zarr(input_file, decode_timedelta=False, consolidated=True)
+
+        else:
+            raise RuntimeError(f"Input datacube {input_file} does not exist.")
+
+    else:
+        # When datacube is in the AWS S3 bucket, check if it exists.
+        s3_in = s3fs.S3FileSystem(anon=True)
+
+        file_list = s3_in.glob(input_file)
+        if len(file_list) != 0:
+            # Access datacube in S3 bucket
+            cube_store = s3fs.S3Map(root=input_file, s3=s3_in, check=False)
+            ds_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True)
+
+        else:
+            raise RuntimeError(f"Input datacube {input_file} does not exist.")
+
+
     # Don't decode time delta's as it does some internal conversion based on
     # provided units
-    ds_zarr = xr.open_zarr(input_file, decode_timedelta=False, consolidated=True)
+    # ds_zarr = xr.open_zarr(input_file, decode_timedelta=False, consolidated=True)
 
     time_delta = timeit.default_timer() - start_time
     logging.info(f"Read Zarr {input_file} (took {time_delta} seconds)")
@@ -217,7 +266,42 @@ if __name__ == '__main__':
                         help="NetCDF filename to store data to.")
     parser.add_argument('-e', '--engine', type=str, required=False, default='h5netcdf',
                         help="NetCDF engine to use to store NetCDF data to the file.")
+    parser.add_argument('-b', '--outputBucket', type=str, default="",
+                        help="S3 bucket to copy datacube in NetCDF format to [%(default)s].")
 
     args = parser.parse_args()
     main(args.input, args.output, args.engine)
+
+    if os.path.exists(args.output) and len(args.outputBucket):
+        # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
+        # resulting in as many error messages as there are files in Zarr store
+        # to copy
+
+        # Copy NetCDF file to the bucket
+        env_copy = os.environ.copy()
+        command_line = [
+            "aws", "s3", "cp",
+            args.output,
+            os.path.join(args.outputBucket, os.path.basename(args.output)),
+            "--acl", "bucket-owner-full-control"
+        ]
+
+        logging.info(' '.join(command_line))
+
+        command_return = subprocess.run(
+            command_line,
+            env=env_copy,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT
+        )
+        if command_return.returncode != 0:
+            logging.error(f"Failed to copy {args.output} to {args.outputBucket}: {command_return.stdout}")
+
+        # Remove locally written NetCDF file if target location is AWS S3 bucket.
+        # This is to eliminate out of disk space failures when the same EC2 instance is
+        # being re-used by muliple Batch jobs.
+        logging.info(f"Removing local copy of {args.output}")
+        os.remove(args.output)
+
     logging.info("Done.")
