@@ -67,9 +67,15 @@ class DataCubeConversionBatch:
 
             # Local name for the NetCDF format datacube
             cube_path, cube_filename = os.path.split(each_cube)
+            if not cube_path.startswith(DataCubeConversionBatch.S3_PREFIX):
+                # Append S3 prefix to the output bucket path - os.path.split()
+                # gets rid of it if provided
+                cube_path = DataCubeConversionBatch.S3_PREFIX + cube_path
 
-            # Hack to test one job
+            # ATTN: Just a hack to test one job at a time:
             # if cube_filename != 'ITS_LIVE_vel_EPSG3413_G0120_X-50000_Y-3350000.zarr':
+            # Convert 21.3 GiB datacube
+            # if cube_filename != 'ITS_LIVE_vel_EPSG3413_G0120_X-250000_Y-950000.zarr':
             #     continue
 
             if DataCubeConversionBatch.S3_PREFIX not in each_cube:
@@ -182,14 +188,14 @@ if __name__ == '__main__':
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-convert-terraform:2',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-convert-30gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-convert-terraform',
+        default='datacube-convert-4vCPU-32GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
