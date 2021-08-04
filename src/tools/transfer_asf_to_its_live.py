@@ -56,6 +56,10 @@ class ASFTransfer:
     """
     PROCESSED_JOB_IDS = []
 
+    # Some of original granules included the postfix that needs to be removed
+    # from the target filename
+    POSTFIX_TO_RM = '_IL_ASF_OD'
+
     def __init__(self, user: str, password: str, target_bucket: str, target_dir: str, processed_jobs_file: str):
         self.hyp3 = sdk.HyP3(HYP3_AUTORIFT_API, user, password)
         self.target_bucket = target_bucket
@@ -89,6 +93,7 @@ class ASFTransfer:
         logging.info(f"{num_to_copy} out of {total_num_to_copy} granules to copy...")
 
         while num_to_copy > 0:
+        # while num_to_copy == total_num_to_copy:
             num_tasks = chunks_to_copy if num_to_copy > chunks_to_copy else num_to_copy
 
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
@@ -147,6 +152,11 @@ class ASFTransfer:
             target_prefix = point_to_prefix(self.target_bucket_dir, lat, lon)
             bucket = boto3.resource('s3').Bucket(self.target_bucket)
             target = f"{target_prefix}/{job.files[0]['filename']}"
+
+            # Remove filename postfix which should not make it to the
+            if target.endswith('_IL_ASF_OD.nc'):
+                target = target.replace(ASFTransfer.POSTFIX_TO_RM, '')
+
             source = job.files[0]['s3']['key']
 
             # There are corresponding browse and thumbprint images to transfer
