@@ -26,6 +26,7 @@ class CubeJson:
     EPSG_SEPARATOR = ':'
     EPSG_PREFIX = 'EPSG'
     NC_URL = 'nc_url'
+    EXIST_FLAG = 'datacube_exist'
 
 
 class DataCubeGlobalDefinition:
@@ -115,6 +116,10 @@ class DataCubeGlobalDefinition:
                 properties = each_cube[CubeJson.PROPERTIES]
 
                 roi = properties[CubeJson.ROI_PERCENT_COVERAGE]
+
+                # Default: datacube does not exist
+                each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 0
+
                 if roi != 0.0:
                     # Format filename for the cube
                     epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
@@ -153,6 +158,7 @@ class DataCubeGlobalDefinition:
                     if len(cube_url):
                         # The datacube NetCDF exists, update GeoJson
                         each_cube[CubeJson.PROPERTIES][CubeJson.NC_URL] = cube_url[0]
+                        each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 1
                         num_cubes += 1
 
             logging.info(f"Number of updated entries: {num_cubes}")
