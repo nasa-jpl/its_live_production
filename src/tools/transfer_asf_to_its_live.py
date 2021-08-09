@@ -66,6 +66,49 @@ class ASFTransfer:
         self.target_bucket_dir = target_dir
         self.processed_jobs_file = processed_jobs_file
 
+    def sequential__call__(
+        self,
+        job_ids_file: str,
+        exclude_job_ids_file: str,
+        chunks_to_copy: int,
+        start_job: int,
+        num_dask_workers: int
+    ):
+        """
+        Run the transfer of granules from ASF to ITS_LIVE S3 bucket.
+
+        If provided, don't process job IDs listed in exclude_job_ids_file (
+        as previously processed).
+        """
+        job_ids = json.loads(job_ids_file.read_text())
+        if exclude_job_ids_file is not None:
+            exclude_ids = json.loads(exclude_job_ids_file.read_text())
+
+            # Remove exclude_ids from the jobs to process
+            job_ids = list(set(job_ids).difference(exclude_ids))
+
+        total_num_to_copy = len(job_ids)
+        num_to_copy = total_num_to_copy - start_job
+        start = start_job
+        logging.info(f"{num_to_copy} out of {total_num_to_copy} granules to copy...")
+
+        while num_to_copy > 0:
+        # while num_to_copy == total_num_to_copy:
+            num_tasks = chunks_to_copy if num_to_copy > chunks_to_copy else num_to_copy
+
+            logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
+            for id in job_ids[start:start+num_tasks]:
+                each_result, _ = self.copy_granule(id)
+                logging.info("-->".join(each_result))
+                ASFTransfer.PROCESSED_JOB_IDS.append(id)
+
+            num_to_copy -= num_tasks
+            start += num_tasks
+
+        # Store job IDs that were processed
+        with open(self.processed_jobs_file , 'w') as outfile:
+            json.dump(ASFTransfer.PROCESSED_JOB_IDS, outfile)
+
     def __call__(
         self,
         job_ids_file: str,
