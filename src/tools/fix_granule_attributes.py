@@ -83,7 +83,7 @@ def all_attributes(bucket_name: str, granule_url: str, local_dir: str, s3):
 
     # Previously transferred granules have their attributes fixed already, skip it
     if granule_url.endswith('_IL_ASF_OD.nc'):
-        msgs += f'Skipping {granule_url} as it is fixed already.'
+        msgs.append(f'Skipping {granule_url} as it is fixed already.')
         return msgs
 
     # get center lat lon
