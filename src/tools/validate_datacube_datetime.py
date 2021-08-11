@@ -8,6 +8,7 @@ import argparse
 import dask
 from dask.diagnostics import ProgressBar
 import logging
+import numpy as np
 import os
 import s3fs
 import xarray as xr
@@ -58,7 +59,7 @@ class ValidateDatacubes:
             num_tasks = chunk_size if num_to_fix > chunk_size else num_to_fix
 
             logging.info(f"Starting tasks {start}:{start+num_tasks}")
-            tasks = [dask.delayed(ValidateDatacubes.run)(each) for each in self.all_datacubes[start:start+num_tasks]]
+            tasks = [dask.delayed(ValidateDatacubes.run)(each, self.s3) for each in self.all_datacubes[start:start+num_tasks]]
             results = None
 
             with ProgressBar():
