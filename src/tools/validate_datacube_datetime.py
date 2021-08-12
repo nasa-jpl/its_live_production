@@ -121,34 +121,43 @@ class ValidateDatacubes:
                         # msgs.append(f"Opening {s3_path}...")
                         with s3_in.open(s3_path, mode='rb') as fhandle:
                             with xr.open_dataset(fhandle, engine=ITSCube.NC_ENGINE) as granule_ds:
-                                granule_date_center = ITSCube.get_data_var_attr(
-                                    granule_ds,
-                                    each_url,
-                                    DataVars.ImgPairInfo.NAME,
-                                    DataVars.ImgPairInfo.DATE_CENTER,
-                                    to_date=True)
+                                granule_date_center = np.datetime64(
+                                    ITSCube.get_data_var_attr(
+                                        granule_ds,
+                                        each_url,
+                                        DataVars.ImgPairInfo.NAME,
+                                        DataVars.ImgPairInfo.DATE_CENTER,
+                                        to_date=True
+                                    )
+                                )
 
-                                granule_acq_date_img1 = ITSCube.get_data_var_attr(
-                                    granule_ds,
-                                    each_url,
-                                    DataVars.ImgPairInfo.NAME,
-                                    DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
-                                    to_date=True)
+                                granule_acq_date_img1 = np.datetime64(
+                                    ITSCube.get_data_var_attr(
+                                        granule_ds,
+                                        each_url,
+                                        DataVars.ImgPairInfo.NAME,
+                                        DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
+                                        to_date=True
+                                    )
+                                )
 
-                                granule_acq_date_img2 = ITSCube.get_data_var_attr(
-                                    granule_ds,
-                                    each_url,
-                                    DataVars.ImgPairInfo.NAME,
-                                    DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
-                                    to_date=True)
+                                granule_acq_date_img2 = np.datetime64(
+                                    ITSCube.get_data_var_attr(
+                                        granule_ds,
+                                        each_url,
+                                        DataVars.ImgPairInfo.NAME,
+                                        DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
+                                        to_date=True
+                                    )
+                                )
 
-                                if date_center[index] != granule_date_center:
+                                if date_center[index] != np.datetime_as_string(granule_date_center, 's'):
                                     msgs.append(f"date_center: cube's {date_center[index]} vs. {granule_date_center}")
 
-                                if acq_date_img1[index] != granule_acq_date_img1:
+                                if acq_date_img1[index] != np.datetime_as_string(granule_acq_date_img1, 's'):
                                     msgs.append(f"acq_date_img1: cube's {acq_date_img1[index]} vs. {granule_acq_date_img1}")
 
-                                if acq_date_img2[index] != granule_acq_date_img2:
+                                if acq_date_img2[index] != np.datetime_as_string(granule_acq_date_img2, 's'):
                                     msgs.append(f"acq_date_img2: cube's {acq_date_img2[index]} vs. {granule_acq_date_img2}")
 
                         msgs.append('Cube done.')
