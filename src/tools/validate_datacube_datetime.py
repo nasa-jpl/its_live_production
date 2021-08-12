@@ -13,6 +13,9 @@ import os
 import s3fs
 import xarray as xr
 
+from itscube import ITSCube
+from itscube_types import DataVars
+
 
 class ValidateDatacubes:
     """
@@ -22,6 +25,7 @@ class ValidateDatacubes:
     Need to validate that datetimes stored in the datacubes are as expected and
     identify datacubes that need to be re-generated with Zarr version 2.6.1.
     """
+    SUFFIX_TO_REMOVE = '_IL_ASF_OD'
 
     def __init__(self, bucket: str):
         """
@@ -87,10 +91,67 @@ class ValidateDatacubes:
             with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True, chunks={'mid_date': 250}) as ds:
                 mid_dates = [np.datetime_as_string(t, unit='s') for t in ds.mid_date.values]
                 date_center = [np.datetime_as_string(t, unit='s') for t in ds.date_center.values]
+
                 if mid_dates != date_center:
-                    msgs.append(f"ERROR: mismatching mid_date and date_center for {cube_url}")
+                    msgs.append(f"ERROR: mismatching mid_date and date_center for {cube_url}: ")
+                    # Show which values mis-match
+                    for each_mid_date, each_date_center in zip(mid_dates, date_center):
+                        if each_mid_date != each_date_center:
+                            msgs.append(f"{each_mid_date} vs. {each_date_center}")
+
                 else:
-                    msgs.append(f"Equal mid_date and date_center for {cube_url}")
+                    msgs.append(f"Equal mid_date and date_center for {cube_url}, validate per each layer: ")
+
+                    granule_urls = ds.granule_url.values
+
+                    # Validate each layer's datetime against the one as stored in the datacube
+                    acq_date_img1 = [np.datetime_as_string(t, unit='s') for t in ds.acquisition_date_img1.values]
+                    acq_date_img2 = [np.datetime_as_string(t, unit='s') for t in ds.acquisition_date_img2.values]
+
+                    for index, each_url in enumerate(granule_urls):
+                        # Read each granule in and compare to the value in datacube
+                        s3_path = each_url.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
+                        s3_path = s3_path.replace(ITSCube.PATH_URL, '')
+
+                        file_list = s3_in.glob(s3_path)
+                        if len(file_list) == 0:
+                            # Granule was renamed already, use new name:
+                            s3_path = s3_path.replace('_IL_ASF_OD', '')
+
+                        # msgs.append(f"Opening {s3_path}...")
+                        with s3_in.open(s3_path, mode='rb') as fhandle:
+                            with xr.open_dataset(fhandle, engine=ITSCube.NC_ENGINE) as granule_ds:
+                                granule_date_center = ITSCube.get_data_var_attr(
+                                    granule_ds,
+                                    each_url,
+                                    DataVars.ImgPairInfo.NAME,
+                                    DataVars.ImgPairInfo.DATE_CENTER,
+                                    to_date=True)
+
+                                granule_acq_date_img1 = ITSCube.get_data_var_attr(
+                                    granule_ds,
+                                    each_url,
+                                    DataVars.ImgPairInfo.NAME,
+                                    DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
+                                    to_date=True)
+
+                                granule_acq_date_img2 = ITSCube.get_data_var_attr(
+                                    granule_ds,
+                                    each_url,
+                                    DataVars.ImgPairInfo.NAME,
+                                    DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
+                                    to_date=True)
+
+                                if date_center != granule_date_center:
+                                    msgs.append(f"date_center: cube's {date_center} vs. {granule_date_center}")
+
+                                if acq_date_img1 != granule_acq_date_img1:
+                                    msgs.append(f"acq_date_img1: cube's {acq_date_img1} vs. {granule_acq_date_img1}")
+
+                                if acq_date_img2 != granule_acq_date_img2:
+                                    msgs.append(f"acq_date_img2: cube's {acq_date_img2} vs. {granule_acq_date_img2}")
+
+                        msgs.append('Cube done.')
 
         except OverflowError as exc:
             msgs.append(f"EXCEPTION: processing {cube_url}: {exc}")
