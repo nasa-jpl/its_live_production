@@ -142,14 +142,14 @@ class ValidateDatacubes:
                                     DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
                                     to_date=True)
 
-                                if date_center != granule_date_center:
-                                    msgs.append(f"date_center: cube's {date_center} vs. {granule_date_center}")
+                                if date_center[index] != granule_date_center:
+                                    msgs.append(f"date_center: cube's {date_center[index]} vs. {granule_date_center}")
 
-                                if acq_date_img1 != granule_acq_date_img1:
-                                    msgs.append(f"acq_date_img1: cube's {acq_date_img1} vs. {granule_acq_date_img1}")
+                                if acq_date_img1[index] != granule_acq_date_img1:
+                                    msgs.append(f"acq_date_img1: cube's {acq_date_img1[index]} vs. {granule_acq_date_img1}")
 
-                                if acq_date_img2 != granule_acq_date_img2:
-                                    msgs.append(f"acq_date_img2: cube's {acq_date_img2} vs. {granule_acq_date_img2}")
+                                if acq_date_img2[index] != granule_acq_date_img2:
+                                    msgs.append(f"acq_date_img2: cube's {acq_date_img2[index]} vs. {granule_acq_date_img2}")
 
                         msgs.append('Cube done.')
 
