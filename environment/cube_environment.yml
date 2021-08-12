@@ -30,7 +30,7 @@ dependencies:
   - fsspec==0.8.3
   - tqdm
   - utm
-  - zarr
+  - zarr==2.6.1
   - pip
   - pip:
     - geojson
