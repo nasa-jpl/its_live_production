@@ -105,8 +105,8 @@ class ValidateDatacubes:
                     granule_urls = ds.granule_url.values
 
                     # Validate each layer's datetime against the one as stored in the datacube
-                    acq_date_img1 = [np.datetime_as_string(t, unit='s') for t in ds.acquisition_date_img1.values]
-                    acq_date_img2 = [np.datetime_as_string(t, unit='s') for t in ds.acquisition_date_img2.values]
+                    acq_date_img1 = [np.datetime_as_string(t, unit='m') for t in ds.acquisition_date_img1.values]
+                    acq_date_img2 = [np.datetime_as_string(t, unit='m') for t in ds.acquisition_date_img2.values]
 
                     for index, each_url in enumerate(granule_urls):
                         # Read each granule in and compare to the value in datacube
@@ -151,16 +151,14 @@ class ValidateDatacubes:
                                     )
                                 )
 
-                                if date_center[index] != np.datetime_as_string(granule_date_center, 's'):
-                                    msgs.append(f"date_center: cube's {date_center[index]} vs. {granule_date_center}")
+                                if date_center[index] != np.datetime_as_string(granule_date_center, 'm'):
+                                    msgs.append(f"date_center[{index}]: cube's {date_center[index]} vs. {granule_date_center}")
 
-                                if acq_date_img1[index] != np.datetime_as_string(granule_acq_date_img1, 's'):
-                                    msgs.append(f"acq_date_img1: cube's {acq_date_img1[index]} vs. {granule_acq_date_img1}")
+                                if acq_date_img1[index] != np.datetime_as_string(granule_acq_date_img1, 'm'):
+                                    msgs.append(f"acq_date_img1[{index}]: cube's {acq_date_img1[index]} vs. {granule_acq_date_img1}")
 
-                                if acq_date_img2[index] != np.datetime_as_string(granule_acq_date_img2, 's'):
-                                    msgs.append(f"acq_date_img2: cube's {acq_date_img2[index]} vs. {granule_acq_date_img2}")
-
-                        msgs.append('Cube done.')
+                                if acq_date_img2[index] != np.datetime_as_string(granule_acq_date_img2, 'm'):
+                                    msgs.append(f"acq_date_img2[{index}]: cube's {acq_date_img2[index]} vs. {granule_acq_date_img2}")
 
         except OverflowError as exc:
             msgs.append(f"EXCEPTION: processing {cube_url}: {exc}")
