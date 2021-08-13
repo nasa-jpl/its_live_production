@@ -86,15 +86,16 @@ class ValidateDatacubes:
             #
             cube_store = s3fs.S3Map(root=cube_url, s3=s3_in, check=False)
             with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True, chunks={'mid_date': 250}) as ds:
-                mid_dates = [t.astype(datetime.datetime) for t in ds.mid_date.values]
-                date_center = [t.astype(datetime.datetime) for t in ds.date_center.values]
+                # Make sure mid_date and date_center agree at date() level
+                mid_dates_str = [np.datetime_as_string(t, unit='m') for t in ds.mid_date.values]
+                date_center_str = [np.datetime_as_string(t, unit='m') for t in ds.date_center.values]
 
-                if mid_dates != date_center:
+                if mid_dates_str != date_center_str:
                     msgs.append(f"ERROR: mismatching mid_date and date_center for {cube_url}: ")
                     # Show which values mis-match
-                    for each_mid_date, each_date_center in zip(mid_dates, date_center):
+                    for each_mid_date, each_date_center in zip(mid_dates_str, date_center_str):
                         if each_mid_date != each_date_center:
-                            msgs.append(f"{each_mid_date} vs. {each_date_center}")
+                            msgs.append(f"mid_date {each_mid_date} vs. date_center {each_date_center}")
 
                 else:
                     msgs.append(f"Equal mid_date and date_center for {cube_url}, validate per each of {len(mid_dates)} layers: ")
@@ -102,6 +103,7 @@ class ValidateDatacubes:
                     granule_urls = ds.granule_url.values
 
                     # Validate each layer's datetime against the one as stored in the datacube
+                    date_center = [t.astype(datetime.datetime) for t in ds.date_center.values]
                     acq_date_img1 = [t.astype(datetime.datetime) for t in ds.acquisition_date_img1.values]
                     acq_date_img2 = [t.astype(datetime.datetime) for t in ds.acquisition_date_img2.values]
 
