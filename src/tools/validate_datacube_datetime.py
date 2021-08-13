@@ -98,7 +98,7 @@ class ValidateDatacubes:
                             msgs.append(f"mid_date {each_mid_date} vs. date_center {each_date_center}")
 
                 else:
-                    msgs.append(f"Equal mid_date and date_center for {cube_url}, validate per each of {len(mid_dates)} layers: ")
+                    msgs.append(f"Equal mid_date and date_center for {cube_url}, validate per each of {len(mid_dates_str)} layers: ")
 
                     granule_urls = ds.granule_url.values
 
