@@ -85,7 +85,7 @@ class ValidateDatacubes:
         try:
             #
             cube_store = s3fs.S3Map(root=cube_url, s3=s3_in, check=False)
-            with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True, chunks={'mid_date': 250}) as ds:
+            with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
                 # Make sure mid_date and date_center agree at date() level
                 mid_dates_str = [np.datetime_as_string(t, unit='m') for t in ds.mid_date.values]
                 date_center_str = [np.datetime_as_string(t, unit='m') for t in ds.date_center.values]
@@ -103,9 +103,9 @@ class ValidateDatacubes:
                     granule_urls = ds.granule_url.values
 
                     # Validate each layer's datetime against the one as stored in the datacube
-                    date_center = [t.astype(datetime.datetime) for t in ds.date_center.values]
-                    acq_date_img1 = [t.astype(datetime.datetime) for t in ds.acquisition_date_img1.values]
-                    acq_date_img2 = [t.astype(datetime.datetime) for t in ds.acquisition_date_img2.values]
+                    date_center = [t.astype('M8[ms]').astype('O') for t in ds.date_center.values]
+                    acq_date_img1 = [t.astype('M8[ms]').astype('O') for t in ds.acquisition_date_img1.values]
+                    acq_date_img2 = [t.astype('M8[ms]').astype('O') for t in ds.acquisition_date_img2.values]
 
                     for index, each_url in enumerate(granule_urls):
                         # Read each granule in and compare to the value in datacube
