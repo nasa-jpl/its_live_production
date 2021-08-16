@@ -43,14 +43,14 @@ class ValidateDatacubes:
         logging.info(f"Number of cubes to validate: {len(self.all_datacubes)}")
 
 
-    def __call__(self, chunk_size: int, num_dask_workers: int):
+    def __call__(self, chunk_size: int, num_dask_workers: int, start_index: int=0):
         """
         Validate each cube in S3 bucket.
         """
-        num_to_fix = len(self.all_datacubes)
+        num_to_fix = len(self.all_datacubes) - start_index
 
-        start = 0
-        logging.info(f"{num_to_fix} cubes to validate...")
+        start = start_index
+        logging.info(f"{num_to_fix} cubes to validate starting with {start_index}...")
 
         if num_to_fix <= 0:
             logging.info(f"No datacubes, exiting.")
@@ -157,6 +157,9 @@ class ValidateDatacubes:
         except OverflowError as exc:
             msgs.append(f"EXCEPTION: processing {cube_url}: {exc}")
 
+        except RuntimeError as exc:
+            msgs.append("UNEXPECTED_EXCEPTION: processing {cube_url}: {exc}")
+
         return msgs
 
 def main():
@@ -178,6 +181,12 @@ def main():
         default=4,
         help='Number of Dask parallel workers [%(default)d]'
     )
+    parser.add_argument(
+        '-s', '--start-index',
+        type=int,
+        default=0,
+        help='Index for the start datacube to process (if previous processing terminated) [%(default)d]'
+    )
 
     args = parser.parse_args()
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
@@ -186,7 +195,7 @@ def main():
     logging.info(f"Args: {args}")
 
     validate_datacubes = ValidateDatacubes(args.bucket)
-    validate_datacubes(args.chunk_size, args.dask_workers)
+    validate_datacubes(args.chunk_size, args.dask_workers, args.start_index)
 
 
 if __name__ == '__main__':
