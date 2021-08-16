@@ -157,7 +157,7 @@ class ValidateDatacubes:
         except OverflowError as exc:
             msgs.append(f"EXCEPTION: processing {cube_url}: {exc}")
 
-        except RuntimeError as exc:
+        except Exception as exc:
             msgs.append("UNEXPECTED_EXCEPTION: processing {cube_url}: {exc}")
 
         return msgs
