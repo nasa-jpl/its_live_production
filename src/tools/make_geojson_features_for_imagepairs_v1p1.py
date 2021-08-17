@@ -228,7 +228,7 @@ class GranuleCatalog:
     """
     FIVE_POINTS_PER_SIDE = True
 
-    def __init__(self, granules_file: str):
+    def __init__(self, granules_file: str, features_per_file: int, catalog_dir: str):
         """
         Initialize the object.
         """
@@ -242,7 +242,10 @@ class GranuleCatalog:
 
         logging.info(f"Loaded {len(self.infiles)} granules from '{granules_file}'")
 
-    def create(self, data_version, chunk_size, num_dask_workers):
+        self.features_per_file = features_per_file
+        self.catalog_dir = catalog_dir
+
+    def create(self, data_version, chunk_size, num_dask_workers, granules_dir):
         """
         Create catalog geojson file.
         """
@@ -256,11 +259,16 @@ class GranuleCatalog:
             logging.info(f"Nothing to catalog, exiting.")
             return
 
-        start = 0
+        start = 0               # Current start index into global list
+        read_num_files = 0      # Number of read files within the block
+        block_start = 0         # Current start index for the block to write to file
+        cum_read_num_files = 0  # Cumulative number of processed granules
+
+        base_dir = os.path.basename(granules_dir)
 
         feature_list = []
         while total_num_files > 0:
-            num_tasks =chunk_size if total_num_files > chunk_size else total_num_files
+            num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
 
             logging.info(f"Starting granules {start}:{start+num_tasks} out of {init_total_files} total granules")
             tasks = [dask.delayed(self.image_pair_feature_from_path)(each, data_version, self.s3) for each in self.infiles[start:start+num_tasks]]
@@ -273,10 +281,29 @@ class GranuleCatalog:
                                        num_workers=num_dask_workers)
 
             feature_list.extend(results[0])
+
             total_num_files -= num_tasks
+            read_num_files += num_tasks
+            cum_read_num_files += num_tasks
             start += num_tasks
 
-        return feature_list
+            # Check if need to write to the file:
+            if read_num_files >= self.features_per_file or total_num_files <= 0:
+                # Use sub-directory name of input path as base for output filename
+                featureColl = geojson.FeatureCollection(feature_list)
+                outfilename = f'imgpair_{base_dir}_{block_start}_{cum_read_num_files-1}.json'
+
+                with s3_out.open(f'{self.catalog_dir}/{outfilename}', 'w') as outf:
+                    geojson.dump(featureColl, outf)
+
+                # mt.meminfo(f'wrote {args.catalog_dir}/{outfilename}')
+                logging.info(f'Wrote {self.catalog_dir}/{outfilename}')
+                feature_list = []
+                featureColl = None
+
+                read_num_files = 0
+                block_start = cum_read_num_files
+
 
     def image_pair_feature_from_path(self, infilewithpath: str, data_version: str, s3):
         filename_tokens = infilewithpath.split('/')
@@ -427,13 +454,19 @@ if __name__ == '__main__':
                         action='store',
                         type=str,
                         default='its-live-data.jpl.nasa.gov/catalog_geojson/landsat/v02',
-                        help='output path for featurecollections [%(default)s]')
+                        help='Output path for featurecollections [%(default)s]')
 
     parser.add_argument('-chunk_by',
                         action='store',
                         type=int,
-                        default=20000,
-                        help='chunk feature collections to have chunk_by features each [%(default)d]')
+                        default=1000,
+                        help='Chunk feature collections to have chunk_by features each [%(default)d]')
+
+    parser.add_argument('-features_per_file',
+                        action='store',
+                        type=int,
+                        default=500000,
+                        help='Number of features to store per the file [%(default)d]')
 
     parser.add_argument('-skipped_granules_file',
                         action='store',
@@ -455,7 +488,7 @@ if __name__ == '__main__':
                         action='store',
                         type=str,
                         default='*/*.nc',
-                        help='glob pattern for the granule search under "base_dir_s3fs" [%(default)s]')
+                        help='Glob pattern for the granule search under "base_dir_s3fs" [%(default)s]')
 
     parser.add_argument('-five_points_per_side', action='store_true',
                         help='Define 5 points per side before re-projecting granule polygon to longitude/latitude coordinates')
@@ -463,7 +496,7 @@ if __name__ == '__main__':
     parser.add_argument('-data_version',
                         default=None,
                         type=str,
-                        help='Data version to be recorded for each granule. If none is provided, immediate parent directory of the granule is used as its version.')
+                        help='Data version to be recorded for each granule [%(default)d]. If none is provided, immediate parent directory of the granule is used as its version.')
 
     parser.add_argument('-w', '--dask_workers', type=int,
                         default=4,
@@ -483,21 +516,17 @@ if __name__ == '__main__':
     granules_dir = args.granule_dir
 
     if not args.create_catalog_list:
-        catalog = GranuleCatalog(os.path.join(args.catalog_dir, args.catalog_granules_file))
-        feature_list = catalog.create(args.data_version, args.chunk_by, args.dask_workers)
-
-        # Use sub-directory name of input path as base for output filename
-        base_dir = os.path.basename(granules_dir)
-        featureColl = geojson.FeatureCollection(feature_list)
-        outfilename = f'imgpair_{base_dir}.json'
-
-        with s3_out.open(f'{args.catalog_dir}/{outfilename}', 'w') as outf:
-            geojson.dump(featureColl, outf)
-
-        # mt.meminfo(f'wrote {args.catalog_dir}/{outfilename}')
-        logging.info(f'Wrote {args.catalog_dir}/{outfilename}')
-        feature_list = None
-        featureColl = None
+        catalog = GranuleCatalog(
+            os.path.join(args.catalog_dir, args.catalog_granules_file),
+            args.features_per_file,
+            args.catalog_dir
+        )
+        catalog.create(
+            args.data_version,
+            args.chunk_by,
+            args.dask_workers,
+            granules_dir
+        )
 
     else:
         # Create a list of granules to catalog and store it in S3 bucket
