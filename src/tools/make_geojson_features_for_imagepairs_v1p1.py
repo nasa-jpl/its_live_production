@@ -272,11 +272,7 @@ class GranuleCatalog:
                                        scheduler="processes",
                                        num_workers=num_dask_workers)
 
-            for each_result in results[0]:
-                feature_list.append(each_result)
-
-            print(f"Feature_list: {feature_list}")
-
+            feature_list.extend(results[0])
             total_num_files -= num_tasks
             start += num_tasks
 
@@ -292,8 +288,6 @@ class GranuleCatalog:
 
         with s3.open(f"s3://{infilewithpath}", "rb") as ins3:
             inh5 = h5py.File(ins3, mode = 'r')
-            # inh5 = h5py.File(s3.open(f"s3://{infilewithpath}", "rb"), mode = 'r')
-            #     inh5 = h5py.File(ingeoimg.in_dir_path + '/' + ingeoimg.filename,mode='r')
             # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
             xvals = np.array(inh5.get('x'))
             yvals = np.array(inh5.get('y'))
