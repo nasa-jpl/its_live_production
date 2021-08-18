@@ -496,7 +496,7 @@ if __name__ == '__main__':
     parser.add_argument('-data_version',
                         default=None,
                         type=str,
-                        help='Data version to be recorded for each granule [%(default)d]. If none is provided, immediate parent directory of the granule is used as its version.')
+                        help='Data version to be recorded for each granule [%(default)s]. If none is provided, immediate parent directory of the granule is used as its version.')
 
     parser.add_argument('-w', '--dask_workers', type=int,
                         default=4,
