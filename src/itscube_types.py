@@ -41,6 +41,12 @@ class DataVars:
     AUTORIFT_SOFTWARE_VERSION = 'autoRIFT_software_version'
     AUTORIFT_PARAMETER_FILE   = 'autoRIFT_parameter_file'
 
+    # Datacube attributes to store skipped granule information
+    SKIP_EMPTY_DATA         = 'skipped_empty_data'
+    SKIP_DUPLICATE_MID_DATE = 'skipped_duplicate_middle_date'
+    SKIP_WRONG_PROJECTION   = 'skipped_wrong_projection'
+
+
     # Attributes that appear for multiple data variables
     MISSING_VALUE_ATTR         = 'missing_value'
     FILL_VALUE_ATTR            = '_FillValue'
@@ -73,7 +79,7 @@ class DataVars:
     COUNT_UNITS = 'count'
     BINARY_UNITS = 'binary'
 
-    # Original data variables and their attributes per ITS_LIVE granules.
+    # Original data variables and their a   ttributes per ITS_LIVE granules.
     V = 'v'
     # Attributes
     MAP_SCALE_CORRECTED = 'map_scale_corrected'
