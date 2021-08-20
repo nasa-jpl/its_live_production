@@ -1,6 +1,8 @@
 """
 ITSCube class creates ITS_LIVE datacube based on target projection,
-bounding polygon and date period provided by the caller.
+bounding polygon and datetime period provided by the caller.
+
+Authors: Masha Liukis
 """
 import copy
 from datetime import datetime, timedelta
@@ -15,7 +17,6 @@ import shutil
 import timeit
 import zarr
 
-# Extra installed packages
 import dask
 # from dask.distributed import Client, performance_report
 from dask.diagnostics import ProgressBar
@@ -29,7 +30,7 @@ import xarray as xr
 import itslive_utils
 from grid import Bounds, Grid
 from itscube_types import Coords, DataVars
-import zarr_to_netcdf
+# import zarr_to_netcdf
 
 # Set up logging
 logging.basicConfig(
@@ -56,7 +57,7 @@ Y_ATTRS = {
 class ITSCube:
     """
     Class to build ITS_LIVE cube: time series of velocity pairs within a
-    polygon of interest.
+    polygon of interest for specified time period.
     """
     # Current ITSCube software version
     Version = '1.0'
@@ -78,7 +79,7 @@ class ITSCube:
     # S3 bucket location of the file is 's3://its-live-data.jpl.nasa.gov/velocity_image_pair/landsat/v00.0/32628/file.nc'
     PATH_URL = ".s3.amazonaws.com"
 
-    # Engine to read xarray data into from NetCDF file
+    # Engine to read xarray data into from NetCDF filecompression
     NC_ENGINE = 'h5netcdf'
 
     # Date format as it appears in granules filenames:
@@ -99,9 +100,9 @@ class ITSCube:
         Initialize object.
 
         polygon: tuple
-            Polygon for the tile.
+            Polygon for the datacube tile.
         projection: str
-            Projection in which polygon is defined.
+            Projection in which polygon/datacube is defined.
         """
         self.logger = logging.getLogger("datacube")
         self.logger.info(f"Polygon: {polygon}")
@@ -158,16 +159,20 @@ class ITSCube:
         # Constructed cube
         self.layers = None
 
+        # Dates when datacube was created or updated
+        self.date_created = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
+        self.date_updated = None
+
     def clear_vars(self):
         """
         Clear current set of cube layers.
         """
         self.ds = None
-
         self.layers = None
         self.dates = []
         self.urls = []
 
+        # Call Python's garbage collector
         gc.collect()
 
         self.ds = []
@@ -207,12 +212,12 @@ class ITSCube:
 
         if len(found_urls) == 0:
             self.logger.info(f"No granules are found for the search API parameters: {params}, " \
-                              "skipping datacube generation")
+                              "skipping datacube generation or update")
             return found_urls
 
         # Number of granules to examine is specified
-        # TODO: just a workaround for now as it's very slow to examine all granules
-        #       sequentially at this point.
+        # ATTN: just a way to limit number of granules to be considered for the
+        #       datacube generation (testing or debugging only).
         if num_granules:
             found_urls = found_urls[:num_granules]
             self.logger.info(f"Examining only first {len(found_urls)} out of {total_num} found granules")
@@ -221,7 +226,8 @@ class ITSCube:
 
     def skip_duplicate_granules(self, found_urls):
         """
-        Skip duplicate granules (the ones that have earlier processing date(s)).
+        Skip duplicate granules (the ones that have earlier processing date(s))
+        for the same path row granule.
         """
         self.num_urls_from_api = len(found_urls)
 
@@ -314,6 +320,34 @@ class ITSCube:
 
         return granules
 
+    def exclude_processed_granules(self, found_urls: list, cube_ds: xr.Dataset):
+        """
+        Exclude datacube granules, and all skipped granules in existing datacube
+        (empty data, wrong projection, duplicate middle date) from found granules.
+        """
+        self.logger.info("Excluding known to datacube granules...")
+        cube_granules = cube_ds[DataVars.URL].values.tolist()
+        granules = set(found_urls).difference(cube_granules)
+
+        # Remove known empty granules from found urls
+        self.skipped_empty_granules = json.loads(cube_ds.attrs[DataVars.SKIP_EMPTY_DATA])
+        granules = granules.difference(self.skipped_empty_granules)
+
+        # Remove known duplicate middle date granules from found urls
+        self.skipped_double_granules = json.loads(cube_ds.attrs[DataVars.SKIP_DUPLICATE_MID_DATE])
+        granules = granules.difference(self.skipped_double_granules)
+
+        # Remove known wrong projection granules from found urls
+        self.skipped_proj_granules = json.loads(cube_ds.attrs[DataVars.SKIP_WRONG_PROJECTION])
+        known_granules = []
+        for each in self.skipped_proj_granules:
+            known_granules.extend(self.skipped_proj_granules[each])
+
+        granules = list(granules.difference(known_granules))
+        self.logger.info(f"Leaving {len(granules)} granules...")
+
+        return granules
+
     @staticmethod
     def get_tokens_from_filename(filename):
         """
@@ -357,73 +391,115 @@ class ITSCube:
     @staticmethod
     def init_output_store(output_dir: str):
         """
-        Initialize output store to the datacube. The method detects if S3 bucket
-        store or local Zarr archive is requested. It removes existing local
-        store if it exists already, and opens file-like access to the Zarr store
-        in the S3 bucket.
+        Initialize output store for the datacube. It removes existing local
+        store if it exists already. This method is useful only if create_* methods
+        are called directly by the user - to guarantee that datacube is created
+        from the scratch.
         """
-        cube_store = output_dir
-        s3_out = None
-        if ITSCube.S3_PREFIX not in output_dir:
-            # If writing to the local directory, remove datacube store if it exists
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
+        # Remove datacube store if it exists
+        if os.path.exists(output_dir):
+            logging.info(f"Removing existing {output_dir}")
+            shutil.rmtree(output_dir)
+
+        return
+
+    @staticmethod
+    def exists(output_dir: str, s3_bucket: str):
+        """
+        Check if datacube exists. The datacube can be on a local file system or
+        in AWS S3 bucket.
+        """
+        cube_exists = False
+
+        # Check if the datacube is in the S3 bucket
+        if len(s3_bucket):
+            cube_path = os.path.join(s3_bucket, output_dir)
+            s3 = s3fs.S3FileSystem(anon=True)
+            cube_glob = s3.glob(cube_path)
+            if len(cube_glob):
+                cube_exists = True
 
         else:
-            # When writing to the AWS S3 bucket, assume it's a new datacube.
-            # Open S3FS access to S3 bucket with output granules
-            s3_out = s3fs.S3FileSystem()
-            cube_store = s3fs.S3Map(root=output_dir, s3=s3_out, check=False)
-            # cube_store = s3_out.open(output_dir, mode='wb')
+            if os.path.exists(output_dir):
+                cube_exists = True
 
-        # Don't use s3_out, keep it in scope only to guarantee valid file system
-        # like access.
-        return s3_out, cube_store
+        return cube_exists
 
-    def init_input_store(self, output_dir: str):
+    @staticmethod
+    def init_input_store(input_dir: str, s3_bucket: str):
         """
         Read datacube from provided store. The method detects if S3 bucket
-        store or local Zarr archive is provided. It reads xarray.Dataset from
-        provided the Zarr store from local filesystem or S3 bucket.
+        store or local Zarr archive is provided, and reads xarray.Dataset from
+        the Zarr store.
         """
         ds_from_zarr = None
         s3_in = None
+        cube_store = None
 
-        if ITSCube.S3_PREFIX not in output_dir:
-            # If writing to the local directory, check if datacube store exists
-            if os.path.exists(output_dir):
+        if len(s3_bucket) == 0:
+            # If reading from the local directory, check if datacube store exists
+            if os.path.exists(input_dir):
+                logging.info(f"Reading existing {input_dir}")
                 # Read dataset in
-                ds_from_zarr = xr.open_zarr(output_dir, decode_timedelta=False)
+                ds_from_zarr = xr.open_zarr(input_dir, decode_timedelta=False, consolidated=True)
 
         else:
             # When datacube is in the AWS S3 bucket, check if it exists.
-            file_list = s3.glob(output_dir)
-            if len(file_list) != 0:
+            cube_path = os.path.join(s3_bucket, input_dir)
+            s3_in = s3fs.S3FileSystem(anon=True)
+            cube_glob = s3.glob(cube_path)
+            if len(cube_glob):
+                logging.info(f"Reading exiting {cube_path}")
                 # Open S3FS access to S3 bucket with output granules
-                s3_in = s3fs.S3FileSystem(anon=True)
-                cube_store = s3fs.S3Map(root=output_dir, s3=s3_out, check=False)
-                ds_from_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr')
+                cube_store = s3fs.S3Map(root=cube_path, s3=s3_in, check=False)
+                ds_from_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True)
 
-        if ds_from_zarr is not None:
-            self.updated_datacube_filename = 'local_' + os.path.basename(output_dir)
+        if ds_from_zarr is None:
+            raise RuntimeError(f"Provided input datacube {input_dir} does not exist (s3={s3_bucket})")
 
-        # Don't use s3_in, keep it in scope only to guarantee valid file system
-        # like access.
-        return s3_in, ds_from_zarr
+        # Don't use cube_store - keep it in scope only to guarantee valid
+        # file-like access.
+        return s3_in, cube_store, ds_from_zarr
 
-    def create(self, api_params: dict, output_dir: str, num_granules=None):
+    def create_or_update(self, api_params: dict, output_dir: str, output_bucket: str, num_granules=None):
         """
-        Create velocity pair cube.
+        Create new or update existing datacube.
+        """
+        self.logger.info(f"ITS_LIVE search API parameters: {api_params}")
+
+        if ITSCube.exists(output_dir, output_bucket):
+            # Datacube exists, update
+            self.update_parallel(api_params, output_dir, output_bucket, num_granules)
+
+        else:
+            # Create new datacube
+            self.create_parallel(api_params, output_dir, output_bucket, num_granules)
+
+    def update_parallel(self, api_params: dict, output_dir: str, output_bucket: str, num_granules=None):
+        """
+        Update velocity pair datacube by reading and pre-processing new cube layers in parallel.
 
         api_params: dict
             Search API required parameters.
+        output_dir: str
+            Local datacube Zarr store to write updated datacube to.
+        output_bucket: str
+            AWS S3 bucket if datacube Zarr store resides in the cloud.
         num_granules: int
             Number of first granules to examine.
             TODO: This is a temporary solution to a very long time to open remote granules.
                   Should not be used when running the code in production mode.
         """
-        ITSCube.show_memory_usage('in create()')
-        s3_out, cube_store = ITSCube.init_output_store(output_dir)
+        ITSCube.show_memory_usage('update()')
+        s3, cube_store_in, cube_ds = ITSCube.init_input_store(output_dir, output_bucket)
+
+        self.date_updated = self.date_created
+        self.date_created = cube_ds.attrs['date_created']
+
+        if s3 is None:
+            # If input datacube is on the local filesystem, open S3FS for reading
+            # granules from S3 bucket
+            s3 = s3fs.S3FileSystem(anon=True)
 
         self.clear()
 
@@ -431,49 +507,108 @@ class ITSCube:
         if len(found_urls) == 0:
             return found_urls
 
-        # Open S3FS access to public S3 bucket with input granules
-        s3 = s3fs.S3FileSystem(anon=True)
+        # Remove already processed granules
+        found_urls = self.exclude_processed_granules(found_urls, cube_ds)
+        if len(found_urls) == 0:
+            return found_urls
 
-        is_first_write = True
-        for each_url in tqdm(found_urls, ascii=True, desc='Reading and processing S3 granules'):
+        # If datacube resides in AWS S3 bucket, copy it locally - initial datacube to begin with
+        if not os.path.exists(output_dir):
+            # Copy datacube locally using AWS CLI to take advantage of parallel copy:
+            # have to include "max_concurrent_requests" option for the
+            # configuration in ~/.aws/config
+            # [default]
+            # region = us-west-2
+            # output = json
+            # s3 =
+            #    max_concurrent_requests = 100
+            #
+            env_copy = os.environ.copy()
+            source_url = os.path.join(output_bucket, output_dir)
+            if not source_url.beginswith(ITSCube.S3_PREFIX):
+                source_url = ITSCube.S3_PREFIX + source_url
 
-            s3_path = each_url.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
-            s3_path = s3_path.replace(ITSCube.PATH_URL, '')
+            command_line = [
+                "aws", "s3", "cp", "--recursive",
+                source_url,
+                output_dir
+            ]
 
-            self.logger.info(f"Reading {s3_path}...")
-            ITSCube.show_memory_usage(f'before reading {s3_path}')
-            # Attempt to fix locked up s3fs==0.5.1 on Linux (AWS Batch processing)
-            # s3 = s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
+            msgs.append(' '.join(command_line))
 
-            with s3.open(s3_path, mode='rb') as fhandle:
-                with xr.open_dataset(fhandle, engine=ITSCube.NC_ENGINE) as ds:
-                    self.logger.info(f"Preprocess dataset from {s3_path}...")
-                    results = self.preprocess_dataset(ds, each_url)
-                    ITSCube.show_memory_usage('after reading {s3_path}')
+            command_return = subprocess.run(
+                command_line,
+                env=env_copy,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
+            if command_return.returncode != 0:
+                raise RuntimeError(f"Failed to copy {source_url} to {output_store}: {command_return.stdout}")
 
-                    self.logger.info(f"Add layer for {s3_path}...")
-                    self.add_layer(*results)
+            # zarr_encoding = copy.deepcopy(zarr_to_netcdf.ENCODING)
+            # compression = {"compressor": zarr.Blosc(cname='zlib', clevel=2, shuffle=1)}
+            #
+            # for each in zarr_to_netcdf.ENCODE_DATA_VARS:
+            #     zarr_encoding.setdefault(each, {}).update(compression)
+            #
+            # tmp_output_dir = f"{output_dir}.original"
+            # self.logger.info(f"Moving original {output_dir} to {tmp_output_dir}")
+            # os.renames(output_dir, tmp_output_dir)
+            #
+            # self.logger.info(f"Saving updated {output_dir}")
+            # cube_ds.to_zarr(output_dir, encoding=zarr_encoding, consolidated=True)
+            #
+            # self.logger.info(f"Removing original {tmp_output_dir}")
+            # shutil.rmtree(tmp_output_dir)
+            # cube_ds = None
+            # cube_store = None
+            # gc.collect()
 
-            ITSCube.show_memory_usage(f'after adding layer for {s3_path}')
+        is_first_write = False
+        start = 0
+        num_to_process = len(found_urls)
 
-            # Check if need to write to the file accumulated number of granules
-            if len(self.urls) == ITSCube.NUM_GRANULES_TO_WRITE:
-                wrote_layers = self.combine_layers(cube_store, is_first_write)
-                if is_first_write and wrote_layers:
-                    is_first_write = False
+        while num_to_process > 0:
+            # How many tasks to process at a time
+            num_tasks = ITSCube.NUM_GRANULES_TO_WRITE if num_to_process > ITSCube.NUM_GRANULES_TO_WRITE else num_to_process
+            tasks = [dask.delayed(self.read_s3_dataset)(each_file, s3) for each_file in found_urls[start:start+num_tasks]]
+            self.logger.info(f"Processing {len(tasks)} tasks out of {num_to_process} remaining")
 
-        # Check if there are remaining layers to be written to the file
-        if len(self.urls):
-            self.combine_layers(cube_store, is_first_write)
+            results = None
+            with ProgressBar():  # Does not work with Client() scheduler
+                # If to collect performance report (need to define global Client - see above)
+                # with performance_report(filename=f"dask-report-{num_granules}.html"):
+                #     results = dask.compute(tasks)
+                results = dask.compute(
+                    tasks,
+                    scheduler=ITSCube.DASK_SCHEDULER,
+                    num_workers=ITSCube.NUM_THREADS
+                )
 
-        # Report statistics for skipped granules
-        self.format_stats()
+            del tasks
+            gc.collect()
+
+            for each_ds in results[0]:
+                self.add_layer(*each_ds)
+
+            del results
+            gc.collect()
+
+            wrote_layers = self.combine_layers(output_dir, is_first_write)
+            if is_first_write and wrote_layers:
+                is_first_write = False
+
+            self.format_stats()
+
+            num_to_process -= num_tasks
+            start += num_tasks
 
         return found_urls
 
-    def create_parallel(self, api_params: dict, output_dir: str, num_granules=None):
+    def create_parallel(self, api_params: dict, output_dir: str, output_bucket: str, num_granules=None):
         """
-        Create velocity pair cube by reading and pre-processing cube layers in parallel.
+        Create velocity pair datacube by reading and pre-processing cube layers in parallel.
 
         api_params: dict
             Search API required parameters.
@@ -482,7 +617,8 @@ class ITSCube:
             TODO: This is a temporary solution to a very long time to open remote granules. Should not be used
                   when running the code at AWS.
         """
-        s3_out, cube_store = ITSCube.init_output_store(output_dir)
+        ITSCube.show_memory_usage('create()')
+        ITSCube.init_output_store(output_dir)
 
         self.clear()
         found_urls = self.request_granules(api_params, num_granules)
@@ -528,7 +664,7 @@ class ITSCube:
             del results
             gc.collect()
 
-            wrote_layers = self.combine_layers(cube_store, is_first_write)
+            wrote_layers = self.combine_layers(output_dir, is_first_write)
             if is_first_write and wrote_layers:
                 is_first_write = False
 
@@ -539,26 +675,79 @@ class ITSCube:
 
         return found_urls
 
-    @staticmethod
-    def ds_to_netcdf(ds: xr.Dataset, filename: str):
+    def create_sequential(self, api_params: dict, output_dir: str, num_granules=None):
         """
-        Write datacube xarray.Dataset to the NetCDF file.
-        """
-        if ds is not None:
-            ds.to_netcdf(filename, engine=ITSCube.NC_ENGINE, unlimited_dims=(Coords.MID_DATE))
+        Create velocity pair cube.
+        This is non-parallel implementation and used for debugging only.
 
-        else:
-            raise RuntimeError(f"Datacube data does not exist.")
+        api_params: dict
+            Search API required parameters.
+        output_dir: str
+            Zarr store to write datacube to.
+        num_granules: int
+            Number of first granules to examine.
+            TODO: This is a temporary solution to a very long time to open remote granules.
+                  Should not be used when running the code in production mode.
+        """
+        ITSCube.show_memory_usage('create()')
+        ITSCube.init_output_store(output_dir)
+
+        self.clear()
+
+        found_urls = self.request_granules(api_params, num_granules)
+        if len(found_urls) == 0:
+            return found_urls
+
+        # Open S3FS access to public S3 bucket with input granules
+        s3 = s3fs.S3FileSystem(anon=True)
+
+        is_first_write = True
+        for each_url in tqdm(found_urls, ascii=True, desc='Reading and processing S3 granules'):
+
+            s3_path = each_url.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
+            s3_path = s3_path.replace(ITSCube.PATH_URL, '')
+
+            self.logger.info(f"Reading {s3_path}...")
+            ITSCube.show_memory_usage(f'before reading {s3_path}')
+            # Attempt to fix locked up s3fs==0.5.1 on Linux (AWS Batch processing)
+            # s3 = s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
+
+            with s3.open(s3_path, mode='rb') as fhandle:
+                with xr.open_dataset(fhandle, engine=ITSCube.NC_ENGINE) as ds:
+                    self.logger.info(f"Preprocess dataset from {s3_path}...")
+                    results = self.preprocess_dataset(ds, each_url)
+                    ITSCube.show_memory_usage('after reading {s3_path}')
+
+                    self.logger.info(f"Add layer for {s3_path}...")
+                    self.add_layer(*results)
+
+            ITSCube.show_memory_usage(f'after adding layer for {s3_path}')
+
+            # Check if need to write to the file accumulated number of granules
+            if len(self.urls) == ITSCube.NUM_GRANULES_TO_WRITE:
+                wrote_layers = self.combine_layers(output_dir, is_first_write)
+                if is_first_write and wrote_layers:
+                    is_first_write = False
+
+        # Check if there are remaining layers to be written to the file
+        if len(self.urls):
+            self.combine_layers(output_dir, is_first_write)
+
+        # Report statistics for skipped granules
+        self.format_stats()
+
+        return found_urls
 
     def create_from_local_no_api(self, output_dir: str, dirpath='data', num_granules=None):
         """
         Create velocity cube by accessing local data stored in "dirpath" directory.
+        This is non-parallel implementation and used for debugging only.
 
         dirpath: str
             Directory that stores granules files. Default is 'data' sub-directory
             accessible from the directory the code is running from.
         """
-        s3_out, cube_store = ITSCube.init_output_store(output_dir)
+        ITSCube.init_output_store(output_dir)
 
         self.clear()
 
@@ -582,13 +771,13 @@ class ITSCube:
 
                 # Check if need to write to the file accumulated number of granules
                 if len(self.urls) == ITSCube.NUM_GRANULES_TO_WRITE:
-                    wrote_layers = self.combine_layers(cube_store, is_first_write)
+                    wrote_layers = self.combine_layers(output_dir, is_first_write)
                     if is_first_write and wrote_layers:
                         is_first_write = False
 
         # Check if there are remaining layers to be written to the file
         if len(self.urls):
-            self.combine_layers(cube_store, is_first_write)
+            self.combine_layers(output_dir, is_first_write)
 
         self.format_stats()
 
@@ -597,12 +786,13 @@ class ITSCube:
     def create_from_local_parallel_no_api(self, output_dir: str, dirpath='data', num_granules=None):
         """
         Create velocity cube from local data stored in "dirpath" in parallel.
+        This is used for debugging only.
 
         dirpath: str
             Directory that stores granules files. Default is 'data' sub-directory
             accessible from the directory the code is running from.
         """
-        s3_out, cube_store = ITSCube.init_output_store(output_dir)
+        ITSCube.init_output_store(output_dir)
 
         self.clear()
         found_urls = glob.glob(dirpath + os.sep + '*.nc')
@@ -638,7 +828,7 @@ class ITSCube:
             for each_ds in results[0]:
                 self.add_layer(*each_ds)
 
-            wrote_layers = self.combine_layers(cube_store, is_first_write)
+            wrote_layers = self.combine_layers(output_dir, is_first_write)
             if is_first_write and wrote_layers:
                 is_first_write = False
 
@@ -1116,7 +1306,7 @@ class ITSCube:
         #     self.layers[var_name].attrs[DataVars.GRID_MAPPING] = ds_grid_mapping_value
 
     @staticmethod
-    def show_memory_usage(self, msg: str=''):
+    def show_memory_usage(msg: str=''):
         """
         Display current memory usage.
         """
@@ -1124,11 +1314,11 @@ class ITSCube:
         usage = psutil.virtual_memory()
 
         # Use standard logging to be able to use the method without ITSCube object
+        memory_msg = 'Memory '
         if len(msg):
-            logging.info(f"Memory {msg}: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
+            memory_msg += msg
 
-        else:
-            logging.info(f"Memory: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
+        logging.info(f"{memory_msg}: total={usage.total/_GB}Gb used={usage.used/_GB}Gb available={usage.available/_GB}Gb")
 
     def combine_layers(self, output_dir, is_first_write=False):
         """
@@ -1149,8 +1339,6 @@ class ITSCube:
 
         start_time = timeit.default_timer()
         mid_date_coord = pd.Index(self.dates, name=Coords.MID_DATE)
-
-        now_date = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
 
         self.layers = xr.Dataset(
             data_vars = {DataVars.URL: ([Coords.MID_DATE], self.urls)},
@@ -1184,8 +1372,8 @@ class ITSCube:
                 'title': 'ITS_LIVE datacube of image_pair velocities',
                 'author': 'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)',
                 'institution': 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology',
-                'date_created': now_date,
-                'date_updated': now_date,
+                'date_created': self.date_created,
+                'date_updated': self.date_updated if self.date_updated is not None else self.date_created,
                 'datacube_software_version': ITSCube.Version,
                 'GDAL_AREA_OR_POINT': 'Area',
                 'projection': str(self.projection),
@@ -1481,6 +1669,7 @@ class ITSCube:
                     DataVars.DESCRIPTION_ATTR: DataVars.ImgPairInfo.DESCRIPTION[each]
                 }
             )
+
             if each in DataVars.ImgPairInfo.UNITS:
                 # Units attribute exists for the variable
                 self.layers[each].attrs[DataVars.UNITS] = DataVars.ImgPairInfo.UNITS[each]
@@ -1591,8 +1780,7 @@ class ITSCube:
             encoding_settings = {}
             for each in [DataVars.INTERP_MASK,
                          DataVars.CHIP_SIZE_HEIGHT,
-                         DataVars.CHIP_SIZE_WIDTH,
-                         DataVars.FLAG_STABLE_SHIFT]:
+                         DataVars.CHIP_SIZE_WIDTH]:
                 encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE}
 
             # Treat it outside of "for" loop
@@ -1655,6 +1843,7 @@ class ITSCube:
                          DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
                          DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE,
                          DataVars.ImgPairInfo.MISSION_IMG1,
+                         DataVars.ImgPairInfo.MISSION_IMG2,
                          DataVars.ImgPairInfo.SENSOR_IMG1,
                          DataVars.ImgPairInfo.SENSOR_IMG2]:
                 encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
@@ -1669,7 +1858,7 @@ class ITSCube:
                          Coords.MID_DATE]:
                 encoding_settings.setdefault(each, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
-            # self.logger.info(f"Encoding writing to Zarr: {json.dumps(encoding_settings, indent=4)}")
+            self.logger.info(f"Encoding writing to Zarr: {encoding_settings}")
             # self.logger.info(f"Data variables to Zarr:   {json.dumps(list(self.layers.keys()), indent=4)}")
 
             # This is first write, create Zarr store
@@ -1765,9 +1954,9 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--threads', type=int, default=4,
                         help='number of Dask workers to use for parallel processing [%(default)d].')
     parser.add_argument('-s', '--scheduler', type=str, default="processes",
-                        help="Dask scheduler to use. One of ['threads', 'processes'] (effective only when -p option is specified) [%(default)s].")
+                        help="Dask scheduler to use. One of ['threads', 'processes'] (effective only when --parallel option is specified) [%(default)s].")
     parser.add_argument('-p', '--parallel', action='store_true',
-                        help='enable parallel processing')
+                        help='enable sequential processing, default is to process all granules in parallel')
     parser.add_argument('-n', '--numberGranules', type=int, required=False, default=None,
                         help="number of ITS_LIVE granules to consider for the cube (due to runtime limitations). "
                              " If none is provided, process all found granules.")
@@ -1776,7 +1965,7 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--outputStore', type=str, default="cubedata.zarr",
                         help="Zarr output directory to write cube data to [%(default)s].")
     parser.add_argument('-b', '--outputBucket', type=str, default="",
-                        help="S3 bucket to copy datacube in Zarr, NetCDF formats and granule logs to [%(default)s].")
+                        help="S3 bucket to copy Zarr format of the datacube to [%(default)s].")
     parser.add_argument('-c', '--chunks', type=int, default=500,
                         help="Number of granules to write at a time [%(default)d].")
     parser.add_argument('--targetProjection', type=str, required=True,
@@ -1837,6 +2026,7 @@ if __name__ == '__main__':
     # Create cube object
     cube = ITSCube(polygon, projection)
 
+    # Record used package versions
     cube.logger.info(f"Command: {sys.argv}")
     cube.logger.info(f"{xr.show_versions()}")
     cube.logger.info(f"s3fs: {s3fs.__version__}")
@@ -1849,28 +2039,32 @@ if __name__ == '__main__':
     }
     cube.logger.info("ITS_LIVE API parameters: %s" %API_params)
 
-    if not args.parallel:
-        # Process ITS_LIVE granules sequentially, look at provided number of granules only
-        cube.logger.info("Processing granules sequentially...")
-        if args.localPath:
-            # Granules are downloaded locally
-            cube.create_from_local_no_api(args.outputStore, args.localPath, args.numberGranules)
+    cube.create_or_update(API_params, args.outputStore, args.outputBucket, args.numberGranules)
 
-        else:
-            cube.create(API_params, args.outputStore, args.numberGranules)
+    # This is for debugging only to be able to run non-parallel processing
+    # if not args.parallel:
+    #     # Process ITS_LIVE granules sequentially, look at provided number of granules only
+    #     cube.logger.info("Processing granules sequentially...")
+    #     if args.localPath:
+    #         # Granules are downloaded locally
+    #         cube.create_from_local_no_api(args.outputStore, args.localPath, args.numberGranules)
+    #
+    #     else:
+    #         cube.create(API_params, args.outputStore, args.numberGranules)
+    #
+    # else:
+    #     # Process ITS_LIVE granules in parallel, look at 100 first granules only
+    #     cube.logger.info("Processing granules in parallel...")
+    #     if args.localPath:
+    #         # Granules are downloaded locally
+    #         cube.create_from_local_parallel_no_api(args.outputStore, args.localPath, args.numberGranules)
+    #
+    #     else:
+    #         cube.create_parallel(API_params, args.outputStore, args.numberGranules)
 
-    else:
-        # Process ITS_LIVE granules in parallel, look at 100 first granules only
-        cube.logger.info("Processing granules in parallel...")
-        if args.localPath:
-            # Granules are downloaded locally
-            cube.create_from_local_parallel_no_api(args.outputStore, args.localPath, args.numberGranules)
-
-        else:
-            cube.create_parallel(API_params, args.outputStore, args.numberGranules)
-
-    del cube
+    cube = None
     gc.collect()
+
     ITSCube.show_memory_usage('at the end of datacube generation')
 
     if os.path.exists(args.outputStore) and len(args.outputBucket):
@@ -1883,8 +2077,6 @@ if __name__ == '__main__':
         # nc_filename = args.outputStore.replace('.zarr', '.nc')
         # zarr_to_netcdf.main(args.outputStore, nc_filename, ITSCube.NC_ENGINE)
         # ITSCube.show_memory_usage('after Zarr to NetCDF conversion')
-        acl_option = '--'
-
         for each_input, each_output, recursive_option in zip(
             # [nc_filename, args.outputStore],
             # [nc_filename, args.outputStore],
