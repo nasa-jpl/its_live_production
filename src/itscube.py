@@ -447,7 +447,7 @@ class ITSCube:
             # When datacube is in the AWS S3 bucket, check if it exists.
             cube_path = os.path.join(s3_bucket, input_dir)
             s3_in = s3fs.S3FileSystem(anon=True)
-            cube_glob = s3.glob(cube_path)
+            cube_glob = s3_in.glob(cube_path)
             if len(cube_glob):
                 logging.info(f"Reading exiting {cube_path}")
                 # Open S3FS access to S3 bucket with output granules
@@ -525,7 +525,7 @@ class ITSCube:
             #
             env_copy = os.environ.copy()
             source_url = os.path.join(output_bucket, output_dir)
-            if not source_url.beginswith(ITSCube.S3_PREFIX):
+            if not source_url.startswith(ITSCube.S3_PREFIX):
                 source_url = ITSCube.S3_PREFIX + source_url
 
             command_line = [
@@ -534,7 +534,7 @@ class ITSCube:
                 output_dir
             ]
 
-            msgs.append(' '.join(command_line))
+            self.logger.info(' '.join(command_line))
 
             command_return = subprocess.run(
                 command_line,
