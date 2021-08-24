@@ -58,7 +58,7 @@ class FixDatacubes:
         self.bucket_dir = bucket_dir
 
         # Collect names for existing datacubes
-        logging.info(f"Reading {os.path.join(bucket, bucket_dir)}")
+        logging.info(f"Reading sub-directories of {os.path.join(bucket, bucket_dir)}")
 
         self.all_zarr_datacubes = []
         for each in self.s3.ls(os.path.join(bucket, bucket_dir)):
@@ -73,7 +73,9 @@ class FixDatacubes:
         for each in ENCODE_DATA_VARS:
             FixDatacubes.ZARR_ENCODING.setdefault(each, {}).update(compression)
 
-    def __call__(self, local_dir: str, chunk_size: int, num_dask_workers: int):
+        logging.info(f"Zarr encoding: {FixDatacubes.ZARR_ENCODING}")
+
+    def __call__(self, local_dir: str, num_dask_workers: int):
         """
         Fix mapping.GeoTransform of ITS_LIVE datacubes stored in S3 bucket.
         Strip suffix from original granules names as appear within 'granule_url'
@@ -92,7 +94,7 @@ class FixDatacubes:
             os.mkdir(local_dir)
 
         while num_to_fix > 0:
-            num_tasks = chunk_size if num_to_fix > chunk_size else num_to_fix
+            num_tasks = num_dask_workers if num_to_fix > num_dask_workers else num_to_fix
 
             logging.info(f"Starting tasks {start}:{start+num_tasks}")
             tasks = [dask.delayed(FixDatacubes.all)(each, self.bucket, local_dir, self.s3) for each in self.all_zarr_datacubes[start:start+num_tasks]]
@@ -121,6 +123,7 @@ class FixDatacubes:
 
         # get center lat lon
         with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True, chunks={'mid_date': 250}) as ds:
+            ds = ds.chunk({'mid_date': 250})
             # Fix mapping.GeoTransform
             ds_x = ds.x.values
             ds_y = ds.y.values
@@ -161,7 +164,7 @@ class FixDatacubes:
 
             # Write datacube locally, upload it to the bucket, remove file
             fixed_file = os.path.join(local_dir, cube_basename)
-            logging.info(f"Saving datacube to {fixed_file}")
+            msgs.append(f"Saving datacube to {fixed_file}")
             ds.to_zarr(fixed_file, encoding=FixDatacubes.ZARR_ENCODING, consolidated=True)
 
             if os.path.exists(fixed_file) and len(bucket_name):
@@ -199,7 +202,7 @@ class FixDatacubes:
 
             # Save fixed datacube to NetCDF format file
             fixed_file = fixed_file.replace('.zarr', '.nc')
-            logging.info(f"Saving datacube to {fixed_file}")
+            msgs.append(f"Saving datacube to {fixed_file}")
             convert(ds, fixed_file, 'h5netcdf')
 
             if os.path.exists(fixed_file) and len(bucket_name):
@@ -239,10 +242,6 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        '-c', '--chunk_size', type=int,
-        default=10, help='Number of datacubes to fix in parallel [%(default)d]'
-    )
-    parser.add_argument(
         '-b', '--bucket', type=str,
         default='its-live-data.jpl.nasa.gov',
         help='AWS S3 that stores ITS_LIVE granules to fix attributes for'
@@ -269,11 +268,7 @@ def main():
     logging.info(f"Args: {args}")
 
     fix_cubes = FixDatacubes(args.bucket, args.bucket_dir)
-    fix_cubes(
-        args.local_dir,
-        args.chunk_size,
-        args.dask_workers
-    )
+    fix_cubes(args.local_dir, args.dask_workers)
 
 
 if __name__ == '__main__':
