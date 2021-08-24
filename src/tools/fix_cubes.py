@@ -67,7 +67,7 @@ class FixDatacubes:
 
         logging.info(f"Found number of datacubes: {len(self.all_zarr_datacubes)}")
 
-    def debug__call__(self, local_dir: str, num_dask_workers: int):
+    def __call__(self, local_dir: str, num_dask_workers: int):
         """
         Fix mapping.GeoTransform of ITS_LIVE datacubes stored in S3 bucket.
         Strip suffix from original granules names as appear within 'granule_url'
@@ -87,10 +87,9 @@ class FixDatacubes:
 
         for each_cube in self.all_zarr_datacubes:
             logging.info(f"Starting {each_cube}")
-            msgs = FixDatacubes.all(each_cube, self.bucket, local_dir, self.s3)
-            logging.info("-->".join(msgs))
+            FixDatacubes.all(each_cube, self.bucket, local_dir, self.s3)
 
-    def __call__(self, local_dir: str, num_dask_workers: int):
+    def dont__call__(self, local_dir: str, num_dask_workers: int):
         """
         Fix mapping.GeoTransform of ITS_LIVE datacubes stored in S3 bucket.
         Strip suffix from original granules names as appear within 'granule_url'
@@ -132,7 +131,7 @@ class FixDatacubes:
         """
         Fix datacubes and copy them back to S3 bucket.
         """
-        msgs = [f'Processing {cube_url}']
+        logging.info(f'Processing {cube_url}')
 
         cube_store = s3fs.S3Map(root=cube_url, s3=s3_in, check=False)
 
@@ -178,7 +177,7 @@ class FixDatacubes:
 
             # Write datacube locally, upload it to the bucket, remove file
             fixed_file = os.path.join(local_dir, cube_basename)
-            msgs.append(f"Saving datacube to {fixed_file}")
+            logging.info(f"Saving datacube to {fixed_file}")
 
             ds.to_zarr(fixed_file, encoding=ENCODING_ZARR, consolidated=True)
 
@@ -205,7 +204,7 @@ class FixDatacubes:
                     "--acl", "bucket-owner-full-control"
                 ]
 
-                msgs.append(' '.join(command_line))
+                logging.info(' '.join(command_line))
 
                 command_return = subprocess.run(
                     command_line,
@@ -215,14 +214,14 @@ class FixDatacubes:
                     stderr=subprocess.STDOUT
                 )
                 if command_return.returncode != 0:
-                    msgs.append(f"ERROR: Failed to copy {fixed_file} to {target_url}: {command_return.stdout}")
+                    logging.info(f"ERROR: Failed to copy {fixed_file} to {target_url}: {command_return.stdout}")
 
-                msgs.append(f"Removing local {fixed_file}")
+                logging.info(f"Removing local {fixed_file}")
                 shutil.rmtree(fixed_file)
 
             # Save fixed datacube to NetCDF format file
             fixed_file = fixed_file.replace('.zarr', '.nc')
-            msgs.append(f"Saving datacube to {fixed_file}")
+            logging.info(f"Saving datacube to {fixed_file}")
             convert(ds, fixed_file, 'h5netcdf')
 
             if os.path.exists(fixed_file) and len(bucket_name):
@@ -238,7 +237,7 @@ class FixDatacubes:
                     "--acl", "bucket-owner-full-control"
                 ]
 
-                msgs.append(' '.join(command_line))
+                logging.info(' '.join(command_line))
 
                 command_return = subprocess.run(
                     command_line,
@@ -248,12 +247,12 @@ class FixDatacubes:
                     stderr=subprocess.STDOUT
                 )
                 if command_return.returncode != 0:
-                    msgs.append(f"ERROR: Failed to copy {fixed_file} to {cube_url_nc}: {command_return.stdout}")
+                    logging.info(f"ERROR: Failed to copy {fixed_file} to {cube_url_nc}: {command_return.stdout}")
 
-                msgs.append(f"Removing local {fixed_file}")
+                logging.info(f"Removing local {fixed_file}")
                 os.unlink(fixed_file)
 
-            return msgs
+            return
 
 def main():
     parser = argparse.ArgumentParser(
