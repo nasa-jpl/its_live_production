@@ -46,6 +46,7 @@ class FixDatacubes:
     # Suffix to remove in original granule URLs
     SUFFIX_TO_REMOVE = '_IL_ASF_OD.nc'
     SUFFIX_TO_USE = '.nc'
+    S3_PREFIX = 's3://'
 
     # Encoding to use per each datacube format
     ZARR_ENCODING = {}
@@ -203,10 +204,15 @@ class FixDatacubes:
                 # zarr_to_netcdf.main(args.outputStore, nc_filename, ITSCube.NC_ENGINE)
                 # ITSCube.show_memory_usage('after Zarr to NetCDF conversion')
                 env_copy = os.environ.copy()
+                target_url = cube_url
+
+                if not target_url.startswith(FixDatacubes.S3_PREFIX):
+                    target_url = FixDatacubes.S3_PREFIX + cube_url
+
                 command_line = [
                     "aws", "s3", "cp", "--recursive",
                     fixed_file,
-                    cube_url,
+                    target_url,
                     "--acl", "bucket-owner-full-control"
                 ]
 
@@ -220,7 +226,7 @@ class FixDatacubes:
                     stderr=subprocess.STDOUT
                 )
                 if command_return.returncode != 0:
-                    msgs.append(f"ERROR: Failed to copy {fixed_file} to {cube_url}: {command_return.stdout}")
+                    msgs.append(f"ERROR: Failed to copy {fixed_file} to {target_url}: {command_return.stdout}")
 
                 msgs.append(f"Removing local {fixed_file}")
                 shutil.rmtree(fixed_file)
@@ -234,7 +240,7 @@ class FixDatacubes:
                 # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
                 # resulting in as many error messages as there are files in Zarr store
                 # to copy
-                cube_url_nc = cube_url.replace('.zarr', '.nc')
+                cube_url_nc = target_url.replace('.zarr', '.nc')
                 env_copy = os.environ.copy()
                 command_line = [
                     "aws", "s3", "cp",
