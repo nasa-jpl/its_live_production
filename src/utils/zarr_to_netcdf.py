@@ -24,9 +24,8 @@ import zarr
 COMPRESSION_ZARR = zarr.Blosc(cname='zlib', clevel=2, shuffle=1)
 
 ENCODING_ZARR = {
-    # 'map_scale_corrected':       {'_FillValue': 0.0, 'dtype': 'byte'},
     'interp_mask':               {'_FillValue': 0.0, 'dtype': 'ubyte'},
-    'flag_stable_shift':         {'_FillValue': 0, 'dtype': 'long'},
+    'flag_stable_shift':         {'_FillValue': None, 'dtype': 'long'},
     'chip_size_height':          {'_FillValue': 0.0, 'dtype': 'ushort'},
     'chip_size_width':           {'_FillValue': 0.0, 'dtype': 'ushort'},
     'stable_count_slow':         {'_FillValue': None, 'dtype': 'long'},
@@ -102,7 +101,7 @@ ENCODING_ZARR = {
 ENCODING = {
     # 'map_scale_corrected':       {'_FillValue': 0.0, 'dtype': 'byte'},
     'interp_mask':               {'_FillValue': 0.0, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
-    'flag_stable_shift':         {'_FillValue': 0, 'dtype': 'long', "zlib": True, "complevel": 2, "shuffle": True},
+    'flag_stable_shift':         {'_FillValue': None, 'dtype': 'long', "zlib": True, "complevel": 2, "shuffle": True},
     'chip_size_height':          {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
     'chip_size_width':           {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
     'v_error':                   {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
