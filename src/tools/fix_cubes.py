@@ -2,8 +2,8 @@
 """
 Apply some fixed to existing ITS_LIVE datacubes that are residing in AWS S3 bucket:
 
-* Fix mapping.GeoTransform to capture origin of the datacube tile - not first
-  granule (each granule has different origin)
+* Fix mapping.GeoTransform to capture origin of the datacube tile (used metdata of
+  first granule (each granule has different origin))
 
 * Remove '_IL_ASF_OD' suffix from all granule URLs as used within the datacube
  (granules names are being fixed after the transfer)
@@ -257,21 +257,9 @@ def main():
         default='sandbox',
         help='Directory to store fixed granules before uploading them to the S3 bucket'
     )
-    parser.add_argument(
-        '-glob', action='store', type=str, default='*/*.nc',
-        help='Glob pattern for the granule search under "s3://bucket/dir/" [%(default)s]')
-
     parser.add_argument('-w', '--dask-workers', type=int,
         default=4,
         help='Number of Dask parallel workers [%(default)d]'
-    )
-    parser.add_argument('-s', '--start-cube', type=int,
-        default=0,
-        help='Index for the start granule to process (if previous processing terminated) [%(default)d]'
-    )
-    parser.add_argument('-i', '--include-prefix', type=str,
-        default=None,
-        help='Path prefix to include for processing[%(default)s]'
     )
 
     args = parser.parse_args()
@@ -284,8 +272,7 @@ def main():
     fix_cubes(
         args.local_dir,
         args.chunk_size,
-        args.dask_workers,
-        args.start_granule
+        args.dask_workers
     )
 
 
