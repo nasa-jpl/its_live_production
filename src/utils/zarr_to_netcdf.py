@@ -17,67 +17,76 @@ import subprocess
 import timeit
 import warnings
 import xarray as xr
+import zarr
 
-ENCODING = {
+
+# Encoding settings for Zarr format
+COMPRESSION_ZARR = zarr.Blosc(cname='zlib', clevel=2, shuffle=1)
+
+ENCODING_ZARR = {
     # 'map_scale_corrected':       {'_FillValue': 0.0, 'dtype': 'byte'},
     'interp_mask':               {'_FillValue': 0.0, 'dtype': 'ubyte'},
     'flag_stable_shift':         {'_FillValue': 0, 'dtype': 'long'},
     'chip_size_height':          {'_FillValue': 0.0, 'dtype': 'ushort'},
     'chip_size_width':           {'_FillValue': 0.0, 'dtype': 'ushort'},
-    'v_error':                   {'_FillValue': -32767.0, 'dtype': 'short'},
-    'v':                         {'_FillValue': -32767.0, 'dtype': 'short'},
-    'vx':                        {'_FillValue': -32767.0, 'dtype': 'short'},
-    'vx_error':                  {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vx_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vx_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vx_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vx_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vx_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vx_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vy':                        {'_FillValue': -32767.0, 'dtype': 'short'},
-    'vy_error':                  {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vy_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vy_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vy_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vy_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vy_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vy_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double'},
-    'va':                        {'_FillValue': -32767.0, 'dtype': 'short'},
-    'va_error':                  {'_FillValue': -32767.0, 'dtype': 'double'},
-    'va_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double'},
-    'va_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double'},
-    'va_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double'},
-    'va_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double'},
-    'va_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double'},
-    'va_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vr':                        {'_FillValue': -32767.0, 'dtype': 'short'},
-    'vr_error':                  {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vr_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vr_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vr_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vr_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vr_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vr_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vxp':                       {'_FillValue': -32767.0, 'dtype': 'short'},
-    'vxp_error':                 {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vxp_error_mask':            {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vxp_error_modeled':         {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vxp_error_slow':            {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vxp_stable_shift':          {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vxp_stable_shift_slow':     {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vxp_stable_shift_mask':     {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vyp':                       {'_FillValue': -32767.0, 'dtype': 'short'},
-    'vyp_error':                 {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vyp_error_mask':            {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vyp_error_modeled':         {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vyp_error_slow':            {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vyp_stable_shift':          {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vyp_stable_shift_slow':     {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vyp_stable_shift_mask':     {'_FillValue': -32767.0, 'dtype': 'double'},
-    'vp':                        {'_FillValue': -32767.0, 'dtype': 'short'},
-    'vp_error':                  {'_FillValue': -32767.0, 'dtype': 'short'},
+    'stable_count_slow':         {'_FillValue': None, 'dtype': 'long'},
+    'stable_count_mask':         {'_FillValue': None, 'dtype': 'long'},
+    'v_error':                   {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
+    'v':                         {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
+    'vx':                        {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
+    'vx_error':                  {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vx_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vx_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vx_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vx_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vx_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vx_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vy':                        {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
+    'vy_error':                  {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vy_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vy_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vy_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vy_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vy_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vy_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'va':                        {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
+    'va_error':                  {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'va_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'va_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'va_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'va_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'va_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'va_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vr':                        {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
+    'vr_error':                  {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vr_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vr_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vr_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vr_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vr_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vr_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vxp':                       {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
+    'vxp_error':                 {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vxp_error_mask':            {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vxp_error_modeled':         {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vxp_error_slow':            {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vxp_stable_shift':          {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vxp_stable_shift_slow':     {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vxp_stable_shift_mask':     {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vyp':                       {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
+    'vyp_error':                 {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vyp_error_mask':            {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vyp_error_modeled':         {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vyp_error_slow':            {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vyp_stable_shift':          {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vyp_stable_shift_slow':     {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vyp_stable_shift_mask':     {'_FillValue': -32767.0, 'dtype': 'double', 'compressor': COMPRESSION_ZARR},
+    'vp':                        {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
+    'vp_error':                  {'_FillValue': -32767.0, 'dtype': 'short', 'compressor': COMPRESSION_ZARR},
     'acquisition_date_img1':     {'_FillValue': None, 'units': 'days since 1970-01-01'},
     'acquisition_date_img2':     {'_FillValue': None, 'units': 'days since 1970-01-01'},
+    'date_center':               {'_FillValue': None, 'units': 'days since 1970-01-01'},
+    'mid_date':                  {'_FillValue': None, 'units': 'days since 1970-01-01'},
     'roi_valid_percentage':      {'_FillValue': None},
     'satellite_img1':            {'_FillValue': None},
     'satellite_img2':            {'_FillValue': None},
@@ -85,88 +94,87 @@ ENCODING = {
     'mission_img2':              {'_FillValue': None},
     'sensor_img1':               {'_FillValue': None},
     'sensor_img2':               {'_FillValue': None},
-    'date_center':               {'_FillValue': None, 'units': 'days since 1970-01-01'},
-    'mid_date':                  {'_FillValue': None, 'units': 'days since 1970-01-01'},
     'autoRIFT_software_version': {'_FillValue': None},
-    'stable_count_slow':         {'_FillValue': None, 'dtype': 'long'},
-    'stable_count_mask':         {'_FillValue': None, 'dtype': 'long'},
     'date_dt':                   {'_FillValue': None}
 }
 
-# Data variables that need to have compression
-ENCODE_DATA_VARS = [
-    'v',
-    'v_error',
-    'vx',
-    'vx_error',
-    'vx_error_mask',
-    'vx_error_modeled',
-    'vx_error_slow',
-    'vx_stable_shift',
-    'vx_stable_shift_slow',
-    'vx_stable_shift_mask',
-    # 'flag_stable_shift',
-    'vy',
-    'vy_error',
-    'vy_error_mask',
-    'vy_error_modeled',
-    'vy_error_slow',
-    'vy_stable_shift',
-    'vy_stable_shift_slow',
-    'vy_stable_shift_mask',
-    # 'chip_size_height',
-    # 'chip_size_width',
-    # 'interp_mask',
-    'va',
-    'va_error',
-    'va_error_mask',
-    'va_error_modeled',
-    'va_error_slow',
-    'va_stable_shift',
-    'va_stable_shift_slow',
-    'va_stable_shift_mask',
-    'vp',
-    'vp_error',
-    'vr',
-    'vr_error',
-    'vr_error_mask',
-    'vr_error_modeled',
-    'vr_error_slow',
-    'vr_stable_shift',
-    'vr_stable_shift_slow',
-    'vr_stable_shift_mask',
-    'vxp',
-    'vxp_error',
-    'vxp_error_mask',
-    'vxp_error_modeled',
-    'vxp_error_slow',
-    'vxp_stable_shift',
-    'vxp_stable_shift_slow',
-    'vxp_stable_shift_mask',
-    'vyp',
-    'vyp_error',
-    'vyp_error_mask',
-    'vyp_error_modeled',
-    'vyp_error_slow',
-    'vyp_stable_shift',
-    'vyp_stable_shift_slow',
-    'vyp_stable_shift_mask',
-    # 'mission_img1',
-    # 'sensor_img1',
-    # 'satellite_img1',
-    # 'acquisition_date_img1',
-    # 'mission_img2',
-    # 'sensor_img2',
-    # 'satellite_img2',
-    # 'acquisition_date_img2',
-    # 'date_dt',
-    # 'date_center',
-    # 'roi_valid_percentage',
-    # 'autoRIFT_software_version'
-]
-
-compression = {"zlib": True, "complevel": 2, "shuffle": True}
-
+# Encoding settings for NetCDF format
+ENCODING = {
+    # 'map_scale_corrected':       {'_FillValue': 0.0, 'dtype': 'byte'},
+    'interp_mask':               {'_FillValue': 0.0, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
+    'flag_stable_shift':         {'_FillValue': 0, 'dtype': 'long', "zlib": True, "complevel": 2, "shuffle": True},
+    'chip_size_height':          {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
+    'chip_size_width':           {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
+    'v_error':                   {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'v':                         {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'vx':                        {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_error':                  {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vy':                        {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_error':                  {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'va':                        {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'va_error':                  {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'va_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'va_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'va_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'va_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'va_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'va_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vr':                        {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'vr_error':                  {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vr_error_mask':             {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vr_error_modeled':          {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vr_error_slow':             {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vr_stable_shift':           {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vr_stable_shift_slow':      {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vr_stable_shift_mask':      {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vxp':                       {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'vxp_error':                 {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vxp_error_mask':            {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vxp_error_modeled':         {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vxp_error_slow':            {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vxp_stable_shift':          {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vxp_stable_shift_slow':     {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vxp_stable_shift_mask':     {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vyp':                       {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'vyp_error':                 {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vyp_error_mask':            {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vyp_error_modeled':         {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vyp_error_slow':            {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vyp_stable_shift':          {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vyp_stable_shift_slow':     {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vyp_stable_shift_mask':     {'_FillValue': -32767.0, 'dtype': 'double', "zlib": True, "complevel": 2, "shuffle": True},
+    'vp':                        {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'vp_error':                  {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+    'acquisition_date_img1':     {'_FillValue': None, 'units': 'days since 1970-01-01', "zlib": True, "complevel": 2, "shuffle": True},
+    'acquisition_date_img2':     {'_FillValue': None, 'units': 'days since 1970-01-01', "zlib": True, "complevel": 2, "shuffle": True},
+    'roi_valid_percentage':      {'_FillValue': None, "zlib": True, "complevel": 2, "shuffle": True},
+    'satellite_img1':            {'_FillValue': None, "zlib": True, "complevel": 2, "shuffle": True},
+    'satellite_img2':            {'_FillValue': None, "zlib": True, "complevel": 2, "shuffle": True},
+    'mission_img1':              {'_FillValue': None, "zlib": True, "complevel": 2, "shuffle": True},
+    'mission_img2':              {'_FillValue': None, "zlib": True, "complevel": 2, "shuffle": True},
+    'sensor_img1':               {'_FillValue': None, "zlib": True, "complevel": 2, "shuffle": True},
+    'sensor_img2':               {'_FillValue': None, "zlib": True, "complevel": 2, "shuffle": True},
+    'date_center':               {'_FillValue': None, 'units': 'days since 1970-01-01', "zlib": True, "complevel": 2, "shuffle": True},
+    'mid_date':                  {'_FillValue': None, 'units': 'days since 1970-01-01'},
+    'autoRIFT_software_version': {'_FillValue': None, "zlib": True, "complevel": 2, "shuffle": True},
+    'stable_count_slow':         {'_FillValue': None, 'dtype': 'long', "zlib": True, "complevel": 2, "shuffle": True},
+    'stable_count_mask':         {'_FillValue': None, 'dtype': 'long', "zlib": True, "complevel": 2, "shuffle": True},
+    'date_dt':                   {'_FillValue': None, "zlib": True, "complevel": 2, "shuffle": True},
+    'x':                         {'_FillValue': 0},
+    'y':                         {'_FillValue': 0}
+}
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                     datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
@@ -190,20 +198,15 @@ def convert(ds_zarr: xr.Dataset, output_file: str, nc_engine: str):
     """
     Store datacube to NetCDF format file.
     """
-    if 'stable_count' in ds_zarr:
-        ENCODING['stable_count'] = {'_FillValue': None, 'dtype': 'long'}
-
-    if 'map_scale_corrected' in ds_zarr:
-        ENCODE_DATA_VARS.append('map_scale_corrected')
-
-    # Set up compression for each of the data variables
-    for each in ENCODE_DATA_VARS:
-        ENCODING.setdefault(each, {}).update(compression)
-
-    # For Zarr->NetCDF have to specify _FillValue = None for x and y coords,
-    # otherwise _FillValue is added automatically
-    for each in ['x', 'y']:
-        ENCODING[each] = {'_FillValue': None}
+    # if 'stable_count' in ds_zarr:
+    #     ENCODING['stable_count'] = {'_FillValue': None, 'dtype': 'long'}
+    #
+    # if 'map_scale_corrected' in ds_zarr:
+    #     ENCODE_DATA_VARS.append('map_scale_corrected')
+    #
+    # # Set up compression for each of the data variables
+    # for each in ENCODE_DATA_VARS:
+    #     ENCODING.setdefault(each, {}).update(compression)
 
     start_time = timeit.default_timer()
     show_memory_usage('before to_netcdf()')
@@ -255,8 +258,6 @@ def main(input_file: str, output_file: str, nc_engine: str, chunks_size: int):
 
     # Don't decode time delta's as it does some internal conversion based on
     # provided units
-    # ds_zarr = xr.open_zarr(input_file, decode_timedelta=False, consolidated=True)
-
     time_delta = timeit.default_timer() - start_time
     logging.info(f"Read Zarr {input_file} (took {time_delta} seconds)")
 
