@@ -123,7 +123,6 @@ class FixDatacubes:
 
         # get center lat lon
         with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True, chunks={'mid_date': 250}) as ds:
-            ds = ds.chunk({'mid_date': 250})
             # Fix mapping.GeoTransform
             ds_x = ds.x.values
             ds_y = ds.y.values
@@ -165,6 +164,8 @@ class FixDatacubes:
             # Write datacube locally, upload it to the bucket, remove file
             fixed_file = os.path.join(local_dir, cube_basename)
             msgs.append(f"Saving datacube to {fixed_file}")
+
+            ds = ds.chunk({'mid_date': 250})
             ds.to_zarr(fixed_file, encoding=FixDatacubes.ZARR_ENCODING, consolidated=True)
 
             if os.path.exists(fixed_file) and len(bucket_name):
