@@ -90,9 +90,7 @@ ENCODING = {
     'autoRIFT_software_version': {'_FillValue': None},
     'stable_count_slow':         {'_FillValue': None, 'dtype': 'long'},
     'stable_count_mask':         {'_FillValue': None, 'dtype': 'long'},
-    'date_dt':                   {'_FillValue': None},
-    'x':                         {'_FillValue': None},
-    'y':                         {'_FillValue': None}
+    'date_dt':                   {'_FillValue': None}
 }
 
 # Data variables that need to have compression
@@ -201,6 +199,11 @@ def convert(ds_zarr: xr.Dataset, output_file: str, nc_engine: str):
     # Set up compression for each of the data variables
     for each in ENCODE_DATA_VARS:
         ENCODING.setdefault(each, {}).update(compression)
+
+    # For Zarr->NetCDF have to specify _FillValue = None for x and y coords,
+    # otherwise _FillValue is added automatically
+    for each in ['x', 'y']:
+        ENCODING[each] = {'_FillValue': None}
 
     start_time = timeit.default_timer()
     show_memory_usage('before to_netcdf()')
