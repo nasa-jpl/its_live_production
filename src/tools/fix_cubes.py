@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import s3fs
+import shutil
 import subprocess
 import xarray as xr
 import zarr
@@ -222,7 +223,7 @@ class FixDatacubes:
                     msgs.append(f"ERROR: Failed to copy {fixed_file} to {cube_url}: {command_return.stdout}")
 
                 msgs.append(f"Removing local {fixed_file}")
-                os.unlink(fixed_file)
+                shutil.rmtree(fixed_file)
 
             # Save fixed datacube to NetCDF format file
             fixed_file = fixed_file.replace('.zarr', '.nc')
