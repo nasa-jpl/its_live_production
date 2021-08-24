@@ -21,7 +21,7 @@ import xarray as xr
 ENCODING = {
     # 'map_scale_corrected':       {'_FillValue': 0.0, 'dtype': 'byte'},
     'interp_mask':               {'_FillValue': 0.0, 'dtype': 'ubyte'},
-    'flag_stable_shift':         {'dtype': 'long'},
+    'flag_stable_shift':         {'_FillValue': 0, 'dtype': 'long'},
     'chip_size_height':          {'_FillValue': 0.0, 'dtype': 'ushort'},
     'chip_size_width':           {'_FillValue': 0.0, 'dtype': 'ushort'},
     'v_error':                   {'_FillValue': -32767.0, 'dtype': 'short'},
