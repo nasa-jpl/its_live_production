@@ -30,7 +30,7 @@ import xarray as xr
 import zarr
 
 from itscube_types import DataVars, Coords
-from zarr_to_netcdf import ENCODING, ENCODE_DATA_VARS, convert
+from zarr_to_netcdf import ENCODING_ZARR, convert
 
 
 class FixDatacubes:
@@ -47,9 +47,6 @@ class FixDatacubes:
     SUFFIX_TO_REMOVE = '_IL_ASF_OD.nc'
     SUFFIX_TO_USE = '.nc'
     S3_PREFIX = 's3://'
-
-    # Encoding to use per each datacube format
-    ZARR_ENCODING = {}
 
     def __init__(self, bucket: str, bucket_dir: str):
         """
@@ -68,14 +65,7 @@ class FixDatacubes:
             cubes = [each_cube for each_cube in cubes if each_cube.endswith('.zarr')]
             self.all_zarr_datacubes.extend(cubes)
 
-        logging.info(f"Number of datacubes: {len(self.all_zarr_datacubes)}")
-
-        FixDatacubes.ZARR_ENCODING = copy.deepcopy(ENCODING)
-        compression = {"compressor": zarr.Blosc(cname='zlib', clevel=2, shuffle=1)}
-        for each in ENCODE_DATA_VARS:
-            FixDatacubes.ZARR_ENCODING.setdefault(each, {}).update(compression)
-
-        logging.info(f"Zarr encoding: {FixDatacubes.ZARR_ENCODING}")
+        logging.info(f"Found number of datacubes: {len(self.all_zarr_datacubes)}")
 
     def debug__call__(self, local_dir: str, num_dask_workers: int):
         """
@@ -146,7 +136,6 @@ class FixDatacubes:
 
         cube_store = s3fs.S3Map(root=cube_url, s3=s3_in, check=False)
 
-        # get center lat lon
         with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True, chunks={'mid_date': 250}) as ds:
             # Fix mapping.GeoTransform
             ds_x = ds.x.values
@@ -158,6 +147,7 @@ class FixDatacubes:
             half_x_cell = x_size/2.0
             half_y_cell = y_size/2.0
 
+            # Format cube's GeoTransform
             new_geo_transform_str = f"{ds_x[0] - half_x_cell} {x_size} 0 {ds_y[0] - half_y_cell} 0 {y_size}"
             ds.mapping.attrs['GeoTransform'] = new_geo_transform_str
 
@@ -190,8 +180,7 @@ class FixDatacubes:
             fixed_file = os.path.join(local_dir, cube_basename)
             msgs.append(f"Saving datacube to {fixed_file}")
 
-            ds = ds.chunk({'mid_date': 250})
-            ds.to_zarr(fixed_file, encoding=FixDatacubes.ZARR_ENCODING, consolidated=True)
+            ds.to_zarr(fixed_file, encoding=ENCODING_ZARR, consolidated=True)
 
             if os.path.exists(fixed_file) and len(bucket_name):
                 # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
