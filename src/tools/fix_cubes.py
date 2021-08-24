@@ -75,6 +75,29 @@ class FixDatacubes:
 
         logging.info(f"Zarr encoding: {FixDatacubes.ZARR_ENCODING}")
 
+    def debug__call__(self, local_dir: str, num_dask_workers: int):
+        """
+        Fix mapping.GeoTransform of ITS_LIVE datacubes stored in S3 bucket.
+        Strip suffix from original granules names as appear within 'granule_url'
+        data variable and skipped_* datacube attributes.
+        """
+        num_to_fix = len(self.all_zarr_datacubes)
+        start = 0
+
+        logging.info(f"{num_to_fix} datacubes to fix...")
+
+        if num_to_fix <= 0:
+            logging.info(f"Nothing to fix, exiting.")
+            return
+
+        if not os.path.exists(local_dir):
+            os.mkdir(local_dir)
+
+        for each_cube in self.all_zarr_datacubes:
+            logging.info(f"Starting {each_cube}")
+            msgs = FixDatacubes.all(each_cube, self.bucket, local_dir, self.s3)
+            logging.info("-->".join(msgs))
+
     def __call__(self, local_dir: str, num_dask_workers: int):
         """
         Fix mapping.GeoTransform of ITS_LIVE datacubes stored in S3 bucket.
