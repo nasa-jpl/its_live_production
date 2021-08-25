@@ -92,14 +92,14 @@ class FixDatacubes:
             msgs = FixDatacubes.all(each_cube, self.bucket, local_dir, self.s3)
             logging.info("\n-->".join(msgs))
 
-    def __call__(self, local_dir: str, num_dask_workers: int):
+    def __call__(self, local_dir: str, num_dask_workers: int, start_cube: int=0):
         """
         Fix mapping.GeoTransform of ITS_LIVE datacubes stored in S3 bucket.
         Strip suffix from original granules names as appear within 'granule_url'
         data variable and skipped_* datacube attributes.
         """
-        num_to_fix = len(self.all_zarr_datacubes)
-        start = 0
+        num_to_fix = len(self.all_zarr_datacubes) - start_cube
+        start = start_cube
 
         logging.info(f"{num_to_fix} datacubes to fix...")
 
@@ -296,6 +296,12 @@ def main():
         action='store_true',
         help='Dry run, do not actually submit any AWS Batch jobs'
     )
+    parser.add_argument(
+        '-s', '--start-cube',
+        type=int,
+        default=0,
+        help='Index for the start datacube to process (if previous processing terminated) [%(default)d]'
+    )
 
     args = parser.parse_args()
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
@@ -306,7 +312,7 @@ def main():
     FixDatacubes.DRY_RUN = args.dry
 
     fix_cubes = FixDatacubes(args.bucket, args.bucket_dir)
-    fix_cubes(args.local_dir, args.dask_workers)
+    fix_cubes(args.local_dir, args.dask_workers, args.start_cube)
 
 
 if __name__ == '__main__':
