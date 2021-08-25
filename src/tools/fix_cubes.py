@@ -30,7 +30,7 @@ import xarray as xr
 import zarr
 
 from itscube_types import DataVars, Coords
-from zarr_to_netcdf import ENCODING_ZARR, convert
+import zarr_to_netcdf
 
 
 class FixDatacubes:
@@ -47,6 +47,8 @@ class FixDatacubes:
     SUFFIX_TO_REMOVE = '_IL_ASF_OD.nc'
     SUFFIX_TO_USE = '.nc'
     S3_PREFIX = 's3://'
+    DASK_CHUNKS = 250
+    DRY_RUN = False
 
     def __init__(self, bucket: str, bucket_dir: str):
         """
@@ -67,7 +69,7 @@ class FixDatacubes:
 
         logging.info(f"Found number of datacubes: {len(self.all_zarr_datacubes)}")
 
-    def __call__(self, local_dir: str, num_dask_workers: int):
+    def debug__call__(self, local_dir: str, num_dask_workers: int):
         """
         Fix mapping.GeoTransform of ITS_LIVE datacubes stored in S3 bucket.
         Strip suffix from original granules names as appear within 'granule_url'
@@ -87,9 +89,10 @@ class FixDatacubes:
 
         for each_cube in self.all_zarr_datacubes:
             logging.info(f"Starting {each_cube}")
-            FixDatacubes.all(each_cube, self.bucket, local_dir, self.s3)
+            msgs = FixDatacubes.all(each_cube, self.bucket, local_dir, self.s3)
+            logging.info("\n-->".join(msgs))
 
-    def dont__call__(self, local_dir: str, num_dask_workers: int):
+    def __call__(self, local_dir: str, num_dask_workers: int):
         """
         Fix mapping.GeoTransform of ITS_LIVE datacubes stored in S3 bucket.
         Strip suffix from original granules names as appear within 'granule_url'
@@ -121,7 +124,7 @@ class FixDatacubes:
                                        num_workers=num_dask_workers)
 
             for each_result in results[0]:
-                logging.info("-->".join(each_result))
+                logging.info("\n-->".join(each_result))
 
             num_to_fix -= num_tasks
             start += num_tasks
@@ -131,11 +134,18 @@ class FixDatacubes:
         """
         Fix datacubes and copy them back to S3 bucket.
         """
-        logging.info(f'Processing {cube_url}')
+        msgs = [f'Processing {cube_url}']
+
+        if FixDatacubes.DRY_RUN:
+            return msgs
 
         cube_store = s3fs.S3Map(root=cube_url, s3=s3_in, check=False)
+        cube_basename = os.path.basename(cube_url)
 
-        with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True, chunks={'mid_date': 250}) as ds:
+        # Write datacube locally, upload it to the bucket, remove file
+        fixed_file = os.path.join(local_dir, cube_basename)
+
+        with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True, chunks={'mid_date': FixDatacubes.DASK_CHUNKS}) as ds:
             # Fix mapping.GeoTransform
             ds_x = ds.x.values
             ds_y = ds.y.values
@@ -173,58 +183,54 @@ class FixDatacubes:
             # Replace attribute value
             ds.attrs[DataVars.SKIP_WRONG_PROJECTION] = json.dumps(attr_data)
 
-            cube_basename = os.path.basename(cube_url)
+            msgs.append(f"Saving datacube to {fixed_file}")
 
-            # Write datacube locally, upload it to the bucket, remove file
-            fixed_file = os.path.join(local_dir, cube_basename)
-            logging.info(f"Saving datacube to {fixed_file}")
+            ds.to_zarr(fixed_file, encoding=zarr_to_netcdf.ENCODING_ZARR, consolidated=True)
 
-            ds.to_zarr(fixed_file, encoding=ENCODING_ZARR, consolidated=True)
+        cube_store = None
 
-            if os.path.exists(fixed_file) and len(bucket_name):
-                # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
-                # resulting in as many error messages as there are files in Zarr store
-                # to copy
+        if os.path.exists(fixed_file) and len(bucket_name):
+            # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
+            # resulting in as many error messages as there are files in Zarr store
+            # to copy
 
-                # Enable conversion to NetCDF when the cube is created
-                # Convert Zarr to NetCDF and copy to the bucket
-                # nc_filename = args.outputStore.replace('.zarr', '.nc')
-                # zarr_to_netcdf.main(args.outputStore, nc_filename, ITSCube.NC_ENGINE)
-                # ITSCube.show_memory_usage('after Zarr to NetCDF conversion')
-                env_copy = os.environ.copy()
-                target_url = cube_url
+            # Enable conversion to NetCDF when the cube is created
+            # Convert Zarr to NetCDF and copy to the bucket
+            # nc_filename = args.outputStore.replace('.zarr', '.nc')
+            # zarr_to_netcdf.main(args.outputStore, nc_filename, ITSCube.NC_ENGINE)
+            # ITSCube.show_memory_usage('after Zarr to NetCDF conversion')
+            env_copy = os.environ.copy()
+            target_url = cube_url
 
-                if not target_url.startswith(FixDatacubes.S3_PREFIX):
-                    target_url = FixDatacubes.S3_PREFIX + cube_url
+            if not target_url.startswith(FixDatacubes.S3_PREFIX):
+                target_url = FixDatacubes.S3_PREFIX + cube_url
 
-                command_line = [
-                    "aws", "s3", "cp", "--recursive",
-                    fixed_file,
-                    target_url,
-                    "--acl", "bucket-owner-full-control"
-                ]
+            command_line = [
+                "aws", "s3", "cp", "--recursive",
+                fixed_file,
+                target_url,
+                "--acl", "bucket-owner-full-control"
+            ]
 
-                logging.info(' '.join(command_line))
+            msgs.append(' '.join(command_line))
 
-                command_return = subprocess.run(
-                    command_line,
-                    env=env_copy,
-                    check=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT
-                )
-                if command_return.returncode != 0:
-                    logging.info(f"ERROR: Failed to copy {fixed_file} to {target_url}: {command_return.stdout}")
+            command_return = subprocess.run(
+                command_line,
+                env=env_copy,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
+            if command_return.returncode != 0:
+                msgs.append(f"ERROR: Failed to copy {fixed_file} to {target_url}: {command_return.stdout}")
 
-                logging.info(f"Removing local {fixed_file}")
-                shutil.rmtree(fixed_file)
 
             # Save fixed datacube to NetCDF format file
-            fixed_file = fixed_file.replace('.zarr', '.nc')
-            logging.info(f"Saving datacube to {fixed_file}")
-            convert(ds, fixed_file, 'h5netcdf')
+            nc_fixed_file = fixed_file.replace('.zarr', '.nc')
+            msgs.append(f"Saving datacube to {nc_fixed_file}")
+            zarr_to_netcdf.main(fixed_file, nc_fixed_file, 'h5netcdf', FixDatacubes.DASK_CHUNKS)
 
-            if os.path.exists(fixed_file) and len(bucket_name):
+            if os.path.exists(nc_fixed_file) and len(bucket_name):
                 # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
                 # resulting in as many error messages as there are files in Zarr store
                 # to copy
@@ -232,12 +238,12 @@ class FixDatacubes:
                 env_copy = os.environ.copy()
                 command_line = [
                     "aws", "s3", "cp",
-                    fixed_file,
+                    nc_fixed_file,
                     cube_url_nc,
                     "--acl", "bucket-owner-full-control"
                 ]
 
-                logging.info(' '.join(command_line))
+                msgs.append(' '.join(command_line))
 
                 command_return = subprocess.run(
                     command_line,
@@ -247,12 +253,15 @@ class FixDatacubes:
                     stderr=subprocess.STDOUT
                 )
                 if command_return.returncode != 0:
-                    logging.info(f"ERROR: Failed to copy {fixed_file} to {cube_url_nc}: {command_return.stdout}")
+                    logging.info(f"ERROR: Failed to copy {nc_fixed_file} to {cube_url_nc}: {command_return.stdout}")
 
-                logging.info(f"Removing local {fixed_file}")
-                os.unlink(fixed_file)
+                msgs.append(f"Removing local {nc_fixed_file}")
+                os.unlink(nc_fixed_file)
 
-            return
+            msgs.append(f"Removing local {fixed_file}")
+            shutil.rmtree(fixed_file)
+
+            return msgs
 
 def main():
     parser = argparse.ArgumentParser(
@@ -267,7 +276,7 @@ def main():
     )
     parser.add_argument(
         '-d', '--bucket_dir', type=str,
-        default='velocity_image_pair/landsat/v02',
+        default='datacubes/v01',
         help='AWS S3 bucket and directory that store the granules'
     )
     parser.add_argument(
@@ -279,12 +288,22 @@ def main():
         default=4,
         help='Number of Dask parallel workers [%(default)d]'
     )
+    parser.add_argument('-c', '--chunks', type=int, default=250,
+                        help="Dask chunk size for mid_date coordinate [%(default)d]. " \
+                        "This is to handle datacubes that can't fit in memory, and should be read in as Dask arrays.")
+    parser.add_argument(
+        '--dry',
+        action='store_true',
+        help='Dry run, do not actually submit any AWS Batch jobs'
+    )
 
     args = parser.parse_args()
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
     logging.info(f"Args: {args}")
+    FixDatacubes.DASK_CHUNKS = args.chunks
+    FixDatacubes.DRY_RUN = args.dry
 
     fix_cubes = FixDatacubes(args.bucket, args.bucket_dir)
     fix_cubes(args.local_dir, args.dask_workers)
