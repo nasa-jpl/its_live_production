@@ -317,6 +317,7 @@ class GranuleCatalog:
         use_h5py = False
         with s3.open(f"s3://{infilewithpath}", "rb") as ins3:
             with xr.open_dataset(ins3, engine='h5netcdf') as inh5:
+                # Original implementation using h5py
                 if use_h5py is True:
                     # inh5 = h5py.File(ins3, mode = 'r')
                     # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
@@ -356,7 +357,8 @@ class GranuleCatalog:
                     inh5.close()
 
                 else:
-                    # Use xarray interface to access granule's content
+                    # Use xarray interface to access granule's content - to see if
+                    # it helps with granule access (it didn't help)
                     # inh5 = h5py.File(ins3, mode = 'r')
                     # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
                     xvals = inh5.x.values
@@ -508,7 +510,7 @@ if __name__ == '__main__':
     parser.add_argument('-features_per_file',
                         action='store',
                         type=int,
-                        default=500000,
+                        default=20000,
                         help='Number of features to store per the file [%(default)d]')
 
     parser.add_argument('-skipped_granules_file',
