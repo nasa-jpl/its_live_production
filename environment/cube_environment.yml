@@ -17,13 +17,13 @@ channels:
 dependencies:
   - python==3.9.6
   - dask==2.30.0
-  - pandas
+  - pandas==1.1.4
   - numpy
-  - h5py
+  - h5py==3.1.0
   - h5netcdf
   - requests
   - pyproj
-  - xarray
+  - xarray==0.18.0
   - netcdf4
   - flake8
   - s3fs==0.4.2
