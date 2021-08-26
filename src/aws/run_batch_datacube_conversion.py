@@ -25,6 +25,9 @@ class DataCubeConversionBatch:
     NC_EXT    = '.nc'
     S3_PREFIX = 's3://'
 
+    # List of datacube filenames to convert
+    CUBES_TO_PROCESS = []
+
     CLIENT = boto3.client('batch', region_name='us-west-2')
 
     def __init__(self, batch_job: str, batch_queue: str, is_dry_run: bool):
@@ -76,7 +79,11 @@ class DataCubeConversionBatch:
             # if cube_filename != 'ITS_LIVE_vel_EPSG3413_G0120_X-50000_Y-3350000.zarr':
             # Convert 21.3 GiB datacube
             # if cube_filename != 'ITS_LIVE_vel_EPSG3413_G0120_X-250000_Y-950000.zarr':
-            #     continue
+            if len(DataCubeConversionBatch.CUBES_TO_PROCESS) and \
+               cube_filename not in DataCubeConversionBatch.CUBES_TO_PROCESS:
+                # Skip other than cubes of interest
+                logging.info(f"Skipping non-{DataCubeConversionBatch.CUBES_TO_PROCESS}")
+                continue
 
             if DataCubeConversionBatch.S3_PREFIX not in each_cube:
                 # Prepend an S3 bucket prefix (for conversion script to use)
@@ -115,7 +122,9 @@ class DataCubeConversionBatch:
                         'attempts': 1
                     },
                     timeout={
-                        'attemptDurationSeconds': 21600
+                        # Use 10 hours for timeout as conversion of 21Gb cube
+                        # took 5.5 hours using chunks=100
+                        'attemptDurationSeconds': 36000
                     }
                 )
 
@@ -206,12 +215,19 @@ if __name__ == '__main__':
         help="File to capture submitted datacube AWS Batch jobs [%(default)s]"
     )
     parser.add_argument(
+        '--processCubes',
+        type=str,
+        default='[]',
+        help="JSON list of datacube filenames to process [%(default)s]."
+    )
+    parser.add_argument(
         '--dry',
         action='store_true',
         help='Dry run, do not actually submit any AWS Batch jobs'
     )
 
     args = parser.parse_args()
+    DataCubeConversionBatch.CUBES_TO_PROCESS = json.loads(args.processCubes)
 
     main(
         args.dry,
