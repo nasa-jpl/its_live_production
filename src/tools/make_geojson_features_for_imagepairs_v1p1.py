@@ -20,6 +20,7 @@ import s3fs
 import sys
 import time
 from tqdm import tqdm
+import xarray as xr
 
 
 # Date format as it appears in granules filenames of optical format:
@@ -313,43 +314,85 @@ class GranuleCatalog:
         if data_version is None:
             data_version = filename_tokens[-2]
 
+        use_h5py = False
         with s3.open(f"s3://{infilewithpath}", "rb") as ins3:
-            inh5 = h5py.File(ins3, mode = 'r')
-            # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
-            xvals = np.array(inh5.get('x'))
-            yvals = np.array(inh5.get('y'))
+            with xr.open_dataset(ins3, engine='h5netcdf') as inh5:
+                if use_h5py is True:
+                    # inh5 = h5py.File(ins3, mode = 'r')
+                    # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
+                    xvals = np.array(inh5.get('x'))
+                    yvals = np.array(inh5.get('y'))
 
-            # Extract projection variable
-            projection_cf = None
-            if 'mapping' in inh5:
-                projection_cf = inh5['mapping']
+                    # Extract projection variable
+                    projection_cf = None
+                    if 'mapping' in inh5:
+                        projection_cf = inh5['mapping']
 
-            elif 'UTM_Projection' in inh5:
-                projection_cf = inh5['UTM_Projection']
+                    elif 'UTM_Projection' in inh5:
+                        projection_cf = inh5['UTM_Projection']
 
-            elif 'Polar_Stereographic' in inh5:
-                projection_cf = inh5['Polar_Stereographic']
+                    elif 'Polar_Stereographic' in inh5:
+                        projection_cf = inh5['Polar_Stereographic']
 
-            imginfo_attrs = inh5['img_pair_info'].attrs
-            # turn hdf5 img_pair_info attrs into a python dict to save below
-            img_pair_info_dict = {}
-            for k in imginfo_attrs.keys():
-                if isinstance(imginfo_attrs[k], str):
-                    img_pair_info_dict[k] = imginfo_attrs[k]
+                    imginfo_attrs = inh5['img_pair_info'].attrs
+                    # turn hdf5 img_pair_info attrs into a python dict to save below
+                    img_pair_info_dict = {}
+                    for k in imginfo_attrs.keys():
+                        if isinstance(imginfo_attrs[k], str):
+                            img_pair_info_dict[k] = imginfo_attrs[k]
 
-                elif imginfo_attrs[k].shape == ():
-                    img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
+                        elif imginfo_attrs[k].shape == ():
+                            img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
+
+                        else:
+                            img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
+
+                    num_pix_x = len(xvals)
+                    num_pix_y = len(yvals)
+
+                    minval_x, pix_size_x, rot_x_ignored, maxval_y, rot_y_ignored, pix_size_y = [float(x) for x in projection_cf.attrs['GeoTransform'].split()]
+
+                    epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
+                    inh5.close()
 
                 else:
-                    img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
+                    # Use xarray interface to access granule's content
+                    # inh5 = h5py.File(ins3, mode = 'r')
+                    # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
+                    xvals = inh5.x.values
+                    yvals = inh5.y.values
 
-            num_pix_x = len(xvals)
-            num_pix_y = len(yvals)
+                    # Extract projection variable
+                    projection_cf = None
+                    if 'mapping' in inh5:
+                        projection_cf = inh5['mapping']
 
-            minval_x, pix_size_x, rot_x_ignored, maxval_y, rot_y_ignored, pix_size_y = [float(x) for x in projection_cf.attrs['GeoTransform'].split()]
+                    elif 'UTM_Projection' in inh5:
+                        projection_cf = inh5['UTM_Projection']
 
-            epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
-            inh5.close()
+                    elif 'Polar_Stereographic' in inh5:
+                        projection_cf = inh5['Polar_Stereographic']
+
+                    imginfo_attrs = inh5['img_pair_info'].attrs
+                    # turn hdf5 img_pair_info attrs into a python dict to save below
+                    img_pair_info_dict = {}
+                    for k in imginfo_attrs.keys():
+                        if isinstance(imginfo_attrs[k], str):
+                            img_pair_info_dict[k] = imginfo_attrs[k]
+
+                        elif imginfo_attrs[k].shape == ():
+                            img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
+
+                        else:
+                            img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
+
+                    num_pix_x = len(xvals)
+                    num_pix_y = len(yvals)
+
+                    minval_x, pix_size_x, rot_x_ignored, maxval_y, rot_y_ignored, pix_size_y = [float(x) for x in projection_cf.attrs['GeoTransform'].split()]
+
+                    epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
+
 
         # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
         projection_cf_minx = xvals[0] - pix_size_x/2.0
