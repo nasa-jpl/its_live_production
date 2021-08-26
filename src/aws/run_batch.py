@@ -47,6 +47,10 @@ class DataCubeBatch:
     # then generate all ROI!=0 datacubes.
     EPSG_TO_GENERATE = []
 
+    # List of datacube filenames to generate if only specific datacubes should be generated.
+    # If an empty list then generate all qualifying datacubes.
+    CUBES_TO_GENERATE = []
+
     # Number of granules to process in parallel at a time (to avoid out of memory
     # failures)
     PARALLEL_GRANULES = 250
@@ -159,9 +163,11 @@ class DataCubeBatch:
                     cube_filename = f"{DataCubeBatch.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
                     logging.info(f'Cube name: {cube_filename}')
 
-                    # Hack to create long running job - to test s3fs issue
-                    # if cube_filename != 'ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr':
-                    #     continue
+                    # Hack to run specific jobs
+                    # to test s3fs problem: 'ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr'
+                    if len(DataCubeBatch.CUBES_TO_GENERATE) and cube_filename not in DataCubeBatch.CUBES_TO_GENERATE:
+                        logging.info(f"Skipping non-{DataCubeBatch.CUBES_TO_GENERATE}")
+                        continue
 
                     cube_params = {
                         'outputStore': cube_filename,
@@ -177,7 +183,7 @@ class DataCubeBatch:
                     response = None
                     if self.is_dry_run is False:
                         response = DataCubeBatch.CLIENT.submit_job(
-                            jobName=cube_filename,
+                            jobName=cube_filename.replace('.zarr', ''),
                             jobQueue=self.batch_queue,
                             jobDefinition=self.batch_job,
                             parameters=cube_params,
@@ -249,11 +255,10 @@ def main(
 
 
 if __name__ == '__main__':
-    # Since port forwarding is not working on EC2 to run jupyter lab for now,
-    # allow to run test case from itscube.ipynb in standalone mode
     import argparse
-    import warnings
     import sys
+    import warnings
+
     warnings.filterwarnings('ignore')
 
     # Set up logging
@@ -306,14 +311,14 @@ if __name__ == '__main__':
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-terraform:1',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-30Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-terraform',
+        default='datacube-convert-4vCPU-32GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
@@ -354,8 +359,15 @@ if __name__ == '__main__':
         default='',
         help="Path token to be present in datacube S3 target path in order for the datacube to be generated [%(default)s]."
     )
+    parser.add_argument(
+        '--processCubes',
+        type=str,
+        default='[]',
+        help="JSON list of datacube filenames to generate [%(default)s]."
+    )
 
     args = parser.parse_args()
+    logging.info(f"Command-line arguments: {sys.argv}")
 
     epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
@@ -365,6 +377,7 @@ if __name__ == '__main__':
     DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
     DataCubeBatch.HTTP_PREFIX       = args.urlPath
     DataCubeBatch.PATH_TOKEN        = args.pathToken
+    DataCubeBatch.CUBES_TO_GENERATE = json.loads(args.processCubes)
 
     main(
         args.dry,
