@@ -46,6 +46,7 @@ cp -r ${WORKSPACE}/src/itscube_types.py ${WORKSPACE}/src/itscube.py \
       ${TEMP_STAGING_DIR}/
 
 cp -r ${WORKSPACE}/environment/cube_environment.yml \
+      ${WORKSPACE}/environment/aws_config \
       ${WORKSPACE}/docker/entrypoint_cube.sh \
       ${TEMP_STAGING_DIR}/env/
 

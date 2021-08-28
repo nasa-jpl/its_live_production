@@ -43,10 +43,12 @@ WORKDIR /home/conda
 COPY --chown=1000:1000 ${SOURCE_DIR} /home/conda/itslive
 
 # build datacube conda environment
-RUN conda env create -f itslive/env/cube_environment.yml && \
+RUN conda env create -f itslive/env/cube_convert_environment.yml && \
     conda clean -afy && \
     conda activate itslivecube && \
-    sed -i 's/conda activate base/conda activate itslivecube/g' /home/conda/.profile
+    sed -i 's/conda activate base/conda activate itslivecube/g' /home/conda/.profile && \
+    mkdir /home/conda/.aws && \
+    cat itslive/env/aws_config >> /home/conda/.aws/config
 
 # Set directory and entrypoint
 WORKDIR /home/conda
