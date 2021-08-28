@@ -30,7 +30,7 @@ import xarray as xr
 import itslive_utils
 from grid import Bounds, Grid
 from itscube_types import Coords, DataVars
-# import zarr_to_netcdf
+import zarr_to_netcdf
 
 # Set up logging
 logging.basicConfig(
@@ -222,7 +222,9 @@ class ITSCube:
             found_urls = found_urls[:num_granules]
             self.logger.info(f"Examining only first {len(found_urls)} out of {total_num} found granules")
 
-        return self.skip_duplicate_granules(found_urls)
+        urls, self.skipped_double_granules = self.skip_duplicate_granules(found_urls)
+
+        return urls
 
     def skip_duplicate_granules(self, found_urls):
         """
@@ -234,7 +236,7 @@ class ITSCube:
         # Need to remove duplicate granules for the middle date: some granules
         # have newer processing date, keep those.
         keep_urls = {}
-        self.skipped_double_granules = []
+        skipped_double_granules = []
 
         for each_url in tqdm(found_urls, ascii=True, desc='Skipping duplicate granules...'):
             # Extract acquisition and processing dates
@@ -269,7 +271,7 @@ class ITSCube:
                         keep_found_url = True
                         break
 
-                # There are no "identical" granules to the "each_url", check if
+                # There are no "identical" granules for "each_url", check if
                 # new granule has newer processing dates
                 if not keep_found_url:
                     # Check if any of the found URLs have older processing time
@@ -296,7 +298,7 @@ class ITSCube:
                         # Some of the URLs need to be removed due to newer
                         # processed granule
                         self.logger.info(f"Skipping {remove_urls} in favor of new {each_url}")
-                        self.skipped_double_granules.extend(remove_urls)
+                        skipped_double_granules.extend(remove_urls)
 
                         # Remove older processed granules
                         keep_urls[granule_id][:] = [each for each in keep_urls[granule_id] if each not in remove_urls]
@@ -306,7 +308,7 @@ class ITSCube:
                     else:
                         # New granule has older processing date, don't include
                         self.logger.info(f"Skipping new {each_url} in favor of {keep_urls[granule_id]}")
-                        self.skipped_double_granules.append(each_url)
+                        skipped_double_granules.append(each_url)
 
             else:
                 # This is a granule for new ID, append it to URLs to keep
@@ -318,35 +320,77 @@ class ITSCube:
 
         self.logger.info(f"Keeping {len(granules)} unique granules")
 
-        return granules
+        return granules, skipped_double_granules
 
     def exclude_processed_granules(self, found_urls: list, cube_ds: xr.Dataset):
         """
-        Exclude datacube granules, and all skipped granules in existing datacube
+        * Exclude datacube granules, and all skipped granules in existing datacube
         (empty data, wrong projection, duplicate middle date) from found granules.
+        * Identify if any of the skipped double mid_date granules from "found_urls"
+        are already existing layers in the datacube. Need to mark such layers
+        to be deleted from the datacube.
+        * Identify if current cube layers and remaining found_urls have duplicate
+        mid_date - register these for deletion from the datacube if they appear
+        as datacube layers.
+
+        Return:
+            granules: list
+                List of granules to update datacube with.
+            layers_to_delete: list
+                List of existing datacube layers to remove.
         """
         self.logger.info("Excluding known to datacube granules...")
         cube_granules = cube_ds[DataVars.URL].values.tolist()
         granules = set(found_urls).difference(cube_granules)
 
-        # Remove known empty granules from found urls
+        # Remove known empty granules (per cube) from found_urls
         self.skipped_empty_granules = json.loads(cube_ds.attrs[DataVars.SKIP_EMPTY_DATA])
         granules = granules.difference(self.skipped_empty_granules)
 
-        # Remove known duplicate middle date granules from found urls
-        self.skipped_double_granules = json.loads(cube_ds.attrs[DataVars.SKIP_DUPLICATE_MID_DATE])
-        granules = granules.difference(self.skipped_double_granules)
-
-        # Remove known wrong projection granules from found urls
+        # Remove known wrong projection granules (per cube) from found_urls
         self.skipped_proj_granules = json.loads(cube_ds.attrs[DataVars.SKIP_WRONG_PROJECTION])
         known_granules = []
         for each in self.skipped_proj_granules:
             known_granules.extend(self.skipped_proj_granules[each])
 
-        granules = list(granules.difference(known_granules))
+        granules = granules.difference(known_granules)
+
+        # Identify cube granules that are now skipped due to double middle date
+        # in new found_urls granules
+        cube_layers_to_delete = list(set(self.skipped_double_granules).intersection(cube_granules))
+        self.logger.info(f"After found_urls::skip_granules: {len(cube_layers_to_delete)} " \
+                          f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
+
+        # Remove known duplicate middle date granules from found_urls:
+        # if cube skipped granules don't appear in found_urls:skipped_granules
+        # for whatever reason (different start/end dates are used for cube update)
+        # self.skipped_double_granules is populated by self.request_granules()
+        # with skipped granules due to double date in "found_urls"
+        cube_skipped_double_granules = json.loads(cube_ds.attrs[DataVars.SKIP_DUPLICATE_MID_DATE])
+        granules = granules.difference(cube_skipped_double_granules)
+
+        # Check if there are any granules between existing cube layers and found_urls
+        # that have duplicate middle date
+        combined_cube_found_urls = cube_granules + list(granules)
+        _, skipped_granules = self.skip_duplicate_granules(combined_cube_found_urls)
+
+        # Check if any of the skipped granules are in the cube
+        cube_layers_to_delete.extend(list(set(cube_granules).intersection(skipped_granules)))
+        self.logger.info(f"After (cube+found_urls)::skip_granules: {len(cube_layers_to_delete)} " \
+                         f"existing datacube layers to delete due to duplicate middle_date: {cube_layers_to_delete}")
+
+        # Merge two lists of skipped granules (for existing cube, new list
+        # of granules from search API, and duplicate granules b/w cube and new granules)
+        cube_skipped_double_granules.extend(self.skipped_double_granules)
+        cube_skipped_double_granules.extend(skipped_granules)
+        self.skipped_double_granules = list(set(cube_skipped_double_granules))
+
+        # Skim down found_urls by newly skipped granules
+        granules = list(granules.difference(self.skipped_double_granules))
+
         self.logger.info(f"Leaving {len(granules)} granules...")
 
-        return granules
+        return granules, cube_layers_to_delete
 
     @staticmethod
     def get_tokens_from_filename(filename):
@@ -370,10 +414,9 @@ class ITSCube:
         """
 
         if data is not None:
-            # TODO: Handle "duplicate" granules for the mid_date if concatenating
-            #       to existing cube.
-            #       "Duplicate" granules are handled apriori for newly constructed
-            #       cubes (see self.request_granules() method).
+            # "Duplicate" granules are handled apriori for newly constructed
+            #  cubes (see self.request_granules() method) and for updated cubes
+            #  (see self.exclude_processed_granules() method).
             # print(f"Adding {url} for {mid_date}")
             self.dates.append(mid_date)
             self.ds.append(data)
@@ -507,9 +550,15 @@ class ITSCube:
         if len(found_urls) == 0:
             return found_urls
 
+        # Check if any of the existing cube layers are excluded, mark them to be
+        # deleted
+        layers_to_delete = []
+
+
         # Remove already processed granules
-        found_urls = self.exclude_processed_granules(found_urls, cube_ds)
+        found_urls, cube_layers_to_delete = self.exclude_processed_granules(found_urls, cube_ds)
         if len(found_urls) == 0:
+            self.logger.info("No granules to update with, exiting.")
             return found_urls
 
         # If datacube resides in AWS S3 bucket, copy it locally - initial datacube to begin with
@@ -546,24 +595,37 @@ class ITSCube:
             if command_return.returncode != 0:
                 raise RuntimeError(f"Failed to copy {source_url} to {output_store}: {command_return.stdout}")
 
-            # zarr_encoding = copy.deepcopy(zarr_to_netcdf.ENCODING)
-            # compression = {"compressor": zarr.Blosc(cname='zlib', clevel=2, shuffle=1)}
-            #
-            # for each in zarr_to_netcdf.ENCODE_DATA_VARS:
-            #     zarr_encoding.setdefault(each, {}).update(compression)
-            #
-            # tmp_output_dir = f"{output_dir}.original"
-            # self.logger.info(f"Moving original {output_dir} to {tmp_output_dir}")
-            # os.renames(output_dir, tmp_output_dir)
-            #
-            # self.logger.info(f"Saving updated {output_dir}")
-            # cube_ds.to_zarr(output_dir, encoding=zarr_encoding, consolidated=True)
-            #
-            # self.logger.info(f"Removing original {tmp_output_dir}")
-            # shutil.rmtree(tmp_output_dir)
-            # cube_ds = None
-            # cube_store = None
-            # gc.collect()
+        # Delete identified layers of the cube
+        if len(cube_layers_to_delete):
+            ds_from_zarr = xr.open_zarr(output_dir, decode_timedelta=False, consolidated=True)
+            self.logger.info(f"Deleting {len(cube_layers_to_delete)} layers from total {len(ds_from_zarr.mid_date.values)} layers of {output_dir}")
+
+            # Identify layer indices that correspond to granule urls
+            layers_bool_flag = ds_from_zarr[DataVars.URL].isin(cube_layers_to_delete)
+
+            # Drop the layers
+            # layers_mid_dates = ds_from_zarr[DataVars.MID_DATE].values[layers_bool_flag.values]
+            ds_from_zarr = ds_from_zarr.drop_isel(mid_date=layers_bool_flag.values)
+
+            tmp_output_dir = f"{output_dir}.original"
+            self.logger.info(f"Moving original {output_dir} to {tmp_output_dir}")
+            os.renames(output_dir, tmp_output_dir)
+
+            # Write updated datacube to original store location,
+            # but at first re-chunk xr.Dataset to avoid errors
+            ds_from_zarr = ds_from_zarr.chunk({Coords.MID_DATE: ITSCube.NUM_GRANULES_TO_WRITE})
+
+            self.logger.info(f"Saving updated {output_dir}")
+            zarr_to_netcdf.convert(ds_from_zarr, output_dir, ITSCube.NC_ENGINE)
+
+            self.logger.info(f"Removing original {tmp_output_dir}")
+            shutil.rmtree(tmp_output_dir)
+
+            ds_from_zarr = None
+
+        cube_store_in = None
+        cube_ds = None
+        gc.collect()
 
         is_first_write = False
         start = 0
@@ -603,6 +665,8 @@ class ITSCube:
 
             num_to_process -= num_tasks
             start += num_tasks
+
+        # Remove existing granules with older processing dates if any
 
         return found_urls
 
@@ -1415,6 +1479,17 @@ class ITSCube:
                 dims=[]
             )
 
+            # Set GeoTransform to correspond to the datacube's tile
+            x_size = self.grid_x[1] - self.grid_x[0]
+            y_size = self.grid_y[1] - self.grid_y[0]
+
+            half_x_cell = x_size/2.0
+            half_y_cell = y_size/2.0
+
+            # Format cube's GeoTransform
+            new_geo_transform_str = f"{self.grid_x[0] - half_x_cell} {x_size} 0 {self.grid_y[0] - half_y_cell} 0 {y_size}"
+            self.layers[DataVars.MAPPING].attrs['GeoTransform'] = new_geo_transform_str
+
         # ATTN: Assign one data variable at a time to avoid running out of memory.
         #       Delete each variable after it has been processed to free up the
         #       memory.
@@ -1951,31 +2026,88 @@ if __name__ == '__main__':
     # Command-line arguments parser
     parser = argparse.ArgumentParser(description=ITSCube.__doc__.split('\n')[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('-t', '--threads', type=int, default=4,
-                        help='number of Dask workers to use for parallel processing [%(default)d].')
-    parser.add_argument('-s', '--scheduler', type=str, default="processes",
-                        help="Dask scheduler to use. One of ['threads', 'processes'] (effective only when --parallel option is specified) [%(default)s].")
-    parser.add_argument('-p', '--parallel', action='store_true',
-                        help='enable sequential processing, default is to process all granules in parallel')
-    parser.add_argument('-n', '--numberGranules', type=int, required=False, default=None,
-                        help="number of ITS_LIVE granules to consider for the cube (due to runtime limitations). "
-                             " If none is provided, process all found granules.")
-    parser.add_argument('-l', '--localPath', type=str, default=None,
-                        help='Local path that stores ITS_LIVE granules.')
-    parser.add_argument('-o', '--outputStore', type=str, default="cubedata.zarr",
-                        help="Zarr output directory to write cube data to [%(default)s].")
-    parser.add_argument('-b', '--outputBucket', type=str, default="",
-                        help="S3 bucket to copy Zarr format of the datacube to [%(default)s].")
-    parser.add_argument('-c', '--chunks', type=int, default=500,
-                        help="Number of granules to write at a time [%(default)d].")
-    parser.add_argument('--targetProjection', type=str, required=True,
-                        help="UTM target projection.")
-    parser.add_argument('--dimSize', type=float, default=100000,
-                        help="Cube dimension in meters [%(default)d].")
-    parser.add_argument('-g', '--gridCellSize', type=int, default=240,
-                        help="Grid cell size of input ITS_LIVE granules [%(default)d].")
-    parser.add_argument('--fivePointsPerPolygonSide', action='store_true',
-                        help='Define 5 points per side before re-projecting granule polygon to longitude/latitude coordinates')
+    parser.add_argument(
+        '-t', '--threads',
+        type=int, default=4,
+        help='number of Dask workers to use for parallel processing [%(default)d].'
+    )
+    parser.add_argument(
+        '-s', '--scheduler',
+        type=str,
+        default="processes",
+        help="Dask scheduler to use. One of ['threads', 'processes'] (effective only when --parallel option is specified) [%(default)s]."
+    )
+    parser.add_argument(
+        '-p', '--parallel',
+        action='store_true',
+        help='enable sequential processing, default is to process all granules in parallel'
+    )
+    parser.add_argument(
+        '-n', '--numberGranules',
+        type=int,
+        default=None,
+        help="number of ITS_LIVE granules to consider for the cube (due to runtime limitations). "
+             " If none is provided, process all found granules."
+    )
+    parser.add_argument(
+        '-l', '--localPath',
+        type=str,
+        default=None,
+        help='Local path that stores ITS_LIVE granules.'
+    )
+    parser.add_argument(
+        '-o', '--outputStore',
+        type=str,
+        default="cubedata.zarr",
+        help="Zarr output directory to write cube data to [%(default)s]."
+    )
+    parser.add_argument(
+        '-b', '--outputBucket',
+        type=str,
+        default='',
+        help="S3 bucket to copy Zarr format of the datacube to [%(default)s]."
+    )
+    parser.add_argument(
+        '-c', '--chunks',
+        type=int,
+        default=250,
+        help="Number of granules to write at a time [%(default)d]."
+    )
+    parser.add_argument(
+        '--targetProjection',
+        type=str,
+        required=True,
+        help="UTM target projection."
+    )
+    parser.add_argument(
+        '--dimSize',
+        type=float,
+        default=100000,
+        help="Cube dimension in meters [%(default)d]."
+    )
+    parser.add_argument(
+        '-g', '--gridCellSize',
+        type=int,
+        default=240,
+        help="Grid cell size of input ITS_LIVE granules [%(default)d]."
+    )
+    parser.add_argument(
+        '--fivePointsPerPolygonSide',
+        action='store_true',
+        help='Define 5 points per side before re-projecting granule polygon to longitude/latitude coordinates'
+    )
+    parser.add_argument(
+        '--searchAPIStartDate',
+        type=str,
+        default='1984-01-01',
+        help='Start date in YYYY-MM-DD format to pass to search API query to get velocity pair granules'
+    )
+    parser.add_argument(
+        '--searchAPIStopDate',
+        type=str,
+        default=None,
+        help='Stop date in YYYY-MM-DD format to pass to search API query to get velocity pair granules'
+    )
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
     group = parser.add_mutually_exclusive_group()
@@ -2032,9 +2164,10 @@ if __name__ == '__main__':
     cube.logger.info(f"s3fs: {s3fs.__version__}")
 
     # Parameters for the search granule API
+    end_date = datetime.now().strftime('%Y-%m-%d') if args.searchAPIStopDate is None else args.searchAPIStopDate
     API_params = {
-        'start'               : '1984-01-01',
-        'end'                 : '2021-07-01',
+        'start'               : args.searchAPIStartDate,
+        'end'                 : end_date,
         'percent_valid_pixels': 1
     }
     cube.logger.info("ITS_LIVE API parameters: %s" %API_params)
@@ -2113,6 +2246,12 @@ if __name__ == '__main__':
             )
             if command_return.returncode != 0:
                 logging.error(f"Failed to copy {each_input} to {args.outputBucket}: {command_return.stdout}")
+
+        # Remove locally written Zarr store if target location is AWS S3 bucket.
+        # This is to eliminate out of disk space failures when the same EC2 instance is
+        # being re-used by muliple Batch jobs.
+        logging.info(f"Removing local copy of {args.outputStore}")
+        shutil.rmtree(args.outputStore)
 
     # Write cube data to the NetCDF file
     # cube.to_netcdf('test_v_cube.nc')
