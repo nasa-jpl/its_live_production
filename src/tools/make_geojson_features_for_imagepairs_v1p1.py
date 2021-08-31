@@ -7,6 +7,7 @@ Authors: Mark Fahnestock, Masha Liukis
 import argparse
 import dask
 from dask.diagnostics import ProgressBar
+from joblib import Parallel, delayed
 from datetime import datetime
 import geojson
 import h5py
@@ -17,6 +18,7 @@ import os
 import psutil
 import pyproj
 import s3fs
+import fsspec
 import sys
 import time
 from tqdm import tqdm
@@ -221,13 +223,13 @@ class memtracker:
 
 # mt = memtracker()
 
-
 class GranuleCatalog:
     """
     Class to build ITS_LIVE granule catalog in geojson format for ingest by
     the webside DB.
     """
     FIVE_POINTS_PER_SIDE = True
+    DATA_VERSION = None
 
     def __init__(self, granules_file: str, features_per_file: int, catalog_dir: str):
         """
@@ -246,7 +248,7 @@ class GranuleCatalog:
         self.features_per_file = features_per_file
         self.catalog_dir = catalog_dir
 
-    def create(self, data_version, chunk_size, num_dask_workers, granules_dir):
+    def create(self, chunk_size, num_dask_workers, granules_dir):
         """
         Create catalog geojson file.
         """
@@ -272,7 +274,7 @@ class GranuleCatalog:
             num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
 
             logging.info(f"Starting granules {start}:{start+num_tasks} out of {init_total_files} total granules")
-            tasks = [dask.delayed(self.image_pair_feature_from_path)(each, data_version, self.s3) for each in self.infiles[start:start+num_tasks]]
+            tasks = [dask.delayed(GranuleCatalog.image_pair_feature_from_path)(each, self.s3) for each in self.infiles[start:start+num_tasks]]
             results = None
 
             with ProgressBar():
@@ -305,96 +307,53 @@ class GranuleCatalog:
                 read_num_files = 0
                 block_start = cum_read_num_files
 
-
-    def image_pair_feature_from_path(self, infilewithpath: str, data_version: str, s3):
+    @staticmethod
+    def image_pair_feature_from_path(infilewithpath: str, s3):
         filename_tokens = infilewithpath.split('/')
         directory = '/'.join(filename_tokens[1:-1])
         filename = filename_tokens[-1]
 
+        data_version = GranuleCatalog.DATA_VERSION
         if data_version is None:
             data_version = filename_tokens[-2]
 
-        use_h5py = False
         with s3.open(f"s3://{infilewithpath}", "rb") as ins3:
-            with xr.open_dataset(ins3, engine='h5netcdf') as inh5:
-                # Original implementation using h5py
-                if use_h5py is True:
-                    # inh5 = h5py.File(ins3, mode = 'r')
-                    # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
-                    xvals = np.array(inh5.get('x'))
-                    yvals = np.array(inh5.get('y'))
+            inh5 = h5py.File(ins3, mode = 'r')
+            # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
+            xvals = np.array(inh5.get('x'))
+            yvals = np.array(inh5.get('y'))
 
-                    # Extract projection variable
-                    projection_cf = None
-                    if 'mapping' in inh5:
-                        projection_cf = inh5['mapping']
+            # Extract projection variable
+            projection_cf = None
+            if 'mapping' in inh5:
+                projection_cf = inh5['mapping']
 
-                    elif 'UTM_Projection' in inh5:
-                        projection_cf = inh5['UTM_Projection']
+            elif 'UTM_Projection' in inh5:
+                projection_cf = inh5['UTM_Projection']
 
-                    elif 'Polar_Stereographic' in inh5:
-                        projection_cf = inh5['Polar_Stereographic']
+            elif 'Polar_Stereographic' in inh5:
+                projection_cf = inh5['Polar_Stereographic']
 
-                    imginfo_attrs = inh5['img_pair_info'].attrs
-                    # turn hdf5 img_pair_info attrs into a python dict to save below
-                    img_pair_info_dict = {}
-                    for k in imginfo_attrs.keys():
-                        if isinstance(imginfo_attrs[k], str):
-                            img_pair_info_dict[k] = imginfo_attrs[k]
+            imginfo_attrs = inh5['img_pair_info'].attrs
+            # turn hdf5 img_pair_info attrs into a python dict to save below
+            img_pair_info_dict = {}
+            for k in imginfo_attrs.keys():
+                if isinstance(imginfo_attrs[k], str):
+                    img_pair_info_dict[k] = imginfo_attrs[k]
 
-                        elif imginfo_attrs[k].shape == ():
-                            img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
-
-                        else:
-                            img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
-
-                    num_pix_x = len(xvals)
-                    num_pix_y = len(yvals)
-
-                    minval_x, pix_size_x, rot_x_ignored, maxval_y, rot_y_ignored, pix_size_y = [float(x) for x in projection_cf.attrs['GeoTransform'].split()]
-
-                    epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
-                    inh5.close()
+                elif imginfo_attrs[k].shape == ():
+                    img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
 
                 else:
-                    # Use xarray interface to access granule's content - to see if
-                    # it helps with granule access (it didn't help)
-                    # inh5 = h5py.File(ins3, mode = 'r')
-                    # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
-                    xvals = inh5.x.values
-                    yvals = inh5.y.values
+                    img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
 
-                    # Extract projection variable
-                    projection_cf = None
-                    if 'mapping' in inh5:
-                        projection_cf = inh5['mapping']
+            num_pix_x = len(xvals)
+            num_pix_y = len(yvals)
 
-                    elif 'UTM_Projection' in inh5:
-                        projection_cf = inh5['UTM_Projection']
+            minval_x, pix_size_x, rot_x_ignored, maxval_y, rot_y_ignored, pix_size_y = [float(x) for x in projection_cf.attrs['GeoTransform'].split()]
 
-                    elif 'Polar_Stereographic' in inh5:
-                        projection_cf = inh5['Polar_Stereographic']
-
-                    imginfo_attrs = inh5['img_pair_info'].attrs
-                    # turn hdf5 img_pair_info attrs into a python dict to save below
-                    img_pair_info_dict = {}
-                    for k in imginfo_attrs.keys():
-                        if isinstance(imginfo_attrs[k], str):
-                            img_pair_info_dict[k] = imginfo_attrs[k]
-
-                        elif imginfo_attrs[k].shape == ():
-                            img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
-
-                        else:
-                            img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
-
-                    num_pix_x = len(xvals)
-                    num_pix_y = len(yvals)
-
-                    minval_x, pix_size_x, rot_x_ignored, maxval_y, rot_y_ignored, pix_size_y = [float(x) for x in projection_cf.attrs['GeoTransform'].split()]
-
-                    epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
-
+            epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
+            inh5.close()
 
         # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
         projection_cf_minx = xvals[0] - pix_size_x/2.0
@@ -411,8 +370,8 @@ class GranuleCatalog:
         ul_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_maxy),decimals = 7).tolist()
 
         # find center lon lat for inclusion in feature (to determine lon lat grid cell directory)
-    #     projection_cf_centerx = (xvals[0] + xvals[-1])/2.0
-    #     projection_cf_centery = (yvals[0] + yvals[-1])/2.0
+        #     projection_cf_centerx = (xvals[0] + xvals[-1])/2.0
+        #     projection_cf_centery = (yvals[0] + yvals[-1])/2.0
         center_lonlat = np.round(transformer.transform((xvals[0] + xvals[-1])/2.0,(yvals[0] + yvals[-1])/2.0 ),decimals = 7).tolist()
 
         if GranuleCatalog.FIVE_POINTS_PER_SIDE:
@@ -551,6 +510,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     GranuleCatalog.FIVE_POINTS_PER_SIDE = args.five_points_per_side
+    GranuleCatalog.DATA_VERSION = args.data_version
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
@@ -566,8 +526,8 @@ if __name__ == '__main__':
             args.features_per_file,
             args.catalog_dir
         )
+
         catalog.create(
-            args.data_version,
             args.chunk_by,
             args.dask_workers,
             granules_dir
