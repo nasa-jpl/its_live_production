@@ -7,7 +7,6 @@ Authors: Mark Fahnestock, Masha Liukis
 import argparse
 import dask
 from dask.diagnostics import ProgressBar
-from joblib import Parallel, delayed
 from datetime import datetime
 import geojson
 import h5py
@@ -18,7 +17,6 @@ import os
 import psutil
 import pyproj
 import s3fs
-import fsspec
 import sys
 import time
 from tqdm import tqdm
