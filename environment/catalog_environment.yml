@@ -1,0 +1,32 @@
+#
+# Configuration file to create conda environment to run catalog geojson code.
+#
+# To create conda environment, run command:
+#
+# $ conda env create -f catalog_environment.yml
+#
+# Followed by the following command to activate the environment:
+#
+# $ conda activate itslivecatalog
+#
+name: itslivecatalog
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python
+  - aiohttp
+  - dask
+  - numpy
+  - h5py
+  - h5netcdf
+  - pyproj
+  - xarray
+  - netcdf4
+  - fsspec
+  - requests
+  - pip
+  - pip:
+    - geojson
+    - awscli
