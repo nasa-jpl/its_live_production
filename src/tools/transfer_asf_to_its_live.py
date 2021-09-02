@@ -60,10 +60,13 @@ class ASFTransfer:
     # from the target filename
     POSTFIX_TO_RM = '_IL_ASF_OD'
 
-    def __init__(self, user: str, password: str, target_bucket: str, target_dir: str, processed_jobs_file: str):
-        self.hyp3 = sdk.HyP3(HYP3_AUTORIFT_API, user, password)
-        self.target_bucket = target_bucket
-        self.target_bucket_dir = target_dir
+    # HyP3 API access
+    HYP3 = None
+    TARGET_BUCKET = None
+    TARGET_BUCKET_DIR = None
+    PROCESSED_JOBS_FILE = None
+
+    def __init__(self, processed_jobs_file: str):
         self.processed_jobs_file = processed_jobs_file
 
     def sequential__call__(
@@ -98,7 +101,7 @@ class ASFTransfer:
 
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
             for id in job_ids[start:start+num_tasks]:
-                each_result, _ = self.copy_granule(id)
+                each_result, _ = ASFTransfer.copy_granule(id)
                 logging.info("-->".join(each_result))
                 ASFTransfer.PROCESSED_JOB_IDS.append(id)
 
@@ -136,11 +139,10 @@ class ASFTransfer:
         logging.info(f"{num_to_copy} out of {total_num_to_copy} granules to copy...")
 
         while num_to_copy > 0:
-        # while num_to_copy == total_num_to_copy:
             num_tasks = chunks_to_copy if num_to_copy > chunks_to_copy else num_to_copy
 
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
-            tasks = [dask.delayed(self.copy_granule)(id) for id in job_ids[start:start+num_tasks]]
+            tasks = [dask.delayed(ASFTransfer.copy_granule)(id) for id in job_ids[start:start+num_tasks]]
             assert len(tasks) == num_tasks
             results = None
 
@@ -150,7 +152,7 @@ class ASFTransfer:
                                        scheduler="processes",
                                        num_workers=num_dask_workers)
 
-            # logging.info(f"Results: {results}")
+            logging.info(f"Results: {results}")
             for each_result, id in results[0]:
                 logging.info("-->".join(each_result))
                 ASFTransfer.PROCESSED_JOB_IDS.append(id)
@@ -172,12 +174,13 @@ class ASFTransfer:
 
         return True
 
-    def copy_granule(self, job_id):
+    @staticmethod
+    def copy_granule(job_id):
         """
         Copy granule from source to target bucket if it does not exist in target
         bucket already.
         """
-        job = self.hyp3.get_job_by_id(job_id)
+        job = ASFTransfer.HYP3.get_job_by_id(job_id)
         msgs = [f'Processing {job}']
 
         if job.running():
@@ -192,8 +195,8 @@ class ASFTransfer:
                     lon = ds.img_pair_info.longitude[0]
                     msgs.append(f'Image center (lat, lon): ({lat}, {lon})')
 
-            target_prefix = point_to_prefix(self.target_bucket_dir, lat, lon)
-            bucket = boto3.resource('s3').Bucket(self.target_bucket)
+            target_prefix = point_to_prefix(ASFTransfer.TARGET_BUCKET_DIR, lat, lon)
+            bucket = boto3.resource('s3').Bucket(ASFTransfer.TARGET_BUCKET)
             target = f"{target_prefix}/{job.files[0]['filename']}"
 
             # Remove filename postfix which should not make it to the
@@ -212,7 +215,7 @@ class ASFTransfer:
                     target_key = target_key.replace('.nc', target_ext)
                     source_key = source_key.replace('.nc', target_ext)
 
-                if self.object_exists(bucket, target_key):
+                if ASFTransfer.object_exists(bucket, target_key):
                     msgs.append(f'WARNING: {bucket.name}/{target_key} already exists, skipping {job}')
 
                 else:
@@ -243,10 +246,14 @@ def main():
 
     args = parser.parse_args()
 
+    ASFTransfer.HYP3 = sdk.HyP3(HYP3_AUTORIFT_API, args.user, args.password)
+    ASFTransfer.TARGET_BUCKET = args.target_bucket
+    ASFTransfer.TARGET_BUCKET_DIR = args.dir
+
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
-    transfer = ASFTransfer(args.user, args.password, args.target_bucket, args.dir, args.output_job_file)
+    transfer = ASFTransfer(args.output_job_file)
     transfer(
         args.job_ids,
         args.exclude_job_file, # Exclude previously processed job IDs if any
