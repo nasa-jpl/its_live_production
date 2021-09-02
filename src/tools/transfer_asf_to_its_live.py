@@ -152,7 +152,6 @@ class ASFTransfer:
                                        scheduler="processes",
                                        num_workers=num_dask_workers)
 
-            logging.info(f"Results: {results}")
             for each_result, id in results[0]:
                 logging.info("-->".join(each_result))
                 ASFTransfer.PROCESSED_JOB_IDS.append(id)
