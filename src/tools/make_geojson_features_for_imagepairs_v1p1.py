@@ -228,6 +228,7 @@ class GranuleCatalog:
     """
     FIVE_POINTS_PER_SIDE = True
     DATA_VERSION = None
+    EXCLUDE_GRANULES_FILE = None
 
     def __init__(self, granules_file: str, features_per_file: int, catalog_dir: str):
         """
@@ -240,13 +241,25 @@ class GranuleCatalog:
         logging.info(f"Opening granules file: {granules_file}")
         with self.s3.open(granules_file, 'r') as ins3file:
             self.infiles = json.load(ins3file)
+            logging.info(f"Loaded {len(self.infiles)} granules from '{granules_file}'")
 
-        logging.info(f"Loaded {len(self.infiles)} granules from '{granules_file}'")
+        if GranuleCatalog.EXCLUDE_GRANULES_FILE is not None:
+            # Exclude known granules from new catalog geojson files
+            exclude_files = []
+            exclude_file_path = os.path.join(catalog_dir, GranuleCatalog.EXCLUDE_GRANULES_FILE)
+            logging.info(f"Opening file with granules to exclude: {exclude_file_path}")
+
+            with self.s3.open(exclude_file_path, 'r') as fhandle:
+                exclude_files = json.load(fhandle)
+                logging.info(f"Loaded {len(exclude_files)} granules from '{exclude_file_path}' to exclude ")
+
+                self.infiles = list(set(self.infiles).difference(exclude_files))
+                logging.info(f"{len(self.infiles)} new granules to catalog")
 
         self.features_per_file = features_per_file
         self.catalog_dir = catalog_dir
 
-    def create(self, chunk_size, num_dask_workers, granules_dir):
+    def create(self, chunk_size, num_dask_workers, granules_dir, file_start_index=0):
         """
         Create catalog geojson file.
         """
@@ -260,10 +273,10 @@ class GranuleCatalog:
             logging.info(f"Nothing to catalog, exiting.")
             return
 
-        start = 0               # Current start index into global list
-        read_num_files = 0      # Number of read files within the block
-        block_start = 0         # Current start index for the block to write to file
-        cum_read_num_files = 0  # Cumulative number of processed granules
+        start = 0                              # Current start index into global list
+        read_num_files = 0                     # Number of read files within the block
+        block_start = file_start_index         # Current start index for the block to write to file
+        cum_read_num_files = file_start_index  # Cumulative number of processed granules
 
         base_dir = os.path.basename(granules_dir)
 
@@ -474,13 +487,26 @@ if __name__ == '__main__':
                         action='store',
                         type=str,
                         default='skipped_granules_landsat.json',
-                        help='Filename to keep track of skipped duplicate granules [%(default)s], file is stored in "-granule_dir"')
+                        help='Filename to keep track of skipped duplicate granules [%(default)s], file is stored in "-catalog_dir"')
 
     parser.add_argument('-catalog_granules_file',
                         action='store',
                         type=str,
                         default='used_granules_landsat.json',
-                        help='Filename to keep track of granules used for the geojson catalog [%(default)s], file is stored in  "-granule_dir"')
+                        help='Filename to keep track of granules used for the geojson catalog [%(default)s], file is stored in  "-catalog_dir"')
+
+    parser.add_argument('-exclude_granules_file',
+                        action='store',
+                        type=str,
+                        default=None,
+                        help='Name of the file with granules to exclude from the geojson catalog [%(default)s], file is stored in  "-catalog_dir"')
+
+    parser.add_argument('-file_start_index',
+                        action='store',
+                        type=int,
+                        default=0,
+                        help="Start index to use when formatting first catalog geojson filename [%(default)d]. " \
+                             "Usefull if adding new granules to existing set of catalog geojson files.")
 
     parser.add_argument('-c', '--create_catalog_list',
                         action='store_true',
@@ -509,6 +535,7 @@ if __name__ == '__main__':
 
     GranuleCatalog.FIVE_POINTS_PER_SIDE = args.five_points_per_side
     GranuleCatalog.DATA_VERSION = args.data_version
+    GranuleCatalog.EXCLUDE_GRANULES_FILE = args.exclude_granules_file
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
@@ -528,10 +555,16 @@ if __name__ == '__main__':
         catalog.create(
             args.chunk_by,
             args.dask_workers,
-            granules_dir
+            granules_dir,
+            args.file_start_index
         )
 
     else:
+        # Check if catalog_granules_file exists - report to avoid overwrite
+        granules_file = s3_out.glob(os.path.join(args.catalog_dir, args.catalog_granules_file))
+        if len(granules_file):
+            raise RuntimeError(f"{os.path.join(args.catalog_dir, args.catalog_granules_file)} already exists.")
+
         # Create a list of granules to catalog and store it in S3 bucket
         # use a glob to list directory
         logging.info(f"Creating a list of granules to catalog")
