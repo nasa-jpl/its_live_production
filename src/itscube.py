@@ -342,10 +342,12 @@ class ITSCube:
         self.logger.info("Excluding known to datacube granules...")
         cube_granules = cube_ds[DataVars.URL].values.tolist()
         granules = set(found_urls).difference(cube_granules)
+        self.logger.info(f"Removed existing cube granules ({len(cube_granules)}): {len(granules)} granules left ")
 
         # Remove known empty granules (per cube) from found_urls
         self.skipped_empty_granules = json.loads(cube_ds.attrs[DataVars.SKIP_EMPTY_DATA])
         granules = granules.difference(self.skipped_empty_granules)
+        self.logger.info(f"Removed known empty data granules ({len(self.skipped_empty_granules)}): {len(granules)} granules left ")
 
         # Remove known wrong projection granules (per cube) from found_urls
         self.skipped_proj_granules = json.loads(cube_ds.attrs[DataVars.SKIP_WRONG_PROJECTION])
@@ -354,20 +356,22 @@ class ITSCube:
             known_granules.extend(self.skipped_proj_granules[each])
 
         granules = granules.difference(known_granules)
+        self.logger.info(f"Removed wrong projection granules ({len(known_granules)}): {len(granules)} granules left ")
 
         # Identify cube granules that are now skipped due to double middle date
         # in new found_urls granules
         cube_layers_to_delete = list(set(self.skipped_double_granules).intersection(cube_granules))
-        self.logger.info(f"After found_urls::skip_granules: {len(cube_layers_to_delete)} " \
+        self.logger.info(f"After found_urls::skipped_granules: {len(cube_layers_to_delete)} " \
                           f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
 
         # Remove known duplicate middle date granules from found_urls:
-        # if cube skipped granules don't appear in found_urls:skipped_granules
+        # if cube's skipped granules don't appear in found_urls:skipped_granules
         # for whatever reason (different start/end dates are used for cube update)
         # self.skipped_double_granules is populated by self.request_granules()
         # with skipped granules due to double date in "found_urls"
         cube_skipped_double_granules = json.loads(cube_ds.attrs[DataVars.SKIP_DUPLICATE_MID_DATE])
         granules = granules.difference(cube_skipped_double_granules)
+        self.logger.info(f"Removed cube's duplicate middle date granules ({len(cube_skipped_double_granules)}): {len(granules)} granules left ")
 
         # Check if there are any granules between existing cube layers and found_urls
         # that have duplicate middle date
@@ -376,7 +380,7 @@ class ITSCube:
 
         # Check if any of the skipped granules are in the cube
         cube_layers_to_delete.extend(list(set(cube_granules).intersection(skipped_granules)))
-        self.logger.info(f"After (cube+found_urls)::skip_granules: {len(cube_layers_to_delete)} " \
+        self.logger.info(f"After (cube+found_urls)::skipped_granules: {len(cube_layers_to_delete)} " \
                          f"existing datacube layers to delete due to duplicate middle_date: {cube_layers_to_delete}")
 
         # Merge two lists of skipped granules (for existing cube, new list
@@ -387,7 +391,6 @@ class ITSCube:
 
         # Skim down found_urls by newly skipped granules
         granules = list(granules.difference(self.skipped_double_granules))
-
         self.logger.info(f"Leaving {len(granules)} granules...")
 
         return granules, cube_layers_to_delete
@@ -481,21 +484,20 @@ class ITSCube:
 
         if len(s3_bucket) == 0:
             # If reading from the local directory, check if datacube store exists
-            if os.path.exists(input_dir):
+            if ITSCube.exists(input_dir, s3_bucket):
                 logging.info(f"Reading existing {input_dir}")
                 # Read dataset in
                 ds_from_zarr = xr.open_zarr(input_dir, decode_timedelta=False, consolidated=True)
 
-        else:
+        elif ITSCube.exists(input_dir, s3_bucket):
             # When datacube is in the AWS S3 bucket, check if it exists.
             cube_path = os.path.join(s3_bucket, input_dir)
+            logging.info(f"Reading existing {cube_path}")
+
+            # Open S3FS access to S3 bucket with input datacube
             s3_in = s3fs.S3FileSystem(anon=True)
-            cube_glob = s3_in.glob(cube_path)
-            if len(cube_glob):
-                logging.info(f"Reading exiting {cube_path}")
-                # Open S3FS access to S3 bucket with output granules
-                cube_store = s3fs.S3Map(root=cube_path, s3=s3_in, check=False)
-                ds_from_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True)
+            cube_store = s3fs.S3Map(root=cube_path, s3=s3_in, check=False)
+            ds_from_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True)
 
         if ds_from_zarr is None:
             raise RuntimeError(f"Provided input datacube {input_dir} does not exist (s3={s3_bucket})")
@@ -533,6 +535,8 @@ class ITSCube:
             TODO: This is a temporary solution to a very long time to open remote granules.
                   Should not be used when running the code in production mode.
         """
+        self.logger.info(f"Updating {os.path.join(output_bucket, output_dir)}")
+
         ITSCube.show_memory_usage('update()')
         s3, cube_store_in, cube_ds = ITSCube.init_input_store(output_dir, output_bucket)
 
@@ -560,6 +564,10 @@ class ITSCube:
         if len(found_urls) == 0:
             self.logger.info("No granules to update with, exiting.")
             return found_urls
+
+        cube_store_in = None
+        cube_ds = None
+        gc.collect()
 
         # If datacube resides in AWS S3 bucket, copy it locally - initial datacube to begin with
         if not os.path.exists(output_dir):
@@ -595,6 +603,11 @@ class ITSCube:
             if command_return.returncode != 0:
                 raise RuntimeError(f"Failed to copy {source_url} to {output_store}: {command_return.stdout}")
 
+        elif len(output_bucket):
+            # datacube exists on local file system even though S3 bucket for the
+            # datacube is provided.
+            raise RuntimeError(f'Local copy of {output_dir} already exists though {output_bucket} is provided, remove datacube first')
+
         # Delete identified layers of the cube
         if len(cube_layers_to_delete):
             ds_from_zarr = xr.open_zarr(output_dir, decode_timedelta=False, consolidated=True)
@@ -622,10 +635,7 @@ class ITSCube:
             shutil.rmtree(tmp_output_dir)
 
             ds_from_zarr = None
-
-        cube_store_in = None
-        cube_ds = None
-        gc.collect()
+            gc.collect()
 
         is_first_write = False
         start = 0
@@ -681,6 +691,8 @@ class ITSCube:
             TODO: This is a temporary solution to a very long time to open remote granules. Should not be used
                   when running the code at AWS.
         """
+        self.logger.info(f"Creating {os.path.join(output_bucket, output_dir)}")
+
         ITSCube.show_memory_usage('create()')
         ITSCube.init_output_store(output_dir)
 
@@ -2040,7 +2052,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-p', '--parallel',
         action='store_true',
-        help='enable sequential processing, default is to process all granules in parallel'
+        help='Enable parallel processing, default is to process all granules in parallel'
     )
     parser.add_argument(
         '-n', '--numberGranules',
@@ -2205,6 +2217,29 @@ if __name__ == '__main__':
         # resulting in as many error messages as there are files in Zarr store
         # to copy
 
+        # Remove Zarr store in S3 if it exists: updated Zarr, which is stored to the
+        # local file system before copying to the S3 bucket, might have different
+        # "sub-directory" structure. This will result in original "sub-directories"
+        # and "new" ones to co-exist for the same Zarr store. This doubles up
+        # the Zarr disk usage.
+        env_copy = os.environ.copy()
+        if ITSCube.exists(args.outputStore, args.outputBucket):
+            command_line = [
+                "aws", "s3", "rm", "--recursive",
+                os.path.join(args.outputBucket, args.outputStore)
+            ]
+            logging.info(' '.join(command_line))
+
+            command_return = subprocess.run(
+                command_line,
+                env=env_copy,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
+            if command_return.returncode != 0:
+                logging.error(f"Failed to remove original {args.outputStore} from {args.outputBucket}: {command_return.stdout}")
+
         # Enable conversion to NetCDF when the cube is created
         # Convert Zarr to NetCDF and copy to the bucket
         # nc_filename = args.outputStore.replace('.zarr', '.nc')
@@ -2218,7 +2253,6 @@ if __name__ == '__main__':
             [args.outputStore],
             ["--recursive"]
             ):
-            env_copy = os.environ.copy()
             if recursive_option is not None:
                 command_line = [
                     "aws", "s3", "cp", recursive_option,
