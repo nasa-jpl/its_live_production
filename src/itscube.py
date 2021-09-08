@@ -86,6 +86,9 @@ class ITSCube:
     # (LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc)
     DATE_FORMAT = "%Y%m%d"
 
+    # Date and time format for acquisition dates of img_info_pair
+    DATE_TIME_FORMAT = '%Y%m%dT%H:%M:%S'
+
     # Granules are written to the file in chunks to avoid out of memory issues.
     # Number of granules to write to the file at a time.
     NUM_GRANULES_TO_WRITE = 1000
@@ -618,7 +621,7 @@ class ITSCube:
 
             # Drop the layers
             # layers_mid_dates = ds_from_zarr[DataVars.MID_DATE].values[layers_bool_flag.values]
-            ds_from_zarr = ds_from_zarr.drop_isel(mid_date=layers_bool_flag.values)
+            dropped_ds = ds_from_zarr.drop_isel(mid_date=layers_bool_flag.values)
 
             tmp_output_dir = f"{output_dir}.original"
             self.logger.info(f"Moving original {output_dir} to {tmp_output_dir}")
@@ -626,15 +629,16 @@ class ITSCube:
 
             # Write updated datacube to original store location,
             # but at first re-chunk xr.Dataset to avoid errors
-            ds_from_zarr = ds_from_zarr.chunk({Coords.MID_DATE: ITSCube.NUM_GRANULES_TO_WRITE})
+            dropped_ds = dropped_ds.chunk({Coords.MID_DATE: ITSCube.NUM_GRANULES_TO_WRITE})
 
             self.logger.info(f"Saving updated {output_dir}")
-            zarr_to_netcdf.convert(ds_from_zarr, output_dir, ITSCube.NC_ENGINE)
+            dropped_ds.to_zarr(output_dir, encoding=zarr_to_netcdf.ENCODING_ZARR, consolidated=True)
 
             self.logger.info(f"Removing original {tmp_output_dir}")
             shutil.rmtree(tmp_output_dir)
 
             ds_from_zarr = None
+            dropped_ds   = None
             gc.collect()
 
         is_first_write = False
@@ -1040,11 +1044,18 @@ class ITSCube:
 
         # Consider granules with data only within target projection
         if str(int(ds_projection)) == self.projection:
-            mid_date = datetime.strptime(ds.img_pair_info.date_center, '%Y%m%d')
+            acq1_datetime = datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1], ITSCube.DATE_TIME_FORMAT)
+            mid_date = acq1_datetime + \
+                (datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2], ITSCube.DATE_TIME_FORMAT) - acq1_datetime)/2
 
-            # Add date separation in days as milliseconds for the middle date
-            # (avoid resolution issues for layers with the same middle date).
-            mid_date += timedelta(milliseconds=int(ds.img_pair_info.date_dt))
+            # Create unique "token" by using granule's centroid longitude/latitude to
+            # increase uniqueness of the mid_date for the layer (xarray: can't drop layers
+            # for the cube with mid_date dimension which contains non-unique values).
+            # Add the token as microseconds for the middle date: AAOOO
+            #
+            lat = int(np.abs(ds.img_pair_info.latitude))
+            lon = int(np.abs(ds.img_pair_info.longitude))
+            mid_date += timedelta(microseconds=int(f'{lat:02d}{lon:03d}'))
 
             # Define which points are within target polygon.
             mask_lon = (ds.x >= self.x.min) & (ds.x <= self.x.max)
@@ -2221,7 +2232,7 @@ if __name__ == '__main__':
         # local file system before copying to the S3 bucket, might have different
         # "sub-directory" structure. This will result in original "sub-directories"
         # and "new" ones to co-exist for the same Zarr store. This doubles up
-        # the Zarr disk usage.
+        # the Zarr disk usage in S3 bucket.
         env_copy = os.environ.copy()
         if ITSCube.exists(args.outputStore, args.outputBucket):
             command_line = [
