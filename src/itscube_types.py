@@ -25,9 +25,8 @@ class Coords:
     }
 
     DESCRIPTION = {
-        MID_DATE: "midpoint of image 1 and image 2 acquisition date with time " \
-            "separation (in days) between acquisition of image 1 and image 2 as " \
-            "milliseconds",
+        MID_DATE: "midpoint of image 1 and image 2 acquisition date and time " \
+            "with granule's centroid longitude and latitude as microseconds",
         X:  "x coordinate of projection",
         Y:  "y coordinate of projection"
     }
