@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import s3fs
 
 from grid import Bounds
 import itslive_utils
@@ -25,7 +26,7 @@ class CubeJson:
     ROI_PERCENT_COVERAGE = 'roi_percent_coverage'
     EPSG_SEPARATOR = ':'
     EPSG_PREFIX = 'EPSG'
-    NC_URL = 'nc_url'
+    URL = 'zarr_url'
     EXIST_FLAG = 'datacube_exist'
 
 
@@ -50,6 +51,9 @@ class DataCubeGlobalDefinition:
     # then generate all ROI!=0 datacubes.
     EPSG_TO_UPDATE = []
 
+    AWS_PREFIX = 'its-live-data.jpl.nasa.gov'
+    URL_PREFIX = 'http://its-live-data.jpl.nasa.gov.s3.amazonaws.com'
+
     def __init__(self, grid_size: int):
         """
         Initialize object.
@@ -57,18 +61,25 @@ class DataCubeGlobalDefinition:
         self.grid_size_str = f'{grid_size:04d}'
         self.grid_size = grid_size
 
-    def __call__(self, cube_file: str, datacube_nc_file: str, output_file: str):
+        # Collect existing datacubes in Zarr format
+        s3_out = s3fs.S3FileSystem(anon=True)
+
+        self.all_cubes = []
+        for each in s3_out.ls('its-live-data.jpl.nasa.gov/datacubes/v1/'):
+            cubes = s3_out.ls(each)
+            cubes = [each_cube for each_cube in cubes if each_cube.endswith('.zarr')]
+            self.all_cubes.extend(cubes)
+
+        self.all_cubes = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, DataCubeGlobalDefinition.URL_PREFIX) for each in self.all_cubes]
+        logging.info(f'Number of datacubes in Zarr format: {len(self.all_cubes)}')
+
+    def __call__(self, cube_file: str, output_file: str):
         """
         Insert datacube NetCDF S3 URL into datacube definition GeoJson and write
         it to provided output file.
         """
         # List of datacubes that had their URL updated
         num_cubes = 0
-
-        # Read existing datacube URLs
-        cubes_urls = None
-        with open(datacube_nc_file, 'r') as fhandle:
-            cubes_urls = [line.rstrip() for line in fhandle]
 
         with open(cube_file, 'r') as fhandle:
             cubes = json.load(fhandle)
@@ -151,13 +162,13 @@ class DataCubeGlobalDefinition:
                         mid_x, mid_y
                     )
 
-                    cube_filename = f"{DataCubeGlobalDefinition.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.nc"
+                    cube_filename = f"{DataCubeGlobalDefinition.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
                     logging.info(f'Cube name: {cube_filename}')
 
-                    cube_url = [each for each in cubes_urls if cube_filename in each]
+                    cube_url = [each for each in self.all_cubes if cube_filename in each]
                     if len(cube_url):
                         # The datacube NetCDF exists, update GeoJson
-                        each_cube[CubeJson.PROPERTIES][CubeJson.NC_URL] = cube_url[0]
+                        each_cube[CubeJson.PROPERTIES][CubeJson.URL] = cube_url[0]
                         each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 1
                         num_cubes += 1
 
@@ -172,7 +183,6 @@ class DataCubeGlobalDefinition:
 
 def main(
     cube_definition_file: str,
-    datacube_nc_file: str,
     grid_size: int,
     output_file: str):
     """
@@ -180,7 +190,7 @@ def main(
     datacube NetCDF S3 URLs.
     """
     update_urls = DataCubeGlobalDefinition(grid_size)
-    update_urls(cube_definition_file, datacube_nc_file, output_file)
+    update_urls(cube_definition_file, output_file)
 
 
 if __name__ == '__main__':
@@ -206,13 +216,6 @@ if __name__ == '__main__':
         action='store',
         default=None,
         help="GeoJson file that stores cube polygon definitions [%(default)s]."
-    )
-    parser.add_argument(
-        '-n', '--ncFile',
-        type=str,
-        action='store',
-        default=None,
-        help="File with NetCDF S3 URLs for existing datacubes [%(default)s]"
     )
     parser.add_argument(
         '-g', '--gridSize',
@@ -245,7 +248,6 @@ if __name__ == '__main__':
 
     main(
         args.cubeDefinitionFile,
-        args.ncFile,
         args.gridSize,
         args.outputFile)
 
