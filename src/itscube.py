@@ -564,6 +564,8 @@ class ITSCube:
 
         # Remove already processed granules
         found_urls, cube_layers_to_delete = self.exclude_processed_granules(found_urls, cube_ds)
+        num_cube_layers = len(cube_ds.mid_date.values)
+
         if len(found_urls) == 0:
             self.logger.info("No granules to update with, exiting.")
             return found_urls
@@ -594,6 +596,7 @@ class ITSCube:
                 output_dir
             ]
 
+            self.logger.info(f"Creating local copy of {source_url}: {output_dir}")
             self.logger.info(' '.join(command_line))
 
             command_return = subprocess.run(
@@ -611,37 +614,48 @@ class ITSCube:
             # datacube is provided.
             raise RuntimeError(f'Local copy of {output_dir} already exists though {output_bucket} is provided, remove datacube first')
 
-        # Delete identified layers of the cube
-        if len(cube_layers_to_delete):
-            ds_from_zarr = xr.open_zarr(output_dir, decode_timedelta=False, consolidated=True)
-            self.logger.info(f"Deleting {len(cube_layers_to_delete)} layers from total {len(ds_from_zarr.mid_date.values)} layers of {output_dir}")
-
-            # Identify layer indices that correspond to granule urls
-            layers_bool_flag = ds_from_zarr[DataVars.URL].isin(cube_layers_to_delete)
-
-            # Drop the layers
-            # layers_mid_dates = ds_from_zarr[DataVars.MID_DATE].values[layers_bool_flag.values]
-            dropped_ds = ds_from_zarr.drop_isel(mid_date=layers_bool_flag.values)
-
-            tmp_output_dir = f"{output_dir}.original"
-            self.logger.info(f"Moving original {output_dir} to {tmp_output_dir}")
-            os.renames(output_dir, tmp_output_dir)
-
-            # Write updated datacube to original store location,
-            # but at first re-chunk xr.Dataset to avoid errors
-            dropped_ds = dropped_ds.chunk({Coords.MID_DATE: ITSCube.NUM_GRANULES_TO_WRITE})
-
-            self.logger.info(f"Saving updated {output_dir}")
-            dropped_ds.to_zarr(output_dir, encoding=zarr_to_netcdf.ENCODING_ZARR, consolidated=True)
-
-            self.logger.info(f"Removing original {tmp_output_dir}")
-            shutil.rmtree(tmp_output_dir)
-
-            ds_from_zarr = None
-            dropped_ds   = None
-            gc.collect()
-
+        # Delete identified layers of the cube if any
         is_first_write = False
+
+        if len(cube_layers_to_delete):
+            self.logger.info(f"Deleting {len(cube_layers_to_delete)} layers from total {num_cube_layers} layers of {output_dir}")
+
+            if len(cube_layers_to_delete) == num_cube_layers:
+                # If all layers need to be deleted, just delete the cube and start from
+                # the scratch
+                is_first_write = True
+                self.logger.info(f"Deleting existing {output_dir}")
+                shutil.rmtree(output_dir)
+
+            else:
+                # Delete identified layers
+                ds_from_zarr = xr.open_zarr(output_dir, decode_timedelta=False, consolidated=True)
+
+                # Identify layer indices that correspond to granule urls
+                layers_bool_flag = ds_from_zarr[DataVars.URL].isin(cube_layers_to_delete)
+
+                # Drop the layers
+                # layers_mid_dates = ds_from_zarr[DataVars.MID_DATE].values[layers_bool_flag.values]
+                dropped_ds = ds_from_zarr.drop_isel(mid_date=layers_bool_flag.values)
+
+                tmp_output_dir = f"{output_dir}.original"
+                self.logger.info(f"Moving original {output_dir} to {tmp_output_dir}")
+                os.renames(output_dir, tmp_output_dir)
+
+                # Write updated datacube to original store location,
+                # but at first re-chunk xr.Dataset to avoid errors
+                dropped_ds = dropped_ds.chunk({Coords.MID_DATE: ITSCube.NUM_GRANULES_TO_WRITE})
+
+                self.logger.info(f"Saving updated {output_dir}")
+                dropped_ds.to_zarr(output_dir, encoding=zarr_to_netcdf.ENCODING_ZARR, consolidated=True)
+
+                self.logger.info(f"Removing original {tmp_output_dir}")
+                shutil.rmtree(tmp_output_dir)
+
+                ds_from_zarr = None
+                dropped_ds   = None
+                gc.collect()
+
         start = 0
         num_to_process = len(found_urls)
 
