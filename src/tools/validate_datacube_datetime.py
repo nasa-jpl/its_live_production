@@ -18,7 +18,7 @@ from itscube_types import DataVars
 
 # All datetime objects are expected to be later than this date
 START_DATETIME = np.datetime64("1984-01-01")
-
+ERROR_KEYWORD = 'ERROR: '
 
 def validate_layers_datetime(cube_url: str, s3_in):
     """
@@ -114,6 +114,7 @@ def validate_min_datetime(cube_url: str, s3_in):
     """
     msgs = [f'Processing {cube_url}']
 
+
     try:
         #
         cube_store = s3fs.S3Map(root=cube_url, s3=s3_in, check=False)
@@ -121,26 +122,37 @@ def validate_min_datetime(cube_url: str, s3_in):
             # Make sure mid_date and date_center agree at date() level
             values = ds.mid_date.values
             if values.min() < START_DATETIME:
-                msgs.append(f"ERROR: Invalid datetime for mid_date: {values.min()}")
+                if ERROR_KEYWORD not in msgs:
+                    msgs.append(ERROR_KEYWORD)
+
+                msgs.append(f"Invalid datetime for mid_date: {values.min()}")
 
             values = ds.date_center.values
             if values.min() < START_DATETIME:
-                msgs.append(f"ERROR: Invalid datetime for date_center: {values.min()}")
+                if ERROR_KEYWORD not in msgs:
+                    msgs.append(ERROR_KEYWORD)
+
+                msgs.append(f"Invalid datetime for date_center: {values.min()}")
 
             values = ds.acquisition_date_img1.values
             if values.min() < START_DATETIME:
-                msgs.append(f"ERROR: Invalid datetime for acquisition_date_img1: {values.min()}")
+                if ERROR_KEYWORD not in msgs:
+                    msgs.append(ERROR_KEYWORD)
+
+                msgs.append(f"Invalid datetime for acquisition_date_img1: {values.min()}")
 
             values = ds.acquisition_date_img2.values
             if values.min() < START_DATETIME:
+                if ERROR_KEYWORD not in msgs:
+                    msgs.append(ERROR_KEYWORD)
+
                 msgs.append(f"Invalid datetime for acquisition_date_img2: {values.min()}")
-                granule_urls = ds.granule_url.values
 
     except OverflowError as exc:
-        msgs.append(f"EXCEPTION: processing {cube_url}: {exc}")
+        msgs.append(f"EXCEPTION: {exc}")
 
     except Exception as exc:
-        msgs.append(f"UNEXPECTED_EXCEPTION: processing {cube_url}: {exc}")
+        msgs.append(f"UNEXPECTED_EXCEPTION: {exc}")
 
     return msgs
 
