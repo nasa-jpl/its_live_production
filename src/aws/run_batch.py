@@ -204,7 +204,7 @@ class DataCubeBatch:
                                 'attempts': 1
                             },
                             timeout={
-                                'attemptDurationSeconds': 21600
+                                'attemptDurationSeconds': 86400
                             }
                         )
 
@@ -297,7 +297,7 @@ if __name__ == '__main__':
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='datacubes/v01',
+        default='datacubes/v1',
         help="Destination S3 bucket for the datacubes [%(default)s]"
     )
     parser.add_argument(
