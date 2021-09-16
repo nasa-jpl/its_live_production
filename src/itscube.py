@@ -2049,6 +2049,34 @@ class ITSCube:
                 col_wrap=5,
                 levels=100)
 
+    @staticmethod
+    def validate_cube_datetime(ds: xr.Dataset, start_date: str, cube_url: str):
+        """
+        Validate datetime objects of the cube against start_date of the cube.
+        This check is introduced to capture corrupted datacubes as early as
+        possible in the cube generation.
+        """
+        # ATTN: This checking assumes that start_date corresponds to the start
+        # date of the data used to create the datacube
+        start_date = np.datetime64(start_date)
+        logging.info(f"Validating datetime objects for {cube_url}")
+
+        values = ds.acquisition_date_img1.values
+        if values.min() < start_date:
+            raise RuntimeError(f"Unexpected acquisition_date_img1: {values.min()}")
+
+        values = ds.acquisition_date_img2.values
+        if values.min() < start_date:
+            raise RuntimeError(f"Unexpected acquisition_date_img2: {values.min()}")
+
+        values = ds.date_center.values
+        if values.min() < start_date:
+            raise RuntimeError(f"Unexpected date_center: {values.min()}")
+
+        values = ds.mid_date.values
+        if values.min() < start_date:
+            raise RuntimeError(f"Unexpected mid_date: {values.min()}")
+
 
 if __name__ == '__main__':
     # Since port forwarding is not working on EC2 to run jupyter lab for now,
@@ -2246,24 +2274,8 @@ if __name__ == '__main__':
 
     if not args.disableCubeValidation and os.path.exists(args.outputStore):
         with xr.open_zarr(args.outputStore, decode_timedelta=False, consolidated=True) as ds:
-            start_date = np.datetime64(args.searchAPIStartDate)
-            logging.info(f"Validating datetime objects for generated {args.outputStore}")
+            ITSCube.validate_cube_datetime(ds, args.searchAPIStartDate, args.outputStore)
 
-            values = ds.acquisition_date_img1.values
-            if values.min() < start_date:
-                raise RuntimeError(f"Unexpected acquisition_date_img1: {values.min()}")
-
-            values = ds.acquisition_date_img2.values
-            if values.min() < start_date:
-                raise RuntimeError(f"Unexpected acquisition_date_img2: {values.min()}")
-
-            values = ds.date_center.values
-            if values.min() < start_date:
-                raise RuntimeError(f"Unexpected date_center: {values.min()}")
-
-            values = ds.mid_date.values
-            if values.min() < start_date:
-                raise RuntimeError(f"Unexpected mid_date: {values.min()}")
         gc.collect()
 
     if os.path.exists(args.outputStore) and len(args.outputBucket):
@@ -2292,7 +2304,7 @@ if __name__ == '__main__':
                 stderr=subprocess.STDOUT
             )
             if command_return.returncode != 0:
-                logging.error(f"Failed to remove original {args.outputStore} from {args.outputBucket}: {command_return.stdout}")
+                raise RuntimeError(f"Failed to remove original {args.outputStore} from {args.outputBucket}: {command_return.stdout}")
 
         # Enable conversion to NetCDF when the cube is created
         # Convert Zarr to NetCDF and copy to the bucket
@@ -2334,6 +2346,19 @@ if __name__ == '__main__':
             )
             if command_return.returncode != 0:
                 raise RuntimeError(f"Failed to copy {each_input} to {args.outputBucket}: {command_return.stdout}")
+
+            if not args.disableCubeValidation:
+                s3_datacube = os.path.join(args.outputBucket, os.path.basename(args.outputStore))
+                logging.info(f"Opening {s3_datacube} for validation")
+
+                # Validate copied to S3 datacube
+                s3_in = s3fs.S3FileSystem(anon=True)
+                cube_store = s3fs.S3Map(root=s3_datacube, s3=s3_in, check=False)
+                with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
+                    ITSCube.validate_cube_datetime(ds, args.searchAPIStartDate, s3_datacube)
+
+                gc.collect()
+
 
         # Remove locally written Zarr store if target location is AWS S3 bucket.
         # This is to eliminate out of disk space failures when the same EC2 instance is
