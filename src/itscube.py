@@ -2335,7 +2335,7 @@ if __name__ == '__main__':
         # Remove locally written Zarr store.
         # This is to eliminate out of disk space failures when the same EC2 instance is
         # being re-used by muliple Batch jobs.
-        if len(args.outputBucket):
+        if len(args.outputBucket) and os.path.exists(args.outputStore):
             logging.info(f"Removing local copy of {args.outputStore}")
             shutil.rmtree(args.outputStore)
 
