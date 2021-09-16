@@ -463,7 +463,7 @@ class ITSCube:
         # Check if the datacube is in the S3 bucket
         if len(s3_bucket):
             cube_path = os.path.join(s3_bucket, output_dir)
-            s3 = s3fs.S3FileSystem(anon=True)
+            s3 = s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
             cube_glob = s3.glob(cube_path)
             if len(cube_glob):
                 cube_exists = True
@@ -498,7 +498,7 @@ class ITSCube:
             logging.info(f"Reading existing {cube_path}")
 
             # Open S3FS access to S3 bucket with input datacube
-            s3_in = s3fs.S3FileSystem(anon=True)
+            s3_in = s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
             cube_store = s3fs.S3Map(root=cube_path, s3=s3_in, check=False)
             ds_from_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True)
 
@@ -591,7 +591,7 @@ class ITSCube:
                 source_url = ITSCube.S3_PREFIX + source_url
 
             command_line = [
-                "aws", "s3", "cp", "--recursive",
+                "awsv2", "s3", "cp", "--recursive",
                 source_url,
                 output_dir
             ]
@@ -2272,68 +2272,47 @@ if __name__ == '__main__':
 
     ITSCube.show_memory_usage('at the end of datacube generation')
 
-    if not args.disableCubeValidation and os.path.exists(args.outputStore):
-        with xr.open_zarr(args.outputStore, decode_timedelta=False, consolidated=True) as ds:
-            ITSCube.validate_cube_datetime(ds, args.searchAPIStartDate, args.outputStore)
+    try:
+        if not args.disableCubeValidation and os.path.exists(args.outputStore):
+            with xr.open_zarr(args.outputStore, decode_timedelta=False, consolidated=True) as ds:
+                ITSCube.validate_cube_datetime(ds, args.searchAPIStartDate, args.outputStore)
 
-        gc.collect()
+            gc.collect()
 
-    if os.path.exists(args.outputStore) and len(args.outputBucket):
-        # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
-        # resulting in as many error messages as there are files in Zarr store
-        # to copy
+        if os.path.exists(args.outputStore) and len(args.outputBucket):
+            # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
+            # resulting in as many error messages as there are files in Zarr store
+            # to copy
 
-        # Remove Zarr store in S3 if it exists: updated Zarr, which is stored to the
-        # local file system before copying to the S3 bucket, might have different
-        # "sub-directory" structure. This will result in original "sub-directories"
-        # and "new" ones to co-exist for the same Zarr store. This doubles up
-        # the Zarr disk usage in S3 bucket.
-        env_copy = os.environ.copy()
-        if ITSCube.exists(args.outputStore, args.outputBucket):
+            # Remove Zarr store in S3 if it exists: updated Zarr, which is stored to the
+            # local file system before copying to the S3 bucket, might have different
+            # "sub-directory" structure. This will result in original "sub-directories"
+            # and "new" ones to co-exist for the same Zarr store. This doubles up
+            # the Zarr disk usage in S3 bucket.
+            env_copy = os.environ.copy()
+            if ITSCube.exists(args.outputStore, args.outputBucket):
+                command_line = [
+                    "awsv2", "s3", "rm", "--recursive",
+                    os.path.join(args.outputBucket, args.outputStore)
+                ]
+                logging.info(' '.join(command_line))
+
+                command_return = subprocess.run(
+                    command_line,
+                    env=env_copy,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT
+                )
+                if command_return.returncode != 0:
+                    raise RuntimeError(f"Failed to remove original {args.outputStore} from {args.outputBucket}: {command_return.stdout}")
+
             command_line = [
-                "aws", "s3", "rm", "--recursive",
-                os.path.join(args.outputBucket, args.outputStore)
+                "awsv2", "s3", "cp", "--recursive",
+                args.outputStore,
+                os.path.join(args.outputBucket, os.path.basename(args.outputStore)),
+                "--acl", "bucket-owner-full-control"
             ]
-            logging.info(' '.join(command_line))
-
-            command_return = subprocess.run(
-                command_line,
-                env=env_copy,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT
-            )
-            if command_return.returncode != 0:
-                raise RuntimeError(f"Failed to remove original {args.outputStore} from {args.outputBucket}: {command_return.stdout}")
-
-        # Enable conversion to NetCDF when the cube is created
-        # Convert Zarr to NetCDF and copy to the bucket
-        # nc_filename = args.outputStore.replace('.zarr', '.nc')
-        # zarr_to_netcdf.main(args.outputStore, nc_filename, ITSCube.NC_ENGINE)
-        # ITSCube.show_memory_usage('after Zarr to NetCDF conversion')
-        for each_input, each_output, recursive_option in zip(
-            # [nc_filename, args.outputStore],
-            # [nc_filename, args.outputStore],
-            # [None,  "--recursive"]
-            [args.outputStore],
-            [args.outputStore],
-            ["--recursive"]
-            ):
-            if recursive_option is not None:
-                command_line = [
-                    "aws", "s3", "cp", recursive_option,
-                    each_input,
-                    os.path.join(args.outputBucket, os.path.basename(each_output)),
-                    "--acl", "bucket-owner-full-control"
-                ]
-
-            else:
-                command_line = [
-                    "aws", "s3", "cp",
-                    each_input,
-                    os.path.join(args.outputBucket, os.path.basename(each_output)),
-                    "--acl", "bucket-owner-full-control"
-                ]
 
             logging.info(' '.join(command_line))
 
@@ -2345,26 +2324,20 @@ if __name__ == '__main__':
                 stderr=subprocess.STDOUT
             )
             if command_return.returncode != 0:
-                raise RuntimeError(f"Failed to copy {each_input} to {args.outputBucket}: {command_return.stdout}")
+                raise RuntimeError(f"Failed to copy {args.outputStore} to {args.outputBucket}: {command_return.stdout}")
 
             if not args.disableCubeValidation:
-                s3_datacube = os.path.join(args.outputBucket, os.path.basename(args.outputStore))
-                logging.info(f"Opening {s3_datacube} for validation")
+                # Validate just copied to S3 datacube
+                s3_in, cube_store, ds_from_zarr = ITSCube.init_input_store(args.outputStore, args.outputBucket)
+                ITSCube.validate_cube_datetime(ds_from_zarr, args.searchAPIStartDate, os.path.join(args.outputBucket, args.outputStore))
 
-                # Validate copied to S3 datacube
-                s3_in = s3fs.S3FileSystem(anon=True)
-                cube_store = s3fs.S3Map(root=s3_datacube, s3=s3_in, check=False)
-                with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
-                    ITSCube.validate_cube_datetime(ds, args.searchAPIStartDate, s3_datacube)
-
-                gc.collect()
-
-
-        # Remove locally written Zarr store if target location is AWS S3 bucket.
+    finally:
+        # Remove locally written Zarr store.
         # This is to eliminate out of disk space failures when the same EC2 instance is
         # being re-used by muliple Batch jobs.
-        logging.info(f"Removing local copy of {args.outputStore}")
-        shutil.rmtree(args.outputStore)
+        if len(args.outputBucket):
+            logging.info(f"Removing local copy of {args.outputStore}")
+            shutil.rmtree(args.outputStore)
 
     # Write cube data to the NetCDF file
     # cube.to_netcdf('test_v_cube.nc')
