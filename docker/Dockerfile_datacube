@@ -46,8 +46,7 @@ RUN conda env create -f itslive/env/cube_environment.yml && \
     conda clean -afy && \
     conda activate itslivecube && \
     sed -i 's/conda activate base/conda activate itslivecube/g' /home/conda/.profile && \
-    mkdir /home/conda/.aws && \
-    cat itslive/env/aws_config >> /home/conda/.aws/config
+    awsv2 --install
 
 # Set directory and entrypoint
 WORKDIR /home/conda
