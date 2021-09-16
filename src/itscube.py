@@ -1435,7 +1435,7 @@ class ITSCube:
             self.logger.info('No layers to combine, continue')
             return wrote_layers
 
-        ITSCube.show_memory_usage('before combining layers')
+        # ITSCube.show_memory_usage('before combining layers')
         wrote_layers = True
 
         start_time = timeit.default_timer()
@@ -1868,7 +1868,7 @@ class ITSCube:
 
         time_delta = timeit.default_timer() - start_time
         self.logger.info(f"Combined {len(self.urls)} layers (took {time_delta} seconds)")
-        ITSCube.show_memory_usage('after combining layers')
+        # ITSCube.show_memory_usage('after combining layers')
 
         compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
         compression = {"compressor": compressor}
@@ -2145,6 +2145,12 @@ if __name__ == '__main__':
         default=None,
         help='Stop date in YYYY-MM-DD format to pass to search API query to get velocity pair granules'
     )
+    parser.add_argument(
+        '--disableCubeValidation',
+        action='store_true',
+        default=False,
+        help='Disable datetime validation for created datacube. This is to identify corrupted Zarr stores at the time of creation.'
+    )
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
     group = parser.add_mutually_exclusive_group()
@@ -2197,6 +2203,7 @@ if __name__ == '__main__':
 
     # Record used package versions
     cube.logger.info(f"Command: {sys.argv}")
+    cube.logger.info(f"Command args: {args}")
     cube.logger.info(f"{xr.show_versions()}")
     cube.logger.info(f"s3fs: {s3fs.__version__}")
 
@@ -2236,6 +2243,28 @@ if __name__ == '__main__':
     gc.collect()
 
     ITSCube.show_memory_usage('at the end of datacube generation')
+
+    if not args.disableCubeValidation and os.path.exists(args.outputStore):
+        with xr.open_zarr(args.outputStore, decode_timedelta=False, consolidated=True) as ds:
+            start_date = np.datetime64(args.searchAPIStartDate)
+            logging.info(f"Validating datetime objects for generated {args.outputStore}")
+
+            values = ds.acquisition_date_img1.values
+            if values.min() < start_date:
+                raise RuntimeError(f"Unexpected acquisition_date_img1: {values.min()}")
+
+            values = ds.acquisition_date_img2.values
+            if values.min() < start_date:
+                raise RuntimeError(f"Unexpected acquisition_date_img2: {values.min()}")
+
+            values = ds.date_center.values
+            if values.min() < start_date:
+                raise RuntimeError(f"Unexpected date_center: {values.min()}")
+
+            values = ds.mid_date.values
+            if values.min() < start_date:
+                raise RuntimeError(f"Unexpected mid_date: {values.min()}")
+        gc.collect()
 
     if os.path.exists(args.outputStore) and len(args.outputBucket):
         # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
