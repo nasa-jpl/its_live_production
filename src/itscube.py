@@ -2333,7 +2333,7 @@ if __name__ == '__main__':
                 stderr=subprocess.STDOUT
             )
             if command_return.returncode != 0:
-                logging.error(f"Failed to copy {each_input} to {args.outputBucket}: {command_return.stdout}")
+                raise RuntimeError(f"Failed to copy {each_input} to {args.outputBucket}: {command_return.stdout}")
 
         # Remove locally written Zarr store if target location is AWS S3 bucket.
         # This is to eliminate out of disk space failures when the same EC2 instance is
