@@ -2324,7 +2324,9 @@ if __name__ == '__main__':
                 stderr=subprocess.STDOUT
             )
             if command_return.returncode != 0:
-                raise RuntimeError(f"Failed to copy {args.outputStore} to {args.outputBucket}: {command_return.stdout}")
+                # Report the whole stdout stream as one logging message
+                logging.error(f"Failed to copy {args.outputStore} to {args.outputBucket} with returncode={command_return.returncode}: {command_return.stdout}")
+                raise RuntimeError(f"Failed to copy {args.outputStore} to {args.outputBucket} with command.returncode={command_return.returncode}")
 
             if not args.disableCubeValidation:
                 # Validate just copied to S3 datacube
