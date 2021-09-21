@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import os
+from pathlib import Path
 
 from grid import Bounds
 import itslive_utils
@@ -46,6 +47,10 @@ class DataCubeBatch:
     # List of EPSG codes to generate datacubes for. If this list is empty,
     # then generate all ROI!=0 datacubes.
     EPSG_TO_GENERATE = []
+
+    # List of EPSG codes to exclude from datacubes generation. If this list is empty,
+    # then generate all ROI!=0 datacubes.
+    EPSG_TO_EXCLUDE = []
 
     # List of datacube filenames to generate if only specific datacubes should be generated.
     # If an empty list then generate all qualifying datacubes.
@@ -130,8 +135,14 @@ class DataCubeBatch:
                     # Extract int EPSG code
                     epsg_code = epsg.replace(CubeJson.EPSG_PREFIX, '')
 
+                    # Include only specific EPSG code(s) if specified
                     if len(DataCubeBatch.EPSG_TO_GENERATE) and \
                        epsg_code not in DataCubeBatch.EPSG_TO_GENERATE:
+                        continue
+
+                    # Exclude specific EPSG code(s) if specified
+                    if len(DataCubeBatch.EPSG_TO_EXCLUDE) and \
+                       epsg_code in DataCubeBatch.EPSG_TO_EXCLUDE:
                         continue
 
                     coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
@@ -297,7 +308,7 @@ if __name__ == '__main__':
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='datacubes/v1',
+        default='datacubes/v01',
         help="Destination S3 bucket for the datacubes [%(default)s]"
     )
     parser.add_argument(
@@ -359,11 +370,30 @@ if __name__ == '__main__':
         default='',
         help="Path token to be present in datacube S3 target path in order for the datacube to be generated [%(default)s]."
     )
-    parser.add_argument(
+
+    # One of --processCubes or --processCubesFile options is allowed for the datacube names
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         '--processCubes',
         type=str,
+        action='store',
         default='[]',
-        help="JSON list of datacube filenames to generate [%(default)s]."
+        help="JSON list of filenames to generate [%(default)s]."
+    )
+    group.add_argument(
+        '--processCubesFile',
+        type=Path,
+        action='store',
+        default=None,
+        help="File that contains JSON list of filenames for datacube to generate [%(default)s]."
+    )
+
+    parser.add_argument(
+        '--excludeEPSG',
+        type=str,
+        action='store',
+        default=None,
+        help="JSON list of EPSG codes to exclude from the datacube generation [%(default)s]"
     )
 
     args = parser.parse_args()
@@ -374,10 +404,32 @@ if __name__ == '__main__':
         logging.info(f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes")
         DataCubeBatch.EPSG_TO_GENERATE = epsg_codes
 
+    epsg_codes = list(map(str, json.loads(args.excludeEPSG))) if args.excludeEPSG is not None else None
+    if epsg_codes and len(epsg_codes):
+        logging.info(f"Got EPSG codes to exclude: {epsg_codes}")
+        DataCubeBatch.EPSG_TO_EXCLUDE = epsg_codes
+
+    # Make sure there is no overlap in EPSG_TO_GENERATE and EPSG_TO_EXCLUDE
+    diff = set(DataCubeBatch.EPSG_TO_GENERATE).intersection(DataCubeBatch.EPSG_TO_EXCLUDE)
+    if len(diff):
+        raise RuntimeError(f"The same code is specified for DataCubeBatch.EPSG_TO_EXCLUDE={DataCubeBatch.EPSG_TO_EXCLUDE} and DataCubeBatch.EPSG_TO_GENERATE={DataCubeBatch.EPSG_TO_GENERATE}")
+
     DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
     DataCubeBatch.HTTP_PREFIX       = args.urlPath
     DataCubeBatch.PATH_TOKEN        = args.pathToken
-    DataCubeBatch.CUBES_TO_GENERATE = json.loads(args.processCubes)
+
+    if args.processCubesFile:
+        # Check for this option first as another mutually exclusive option has a default value
+        DataCubeBatch.CUBES_TO_GENERATE = args.processCubesFile.read_text().split('\n')
+        # Replace each path by the datacube basename
+        DataCubeBatch.CUBES_TO_GENERATE = [os.path.basename(each) for each in DataCubeBatch.CUBES_TO_GENERATE if len(each)]
+        logging.info(f"Found {len(DataCubeBatch.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubesFile}")
+
+    elif args.processCubes:
+        DataCubeBatch.CUBES_TO_GENERATE = json.loads(args.processCubes)
+        if len(DataCubeBatch.CUBES_TO_GENERATE):
+            logging.info(f"Found {len(DataCubeBatch.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubes}")
+
 
     main(
         args.dry,
