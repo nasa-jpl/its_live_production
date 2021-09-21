@@ -10,6 +10,29 @@
 # that stores log streams for all exported Batch jobs:
 #
 # find . -type d -exec ~/sort_batch_log_events.sh \{\} \;
+#
+# Later on useful commands to sort logs out:
+#
+# grep Traceback *log_group
+# ==========================
+# >find . -type f -exec grep -qiF 'Failed to copy' {} \; -exec mv {} failed_to_copy \;
+#
+# Get list of S3 datacubes to delete
+# >grep Creating failed_to_copy/* | awk -F'Creating ' '{print $NF}' >& 3413_failed_datacubes.txt
+#
+# >grep 'Number of found by API granules: 0' *log | wc -l
+# >find . -type f -exec grep -qiF 'Number of found by API granules: 0' {} \; -exec mv {} zero_granules_by_searchAPI \;
+
+# >find . -type f -exec grep -qiF 'Done' {} \; -exec mv {} done \;
+
+# Jobs that created cubes
+# >find done -type f -exec grep -qiF 'Wrote' {} \; -exec mv {} wrote_cubes \;
+
+# How many jobs wrote any layers
+# >grep Wrote *log | wc -l
+
+# List S3 URLs for cubes that failed to copy
+# grep Creating failed_to_copy/* | awk -F'Creating ' '{print $NF}' >> ../landsat_failed_to_copy.txt
 
 echo $1
 # Actual exported Batch log file archive
