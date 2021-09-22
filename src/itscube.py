@@ -89,7 +89,8 @@ class ITSCube:
     DATE_FORMAT = "%Y%m%d"
 
     # Date and time format for acquisition dates of img_info_pair
-    DATE_TIME_FORMAT = '%Y%m%dT%H:%M:%S'
+    DATE_TIME_NO_MICROSECS_FORMAT = '%Y%m%dT%H:%M:%S'
+    DATE_TIME_FORMAT = '%Y%m%dT%H:%M:%S.%f'
 
     # Granules are written to the file in chunks to avoid out of memory issues.
     # Number of granules to write to the file at a time.
@@ -1002,8 +1003,13 @@ class ITSCube:
                         value = datetime.strptime(value[0:8], '%Y%m%d')
 
                     elif len(value) > 8:
-                        # Extract date and time (20200617T00:00:00)
-                        value = datetime.strptime(value, '%Y%m%dT%H:%M:%S')
+                        if '.' in value:
+                            # Extract date and time with microseconds (20200617T00:00:00.000000)
+                            value = datetime.strptime(value, ITSCube.DATE_TIME_FORMAT)
+
+                        else:
+                            # Extract date and time (20200617T00:00:00)
+                            value = datetime.strptime(value, '%Y%m%dT%H:%M:%S')
 
                 except ValueError as exc:
                     raise RuntimeError(f"Error converting {value} to date format '%Y%m%d': {exc} for {var_name}.{attr_name} in {ds_url}")
@@ -1067,9 +1073,19 @@ class ITSCube:
 
         # Consider granules with data only within target projection
         if str(int(ds_projection)) == self.projection:
-            acq1_datetime = datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1], ITSCube.DATE_TIME_FORMAT)
-            mid_date = acq1_datetime + \
-                (datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2], ITSCube.DATE_TIME_FORMAT) - acq1_datetime)/2
+            mid_date = None
+            try:
+                # Old format that didn't include microseconds
+                acq1_datetime = datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1], ITSCube.DATE_TIME_NO_MICROSECS_FORMAT)
+                mid_date = acq1_datetime + \
+                    (datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2], ITSCube.DATE_TIME_NO_MICROSECS_FORMAT) - acq1_datetime)/2
+
+            except ValueError:
+                # Use new format that includes microseconds
+                acq1_datetime = datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1], ITSCube.DATE_TIME_FORMAT)
+                mid_date = acq1_datetime + \
+                    (datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2], ITSCube.DATE_TIME_FORMAT) - acq1_datetime)/2
+
 
             # Create unique "token" by using granule's centroid longitude/latitude to
             # increase uniqueness of the mid_date for the layer (xarray: can't drop layers
