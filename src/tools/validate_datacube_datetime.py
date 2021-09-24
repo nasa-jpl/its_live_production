@@ -7,6 +7,7 @@ Authors: Masha Liukis
 import argparse
 import dask
 from dask.diagnostics import ProgressBar
+import json
 import logging
 import numpy as np
 import os
@@ -105,7 +106,8 @@ def validate_layers_datetime(cube_url: str, s3_in):
     except Exception as exc:
         msgs.append(f"UNEXPECTED_EXCEPTION: processing {cube_url}: {exc}")
 
-    return msgs
+    return msgs, cube_url, False
+
 
 def validate_min_datetime(cube_url: str, s3_in):
     """
@@ -113,13 +115,13 @@ def validate_min_datetime(cube_url: str, s3_in):
     they fall into expected datetime range.
     """
     msgs = [f'Processing {cube_url}']
-
+    # Flag is cube is corrupted
+    corrupted_cube = False
 
     try:
         #
         cube_store = s3fs.S3Map(root=cube_url, s3=s3_in, check=False)
         with xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
-            # Make sure mid_date and date_center agree at date() level
             values = ds.mid_date.values
             if values.min() < START_DATETIME:
                 if ERROR_KEYWORD not in msgs:
@@ -148,13 +150,18 @@ def validate_min_datetime(cube_url: str, s3_in):
 
                 msgs.append(f"Invalid datetime for acquisition_date_img2: {values.min()}")
 
+        if ERROR_KEYWORD in msgs:
+            corrupted_cube = True
+
     except OverflowError as exc:
         msgs.append(f"EXCEPTION: {exc}")
+        corrupted_cube = True
 
     except Exception as exc:
         msgs.append(f"UNEXPECTED_EXCEPTION: {exc}")
+        corrupted_cube = True
 
-    return msgs
+    return msgs, cube_url, corrupted_cube
 
 
 class ValidateDatacubes:
@@ -172,8 +179,12 @@ class ValidateDatacubes:
     # same number of input parameters)
     FUNCTION_MAP = {
         'layers':  validate_layers_datetime,
-        'min_max': validate_min_datetime
+        'min_datetime': validate_min_datetime
     }
+
+    # File to capture names of the corrupted datacubes that would need to be
+    # reprocessed
+    CORRUPTED_CUBES_FILE = 'corrupted_cubes.json'
 
     def __init__(self, bucket: str, function: str):
         """
@@ -208,6 +219,7 @@ class ValidateDatacubes:
             logging.info(f"No datacubes, exiting.")
             return
 
+        cubes_to_remove = []
         while num_to_fix > 0:
             num_tasks = chunk_size if num_to_fix > chunk_size else num_to_fix
 
@@ -221,11 +233,20 @@ class ValidateDatacubes:
                                        scheduler="processes",
                                        num_workers=num_dask_workers)
 
-            for each_result in results[0]:
+            for each_result, cube_url, is_corrupted in results[0]:
                 logging.info("\n--->".join(each_result))
+
+                if is_corrupted:
+                    cubes_to_remove.append(cube_url)
+
 
             num_to_fix -= num_tasks
             start += num_tasks
+
+        # Write job info to the json file
+        logging.info(f"Writing corrupted cube info to the {ValidateDatacubes.CORRUPTED_CUBES_FILE}...")
+        with open(ValidateDatacubes.CORRUPTED_CUBES_FILE, 'w') as output_fhandle:
+            json.dump(cubes_to_remove, output_fhandle, indent=4)
 
 
 def main():
@@ -240,7 +261,7 @@ def main():
     )
     parser.add_argument(
         '-b', '--bucket', type=str,
-        default='s3://its-live-data.jpl.nasa.gov/datacubes/v1',
+        default='s3://its-live-data.jpl.nasa.gov/datacubes/v01',
         help='AWS S3 that stores ITS_LIVE datacubes to validate'
     )
     parser.add_argument('-w', '--dask-workers', type=int,
@@ -256,8 +277,8 @@ def main():
     parser.add_argument(
         '-f', '--function',
         action='store',
-        default='min_max',
-        help=f'Function to invoke to fix required granules attributes [%(default)s]. One of {list(ValidateDatacubes.FUNCTION_MAP.keys())}')
+        default='min_datetime',
+        help=f'Function to invoke to validate datacubes with [%(default)s]. One of {list(ValidateDatacubes.FUNCTION_MAP.keys())}')
 
     args = parser.parse_args()
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
