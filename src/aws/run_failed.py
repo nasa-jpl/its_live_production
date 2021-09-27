@@ -138,7 +138,7 @@ class DataCubeBatchReprocess:
                             'attempts': 1
                         },
                         timeout={
-                            'attemptDurationSeconds': 21600
+                            'attemptDurationSeconds': 86400
                         }
                     )
 
@@ -210,14 +210,14 @@ if __name__ == '__main__':
         '-d', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-terraform:1',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-30Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-terraform',
+        default='datacube-convert-4vCPU-32GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
