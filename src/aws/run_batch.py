@@ -177,7 +177,7 @@ class DataCubeBatch:
                     # Hack to run specific jobs
                     # to test s3fs problem: 'ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr'
                     if len(DataCubeBatch.CUBES_TO_GENERATE) and cube_filename not in DataCubeBatch.CUBES_TO_GENERATE:
-                        logging.info(f"Skipping non-{DataCubeBatch.CUBES_TO_GENERATE}")
+                        logging.info(f"Skipping as not provided in DataCubeBatch.CUBES_TO_GENERATE")
                         continue
 
                     cube_params = {
