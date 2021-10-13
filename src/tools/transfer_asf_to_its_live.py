@@ -24,8 +24,6 @@ import hyp3_sdk as sdk
 import numpy as np
 
 
-HYP3_AUTORIFT_API = 'https://hyp3-autorift.asf.alaska.edu'
-
 #
 # Author: Mark Fahnestock
 #
@@ -61,6 +59,10 @@ class ASFTransfer:
     POSTFIX_TO_RM = '_IL_ASF_OD'
 
     # HyP3 API access
+    HYP3_AUTORIFT_API = None
+    # Use test environment for the ingest of L8_memlimit_rerun.json
+    # HYP3_AUTORIFT_API = 'https://hyp3-test-api.asf.alaska.edu'
+
     HYP3 = None
     TARGET_BUCKET = None
     TARGET_BUCKET_DIR = None
@@ -242,10 +244,13 @@ def main():
     parser.add_argument('-p', '--password', help='Password for https://urs.earthdata.nasa.gov login')
     parser.add_argument('-o', '--output-job-file', type=str, default='processed_jobs.json', help='File of processed job IDs [%(default)s]')
     parser.add_argument('-e', '--exclude-job-file', type=Path, default=None, help='JSON list of HyP3 Job IDs (previously processed) to exclude from the transfer [%(default)s]')
+    parser.add_argument('-a', '--autoRIFT', default='https://hyp3-autorift.asf.alaska.edu', help='autoRIFT deployment to connect to [%(default)s]')
+
 
     args = parser.parse_args()
 
-    ASFTransfer.HYP3 = sdk.HyP3(HYP3_AUTORIFT_API, args.user, args.password)
+    ASFTransfer.HYP3_AUTORIFT_API = args.autoRIFT
+    ASFTransfer.HYP3 = sdk.HyP3(ASFTransfer.HYP3_AUTORIFT_API, args.user, args.password)
     ASFTransfer.TARGET_BUCKET = args.target_bucket
     ASFTransfer.TARGET_BUCKET_DIR = args.dir
 
