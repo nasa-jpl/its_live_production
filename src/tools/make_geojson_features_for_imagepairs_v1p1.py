@@ -229,6 +229,7 @@ class GranuleCatalog:
     FIVE_POINTS_PER_SIDE = True
     DATA_VERSION = None
     EXCLUDE_GRANULES_FILE = None
+    REMOVE_DUPLICATE_GRANULES = False
 
     def __init__(self, granules_file: str, features_per_file: int, catalog_dir: str):
         """
@@ -521,6 +522,9 @@ if __name__ == '__main__':
     parser.add_argument('-five_points_per_side', action='store_true',
                         help='Define 5 points per side before re-projecting granule polygon to longitude/latitude coordinates')
 
+    parser.add_argument('-remove-duplicate-granules', action='store_true',
+                        help='Remove duplicate granules based on processing date within granule filename. This option should be used for Landsat8 data only.')
+
     parser.add_argument('-data_version',
                         default=None,
                         type=str,
@@ -536,6 +540,7 @@ if __name__ == '__main__':
     GranuleCatalog.FIVE_POINTS_PER_SIDE = args.five_points_per_side
     GranuleCatalog.DATA_VERSION = args.data_version
     GranuleCatalog.EXCLUDE_GRANULES_FILE = args.exclude_granules_file
+    GranuleCatalog.REMOVE_DUPLICATE_GRANULES = args.remove_duplicate_granules
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
@@ -576,8 +581,15 @@ if __name__ == '__main__':
         # also skips txt file placeholders for 000 Pct (all invalid) pairs
         infiles = [x for x in infilelist if '_P' in x and 'txt' not in x]
 
-        # Skip duplicate granules (the same middle date, but different processing date)
-        infiles, skipped_granules = skip_duplicate_granules(infiles)
+        # Skip duplicate granules (the same middle date, but different processing date) for L8 data only
+        if GranuleCatalog.REMOVE_DUPLICATE_GRANULES:
+            infiles, skipped_granules = skip_duplicate_granules(infiles)
+
+            granule_filename = os.path.join(args.catalog_dir, args.skipped_granules_file)
+            with s3_out.open(granule_filename, 'w') as outf:
+                geojson.dump(skipped_granules, outf)
+
+            logging.info(f"Wrote skipped granules to '{granule_filename}'")
 
         # Write all unique granules to the file
         granule_filename = os.path.join(args.catalog_dir, args.catalog_granules_file)
@@ -586,10 +598,5 @@ if __name__ == '__main__':
 
         logging.info(f"Wrote catalog granules to '{granule_filename}'")
 
-        granule_filename = os.path.join(args.catalog_dir, args.skipped_granules_file)
-        with s3_out.open(granule_filename, 'w') as outf:
-            geojson.dump(skipped_granules, outf)
-
-        logging.info(f"Wrote skipped granules to '{granule_filename}'")
 
     logging.info('Done.')
