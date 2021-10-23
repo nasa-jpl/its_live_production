@@ -107,6 +107,13 @@ class ITSCube:
     # Number of seconds to sleep between 'aws s3 cp' retries
     AWS_COPY_SLEEP_SECONDS = 60
 
+    # Chunking to apply when writing datacube to the Zarr store
+    CHUNKS_SETTINGS_3D = (250, 10, 10)
+    CHUNKS_SETTINGS_1D = (250)
+
+    # Landsat8 filename prefixes - when we need to sort out Landsat8 granules
+    # for removal of duplicate reprocessed granules
+    LANDSAT8_PREFIX = tuple(['LC', 'LO'])
 
     def __init__(self, polygon: tuple, projection: str):
         """
@@ -242,7 +249,7 @@ class ITSCube:
     def skip_duplicate_granules(self, found_urls):
         """
         Skip duplicate granules (the ones that have earlier processing date(s))
-        for the same path row granule.
+        for the same path row granule for Landsat8 data only.
         """
         self.num_urls_from_api = len(found_urls)
 
@@ -251,7 +258,22 @@ class ITSCube:
         keep_urls = {}
         skipped_double_granules = []
 
-        for each_url in tqdm(found_urls, ascii=True, desc='Skipping duplicate granules...'):
+        # Unique granules to return
+        granules = []
+
+        # Get Landsat8 granules from the list
+        landsat8_granules = [each for each in found_urls if os.path.basename(each).startswith(ITSCube.LANDSAT8_PREFIX)]
+        if len(landsat8_granules) == 0:
+            # There are no Landsat8 granules, no need to remove duplicates
+            return found_urls, skipped_double_granules
+
+        else:
+            # Include non-Landsat8 granules into unique granules to return
+            # as they don't need to be searched for duplicates
+            granules = list(set(found_urls).difference(landsat8_granules))
+            self.logger.info(f'Non-Landsat8 granules: {len(granules)}')
+
+        for each_url in tqdm(landsat8_granules, ascii=True, desc=f'Skipping duplicate Landsat8 granules out of {len(landsat8_granules)} granules...'):
             # Extract acquisition and processing dates
             url_acq_1, url_proc_1, path_row_1, url_acq_2, url_proc_2, path_row_2 = \
                 ITSCube.get_tokens_from_filename(each_url)
@@ -327,7 +349,6 @@ class ITSCube:
                 # This is a granule for new ID, append it to URLs to keep
                 keep_urls.setdefault(granule_id, []).append(each_url)
 
-        granules = []
         for each in keep_urls.values():
             granules.extend(each)
 
@@ -1034,7 +1055,7 @@ class ITSCube:
 
         Returns:
         cube_v:     Filtered data array for the layer.
-        mid_date:   Middle date that corresponds to the velicity pair (uses date
+        mid_date:   Middle date that corresponds to the velocity pair (uses date
                     separation as milliseconds)
         empty:      Flag to indicate if dataset does not contain any data for
                     the cube region.
@@ -1115,7 +1136,7 @@ class ITSCube:
 
                 # If it's a valid velocity layer, add it to the cube.
                 if np.any(mask_data.v.notnull()):
-                    mask_data.load()
+                    mask_data = mask_data.load()
 
                     # Verify that granule is defined on the same grid cell size as
                     # expected output datacube.
@@ -1995,6 +2016,82 @@ class ITSCube:
                          Coords.MID_DATE]:
                 encoding_settings.setdefault(each, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
+            # Set chunking for writing to the store
+            for each in [DataVars.INTERP_MASK,
+                         DataVars.CHIP_SIZE_HEIGHT,
+                         DataVars.CHIP_SIZE_WIDTH,
+                         DataVars.V,
+                         DataVars.V_ERROR,
+                         DataVars.VA,
+                         DataVars.VP,
+                         DataVars.VP_ERROR,
+                         DataVars.VR,
+                         DataVars.VX,
+                         DataVars.VXP,
+                         DataVars.VY,
+                         DataVars.VYP]:
+                encoding_settings.setdefault(each, {})['chunks'] = ITSCube.CHUNKS_SETTINGS_3D
+
+            # for each in [
+            #     DataVars.FLAG_STABLE_SHIFT,
+            #     DataVars.STABLE_COUNT_SLOW,
+            #     DataVars.STABLE_COUNT_MASK,
+            #     DataVars.VX_ERROR,
+            #     'vx_error_mask',
+            #     'vx_error_modeled',
+            #     'vx_error_slow',
+            #     'vx_stable_shift',
+            #     'vx_stable_shift_slow',
+            #     'vx_stable_shift_mask',
+            #     DataVars.VY_ERROR,
+            #     'vy_error_mask',
+            #     'vy_error_modeled',
+            #     'vy_error_slow',
+            #     'vy_stable_shift',
+            #     'vy_stable_shift_slow',
+            #     'vy_stable_shift_mask',
+            #     'va_error',
+            #     'va_error_mask',
+            #     'va_error_modeled',
+            #     'va_error_slow',
+            #     'va_stable_shift',
+            #     'va_stable_shift_slow',
+            #     'va_stable_shift_mask',
+            #     'vr_error_mask',
+            #     'vr_error_modeled',
+            #     'vr_error_slow',
+            #     'vr_stable_shift',
+            #     'vr_stable_shift_slow',
+            #     'vr_stable_shift_mask',
+            #     'vxp_error',
+            #     'vxp_error_mask',
+            #     'vxp_error_modeled',
+            #     'vxp_error_slow',
+            #     'vxp_stable_shift',
+            #     'vxp_stable_shift_slow',
+            #     'vxp_stable_shift_mask',
+            #     'vyp_error',
+            #     'vyp_error_mask',
+            #     'vyp_error_modeled',
+            #     'vyp_error_slow',
+            #     'vyp_stable_shift',
+            #     'vyp_stable_shift_slow',
+            #     'vyp_stable_shift_mask',
+            #     DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
+            #     DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
+            #     DataVars.ImgPairInfo.DATE_CENTER,
+            #     DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE,
+            #     DataVars.ImgPairInfo.SATELLITE_IMG1,
+            #     DataVars.ImgPairInfo.SATELLITE_IMG2,
+            #     DataVars.ImgPairInfo.MISSION_IMG1,
+            #     DataVars.ImgPairInfo.MISSION_IMG2,
+            #     DataVars.ImgPairInfo.SENSOR_IMG1,
+            #     DataVars.ImgPairInfo.SENSOR_IMG2,
+            #     DataVars.AUTORIFT_SOFTWARE_VERSION,
+            #     DataVars.ImgPairInfo.DATE_DT
+            # ]:
+            #     encoding_settings.setdefault(each, {})['chunks'] = (250)   #ITSCube.CHUNKS_SETTINGS_1D
+
             self.logger.info(f"Encoding writing to Zarr: {encoding_settings}")
             # self.logger.info(f"Data variables to Zarr:   {json.dumps(list(self.layers.keys()), indent=4)}")
 
@@ -2104,15 +2201,13 @@ class ITSCube:
 
 
 if __name__ == '__main__':
-    # Since port forwarding is not working on EC2 to run jupyter lab for now,
-    # allow to run test case from itscube.ipynb in standalone mode
     import argparse
     import warnings
     import sys
     import subprocess
     import time
 
-    warnings.filterwarnings('ignore')
+    # warnings.filterwarnings('ignore')
 
     # Command-line arguments parser
     parser = argparse.ArgumentParser(description=ITSCube.__doc__.split('\n')[0],
