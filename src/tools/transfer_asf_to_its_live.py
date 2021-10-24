@@ -71,7 +71,7 @@ class ASFTransfer:
     def __init__(self, processed_jobs_file: str):
         self.processed_jobs_file = processed_jobs_file
 
-    def sequential__call__(
+    def run_sequentially(
         self,
         job_ids_file: str,
         exclude_job_ids_file: str,
@@ -245,7 +245,12 @@ def main():
     parser.add_argument('-o', '--output-job-file', type=str, default='processed_jobs.json', help='File of processed job IDs [%(default)s]')
     parser.add_argument('-e', '--exclude-job-file', type=Path, default=None, help='JSON list of HyP3 Job IDs (previously processed) to exclude from the transfer [%(default)s]')
     parser.add_argument('-a', '--autoRIFT', default='https://hyp3-autorift.asf.alaska.edu', help='autoRIFT deployment to connect to [%(default)s]')
-
+    parser.add_argument(
+        '--enableDebug',
+        action='store_true',
+        default=False,
+        help='Enable debug mode: process jobs sequentially'
+    )
 
     args = parser.parse_args()
 
@@ -258,13 +263,22 @@ def main():
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
     transfer = ASFTransfer(args.output_job_file)
-    transfer(
-        args.job_ids,
-        args.exclude_job_file, # Exclude previously processed job IDs if any
-        args.number_to_copy,
-        args.start_job,
-        args.dask_workers
-    )
+    if args.enableDebug is True:
+        transfer.run_sequentially(
+            args.job_ids,
+            args.exclude_job_file, # Exclude previously processed job IDs if any
+            args.number_to_copy,
+            args.start_job,
+            args.dask_workers
+        )
+    else:
+        transfer(
+            args.job_ids,
+            args.exclude_job_file, # Exclude previously processed job IDs if any
+            args.number_to_copy,
+            args.start_job,
+            args.dask_workers
+        )
 
 if __name__ == '__main__':
     main()
