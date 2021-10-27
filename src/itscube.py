@@ -5,6 +5,7 @@ bounding polygon and datetime period provided by the caller.
 Authors: Masha Liukis
 """
 import copy
+from dateutil.parser import parse
 from datetime import datetime, timedelta
 import gc
 import glob
@@ -16,7 +17,6 @@ import pyproj
 import shutil
 import timeit
 import zarr
-
 import dask
 # from dask.distributed import Client, performance_report
 from dask.diagnostics import ProgressBar
@@ -25,6 +25,7 @@ import pandas as pd
 import s3fs
 from tqdm import tqdm
 import xarray as xr
+from urllib.parse import urlparse
 
 # Local modules
 import itslive_utils
@@ -111,9 +112,9 @@ class ITSCube:
     CHUNKS_SETTINGS_3D = (250, 10, 10)
     CHUNKS_SETTINGS_1D = (250)
 
-    # Landsat8 filename prefixes - when we need to sort out Landsat8 granules
-    # for removal of duplicate reprocessed granules
-    LANDSAT8_PREFIX = tuple(['LC', 'LO'])
+    # Landsat8 filename prefixes to use when we need to remove duplicate
+    # reprocessed granules for Landsat8
+    LANDSAT8_PREFIX = tuple(['LC08', 'LO08'])
 
     def __init__(self, polygon: tuple, projection: str):
         """
@@ -1019,18 +1020,8 @@ class ITSCube:
                         value = tokens[0] + 'T' + tokens[1][0:2] + ':' + tokens[1][2:4]+ ':' + tokens[1][4:6]
                         value = datetime.strptime(value, '%Y%m%dT%H:%M:%S')
 
-                    elif len(value) == 8:
-                        # Only date is provided
-                        value = datetime.strptime(value[0:8], '%Y%m%d')
-
-                    elif len(value) > 8:
-                        if '.' in value:
-                            # Extract date and time with microseconds (20200617T00:00:00.000000)
-                            value = datetime.strptime(value, ITSCube.DATE_TIME_FORMAT)
-
-                        else:
-                            # Extract date and time (20200617T00:00:00)
-                            value = datetime.strptime(value, '%Y%m%dT%H:%M:%S')
+                    elif len(value) >= 8:
+                        value = parse(value)
 
                 except ValueError as exc:
                     raise RuntimeError(f"Error converting {value} to date format '%Y%m%d': {exc} for {var_name}.{attr_name} in {ds_url}")
@@ -1095,18 +1086,18 @@ class ITSCube:
         # Consider granules with data only within target projection
         if str(int(ds_projection)) == self.projection:
             mid_date = None
-            try:
-                # Old format that didn't include microseconds
-                acq1_datetime = datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1], ITSCube.DATE_TIME_NO_MICROSECS_FORMAT)
-                mid_date = acq1_datetime + \
-                    (datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2], ITSCube.DATE_TIME_NO_MICROSECS_FORMAT) - acq1_datetime)/2
 
-            except ValueError:
-                # Use new format that includes microseconds
-                acq1_datetime = datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1], ITSCube.DATE_TIME_FORMAT)
-                mid_date = acq1_datetime + \
-                    (datetime.strptime(ds.img_pair_info.attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2], ITSCube.DATE_TIME_FORMAT) - acq1_datetime)/2
+            # Sentinel1 granules contain attributes of old naming convention,
+            # check for it
+            attr_name_1 = DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1
+            attr_name_2 = DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2
 
+            if attr_name_1 not in ds.img_pair_info.attrs:
+                attr_name_1 = DataVars.ImgPairInfo.ACQUISITION_IMG1
+                attr_name_2 = DataVars.ImgPairInfo.ACQUISITION_IMG2
+
+            acq1_datetime = parse(ds.img_pair_info.attrs[attr_name_1])
+            mid_date = acq1_datetime + (parse(ds.img_pair_info.attrs[attr_name_2]) - acq1_datetime)/2
 
             # Create unique "token" by using granule's centroid longitude/latitude to
             # increase uniqueness of the mid_date for the layer (xarray: can't drop layers
@@ -1813,6 +1804,8 @@ class ITSCube:
         self.ds = [ds.drop_vars(DataVars.VP_ERROR) if DataVars.VP_ERROR in ds else ds for ds in self.ds]
         gc.collect()
 
+        # ATTN: Sentinel-2 granules are using satellite_img1 and satellite_img2 instead
+        # of sensor_img1 and sensor_img2
         for each in DataVars.ImgPairInfo.ALL:
             # Add new variables that correspond to attributes of 'img_pair_info'
             # (only selected ones)
@@ -1832,6 +1825,33 @@ class ITSCube:
                 # Units attribute exists for the variable
                 self.layers[each].attrs[DataVars.UNITS] = DataVars.ImgPairInfo.UNITS[each]
 
+        sensor_name = [DataVars.ImgPairInfo.SENSOR_IMG1, DataVars.ImgPairInfo.SENSOR_IMG2]
+        old_attr_name = [DataVars.ImgPairInfo.SATELLITE_IMG1, DataVars.ImgPairInfo.SATELLITE_IMG2]
+
+        for index, each in enumerate(sensor_name):
+            # Add new variables that correspond to attributes of 'img_pair_info'
+            # (only selected ones)
+            self.layers[each] = xr.DataArray(
+                data=[ITSCube.get_data_var_attr(
+                    ds, url, DataVars.ImgPairInfo.NAME, each, to_date=DataVars.ImgPairInfo.CONVERT_TO_DATE[each]
+                ) if each in ds[DataVars.ImgPairInfo.NAME].attrs else
+                ITSCube.get_data_var_attr(
+                    ds, url, DataVars.ImgPairInfo.NAME, old_attr_name[index], to_date=DataVars.ImgPairInfo.CONVERT_TO_DATE[each]
+                )
+                for ds, url in zip(self.ds, self.urls)],
+                coords=[mid_date_coord],
+                dims=[Coords.MID_DATE],
+                attrs={
+                    DataVars.STD_NAME: DataVars.ImgPairInfo.STD_NAME[each],
+                    DataVars.DESCRIPTION_ATTR: DataVars.ImgPairInfo.DESCRIPTION[each]
+                }
+            )
+
+            if each in DataVars.ImgPairInfo.UNITS:
+                # Units attribute exists for the variable
+                self.layers[each].attrs[DataVars.UNITS] = DataVars.ImgPairInfo.UNITS[each]
+
+
         # Add new variable that corresponds to autoRIFT_software_version
         self.layers[DataVars.AUTORIFT_SOFTWARE_VERSION] = xr.DataArray(
             data=[ds.attrs[DataVars.AUTORIFT_SOFTWARE_VERSION] for ds in self.ds],
@@ -1846,7 +1866,7 @@ class ITSCube:
         self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE] = self.ds[0].attrs[DataVars.AUTORIFT_PARAMETER_FILE]
 
         # Make sure all layers have the same parameter file
-        all_values = [ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE] for ds in self.ds]
+        all_values = [urlparse(ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE]).path for ds in self.ds]
         unique_values = list(set(all_values))
         if len(unique_values) > 1:
             raise RuntimeError(f"Multiple values for '{DataVars.AUTORIFT_PARAMETER_FILE}' are detected for current {len(self.ds)} layers: {unique_values}")
@@ -2207,7 +2227,7 @@ if __name__ == '__main__':
     import subprocess
     import time
 
-    # warnings.filterwarnings('ignore')
+    warnings.filterwarnings('ignore')
 
     # Command-line arguments parser
     parser = argparse.ArgumentParser(description=ITSCube.__doc__.split('\n')[0],

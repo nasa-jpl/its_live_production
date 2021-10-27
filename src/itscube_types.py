@@ -241,12 +241,14 @@ class DataVars:
         ACQUISITION_DATE_IMG1 = 'acquisition_date_img1'
         ACQUISITION_DATE_IMG2 = 'acquisition_date_img2'
 
+        # ATTN: Sentinel-2 granules are using satellite_img1 and satellite_img2 instead
+        # of sensor_img1 and sensor_img2
         ALL = [
             MISSION_IMG1,
-            SENSOR_IMG1,
+            # SENSOR_IMG1,
             SATELLITE_IMG1,
             MISSION_IMG2,
-            SENSOR_IMG2,
+            # SENSOR_IMG2,
             SATELLITE_IMG2,
             DATE_DT,
             DATE_CENTER,
