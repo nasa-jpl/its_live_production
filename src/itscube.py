@@ -109,7 +109,7 @@ class ITSCube:
     AWS_COPY_SLEEP_SECONDS = 60
 
     # Chunking to apply when writing datacube to the Zarr store
-    CHUNKS_SETTINGS_3D = (250, 10, 10)
+    CHUNKS_SETTINGS_3D = (250, 50, 50)
     CHUNKS_SETTINGS_1D = (250)
 
     # Landsat8 filename prefixes to use when we need to remove duplicate
