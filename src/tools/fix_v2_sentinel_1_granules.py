@@ -67,7 +67,7 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             del ds[DataVars.VYP]
 
             # 4. Recompute stable shift
-            ds = patch_stable_shift(ds)
+            ds = patch_stable_shift(ds, ds_filename = granule_url)
 
             granule_basename = os.path.basename(granule_url)
 

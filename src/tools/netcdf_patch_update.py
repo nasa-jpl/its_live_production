@@ -108,11 +108,9 @@ def find_jpl_parameter_info(ds: xr.Dataset) -> dict:
     parameter_info['xsize'] = abs(dem_geotransform[1])
     parameter_info['ysize'] = abs(dem_geotransform[5])
 
-    print(f'Params: {parameter_info}')
-
     return parameter_info
 
-def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: str=None, output_file: str=None):
+def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: str=None, output_file: str=None, ds_filename: str=None):
     """
     Main function to re-calculate stable_shift for the image velocity pair.
     """
@@ -132,14 +130,18 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
     V = xds['v'].data
     V_error = xds['v_error'].data
     if xds.attrs['scene_pair_type'] == 'radar':
-        VR = xds['vr'].data
-        VA = xds['va'].data
-        M11 = xds['M11'].data * xds['M11'].dr_to_vr_factor
-        M12 = xds['M12'].data * xds['M12'].dr_to_vr_factor
-        VXP = xds['vxp'].data
-        VYP = xds['vyp'].data
-        VP = xds['vp'].data
-        VP_error = xds['vp_error'].data
+        try:
+            VR = xds['vr'].data
+            VA = xds['va'].data
+            M11 = xds['M11'].data * xds['M11'].dr_to_vr_factor
+            M12 = xds['M12'].data * xds['M12'].dr_to_vr_factor
+            VXP = xds['vxp'].data
+            VYP = xds['vyp'].data
+            VP = xds['vp'].data
+            VP_error = xds['vp_error'].data
+
+        except Exception as exc:
+            raise RuntimeError(f"Error processing {filename}: {exc}")
 
     if np.logical_not(np.isnan(xds['vx'].stable_shift)):
         VX += xds['vx'].stable_shift
