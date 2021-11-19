@@ -60,14 +60,14 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             # 2. Fix reference to old its-live-data.jpl.nasa.gov S3 bucket
             ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE] = ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE].replace(OLD_S3_NAME, NEW_S3_NAME)
 
+            # 4. Recompute stable shift
+            fixed_ds = patch_stable_shift(ds, ds_filename = granule_url)
+
             # 3. Remove vp, vxp, vyp, vp_error layers
             del ds[DataVars.VP]
             del ds[DataVars.VP_ERROR]
             del ds[DataVars.VXP]
             del ds[DataVars.VYP]
-
-            # 4. Recompute stable shift
-            fixed_ds = patch_stable_shift(ds, ds_filename = granule_url)
 
             granule_basename = os.path.basename(granule_url)
 
