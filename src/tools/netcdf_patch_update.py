@@ -431,8 +431,8 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
             va_error = xds['va'].va_error_modeled
 
         #   V and V_error
-        VR[np.isnan(VXP)] = NoDataValue
-        VA[np.isnan(VYP)] = NoDataValue
+        VR[np.isnan(VR)] = NoDataValue
+        VA[np.isnan(VA)] = NoDataValue
 
         VR = np.round(np.clip(VR, -32768, 32767)).astype(np.int16)
         VA = np.round(np.clip(VA, -32768, 32767)).astype(np.int16)
