@@ -67,7 +67,7 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             del ds[DataVars.VYP]
 
             # 4. Recompute stable shift
-            ds = patch_stable_shift(ds, ds_filename = granule_url)
+            fixed_ds = patch_stable_shift(ds, ds_filename = granule_url)
 
             granule_basename = os.path.basename(granule_url)
 
@@ -93,7 +93,7 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             else:
                 # Write the granule locally, upload it to the bucket, remove file
                 fixed_file = os.path.join(local_dir, granule_basename)
-                ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.SENTINEL1)
+                fixed_ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.SENTINEL1)
 
                 # Upload corrected granule to the bucket
                 s3_client = boto3.client('s3')
