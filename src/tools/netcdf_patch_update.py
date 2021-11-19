@@ -141,7 +141,7 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
             VP_error = xds['vp_error'].data
 
         except Exception as exc:
-            raise RuntimeError(f"Error processing {filename}: {exc}")
+            raise RuntimeError(f"Error processing {ds_filename}: {exc}")
 
     if np.logical_not(np.isnan(xds['vx'].stable_shift)):
         VX += xds['vx'].stable_shift
