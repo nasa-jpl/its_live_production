@@ -2,14 +2,19 @@
 """
 Fix ITS_LIVE S1 V2 granules:
 
- 1. acquisition attributes (acquisition_img1/2 attribute should be acquisition_date_img1/2)
- 2. fix all references to https://its-live-data.jpl.nasa.gov.s3.amazonaws.com
- 3. remove vp, vxp, vyp, vp_error layers from S1 layers
- 4. recompute S1, S2 and L8 stable shift
+ 1. Acquisition attributes (acquisition_img1/2 attribute should be acquisition_date_img1/2)
+
+ 2. Fix all references to https://its-live-data.jpl.nasa.gov.s3.amazonaws.com
+
+ 3. Recompute S1, S2 and L8 stable shift
+
+ 4. Remove vp, vxp, vyp, vp_error layers from S1 layers
 
 ATTN: This script should run from AWS EC2 instance to have fast access to the S3
-bucket. It takes 2 seconds to upload the file to the S3 bucket from EC2 instance
+bucket.
+It takes 2 seconds to upload the file to the S3 bucket from EC2 instance
 vs. 1.5 minutes to upload the file from laptop to the S3 bucket.
+
 Authors: Masha Liukis, Joe Kennedy
 """
 import argparse
@@ -60,10 +65,11 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             # 2. Fix reference to old its-live-data.jpl.nasa.gov S3 bucket
             ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE] = ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE].replace(OLD_S3_NAME, NEW_S3_NAME)
 
-            # 4. Recompute stable shift
+            # 3. Recompute stable shift
             fixed_ds = patch_stable_shift(ds, ds_filename = granule_url)
 
-            # 3. Remove vp, vxp, vyp, vp_error layers
+            # 4. Remove vp, vxp, vyp, vp_error layers after stable shift re-calculations
+            # as it uses v*p* variables
             del ds[DataVars.VP]
             del ds[DataVars.VP_ERROR]
             del ds[DataVars.VXP]
@@ -87,27 +93,24 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.DATE_DT] = date_ct
             ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.DATE_CENTER] = date_center
 
-            if FixSentinel1Granules.DRY_RUN:
-                msgs.append(f"(dryrun): need to fix {granule_url}")
+            # Write the granule locally, upload it to the bucket, remove file
+            fixed_file = os.path.join(local_dir, granule_basename)
+            fixed_ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.SENTINEL1)
 
-            else:
-                # Write the granule locally, upload it to the bucket, remove file
-                fixed_file = os.path.join(local_dir, granule_basename)
-                fixed_ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.SENTINEL1)
+            # Upload corrected granule to the bucket
+            s3_client = boto3.client('s3')
+            try:
+                bucket_granule = granule_url.replace(source_bucket+'/', '')
+                msgs.append(f"Uploading {bucket_granule} to {target_bucket}")
 
-                # Upload corrected granule to the bucket
-                s3_client = boto3.client('s3')
-                try:
-                    bucket_granule = granule_url.replace(source_bucket+'/', '')
-                    msgs.append(f"Uploading {bucket_granule} to {target_bucket}")
-
+                if not FixSentinel1Granules.DRY_RUN:
                     s3_client.upload_file(fixed_file, target_bucket, bucket_granule)
 
-                    msgs.append(f"Removing local {fixed_file}")
-                    os.unlink(fixed_file)
+                msgs.append(f"Removing local {fixed_file}")
+                os.unlink(fixed_file)
 
-                except ClientError as exc:
-                    msgs.append(f"ERROR: {exc}")
+            except ClientError as exc:
+                msgs.append(f"ERROR: {exc}")
 
             return msgs
 
@@ -201,13 +204,13 @@ def main():
     parser.add_argument(
         '-d', '--bucket_dir',
         type=str,
-        default='velocity_image_pair/landsat/v02',
-        help='AWS S3 bucket and directory that store the granules'
+        default='velocity_image_pair/sentinel1/v02',
+        help='AWS S3 directory that stores the granules'
     )
     parser.add_argument(
         '-l', '--local_dir',
         type=str,
-        default='sandbox',
+        default='sandbox_sentinel1',
         help='Directory to store fixed granules before uploading them to the S3 bucket'
     )
     parser.add_argument(
@@ -219,7 +222,7 @@ def main():
         '-t', '--target_bucket',
         type=str,
         default='its-live-data',
-        help='AWS S3 bucket that stores fixed ITS_LIVE granules'
+        help='AWS S3 bucket to store fixed ITS_LIVE granules (under the same "--bucket_dir" directory)'
     )
     parser.add_argument(
         '-w', '--dask-workers',
