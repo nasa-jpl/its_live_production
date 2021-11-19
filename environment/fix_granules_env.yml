@@ -1,0 +1,31 @@
+#
+# Configuration file to create conda environment to fix ITS_LIVE granules.
+#
+# To create conda environment, run command:
+#
+# $ conda env create -f fix_granules_env.yml
+#
+# Followed by the following command to activate the environment:
+#
+# $ conda activate fixGranules
+#
+name: fixGranules
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.9
+  - boto3
+  - botocore
+  - dask
+  - gdal
+  - h5netcdf
+  - pip
+  - numpy
+  - xarray
+  - s3fs
+  - fsspec
+  - aiohttp
+  - hyp3_sdk>=1.1
