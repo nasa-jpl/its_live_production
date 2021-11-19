@@ -90,7 +90,7 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             date_ct = d0 + (d1 - d0)/2
             date_center = date_ct.strftime(FixSentinel1Granules.DATETIME_FORMAT).rstrip('0')
 
-            ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.DATE_DT] = date_ct
+            ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.DATE_DT] = date_dt
             ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.DATE_CENTER] = date_center
 
             # Write the granule locally, upload it to the bucket, remove file
