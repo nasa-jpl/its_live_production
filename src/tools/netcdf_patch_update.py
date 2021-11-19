@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#Yang Lei, Jet Propulsion Laboratory
-#November 2017
+# Yang Lei, Jet Propulsion Laboratory
+# November 2017:
+#   Original code.
+#
+# Masha Liukis, Jet Propulsion Laboratory
+# November 2021:
+#   Add automatic detection of parametrization files used by calculation.
+#   Restructure the code to be able to invoke the code from another script.
+#   TODO: need to specify encoding when writing corrected dataset to the file.
+#
 
 import argparse
-import isce
-import isceobj
 import numpy as np
 import shelve
 import os
-import datetime 
-from isceobj.Constants import SPEED_OF_LIGHT
+import datetime
 import pdb
-import logging
-from imageMath import IML
-from scipy import signal
-import scipy.io as sio
-import rioxarray
-import xarray
-from osgeo import osr,gdal
+import xarray as xr
+from osgeo import ogr, gdal
 
 
 def cmdLineParse():
@@ -50,14 +50,83 @@ def v_error_cal(vx_error, vy_error):
     return np.std(v)
 
 
+# Authors: Joe Kennedy, Masha Liukis
+def find_jpl_parameter_info(ds: xr.Dataset) -> dict:
+    driver = ogr.GetDriverByName('ESRI Shapefile')
+    parameter_file = ds.attrs['autoRIFT_parameter_file']
+    shapes = driver.Open(f"/vsicurl/{parameter_file}", gdal.GA_ReadOnly)
 
+    parameter_info = None
+    # centroid = flip_point_coordinates(polygon.Centroid())
+    centroid  = ogr.Geometry(ogr.wkbPoint)
+    longitude = np.float(ds.img_pair_info.attrs['longitude'])
+    latitude  = np.float(ds.img_pair_info.attrs['latitude'])
+    centroid.AddPoint(longitude, latitude)
 
-if __name__ == '__main__':
+    for feature in shapes.GetLayer(0):
+        if feature.geometry().Contains(centroid):
+            parameter_info = {
+                'name': f'{feature["name"]}',
+                'epsg': feature['epsg'],
+                'geogrid': {
+                    'dem': f"/vsicurl/{feature['h']}",
+                    'ssm': f"/vsicurl/{feature['StableSurfa']}",
+                    'dhdx': f"/vsicurl/{feature['dhdx']}",
+                    'dhdy': f"/vsicurl/{feature['dhdy']}",
+                    'vx': f"/vsicurl/{feature['vx0']}",
+                    'vy': f"/vsicurl/{feature['vy0']}",
+                    'srx': f"/vsicurl/{feature['vxSearchRan']}",
+                    'sry': f"/vsicurl/{feature['vySearchRan']}",
+                    'csminx': f"/vsicurl/{feature['xMinChipSiz']}",
+                    'csminy': f"/vsicurl/{feature['yMinChipSiz']}",
+                    'csmaxx': f"/vsicurl/{feature['xMaxChipSiz']}",
+                    'csmaxy': f"/vsicurl/{feature['yMaxChipSiz']}",
+                    'sp': f"/vsicurl/{feature['sp']}",
+                    'dhdxs': f"/vsicurl/{feature['dhdxs']}",
+                    'dhdys': f"/vsicurl/{feature['dhdys']}",
+                },
+                'autorift': {
+                    'grid_location': 'window_location.tif',
+                    'init_offset': 'window_offset.tif',
+                    'search_range': 'window_search_range.tif',
+                    'chip_size_min': 'window_chip_size_min.tif',
+                    'chip_size_max': 'window_chip_size_max.tif',
+                    'offset2vx': 'window_rdr_off2vel_x_vec.tif',
+                    'offset2vy': 'window_rdr_off2vel_y_vec.tif',
+                    'stable_surface_mask': 'window_stable_surface_mask.tif',
+                    'mpflag': 0,
+                }
+            }
+            break
 
-    #####Parse command line
-    inps = cmdLineParse()
+    if parameter_info is None:
+        raise RuntimeError('Could not determine appropriate DEM for:\n'
+                          f'    centroid: {centroid}\n'
+                          f'    using: {parameter_file}')
 
-    xds = xarray.open_dataset(inps.nc)
+    dem_geotransform = gdal.Info(parameter_info['geogrid']['dem'], format='json')['geoTransform']
+    parameter_info['xsize'] = abs(dem_geotransform[1])
+    parameter_info['ysize'] = abs(dem_geotransform[5])
+
+    print(f'Params: {parameter_info}')
+
+    return parameter_info
+
+def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: str=None, output_file: str=None):
+    """
+    Main function to re-calculate stable_shift for the image velocity pair.
+    """
+    param_info = find_jpl_parameter_info(xds)
+
+    if vxref_file is None:
+        vxref_file = param_info['geogrid']['vx']
+
+    if vyref_file is None:
+        vyref_file = param_info['geogrid']['vy']
+
+    if ssm_file is None:
+        ssm_file = param_info['geogrid']['ssm']
+
     VX = xds['vx'].data
     VY = xds['vy'].data
     V = xds['v'].data
@@ -71,7 +140,7 @@ if __name__ == '__main__':
         VYP = xds['vyp'].data
         VP = xds['vp'].data
         VP_error = xds['vp_error'].data
-    
+
     if np.logical_not(np.isnan(xds['vx'].stable_shift)):
         VX += xds['vx'].stable_shift
         VY += xds['vy'].stable_shift
@@ -80,9 +149,9 @@ if __name__ == '__main__':
             VA += xds['va'].stable_shift
             VXP += xds['vxp'].stable_shift
             VYP += xds['vyp'].stable_shift
-    
-    
-    ds = gdal.Open(inps.VXref)
+
+
+    ds = gdal.Open(vxref_file)
     band = ds.GetRasterBand(1)
     tran = ds.GetGeoTransform()
     xoff = int(round((np.min(xds['vx'].x.data)-tran[0]-tran[1]/2)/tran[1]))
@@ -93,20 +162,20 @@ if __name__ == '__main__':
     VXref = band.ReadAsArray(xoff, yoff, xcount, ycount)
     ds = None
     band = None
-        
-    ds = gdal.Open(inps.VYref)
+
+    ds = gdal.Open(vyref_file)
     band = ds.GetRasterBand(1)
     VYref = band.ReadAsArray(xoff, yoff, xcount, ycount)
     ds = None
     band = None
-    
-    ds = gdal.Open(inps.SSM)
+
+    ds = gdal.Open(ssm_file)
     band = ds.GetRasterBand(1)
     SSM = band.ReadAsArray(xoff, yoff, xcount, ycount)
     SSM = SSM.astype('bool')
     ds = None
     band = None
-    
+
 #    pdb.set_trace()
     if xds.attrs['scene_pair_type'] == 'radar':
         VRref = M11 * VXref + M12 * VYref
@@ -116,26 +185,26 @@ if __name__ == '__main__':
 
 #   VX and VY stable shift
     stable_count = np.sum(SSM & np.logical_not(np.isnan(VX)))
-    
+
     V_temp = np.sqrt(VXref**2 + VYref**2)
     try:
         V_temp_threshold = np.percentile(V_temp[np.logical_not(np.isnan(V_temp))],25)
         SSM1 = (V_temp <= V_temp_threshold)
     except IndexError:
         SSM1 = np.zeros(V_temp.shape).astype('bool')
-                
+
     stable_count1 = np.sum(SSM1 & np.logical_not(np.isnan(VX)))
-                
+
     vx_mean_shift = 0.0
     vy_mean_shift = 0.0
     vx_mean_shift1 = 0.0
     vy_mean_shift1 = 0.0
-                
+
     if stable_count != 0:
         temp = VX.copy() - VXref.copy()
         temp[np.logical_not(SSM)] = np.nan
         vx_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
-        
+
         temp = VY.copy() - VYref.copy()
         temp[np.logical_not(SSM)] = np.nan
         vy_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
@@ -144,7 +213,7 @@ if __name__ == '__main__':
         temp = VX.copy() - VXref.copy()
         temp[np.logical_not(SSM1)] = np.nan
         vx_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
-        
+
         temp = VY.copy() - VYref.copy()
         temp[np.logical_not(SSM1)] = np.nan
         vy_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
@@ -237,7 +306,7 @@ if __name__ == '__main__':
         xds['vx'].attrs['stable_shift_slow'] = int(round(vx_mean_shift1*10))/10
     else:
         xds['vx'].attrs['stable_shift_slow'] = np.nan
-    
+
     if stable_count != 0:
         xds['vx'].attrs['vx_error_mask'] = int(round(vx_error_mask*10))/10
     else:
@@ -255,7 +324,7 @@ if __name__ == '__main__':
         xds['vy'].attrs['stable_shift'] = int(round(vy_mean_shift*10))/10
     else:
         xds['vy'].attrs['stable_shift'] = np.nan
-    
+
     xds['vy'].attrs['stable_count_mask'] = stable_count
     xds['vy'].attrs['stable_count_slow'] = stable_count1
     if stable_count != 0:
@@ -283,32 +352,30 @@ if __name__ == '__main__':
 
 
     if xds.attrs['scene_pair_type'] == 'radar':
-        
         #   VR and VA stable shift
-        
         vr_mean_shift = 0.0
         va_mean_shift = 0.0
         vr_mean_shift1 = 0.0
         va_mean_shift1 = 0.0
-        
+
         if stable_count != 0:
             temp = VR.copy() - VRref.copy()
             temp[np.logical_not(SSM)] = np.nan
             vr_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
-            
+
             temp = VA.copy() - VAref.copy()
             temp[np.logical_not(SSM)] = np.nan
             va_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
-        
+
         if stable_count1 != 0:
             temp = VR.copy() - VRref.copy()
             temp[np.logical_not(SSM1)] = np.nan
             vr_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
-            
+
             temp = VA.copy() - VAref.copy()
             temp[np.logical_not(SSM1)] = np.nan
             va_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
-        
+
         if stable_count == 0:
             if stable_count1 == 0:
                 stable_shift_applied = 0
@@ -320,8 +387,8 @@ if __name__ == '__main__':
             stable_shift_applied = 1
             VR = VR - vr_mean_shift
             VA = VA - va_mean_shift
-        
-        
+
+
         #   VR and VA error
         if stable_count != 0:
             temp = VR.copy() - VRref.copy()
@@ -341,7 +408,7 @@ if __name__ == '__main__':
             vr_error = vr_error_slow
         else:
             vr_error = xds['vr'].vr_error_modeled
-        
+
         if stable_count != 0:
             temp = VA.copy() - VAref.copy()
             temp[np.logical_not(SSM)] = np.nan
@@ -360,7 +427,7 @@ if __name__ == '__main__':
             va_error = va_error_slow
         else:
             va_error = xds['va'].va_error_modeled
-        
+
         #   V and V_error
         VR[np.isnan(VXP)] = NoDataValue
         VA[np.isnan(VYP)] = NoDataValue
@@ -376,7 +443,7 @@ if __name__ == '__main__':
             xds['vr'].attrs['stable_shift'] = int(round(vr_mean_shift*10))/10
         else:
             xds['vr'].attrs['stable_shift'] = np.nan
-        
+
         xds['vr'].attrs['stable_count_mask'] = stable_count
         xds['vr'].attrs['stable_count_slow'] = stable_count1
         if stable_count != 0:
@@ -387,7 +454,7 @@ if __name__ == '__main__':
             xds['vr'].attrs['stable_shift_slow'] = int(round(vr_mean_shift1*10))/10
         else:
             xds['vr'].attrs['stable_shift_slow'] = np.nan
-        
+
         if stable_count != 0:
             xds['vr'].attrs['vr_error_mask'] = int(round(vr_error_mask*10))/10
         else:
@@ -396,8 +463,8 @@ if __name__ == '__main__':
             xds['vr'].attrs['vr_error_slow'] = int(round(vr_error_slow*10))/10
         else:
             xds['vr'].attrs['vr_error_slow'] = np.nan
-        
-        
+
+
         xds['va'].attrs['va_error'] = int(round(va_error*10))/10
         if stable_shift_applied == 2:
             xds['va'].attrs['stable_shift'] = int(round(va_mean_shift1*10))/10
@@ -405,7 +472,7 @@ if __name__ == '__main__':
             xds['va'].attrs['stable_shift'] = int(round(va_mean_shift*10))/10
         else:
             xds['va'].attrs['stable_shift'] = np.nan
-        
+
         xds['va'].attrs['stable_count_mask'] = stable_count
         xds['va'].attrs['stable_count_slow'] = stable_count1
         if stable_count != 0:
@@ -416,7 +483,7 @@ if __name__ == '__main__':
             xds['va'].attrs['stable_shift_slow'] = int(round(va_mean_shift1*10))/10
         else:
             xds['va'].attrs['stable_shift_slow'] = np.nan
-        
+
         if stable_count != 0:
             xds['va'].attrs['va_error_mask'] = int(round(va_error_mask*10))/10
         else:
@@ -425,37 +492,35 @@ if __name__ == '__main__':
             xds['va'].attrs['va_error_slow'] = int(round(va_error_slow*10))/10
         else:
             xds['va'].attrs['va_error_slow'] = np.nan
-        
+
         xds['vr'].data = VR
         xds['va'].data = VA
 
-        
-        
-        
+
         #   VXP and VYP stable shift
         stable_count_p = np.sum(SSM & np.logical_not(np.isnan(VXP)))
-        
+
         stable_count1_p = np.sum(SSM1 & np.logical_not(np.isnan(VXP)))
-        
+
         vxp_mean_shift = 0.0
         vyp_mean_shift = 0.0
         vxp_mean_shift1 = 0.0
         vyp_mean_shift1 = 0.0
-        
+
         if stable_count_p != 0:
             temp = VXP.copy() - VXref.copy()
             temp[np.logical_not(SSM)] = np.nan
             vxp_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-1.3
-            
+
             temp = VYP.copy() - VYref.copy()
             temp[np.logical_not(SSM)] = np.nan
             vyp_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-1.3
-        
+
         if stable_count1_p != 0:
             temp = VXP.copy() - VXref.copy()
             temp[np.logical_not(SSM1)] = np.nan
             vxp_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-1.3
-            
+
             temp = VYP.copy() - VYref.copy()
             temp[np.logical_not(SSM1)] = np.nan
             vyp_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-1.3
@@ -471,8 +536,8 @@ if __name__ == '__main__':
             stable_shift_applied_p = 1
             VXP = VXP - vxp_mean_shift
             VYP = VYP - vyp_mean_shift
-        
-        
+
+
         #   VXP and VYP error
         if stable_count_p != 0:
             temp = VXP.copy() - VXref.copy()
@@ -511,24 +576,24 @@ if __name__ == '__main__':
             vyp_error = vyp_error_slow
         else:
             vyp_error = xds['vyp'].vyp_error_modeled
-        
+
         #   V and V_error
         VP = np.sqrt(VXP**2+VYP**2)
         VP_error = np.sqrt((vxp_error * VXP / VP)**2 + (vyp_error * VYP / VP)**2)
-        
+
         VXP[np.isnan(VXP)] = NoDataValue
         VYP[np.isnan(VYP)] = NoDataValue
         VP[np.isnan(VP)] = NoDataValue
-        
+
         VXP = np.round(np.clip(VXP, -32768, 32767)).astype(np.int16)
         VYP = np.round(np.clip(VYP, -32768, 32767)).astype(np.int16)
         VP = np.round(np.clip(VP, -32768, 32767)).astype(np.int16)
-        
+
         vp_error = v_error_cal(vxp_error, vyp_error)
         VP_error[VP==0] = vp_error
         VP_error[np.isnan(VP_error)] = NoDataValue
         VP_error = np.round(np.clip(VP_error, -32768, 32767)).astype(np.int16)
-        
+
         #   Update nc file
         xds['vxp'].attrs['vxp_error'] = int(round(vxp_error*10))/10
         if stable_shift_applied_p == 2:
@@ -537,7 +602,7 @@ if __name__ == '__main__':
             xds['vxp'].attrs['stable_shift'] = int(round(vxp_mean_shift*10))/10
         else:
             xds['vxp'].attrs['stable_shift'] = np.nan
-        
+
         xds['vxp'].attrs['stable_count_mask'] = stable_count_p
         xds['vxp'].attrs['stable_count_slow'] = stable_count1_p
         if stable_count_p != 0:
@@ -548,7 +613,7 @@ if __name__ == '__main__':
             xds['vxp'].attrs['stable_shift_slow'] = int(round(vxp_mean_shift1*10))/10
         else:
             xds['vxp'].attrs['stable_shift_slow'] = np.nan
-        
+
         if stable_count_p != 0:
             xds['vxp'].attrs['vxp_error_mask'] = int(round(vxp_error_mask*10))/10
         else:
@@ -566,7 +631,7 @@ if __name__ == '__main__':
             xds['vyp'].attrs['stable_shift'] = int(round(vyp_mean_shift*10))/10
         else:
             xds['vyp'].attrs['stable_shift'] = np.nan
-        
+
         xds['vyp'].attrs['stable_count_mask'] = stable_count_p
         xds['vyp'].attrs['stable_count_slow'] = stable_count1_p
         if stable_count_p != 0:
@@ -577,7 +642,7 @@ if __name__ == '__main__':
             xds['vyp'].attrs['stable_shift_slow'] = int(round(vyp_mean_shift1*10))/10
         else:
             xds['vyp'].attrs['stable_shift_slow'] = np.nan
-        
+
         if stable_count_p != 0:
             xds['vyp'].attrs['vyp_error_mask'] = int(round(vyp_error_mask*10))/10
         else:
@@ -586,22 +651,33 @@ if __name__ == '__main__':
             xds['vyp'].attrs['vyp_error_slow'] = int(round(vyp_error_slow*10))/10
         else:
             xds['vyp'].attrs['vyp_error_slow'] = np.nan
-        
+
         xds['vxp'].data = VXP
         xds['vyp'].data = VYP
         xds['vp'].data = VP
         xds['vp_error'].data = VP_error
 
-    xds.to_netcdf(inps.output)
-    
+    if output_file is not None:
+        # TODO: writing to the file should take encoding dictionary
+        xds.to_netcdf(inps.output)
 
+    return xds
+
+if __name__ == '__main__':
+
+    #####Parse command line
+    inps = cmdLineParse()
+
+    xds = xr.open_dataset(inps.nc)
+
+    _ = main(xds, inps.VXref, inps.VYref, inps.SSM, inps.output)
 
 #    xds.rio.write_crs("epsg:"+str(inps.epsg), inplace=True)
 #    xds[inps.output].rio.to_raster(os.path.dirname(inps.input)+'/'+inps.output+'.tif')
 
-    
+
 ##    pdb.set_trace()
-    
+
 #   stable shift comparison
 #   original: M^{-1} * median([DX;DY] - M * [VXref;VYref])
 #   patch:    median(M^{-1} * [DX;DY] - [VXref;VYref])
@@ -609,4 +685,3 @@ if __name__ == '__main__':
 #   error comparison
 #   original: std(M^{-1} * [DX;DY] - stable_shift_original)
 #   patch:    std(M^{-1} * [DX;DY] - stable_shift_patch)
-
