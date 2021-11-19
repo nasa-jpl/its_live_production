@@ -25,7 +25,7 @@ dependencies:
   - pip
   - numpy
   - xarray
-  - s3fs
-  - fsspec
+  - s3fs==0.4.2
+  - fsspec==0.8.3
   - aiohttp
   - hyp3_sdk>=1.1
