@@ -248,6 +248,9 @@ def main():
 
     logging.info(f"Args: {args}")
 
+    if not os.path.exists(args.local_dir):
+        os.mkdir(args.local_dir)
+
     FixSentinel1Granules.DRY_RUN = args.dry
 
     fix_attributes = FixSentinel1Granules(
@@ -255,7 +258,13 @@ def main():
         args.bucket_dir,
         args.glob
     )
-    fix_attributes(args.target_bucket, args.local_dir, args.chunk_size, args.dask_workers, args.start_granule)
+    fix_attributes(
+        args.target_bucket,
+        args.local_dir,
+        args.chunk_size,
+        args.dask_workers,
+        args.start_granule
+    )
 
 
 if __name__ == '__main__':
