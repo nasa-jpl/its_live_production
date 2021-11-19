@@ -128,8 +128,7 @@ class FixSentinel1Granules:
         bucket: str,
         bucket_dir: str,
         glob_pattern: dir,
-        exclude_granule_file: str=None,
-        granule_prefix: str=None
+        exclude_granule_file: str=None
     ):
         """
         Initialize object.
@@ -271,8 +270,7 @@ def main():
         args.bucket,
         args.bucket_dir,
         args.glob,
-        args.exclude_granule_file,
-        args.granule_prefix
+        args.exclude_granule_file
     )
     fix_attributes(args.target_bucket, args.local_dir, args.chunk_size, args.dask_workers, args.start_granule)
 
