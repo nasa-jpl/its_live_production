@@ -1,0 +1,612 @@
+#!/usr/bin/env python3
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#Yang Lei, Jet Propulsion Laboratory
+#November 2017
+
+import argparse
+import isce
+import isceobj
+import numpy as np
+import shelve
+import os
+import datetime 
+from isceobj.Constants import SPEED_OF_LIGHT
+import pdb
+import logging
+from imageMath import IML
+from scipy import signal
+import scipy.io as sio
+import rioxarray
+import xarray
+from osgeo import osr,gdal
+
+
+def cmdLineParse():
+    '''
+    Command line parser.
+    '''
+
+    parser = argparse.ArgumentParser( description='Converting netcdf variables to geotiff')
+    parser.add_argument('-i', '--nc', dest='nc', type=str, required=True,
+            help = 'input netcdf file path')
+    parser.add_argument('-vx', '--vx', dest='VXref', type=str, required=True,
+            help = 'input reference velocity x file path')
+    parser.add_argument('-vy', '--vy', dest='VYref', type=str, required=True,
+            help = 'input reference velocity y file path')
+    parser.add_argument('-ssm', '--ssm', dest='SSM', type=str, required=True,
+            help = 'input stable surface mask file path')
+    parser.add_argument('-o','--out', dest='output', type=str, required=True,
+            help = 'Variable to output')
+#    parser.add_argument('-e','--epsg', dest='epsg', type=int, default=3413,
+#            help = 'EPSG code')
+    return parser.parse_args()
+
+
+
+def v_error_cal(vx_error, vy_error):
+    vx = np.random.normal(0, vx_error, 1000000)
+    vy = np.random.normal(0, vy_error, 1000000)
+    v = np.sqrt(vx**2 + vy**2)
+    return np.std(v)
+
+
+
+
+if __name__ == '__main__':
+
+    #####Parse command line
+    inps = cmdLineParse()
+
+    xds = xarray.open_dataset(inps.nc)
+    VX = xds['vx'].data
+    VY = xds['vy'].data
+    V = xds['v'].data
+    V_error = xds['v_error'].data
+    if xds.attrs['scene_pair_type'] == 'radar':
+        VR = xds['vr'].data
+        VA = xds['va'].data
+        M11 = xds['M11'].data * xds['M11'].dr_to_vr_factor
+        M12 = xds['M12'].data * xds['M12'].dr_to_vr_factor
+        VXP = xds['vxp'].data
+        VYP = xds['vyp'].data
+        VP = xds['vp'].data
+        VP_error = xds['vp_error'].data
+    
+    if np.logical_not(np.isnan(xds['vx'].stable_shift)):
+        VX += xds['vx'].stable_shift
+        VY += xds['vy'].stable_shift
+        if xds.attrs['scene_pair_type'] == 'radar':
+            VR += xds['vr'].stable_shift
+            VA += xds['va'].stable_shift
+            VXP += xds['vxp'].stable_shift
+            VYP += xds['vyp'].stable_shift
+    
+    
+    ds = gdal.Open(inps.VXref)
+    band = ds.GetRasterBand(1)
+    tran = ds.GetGeoTransform()
+    xoff = int(round((np.min(xds['vx'].x.data)-tran[0]-tran[1]/2)/tran[1]))
+    yoff = int(round((np.max(xds['vx'].y.data)-tran[3]-tran[5]/2)/tran[5]))
+    xcount = VX.shape[1]
+    ycount = VX.shape[0]
+#    pdb.set_trace()
+    VXref = band.ReadAsArray(xoff, yoff, xcount, ycount)
+    ds = None
+    band = None
+        
+    ds = gdal.Open(inps.VYref)
+    band = ds.GetRasterBand(1)
+    VYref = band.ReadAsArray(xoff, yoff, xcount, ycount)
+    ds = None
+    band = None
+    
+    ds = gdal.Open(inps.SSM)
+    band = ds.GetRasterBand(1)
+    SSM = band.ReadAsArray(xoff, yoff, xcount, ycount)
+    SSM = SSM.astype('bool')
+    ds = None
+    band = None
+    
+#    pdb.set_trace()
+    if xds.attrs['scene_pair_type'] == 'radar':
+        VRref = M11 * VXref + M12 * VYref
+        VAref = VRref * 0.0
+
+    NoDataValue = -32767
+
+#   VX and VY stable shift
+    stable_count = np.sum(SSM & np.logical_not(np.isnan(VX)))
+    
+    V_temp = np.sqrt(VXref**2 + VYref**2)
+    try:
+        V_temp_threshold = np.percentile(V_temp[np.logical_not(np.isnan(V_temp))],25)
+        SSM1 = (V_temp <= V_temp_threshold)
+    except IndexError:
+        SSM1 = np.zeros(V_temp.shape).astype('bool')
+                
+    stable_count1 = np.sum(SSM1 & np.logical_not(np.isnan(VX)))
+                
+    vx_mean_shift = 0.0
+    vy_mean_shift = 0.0
+    vx_mean_shift1 = 0.0
+    vy_mean_shift1 = 0.0
+                
+    if stable_count != 0:
+        temp = VX.copy() - VXref.copy()
+        temp[np.logical_not(SSM)] = np.nan
+        vx_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
+        
+        temp = VY.copy() - VYref.copy()
+        temp[np.logical_not(SSM)] = np.nan
+        vy_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
+
+    if stable_count1 != 0:
+        temp = VX.copy() - VXref.copy()
+        temp[np.logical_not(SSM1)] = np.nan
+        vx_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
+        
+        temp = VY.copy() - VYref.copy()
+        temp[np.logical_not(SSM1)] = np.nan
+        vy_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
+
+    if stable_count == 0:
+        if stable_count1 == 0:
+            stable_shift_applied = 0
+        else:
+            stable_shift_applied = 2
+            VX = VX - vx_mean_shift1
+            VY = VY - vy_mean_shift1
+    else:
+        stable_shift_applied = 1
+        VX = VX - vx_mean_shift
+        VY = VY - vy_mean_shift
+
+
+#   VX and VY error
+    if stable_count != 0:
+        temp = VX.copy() - VXref.copy()
+        temp[np.logical_not(SSM)] = np.nan
+        vx_error_mask = np.std(temp[np.logical_not(np.isnan(temp))])
+    else:
+        vx_error_mask = np.nan
+    if stable_count1 != 0:
+        temp = VX.copy() - VXref.copy()
+        temp[np.logical_not(SSM1)] = np.nan
+        vx_error_slow = np.std(temp[np.logical_not(np.isnan(temp))])
+    else:
+        vx_error_slow = np.nan
+    if stable_shift_applied == 1:
+        vx_error = vx_error_mask
+    elif stable_shift_applied == 2:
+        vx_error = vx_error_slow
+    else:
+        vx_error = xds['vx'].vx_error_modeled
+
+    if stable_count != 0:
+        temp = VY.copy() - VYref.copy()
+        temp[np.logical_not(SSM)] = np.nan
+        vy_error_mask = np.std(temp[np.logical_not(np.isnan(temp))])
+    else:
+        vy_error_mask = np.nan
+    if stable_count1 != 0:
+        temp = VY.copy() - VYref.copy()
+        temp[np.logical_not(SSM1)] = np.nan
+        vy_error_slow = np.std(temp[np.logical_not(np.isnan(temp))])
+    else:
+        vy_error_slow = np.nan
+    if stable_shift_applied == 1:
+        vy_error = vy_error_mask
+    elif stable_shift_applied == 2:
+        vy_error = vy_error_slow
+    else:
+        vy_error = xds['vy'].vy_error_modeled
+
+#   V and V_error
+    V = np.sqrt(VX**2+VY**2)
+    V_error = np.sqrt((vx_error * VX / V)**2 + (vy_error * VY / V)**2)
+
+    VX[np.isnan(VX)] = NoDataValue
+    VY[np.isnan(VY)] = NoDataValue
+    V[np.isnan(V)] = NoDataValue
+
+    VX = np.round(np.clip(VX, -32768, 32767)).astype(np.int16)
+    VY = np.round(np.clip(VY, -32768, 32767)).astype(np.int16)
+    V = np.round(np.clip(V, -32768, 32767)).astype(np.int16)
+
+    v_error = v_error_cal(vx_error, vy_error)
+    V_error[V==0] = v_error
+    V_error[np.isnan(V_error)] = NoDataValue
+    V_error = np.round(np.clip(V_error, -32768, 32767)).astype(np.int16)
+
+#   Update nc file
+    xds['vx'].attrs['vx_error'] = int(round(vx_error*10))/10
+    if stable_shift_applied == 2:
+        xds['vx'].attrs['stable_shift'] = int(round(vx_mean_shift1*10))/10
+    elif stable_shift_applied == 1:
+        xds['vx'].attrs['stable_shift'] = int(round(vx_mean_shift*10))/10
+    else:
+        xds['vx'].attrs['stable_shift'] = np.nan
+
+    xds['vx'].attrs['stable_count_mask'] = stable_count
+    xds['vx'].attrs['stable_count_slow'] = stable_count1
+    if stable_count != 0:
+        xds['vx'].attrs['stable_shift_mask'] = int(round(vx_mean_shift*10))/10
+    else:
+        xds['vx'].attrs['stable_shift_mask'] = np.nan
+    if stable_count1 != 0:
+        xds['vx'].attrs['stable_shift_slow'] = int(round(vx_mean_shift1*10))/10
+    else:
+        xds['vx'].attrs['stable_shift_slow'] = np.nan
+    
+    if stable_count != 0:
+        xds['vx'].attrs['vx_error_mask'] = int(round(vx_error_mask*10))/10
+    else:
+        xds['vx'].attrs['vx_error_mask'] = np.nan
+    if stable_count1 != 0:
+        xds['vx'].attrs['vx_error_slow'] = int(round(vx_error_slow*10))/10
+    else:
+        xds['vx'].attrs['vx_error_slow'] = np.nan
+
+
+    xds['vy'].attrs['vy_error'] = int(round(vy_error*10))/10
+    if stable_shift_applied == 2:
+        xds['vy'].attrs['stable_shift'] = int(round(vy_mean_shift1*10))/10
+    elif stable_shift_applied == 1:
+        xds['vy'].attrs['stable_shift'] = int(round(vy_mean_shift*10))/10
+    else:
+        xds['vy'].attrs['stable_shift'] = np.nan
+    
+    xds['vy'].attrs['stable_count_mask'] = stable_count
+    xds['vy'].attrs['stable_count_slow'] = stable_count1
+    if stable_count != 0:
+        xds['vy'].attrs['stable_shift_mask'] = int(round(vy_mean_shift*10))/10
+    else:
+        xds['vy'].attrs['stable_shift_mask'] = np.nan
+    if stable_count1 != 0:
+        xds['vy'].attrs['stable_shift_slow'] = int(round(vy_mean_shift1*10))/10
+    else:
+        xds['vy'].attrs['stable_shift_slow'] = np.nan
+
+    if stable_count != 0:
+        xds['vy'].attrs['vy_error_mask'] = int(round(vy_error_mask*10))/10
+    else:
+        xds['vy'].attrs['vy_error_mask'] = np.nan
+    if stable_count1 != 0:
+        xds['vy'].attrs['vy_error_slow'] = int(round(vy_error_slow*10))/10
+    else:
+        xds['vy'].attrs['vy_error_slow'] = np.nan
+
+    xds['vx'].data = VX
+    xds['vy'].data = VY
+    xds['v'].data = V
+    xds['v_error'].data = V_error
+
+
+    if xds.attrs['scene_pair_type'] == 'radar':
+        
+        #   VR and VA stable shift
+        
+        vr_mean_shift = 0.0
+        va_mean_shift = 0.0
+        vr_mean_shift1 = 0.0
+        va_mean_shift1 = 0.0
+        
+        if stable_count != 0:
+            temp = VR.copy() - VRref.copy()
+            temp[np.logical_not(SSM)] = np.nan
+            vr_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
+            
+            temp = VA.copy() - VAref.copy()
+            temp[np.logical_not(SSM)] = np.nan
+            va_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
+        
+        if stable_count1 != 0:
+            temp = VR.copy() - VRref.copy()
+            temp[np.logical_not(SSM1)] = np.nan
+            vr_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
+            
+            temp = VA.copy() - VAref.copy()
+            temp[np.logical_not(SSM1)] = np.nan
+            va_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-0.0
+        
+        if stable_count == 0:
+            if stable_count1 == 0:
+                stable_shift_applied = 0
+            else:
+                stable_shift_applied = 2
+                VR = VR - vr_mean_shift1
+                VA = VA - va_mean_shift1
+        else:
+            stable_shift_applied = 1
+            VR = VR - vr_mean_shift
+            VA = VA - va_mean_shift
+        
+        
+        #   VR and VA error
+        if stable_count != 0:
+            temp = VR.copy() - VRref.copy()
+            temp[np.logical_not(SSM)] = np.nan
+            vr_error_mask = np.std(temp[np.logical_not(np.isnan(temp))])
+        else:
+            vr_error_mask = np.nan
+        if stable_count1 != 0:
+            temp = VR.copy() - VRref.copy()
+            temp[np.logical_not(SSM1)] = np.nan
+            vr_error_slow = np.std(temp[np.logical_not(np.isnan(temp))])
+        else:
+            vr_error_slow = np.nan
+        if stable_shift_applied == 1:
+            vr_error = vr_error_mask
+        elif stable_shift_applied == 2:
+            vr_error = vr_error_slow
+        else:
+            vr_error = xds['vr'].vr_error_modeled
+        
+        if stable_count != 0:
+            temp = VA.copy() - VAref.copy()
+            temp[np.logical_not(SSM)] = np.nan
+            va_error_mask = np.std(temp[np.logical_not(np.isnan(temp))])
+        else:
+            va_error_mask = np.nan
+        if stable_count1 != 0:
+            temp = VA.copy() - VAref.copy()
+            temp[np.logical_not(SSM1)] = np.nan
+            va_error_slow = np.std(temp[np.logical_not(np.isnan(temp))])
+        else:
+            va_error_slow = np.nan
+        if stable_shift_applied == 1:
+            va_error = va_error_mask
+        elif stable_shift_applied == 2:
+            va_error = va_error_slow
+        else:
+            va_error = xds['va'].va_error_modeled
+        
+        #   V and V_error
+        VR[np.isnan(VXP)] = NoDataValue
+        VA[np.isnan(VYP)] = NoDataValue
+
+        VR = np.round(np.clip(VR, -32768, 32767)).astype(np.int16)
+        VA = np.round(np.clip(VA, -32768, 32767)).astype(np.int16)
+
+        #   Update nc file
+        xds['vr'].attrs['vr_error'] = int(round(vr_error*10))/10
+        if stable_shift_applied == 2:
+            xds['vr'].attrs['stable_shift'] = int(round(vr_mean_shift1*10))/10
+        elif stable_shift_applied == 1:
+            xds['vr'].attrs['stable_shift'] = int(round(vr_mean_shift*10))/10
+        else:
+            xds['vr'].attrs['stable_shift'] = np.nan
+        
+        xds['vr'].attrs['stable_count_mask'] = stable_count
+        xds['vr'].attrs['stable_count_slow'] = stable_count1
+        if stable_count != 0:
+            xds['vr'].attrs['stable_shift_mask'] = int(round(vr_mean_shift*10))/10
+        else:
+            xds['vr'].attrs['stable_shift_mask'] = np.nan
+        if stable_count1 != 0:
+            xds['vr'].attrs['stable_shift_slow'] = int(round(vr_mean_shift1*10))/10
+        else:
+            xds['vr'].attrs['stable_shift_slow'] = np.nan
+        
+        if stable_count != 0:
+            xds['vr'].attrs['vr_error_mask'] = int(round(vr_error_mask*10))/10
+        else:
+            xds['vr'].attrs['vr_error_mask'] = np.nan
+        if stable_count1 != 0:
+            xds['vr'].attrs['vr_error_slow'] = int(round(vr_error_slow*10))/10
+        else:
+            xds['vr'].attrs['vr_error_slow'] = np.nan
+        
+        
+        xds['va'].attrs['va_error'] = int(round(va_error*10))/10
+        if stable_shift_applied == 2:
+            xds['va'].attrs['stable_shift'] = int(round(va_mean_shift1*10))/10
+        elif stable_shift_applied == 1:
+            xds['va'].attrs['stable_shift'] = int(round(va_mean_shift*10))/10
+        else:
+            xds['va'].attrs['stable_shift'] = np.nan
+        
+        xds['va'].attrs['stable_count_mask'] = stable_count
+        xds['va'].attrs['stable_count_slow'] = stable_count1
+        if stable_count != 0:
+            xds['va'].attrs['stable_shift_mask'] = int(round(va_mean_shift*10))/10
+        else:
+            xds['va'].attrs['stable_shift_mask'] = np.nan
+        if stable_count1 != 0:
+            xds['va'].attrs['stable_shift_slow'] = int(round(va_mean_shift1*10))/10
+        else:
+            xds['va'].attrs['stable_shift_slow'] = np.nan
+        
+        if stable_count != 0:
+            xds['va'].attrs['va_error_mask'] = int(round(va_error_mask*10))/10
+        else:
+            xds['va'].attrs['va_error_mask'] = np.nan
+        if stable_count1 != 0:
+            xds['va'].attrs['va_error_slow'] = int(round(va_error_slow*10))/10
+        else:
+            xds['va'].attrs['va_error_slow'] = np.nan
+        
+        xds['vr'].data = VR
+        xds['va'].data = VA
+
+        
+        
+        
+        #   VXP and VYP stable shift
+        stable_count_p = np.sum(SSM & np.logical_not(np.isnan(VXP)))
+        
+        stable_count1_p = np.sum(SSM1 & np.logical_not(np.isnan(VXP)))
+        
+        vxp_mean_shift = 0.0
+        vyp_mean_shift = 0.0
+        vxp_mean_shift1 = 0.0
+        vyp_mean_shift1 = 0.0
+        
+        if stable_count_p != 0:
+            temp = VXP.copy() - VXref.copy()
+            temp[np.logical_not(SSM)] = np.nan
+            vxp_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-1.3
+            
+            temp = VYP.copy() - VYref.copy()
+            temp[np.logical_not(SSM)] = np.nan
+            vyp_mean_shift = np.median(temp[np.logical_not(np.isnan(temp))])-1.3
+        
+        if stable_count1_p != 0:
+            temp = VXP.copy() - VXref.copy()
+            temp[np.logical_not(SSM1)] = np.nan
+            vxp_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-1.3
+            
+            temp = VYP.copy() - VYref.copy()
+            temp[np.logical_not(SSM1)] = np.nan
+            vyp_mean_shift1 = np.median(temp[np.logical_not(np.isnan(temp))])-1.3
+
+        if stable_count_p == 0:
+            if stable_count1_p == 0:
+                stable_shift_applied_p = 0
+            else:
+                stable_shift_applied_p = 2
+                VXP = VXP - vxp_mean_shift1
+                VYP = VYP - vyp_mean_shift1
+        else:
+            stable_shift_applied_p = 1
+            VXP = VXP - vxp_mean_shift
+            VYP = VYP - vyp_mean_shift
+        
+        
+        #   VXP and VYP error
+        if stable_count_p != 0:
+            temp = VXP.copy() - VXref.copy()
+            temp[np.logical_not(SSM)] = np.nan
+            vxp_error_mask = np.std(temp[np.logical_not(np.isnan(temp))])
+        else:
+            vxp_error_mask = np.nan
+        if stable_count1_p != 0:
+            temp = VXP.copy() - VXref.copy()
+            temp[np.logical_not(SSM1)] = np.nan
+            vxp_error_slow = np.std(temp[np.logical_not(np.isnan(temp))])
+        else:
+            vxp_error_slow = np.nan
+        if stable_shift_applied_p == 1:
+            vxp_error = vxp_error_mask
+        elif stable_shift_applied_p == 2:
+            vxp_error = vxp_error_slow
+        else:
+            vxp_error = xds['vxp'].vxp_error_modeled
+
+        if stable_count_p != 0:
+            temp = VYP.copy() - VYref.copy()
+            temp[np.logical_not(SSM)] = np.nan
+            vyp_error_mask = np.std(temp[np.logical_not(np.isnan(temp))])
+        else:
+            vyp_error_mask = np.nan
+        if stable_count1_p != 0:
+            temp = VYP.copy() - VYref.copy()
+            temp[np.logical_not(SSM1)] = np.nan
+            vyp_error_slow = np.std(temp[np.logical_not(np.isnan(temp))])
+        else:
+            vyp_error_slow = np.nan
+        if stable_shift_applied_p == 1:
+            vyp_error = vyp_error_mask
+        elif stable_shift_applied_p == 2:
+            vyp_error = vyp_error_slow
+        else:
+            vyp_error = xds['vyp'].vyp_error_modeled
+        
+        #   V and V_error
+        VP = np.sqrt(VXP**2+VYP**2)
+        VP_error = np.sqrt((vxp_error * VXP / VP)**2 + (vyp_error * VYP / VP)**2)
+        
+        VXP[np.isnan(VXP)] = NoDataValue
+        VYP[np.isnan(VYP)] = NoDataValue
+        VP[np.isnan(VP)] = NoDataValue
+        
+        VXP = np.round(np.clip(VXP, -32768, 32767)).astype(np.int16)
+        VYP = np.round(np.clip(VYP, -32768, 32767)).astype(np.int16)
+        VP = np.round(np.clip(VP, -32768, 32767)).astype(np.int16)
+        
+        vp_error = v_error_cal(vxp_error, vyp_error)
+        VP_error[VP==0] = vp_error
+        VP_error[np.isnan(VP_error)] = NoDataValue
+        VP_error = np.round(np.clip(VP_error, -32768, 32767)).astype(np.int16)
+        
+        #   Update nc file
+        xds['vxp'].attrs['vxp_error'] = int(round(vxp_error*10))/10
+        if stable_shift_applied_p == 2:
+            xds['vxp'].attrs['stable_shift'] = int(round(vxp_mean_shift1*10))/10
+        elif stable_shift_applied_p == 1:
+            xds['vxp'].attrs['stable_shift'] = int(round(vxp_mean_shift*10))/10
+        else:
+            xds['vxp'].attrs['stable_shift'] = np.nan
+        
+        xds['vxp'].attrs['stable_count_mask'] = stable_count_p
+        xds['vxp'].attrs['stable_count_slow'] = stable_count1_p
+        if stable_count_p != 0:
+            xds['vxp'].attrs['stable_shift_mask'] = int(round(vxp_mean_shift*10))/10
+        else:
+            xds['vxp'].attrs['stable_shift_mask'] = np.nan
+        if stable_count1_p != 0:
+            xds['vxp'].attrs['stable_shift_slow'] = int(round(vxp_mean_shift1*10))/10
+        else:
+            xds['vxp'].attrs['stable_shift_slow'] = np.nan
+        
+        if stable_count_p != 0:
+            xds['vxp'].attrs['vxp_error_mask'] = int(round(vxp_error_mask*10))/10
+        else:
+            xds['vxp'].attrs['vxp_error_mask'] = np.nan
+        if stable_count1_p != 0:
+            xds['vxp'].attrs['vxp_error_slow'] = int(round(vxp_error_slow*10))/10
+        else:
+            xds['vxp'].attrs['vxp_error_slow'] = np.nan
+
+
+        xds['vyp'].attrs['vyp_error'] = int(round(vyp_error*10))/10
+        if stable_shift_applied_p == 2:
+            xds['vyp'].attrs['stable_shift'] = int(round(vyp_mean_shift1*10))/10
+        elif stable_shift_applied_p == 1:
+            xds['vyp'].attrs['stable_shift'] = int(round(vyp_mean_shift*10))/10
+        else:
+            xds['vyp'].attrs['stable_shift'] = np.nan
+        
+        xds['vyp'].attrs['stable_count_mask'] = stable_count_p
+        xds['vyp'].attrs['stable_count_slow'] = stable_count1_p
+        if stable_count_p != 0:
+            xds['vyp'].attrs['stable_shift_mask'] = int(round(vyp_mean_shift*10))/10
+        else:
+            xds['vyp'].attrs['stable_shift_mask'] = np.nan
+        if stable_count1_p != 0:
+            xds['vyp'].attrs['stable_shift_slow'] = int(round(vyp_mean_shift1*10))/10
+        else:
+            xds['vyp'].attrs['stable_shift_slow'] = np.nan
+        
+        if stable_count_p != 0:
+            xds['vyp'].attrs['vyp_error_mask'] = int(round(vyp_error_mask*10))/10
+        else:
+            xds['vyp'].attrs['vyp_error_mask'] = np.nan
+        if stable_count1_p != 0:
+            xds['vyp'].attrs['vyp_error_slow'] = int(round(vyp_error_slow*10))/10
+        else:
+            xds['vyp'].attrs['vyp_error_slow'] = np.nan
+        
+        xds['vxp'].data = VXP
+        xds['vyp'].data = VYP
+        xds['vp'].data = VP
+        xds['vp_error'].data = VP_error
+
+    xds.to_netcdf(inps.output)
+    
+
+
+#    xds.rio.write_crs("epsg:"+str(inps.epsg), inplace=True)
+#    xds[inps.output].rio.to_raster(os.path.dirname(inps.input)+'/'+inps.output+'.tif')
+
+    
+##    pdb.set_trace()
+    
+#   stable shift comparison
+#   original: M^{-1} * median([DX;DY] - M * [VXref;VYref])
+#   patch:    median(M^{-1} * [DX;DY] - [VXref;VYref])
+
+#   error comparison
+#   original: std(M^{-1} * [DX;DY] - stable_shift_original)
+#   patch:    std(M^{-1} * [DX;DY] - stable_shift_patch)
+
