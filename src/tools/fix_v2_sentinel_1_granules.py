@@ -127,8 +127,7 @@ class FixSentinel1Granules:
     def __init__(self,
         bucket: str,
         bucket_dir: str,
-        glob_pattern: dir,
-        exclude_granule_file: str=None
+        glob_pattern: dir
     ):
         """
         Initialize object.
@@ -140,18 +139,6 @@ class FixSentinel1Granules:
         self.all_granules = self.s3.glob(f'{os.path.join(bucket, bucket_dir)}/{glob_pattern}')
 
         logging.info(f"Number of all granules: {len(self.all_granules)}")
-
-        # Temporary fix to allow only for specific granule prefix ("LO08" were processed separately)
-        if granule_prefix is not None:
-            self.all_granules = [each for each in self.all_granules if granule_prefix in each]
-            logging.info(f"Number of {granule_prefix} granules: {len(self.all_granules)}")
-
-        if exclude_granule_file is not None:
-            exclude_granules = json.loads(exclude_granule_file.read_text())
-
-            # Remove exclude_ids from the jobs to process
-            self.all_granules = list(set(self.all_granules).difference(exclude_granules))
-            logging.info(f"Number of granules to process: {len(self.all_granules)}")
 
         # Exclude granules previously fixed: the ones that have suffix
         # self.all_granules = [each for each in self.all_granules if 'LC08' in each]
@@ -247,12 +234,6 @@ def main():
         help='Index for the start granule to process (if previous processing terminated) [%(default)d]'
     )
     parser.add_argument(
-        '-e', '--exclude-granule-file',
-        type=Path,
-        default=None,
-        help='JSON list of granules (previously processed) to exclude from processing [%(default)s]'
-    )
-    parser.add_argument(
         '--dry',
         action='store_true',
         help='Dry run, do not apply any fixes to the granules stored in AWS S3 bucket'
@@ -269,8 +250,7 @@ def main():
     fix_attributes = FixSentinel1Granules(
         args.bucket,
         args.bucket_dir,
-        args.glob,
-        args.exclude_granule_file
+        args.glob
     )
     fix_attributes(args.target_bucket, args.local_dir, args.chunk_size, args.dask_workers, args.start_granule)
 
