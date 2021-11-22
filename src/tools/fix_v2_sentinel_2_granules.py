@@ -407,7 +407,7 @@ def main():
     )
     parser.add_argument(
         '-a', '--autoRIFT',
-        default='https://hyp3-autorift.asf.alaska.edu',
+        default='https://hyp3-autorift-eu.asf.alaska.edu',
         help='autoRIFT deployment to connect to [%(default)s]'
     )
     parser.add_argument(
