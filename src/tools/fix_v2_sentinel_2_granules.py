@@ -79,8 +79,6 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     """
     Fix everything in the granule.
     """
-    msgs = [f'Fixing {granule_url}']
-
     # 1. Add missing attributes
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG1] = SENSOR_NAME
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG2] = SENSOR_NAME
@@ -105,7 +103,7 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     date_dt_base = (d1 - d0).total_seconds() / timedelta(days=1).total_seconds()
     date_dt = np.float64(date_dt_base)
     if date_dt < 0:
-        raise Exception('Input image 1 must be older than input image 2')
+        raise Exception(f'{granule_url}: input image 1 must be older than input image 2')
 
     date_ct = d0 + (d1 - d0)/2
     date_center = date_ct.strftime(DATETIME_FORMAT).rstrip('0')
@@ -113,7 +111,7 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.DATE_DT] = date_dt
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.DATE_CENTER] = date_center
 
-    return msgs
+    return ds
 
 
 class ASFTransfer:
