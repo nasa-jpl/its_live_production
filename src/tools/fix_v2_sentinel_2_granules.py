@@ -433,6 +433,9 @@ def main():
     ASFTransfer.LOCAL_DIR = args.local_dir
     ASFTransfer.DRY_RUN = args.dry
 
+    if not os.path.exists(ASFTransfer.LOCAL_DIR):
+        os.mkdir(ASFTransfer.LOCAL_DIR)
+
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
