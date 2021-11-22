@@ -126,7 +126,7 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             del ds[DataVars.VYP]
 
             # 5. Rename v*_error_* and flag_stable_shift attributes
-            ds = fix_error_attrs(ds)
+            ds = rename_error_attrs(ds)
 
             granule_basename = os.path.basename(granule_url)
 
