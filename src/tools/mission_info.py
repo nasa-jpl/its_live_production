@@ -6,7 +6,7 @@ class Encoding:
     """
     Encoding settings for writing ITS_LIVE granule to the file
     """
-    LANDSAT = {
+    LANDSAT_SENTINEL2 = {
         'interp_mask':      {'_FillValue': 0.0, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
         'chip_size_height': {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
         'chip_size_width':  {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
