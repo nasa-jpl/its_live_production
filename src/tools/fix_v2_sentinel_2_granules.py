@@ -22,6 +22,7 @@ import argparse
 import dask
 from dask.diagnostics import ProgressBar
 from datetime import datetime, timedelta
+from dateutil.parser import parse
 import json
 import logging
 import os
@@ -99,8 +100,8 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     img1_datetime = ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1]
     img2_datetime = ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2]
 
-    d0 = datetime.strptime(img1_datetime, DATETIME_FORMAT)
-    d1 = datetime.strptime(img2_datetime, DATETIME_FORMAT)
+    d0 = parse(img1_datetime)
+    d1 = parse(img2_datetime)
     date_dt_base = (d1 - d0).total_seconds() / timedelta(days=1).total_seconds()
     date_dt = np.float64(date_dt_base)
     if date_dt < 0:

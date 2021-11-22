@@ -24,8 +24,8 @@ import boto3
 from botocore.exceptions import ClientError
 import dask
 from dask.diagnostics import ProgressBar
-from dateutil.parser import parse
 from datetime import datetime, timedelta
+from dateutil.parser import parse
 import json
 import logging
 import numpy as np
@@ -133,8 +133,8 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             # Re-compute date_center and date_dt (some of the granules didn't have
             # these attributes updated after acquisition datetime was corrected
             # to include time stamp)
-            d0 = datetime.strptime(img1_datetime, FixSentinel1Granules.DATETIME_FORMAT)
-            d1 = datetime.strptime(img2_datetime, FixSentinel1Granules.DATETIME_FORMAT)
+            d0 = parse(img1_datetime)
+            d1 = parse(img2_datetime)
             date_dt_base = (d1 - d0).total_seconds() / timedelta(days=1).total_seconds()
             date_dt = np.float64(date_dt_base)
             if date_dt < 0:
