@@ -10,6 +10,8 @@ Fix ITS_LIVE S1 V2 granules:
 
  4. Remove vp, vxp, vyp, vp_error layers from S1 layers
 
+ 5. Rename v*_error_* and flag_stable_shift attributes
+
 ATTN: This script should run from AWS EC2 instance to have fast access to the S3
 bucket.
 It takes 2 seconds to upload the file to the S3 bucket from EC2 instance
@@ -42,7 +44,55 @@ from netcdf_patch_update import main as patch_stable_shift
 OLD_S3_NAME = '.jpl.nasa.gov'
 NEW_S3_NAME = ''
 
-def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir: str, s3):
+
+def rename_error_attrs(ds: xr.Dataset):
+    """
+    Rename v*_error* and flag_stable_shift* attributes of velocity data variables.
+    For example, for "vx" data variable:
+
+    vx_error -> error
+    vx_error_description -> error_description
+    vx_error_mask -> error_mask
+    vx_error_mask_description -> error_mask_description
+    vx_error_slow -> error_slow
+    vx_error_slow_description -> error_slow_description
+    vx_error_modeled -> error_modeled
+    vx_error_modeled_description -> error_modeled_description
+
+    flag_stable_shift -> stable_shift_flag
+    flag_stable_shift_description -> stable_shift_flag_description
+    """
+    new_attrs = [
+        "error",
+        "error_description",
+        "error_mask",
+        "error_mask_description",
+        "error_slow",
+        "error_slow_description",
+        "error_modeled",
+        "error_modeled_description"
+    ]
+
+    stable_shift_new_attrs = {
+        'flag_stable_shift': 'stable_shift_flag',
+        'flag_stable_shift_description': 'stable_shift_flag_description'
+    }
+
+    for each_var in ['vx', 'vy', 'va', 'vr']:
+        if each_var in ds:
+            for each_attr in new_attrs:
+                old_attr = f'{each_var}_{each_attr}'
+                ds[each_var].attrs[each_attr] = ds[each_var].attrs[old_attr]
+                del ds[each_var].attrs[old_attr]
+
+            # Rename flag_stable_shift* attrs
+            for old_attr, new_attr in stable_shift_new_attrs.items():
+                ds[each_var].attrs[new_attr] = ds[each_var].attrs[old_attr]
+                del ds[each_var].attrs[old_attr]
+
+    return ds
+
+def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir: str):
     """
     Fix everything in the granule.
     """
@@ -66,7 +116,7 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE] = ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE].replace(OLD_S3_NAME, NEW_S3_NAME)
 
             # 3. Recompute stable shift
-            fixed_ds = patch_stable_shift(ds, ds_filename = granule_url)
+            ds = patch_stable_shift(ds, ds_filename = granule_url)
 
             # 4. Remove vp, vxp, vyp, vp_error layers after stable shift re-calculations
             # as it uses v*p* variables
@@ -74,6 +124,9 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             del ds[DataVars.VP_ERROR]
             del ds[DataVars.VXP]
             del ds[DataVars.VYP]
+
+            # 5. Rename v*_error_* and flag_stable_shift attributes
+            ds = fix_error_attrs(ds)
 
             granule_basename = os.path.basename(granule_url)
 
@@ -95,7 +148,7 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
 
             # Write the granule locally, upload it to the bucket, remove file
             fixed_file = os.path.join(local_dir, granule_basename)
-            fixed_ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.SENTINEL1)
+            ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.SENTINEL1)
 
             # Upload corrected granule to the bucket
             s3_client = boto3.client('s3')
@@ -167,7 +220,7 @@ class FixSentinel1Granules:
             num_tasks = chunk_size if num_to_fix > chunk_size else num_to_fix
 
             logging.info(f"Starting tasks {start}:{start+num_tasks}")
-            tasks = [dask.delayed(fix_all)(self.bucket, target_bucket, each, local_dir, self.s3) for each in self.all_granules[start:start+num_tasks]]
+            tasks = [dask.delayed(fix_all)(self.bucket, target_bucket, each, local_dir) for each in self.all_granules[start:start+num_tasks]]
             results = None
 
             with ProgressBar():
