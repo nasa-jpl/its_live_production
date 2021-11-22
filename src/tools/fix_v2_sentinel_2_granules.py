@@ -352,7 +352,7 @@ def main():
         help='JSON list of HyP3 Job IDs'
     )
     parser.add_argument(
-        '-c', '--chunk_size',
+        '-c', '--chunk-size',
         type=int,
         default=100,
         help='Number of granules to copy in parallel [%(default)d]'
@@ -440,7 +440,7 @@ def main():
         transfer.run_sequentially(
             args.job_ids,
             args.exclude_job_file, # Exclude previously processed job IDs if any
-            args.number_to_copy,
+            args.chunk_size,
             args.start_job,
             args.dask_workers
         )
@@ -448,7 +448,7 @@ def main():
         transfer(
             args.job_ids,
             args.exclude_job_file, # Exclude previously processed job IDs if any
-            args.number_to_copy,
+            args.chunk_size,
             args.start_job,
             args.dask_workers
         )
