@@ -4,7 +4,8 @@ Fix and transfer (with provided "fixed" filename) ITS_LIVE S2 V2 granules from A
 
  1. Add missing sensor_img1="MSI" and sensor_img2="MSI" attributes for img_pair_info
 
- 2. Fix all references to https://its-live-data.jpl.nasa.gov.s3.amazonaws.com
+ 2. Fix all references to https://its-live-data-eu.jpl.nasa.gov.s3.amazonaws.com to point
+    to https://its-live-data.s3.amazonaws.com
 
  3. Recompute S1, S2 and L8 stable shift
 
@@ -41,8 +42,8 @@ from netcdf_patch_update import main as patch_stable_shift
 from fix_v2_sentinel_1_granules import rename_error_attrs
 
 # Old S3 bucket tocken to replace
-OLD_S3_NAME = '.jpl.nasa.gov'
-NEW_S3_NAME = ''
+OLD_S3_NAME = 'its-live-data-eu.jpl.nasa.gov'
+NEW_S3_NAME = 'its-live-data'
 
 SENSOR_NAME = 'MSI'
 
