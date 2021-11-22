@@ -92,7 +92,7 @@ def rename_error_attrs(ds: xr.Dataset):
 
     return ds
 
-def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir: str):
+def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir: str, s3):
     """
     Fix everything in the granule.
     """
@@ -220,7 +220,7 @@ class FixSentinel1Granules:
             num_tasks = chunk_size if num_to_fix > chunk_size else num_to_fix
 
             logging.info(f"Starting tasks {start}:{start+num_tasks}")
-            tasks = [dask.delayed(fix_all)(self.bucket, target_bucket, each, local_dir) for each in self.all_granules[start:start+num_tasks]]
+            tasks = [dask.delayed(fix_all)(self.bucket, target_bucket, each, local_dir, self.s3) for each in self.all_granules[start:start+num_tasks]]
             results = None
 
             with ProgressBar():
