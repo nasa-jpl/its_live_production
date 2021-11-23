@@ -22,6 +22,7 @@ Authors: Masha Liukis, Joe Kennedy
 import argparse
 import boto3
 from botocore.exceptions import ClientError
+import copy
 import dask
 from dask.diagnostics import ProgressBar
 from datetime import datetime, timedelta
@@ -39,6 +40,7 @@ from mission_info import Encoding
 from itscube_types import DataVars
 
 from netcdf_patch_update import main as patch_stable_shift
+from netcdf_patch_update import ITSLiveException
 
 # Old S3 bucket tocken to replace
 OLD_S3_NAME = '.jpl.nasa.gov'
@@ -78,16 +80,18 @@ def rename_error_attrs(ds: xr.Dataset):
         'flag_stable_shift_description': 'stable_shift_flag_description'
     }
 
+    # Rename attributes (and TODO: re-order them to be in alphabetic order)
     for each_var in ['vx', 'vy', 'va', 'vr']:
         if each_var in ds:
-            for each_attr in new_attrs:
-                old_attr = f'{each_var}_{each_attr}'
-                ds[each_var].attrs[each_attr] = ds[each_var].attrs[old_attr]
-                del ds[each_var].attrs[old_attr]
-
             # Rename flag_stable_shift* attrs
             for old_attr, new_attr in stable_shift_new_attrs.items():
                 ds[each_var].attrs[new_attr] = ds[each_var].attrs[old_attr]
+                del ds[each_var].attrs[old_attr]
+
+            # Rename error attributes
+            for each_attr in new_attrs:
+                old_attr = f'{each_var}_{each_attr}'
+                ds[each_var].attrs[each_attr] = ds[each_var].attrs[old_attr]
                 del ds[each_var].attrs[old_attr]
 
     return ds
@@ -104,19 +108,80 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             img1_datetime = ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_IMG1]
             img2_datetime = ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_IMG2]
 
+            # Re-order attributes in alphabetic order
+            # String img_pair_info;
+            #       :absolute_orbit_number_img1 = "004546";
+            #       :absolute_orbit_number_img2 = "004721";
+            #       :acquisition_date_img1 = "20170303T15:31:44.753674";
+            #       :acquisition_date_img2 = "20170315T15:31:45.105188";
+            #       :flight_direction_img1 = "descending";
+            #       :flight_direction_img2 = "descending";
+            #       :mission_data_take_ID_img1 = "007EB7";
+            #       :mission_data_take_ID_img2 = "0083E4";
+            #       :mission_img1 = "S";
+            #       :mission_img2 = "S";
+            #       :product_unique_ID_img1 = "2737";
+            #       :product_unique_ID_img2 = "3CBC";
+            #       :satellite_img1 = "1B";
+            #       :satellite_img2 = "1B";
+            #       :sensor_img1 = "C";
+            #       :sensor_img2 = "C";
+            #       :time_standard_img1 = "UTC";
+            #       :time_standard_img2 = "UTC";
+            #       :date_center = "20170309T15:31:44.929431";
+            #       :date_dt = 12.000004068449075; // double
+            #       :latitude = 58.56; // double
+            #       :longitude = -138.04; // double
+            #       :roi_valid_percentage = 80.2; // double
+            old_attrs = copy.deepcopy(ds[DataVars.ImgPairInfo.NAME].attrs)
+            for each_key in list(ds[DataVars.ImgPairInfo.NAME].attrs.keys()):
+                del ds[DataVars.ImgPairInfo.NAME].attrs[each_key]
+
+            ds[DataVars.ImgPairInfo.NAME].attrs['absolute_orbit_number_img1'] = old_attrs['absolute_orbit_number_img1']
+            ds[DataVars.ImgPairInfo.NAME].attrs['absolute_orbit_number_img2'] = old_attrs['absolute_orbit_number_img2']
+
             # 1. Add missing attributes
             ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1] = img1_datetime
             ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2] = img2_datetime
 
-            # Remove attributes with wrong names
-            del ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_IMG1]
-            del ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_IMG2]
+            ds[DataVars.ImgPairInfo.NAME].attrs['flight_direction_img1'] = old_attrs['flight_direction_img1']
+            ds[DataVars.ImgPairInfo.NAME].attrs['flight_direction_img2'] = old_attrs['flight_direction_img2']
+
+            ds[DataVars.ImgPairInfo.NAME].attrs['mission_data_take_ID_img1'] = old_attrs['mission_data_take_ID_img1']
+            ds[DataVars.ImgPairInfo.NAME].attrs['mission_data_take_ID_img2'] = old_attrs['mission_data_take_ID_img2']
+
+            ds[DataVars.ImgPairInfo.NAME].attrs['mission_img1'] = old_attrs['mission_img1']
+            ds[DataVars.ImgPairInfo.NAME].attrs['mission_img2'] = old_attrs['mission_img2']
+
+            ds[DataVars.ImgPairInfo.NAME].attrs['product_unique_ID_img1'] = old_attrs['product_unique_ID_img1']
+            ds[DataVars.ImgPairInfo.NAME].attrs['product_unique_ID_img2'] = old_attrs['product_unique_ID_img2']
+
+            ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img1'] = old_attrs['satellite_img1']
+            ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img2'] = old_attrs['satellite_img2']
+
+            ds[DataVars.ImgPairInfo.NAME].attrs['sensor_img1'] = old_attrs['sensor_img1']
+            ds[DataVars.ImgPairInfo.NAME].attrs['sensor_img2'] = old_attrs['sensor_img2']
+
+            ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img1'] = old_attrs['time_standard_img1']
+            ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img2'] = old_attrs['time_standard_img2']
+
+            ds[DataVars.ImgPairInfo.NAME].attrs['date_center'] = old_attrs['date_center']
+            ds[DataVars.ImgPairInfo.NAME].attrs['date_dt'] = old_attrs['date_dt']
+            ds[DataVars.ImgPairInfo.NAME].attrs['latitude'] = old_attrs['latitude']
+            ds[DataVars.ImgPairInfo.NAME].attrs['longitude'] = old_attrs['longitude']
+            ds[DataVars.ImgPairInfo.NAME].attrs['roi_valid_percentage'] = old_attrs['roi_valid_percentage']
 
             # 2. Fix reference to old its-live-data.jpl.nasa.gov S3 bucket
             ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE] = ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE].replace(OLD_S3_NAME, NEW_S3_NAME)
 
             # 3. Recompute stable shift
-            ds = patch_stable_shift(ds, ds_filename = granule_url)
+            try:
+                ds = patch_stable_shift(ds, ds_filename = granule_url)
+
+            except ITSLiveException as exc:
+                # A granule with ROI=0 is used for cataloging purposes only,
+                # skip conversion
+                msgs.append(f'WARNING: Skip stable shift corrections for ROI=0: {exc}')
 
             # 4. Remove vp, vxp, vyp, vp_error layers after stable shift re-calculations
             # as it uses v*p* variables
