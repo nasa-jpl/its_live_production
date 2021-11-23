@@ -307,7 +307,7 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
             raise ITSLiveException(f"Error processing {ds_filename}: {exc}")
 
         else:
-            raise RuntimeError(f"Error processing {ds_filename}: {exc}")
+            raise RuntimeError(f"Error processing {ds_filename}: {exc}. stable_count={stable_count} stable_count1={stable_count1} stable_shift_applied={stable_shift_applied}")
 
     if stable_shift_applied == 2:
         xds['vx'].attrs['stable_shift'] = int(round(vx_mean_shift1*10))/10
