@@ -114,8 +114,8 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     ds[DataVars.ImgPairInfo.NAME].attrs['mission_img2'] = old_attrs['mission_img2']
     ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img1'] = old_attrs['satellite_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img2'] = old_attrs['satellite_img2']
-    ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG2] = SENSOR_NAME
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG1] = SENSOR_NAME
+    ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG2] = SENSOR_NAME
     ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img1'] = old_attrs['time_standard_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img2'] = old_attrs['time_standard_img2']
     ds[DataVars.ImgPairInfo.NAME].attrs['date_center'] = old_attrs['date_center']
