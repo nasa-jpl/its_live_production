@@ -20,6 +20,13 @@ import pdb
 import xarray as xr
 from osgeo import ogr, gdal
 
+class ITSLiveException (Exception):
+    """
+    Exception class to handle ITS_LIVE special cases.
+    """
+    def __init__(self, msg):
+        super().__init__(msg)
+
 
 def cmdLineParse():
     '''
@@ -141,7 +148,7 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
             VP_error = xds['vp_error'].data
 
         except Exception as exc:
-            raise RuntimeError(f"Error processing {ds_filename}: {exc}")
+            raise RuntimError(f"Error processing {ds_filename}: {exc}")
 
     if np.logical_not(np.isnan(xds['vx'].stable_shift)):
         VX += xds['vx'].stable_shift
@@ -292,9 +299,15 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
 #   Update nc file
     try:
         xds['vx'].attrs['vx_error'] = int(round(vx_error*10))/10
-        
-    except Exception as exc:
-        raise RuntimeError(f"Error processing {ds_filename}: {exc}")
+
+    except TypeError as exc:
+        # If granule is just for cataloging purposes when ROI=0, skip the
+        # stable shift and error corrections
+        if xds['img_pair_info'].attrs['roi_valid_percentage'] == 0.0:
+            raise ITSLiveException(f"Error processing {ds_filename}: {exc}")
+
+        else:
+            raise RuntimeError(f"Error processing {ds_filename}: {exc}")
 
     if stable_shift_applied == 2:
         xds['vx'].attrs['stable_shift'] = int(round(vx_mean_shift1*10))/10

@@ -41,6 +41,7 @@ from mission_info import Encoding
 from itscube_types import DataVars
 
 from netcdf_patch_update import main as patch_stable_shift
+from netcdf_patch_update import ITSLiveException
 from fix_v2_sentinel_1_granules import rename_error_attrs
 
 # Old S3 bucket tocken to replace
@@ -79,15 +80,60 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     """
     Fix everything in the granule.
     """
-    # 1. Add missing attributes
+    msg = None
+    # 1. Add missing attributes: preserve original insert order of the attributes
+    # String img_pair_info;
+    #       :mission_img1 = "S";
+    #       :satellite_img1 = "2A";
+    #       :sensor_img1 = "MSI";
+    #       :correction_level_img1 = "L1C";
+    #       :acquisition_date_img1 = "20190429T21:08:09.";
+    #       :time_standard_img1 = "UTC";
+    #       :mission_img2 = "S";
+    #       :satellite_img2 = "2A";
+    #       :sensor_img2 = "MSI";
+    #       :correction_level_img2 = "L1C";
+    #       :acquisition_date_img2 = "20201010T21:08:11.";
+    #       :time_standard_img2 = "UTC";
+    #       :date_dt = 530.0000231481481; // double
+    #       :date_center = "20200119T21:08:10.";
+    #       :latitude = 61.7; // double
+    #       :longitude = -144.05; // double
+    #       :roi_valid_percentage = 51.0; // double
+    old_attrs = copy.deepcopy(ds[DataVars.ImgPairInfo.NAME].attrs)
+    for each_key in ds[DataVars.ImgPairInfo.NAME].attrs.keys():
+        del ds[DataVars.ImgPairInfo.NAME].attrs[each_key]
+
+    # Populate new dictionary
+    ds[DataVars.ImgPairInfo.NAME].attrs['mission_img1'] = old_attrs['mission_img1']
+    ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img1'] = old_attrs['satellite_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG1] = SENSOR_NAME
+    ds[DataVars.ImgPairInfo.NAME].attrs['correction_level_img1'] = old_attrs['correction_level_img1']
+    ds[DataVars.ImgPairInfo.NAME].attrs['acquisition_date_img1'] = old_attrs['acquisition_date_img1']
+    ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img1'] = old_attrs['time_standard_img1']
+    ds[DataVars.ImgPairInfo.NAME].attrs['mission_img2'] = old_attrs['mission_img2']
+    ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img2'] = old_attrs['satellite_img2']
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG2] = SENSOR_NAME
+    ds[DataVars.ImgPairInfo.NAME].attrs['correction_level_img2'] = old_attrs['correction_level_img2']
+    ds[DataVars.ImgPairInfo.NAME].attrs['acquisition_date_img2'] = old_attrs['acquisition_date_img2']
+    ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img2'] = old_attrs['time_standard_img2']
+    ds[DataVars.ImgPairInfo.NAME].attrs['date_dt'] = old_attrs['date_dt']
+    ds[DataVars.ImgPairInfo.NAME].attrs['date_center'] = old_attrs['date_center']
+    ds[DataVars.ImgPairInfo.NAME].attrs['latitude'] = old_attrs['latitude']
+    ds[DataVars.ImgPairInfo.NAME].attrs['longitude'] = old_attrs['longitude']
+    ds[DataVars.ImgPairInfo.NAME].attrs['roi_valid_percentage'] = old_attrs['roi_valid_percentage']
 
     # 2. Fix reference to old its-live-data.jpl.nasa.gov S3 bucket
     ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE] = ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE].replace(OLD_S3_NAME, NEW_S3_NAME)
 
     # 3. Recompute stable shift
-    ds = patch_stable_shift(ds, ds_filename = granule_url)
+    try:
+        ds = patch_stable_shift(ds, ds_filename = granule_url)
+
+    except ITSLiveException as exc:
+        # A granule with ROI=0 is used for cataloging purposes only,
+        # skip conversion
+        msg = f'WARNING: Skip stable shift corrections for ROI=0: {exc}'
 
     # 4. Rename v*_error_* and flag_stable_shift attributes
     ds = rename_error_attrs(ds)
@@ -111,7 +157,7 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.DATE_DT] = date_dt
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.DATE_CENTER] = date_center
 
-    return ds
+    return ds, msg
 
 
 class ASFTransfer:
@@ -144,8 +190,7 @@ class ASFTransfer:
         job_ids_file: str,
         exclude_job_ids_file: str,
         chunks_to_copy: int,
-        start_job: int,
-        num_dask_workers: int
+        start_job: int
     ):
         """
         Run the transfer of granules from ASF to ITS_LIVE S3 bucket.
@@ -274,6 +319,10 @@ class ASFTransfer:
             fixed_file = os.path.join(ASFTransfer.LOCAL_DIR, out_name)
             target = None
 
+            source = job.files[0]['s3']['key']
+            source_ext = '.nc'
+            bucket = boto3.resource('s3').Bucket(ASFTransfer.TARGET_BUCKET)
+
             # get center lat lon for target directory, and fix attributes
             with fsspec.open(job.files[0]['url']) as f:
                 with xr.open_dataset(f) as ds:
@@ -281,25 +330,28 @@ class ASFTransfer:
                     lon = ds.img_pair_info.longitude[0]
                     msgs.append(f'Image center (lat, lon): ({lat}, {lon})')
 
-                    # Fix granule
-                    ds = fix_all(ds, granule_url)
+                    target_prefix = point_to_prefix(ASFTransfer.TARGET_BUCKET_DIR, lat, lon)
+                    # target = f"{target_prefix}/{job.files[0]['filename']}"
+                    target = f"{target_prefix}/{out_name}"
 
-                    # Write the granule locally, upload it to the bucket, remove file
-                    ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.LANDSAT_SENTINEL2)
+                    # Remove filename postfix which should not make it to the
+                    # filename in target bucket
+                    if target.endswith(f'{ASFTransfer.POSTFIX_TO_RM}'):
+                        target = target.replace(ASFTransfer.POSTFIX_TO_RM, '')
 
-            # Copy local file to the target bucket
+                    if ASFTransfer.object_exists(bucket, target):
+                        msgs.append(f'WARNING: {bucket.name}/{target_key} already exists, skipping upload')
+
+                    else:
+                        # Fix granule
+                        ds, warning_msg = fix_all(ds, granule_url)
+                        if warning_msg is not None:
+                            msgs.append(warning_msg)
+
+                        # Write the granule locally, upload it to the bucket, remove file
+                        ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.LANDSAT_SENTINEL2)
+
             if os.path.exists(fixed_file):
-                # Probably redundant kind of check - if something went wrong writing local
-                # file, an exception would be generated.
-                target_prefix = point_to_prefix(ASFTransfer.TARGET_BUCKET_DIR, lat, lon)
-                # target = f"{target_prefix}/{job.files[0]['filename']}"
-                target = f"{target_prefix}/{out_name}"
-
-                # Remove filename postfix which should not make it to the
-                # filename in target bucket
-                if target.endswith(f'{ASFTransfer.POSTFIX_TO_RM}'):
-                    target = target.replace(ASFTransfer.POSTFIX_TO_RM, '')
-
                 # Upload corrected granule to the bucket
                 s3_client = boto3.client('s3')
                 try:
@@ -314,13 +366,6 @@ class ASFTransfer:
                 except ClientError as exc:
                     msgs.append(f"ERROR: {exc}")
                     return msgs
-
-            else:
-                raise RuntimeError(f'Fixed file {fixed_file} does not exist.')
-
-            source = job.files[0]['s3']['key']
-            source_ext = '.nc'
-            bucket = boto3.resource('s3').Bucket(ASFTransfer.TARGET_BUCKET)
 
             # There are corresponding browse and thumbprint images to transfer
             for target_ext in ['.png', '_thumb.png']:
@@ -445,8 +490,7 @@ def main():
             args.job_ids,
             args.exclude_job_file, # Exclude previously processed job IDs if any
             args.chunk_size,
-            args.start_job,
-            args.dask_workers
+            args.start_job
         )
     else:
         transfer(
