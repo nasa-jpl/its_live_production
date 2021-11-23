@@ -102,7 +102,7 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     #       :longitude = -144.05; // double
     #       :roi_valid_percentage = 51.0; // double
     old_attrs = copy.deepcopy(ds[DataVars.ImgPairInfo.NAME].attrs)
-    for each_key in ds[DataVars.ImgPairInfo.NAME].attrs.keys():
+    for each_key in list(ds[DataVars.ImgPairInfo.NAME].attrs.keys()):
         del ds[DataVars.ImgPairInfo.NAME].attrs[each_key]
 
     # Re-populate new dictionary
