@@ -108,16 +108,22 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     # Re-populate new dictionary
     ds[DataVars.ImgPairInfo.NAME].attrs['acquisition_date_img1'] = old_attrs['acquisition_date_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['acquisition_date_img2'] = old_attrs['acquisition_date_img2']
+
     ds[DataVars.ImgPairInfo.NAME].attrs['correction_level_img1'] = old_attrs['correction_level_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['correction_level_img2'] = old_attrs['correction_level_img2']
+
     ds[DataVars.ImgPairInfo.NAME].attrs['mission_img1'] = old_attrs['mission_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['mission_img2'] = old_attrs['mission_img2']
+
     ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img1'] = old_attrs['satellite_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img2'] = old_attrs['satellite_img2']
+
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG1] = SENSOR_NAME
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG2] = SENSOR_NAME
+
     ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img1'] = old_attrs['time_standard_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img2'] = old_attrs['time_standard_img2']
+
     ds[DataVars.ImgPairInfo.NAME].attrs['date_center'] = old_attrs['date_center']
     ds[DataVars.ImgPairInfo.NAME].attrs['date_dt'] = old_attrs['date_dt']
     ds[DataVars.ImgPairInfo.NAME].attrs['latitude'] = old_attrs['latitude']
