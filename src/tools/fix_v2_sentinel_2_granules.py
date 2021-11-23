@@ -19,6 +19,7 @@ echo 'machine urs.earthdata.nasa.gov login USERNAME password PASSWORD' >& ~/.net
 Authors: Masha Liukis, Joe Kennedy, Mark Fahnestock
 """
 import argparse
+import copy
 import dask
 from dask.diagnostics import ProgressBar
 from datetime import datetime, timedelta
