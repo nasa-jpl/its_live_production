@@ -290,7 +290,12 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
     V_error = np.round(np.clip(V_error, -32768, 32767)).astype(np.int16)
 
 #   Update nc file
-    xds['vx'].attrs['vx_error'] = int(round(vx_error*10))/10
+    try:
+        xds['vx'].attrs['vx_error'] = int(round(vx_error*10))/10
+        
+    except Exception as exc:
+        raise RuntimeError(f"Error processing {ds_filename}: {exc}")
+
     if stable_shift_applied == 2:
         xds['vx'].attrs['stable_shift'] = int(round(vx_mean_shift1*10))/10
     elif stable_shift_applied == 1:
