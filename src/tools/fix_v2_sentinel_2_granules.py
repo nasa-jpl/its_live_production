@@ -83,20 +83,20 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     msg = None
     # 1. Add missing attributes: preserve original insert order of the attributes
     # String img_pair_info;
-    #       :mission_img1 = "S";
-    #       :satellite_img1 = "2A";
-    #       :sensor_img1 = "MSI";
-    #       :correction_level_img1 = "L1C";
     #       :acquisition_date_img1 = "20190429T21:08:09.";
-    #       :time_standard_img1 = "UTC";
-    #       :mission_img2 = "S";
-    #       :satellite_img2 = "2A";
-    #       :sensor_img2 = "MSI";
-    #       :correction_level_img2 = "L1C";
     #       :acquisition_date_img2 = "20201010T21:08:11.";
+    #       :correction_level_img1 = "L1C";
+    #       :correction_level_img2 = "L1C";
+    #       :mission_img1 = "S";
+    #       :mission_img2 = "S";
+    #       :satellite_img1 = "2A";
+    #       :satellite_img2 = "2A";
+    #       :sensor_img1 = "MSI";
+    #       :sensor_img2 = "MSI";
+    #       :time_standard_img1 = "UTC";
     #       :time_standard_img2 = "UTC";
-    #       :date_dt = 530.0000231481481; // double
     #       :date_center = "20200119T21:08:10.";
+    #       :date_dt = 530.0000231481481; // double
     #       :latitude = 61.7; // double
     #       :longitude = -144.05; // double
     #       :roi_valid_percentage = 51.0; // double
@@ -104,21 +104,21 @@ def fix_all(ds: xr.Dataset, granule_url: str):
     for each_key in ds[DataVars.ImgPairInfo.NAME].attrs.keys():
         del ds[DataVars.ImgPairInfo.NAME].attrs[each_key]
 
-    # Populate new dictionary
-    ds[DataVars.ImgPairInfo.NAME].attrs['mission_img1'] = old_attrs['mission_img1']
-    ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img1'] = old_attrs['satellite_img1']
-    ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG1] = SENSOR_NAME
-    ds[DataVars.ImgPairInfo.NAME].attrs['correction_level_img1'] = old_attrs['correction_level_img1']
+    # Re-populate new dictionary
     ds[DataVars.ImgPairInfo.NAME].attrs['acquisition_date_img1'] = old_attrs['acquisition_date_img1']
-    ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img1'] = old_attrs['time_standard_img1']
+    ds[DataVars.ImgPairInfo.NAME].attrs['acquisition_date_img2'] = old_attrs['acquisition_date_img2']
+    ds[DataVars.ImgPairInfo.NAME].attrs['correction_level_img1'] = old_attrs['correction_level_img1']
+    ds[DataVars.ImgPairInfo.NAME].attrs['correction_level_img2'] = old_attrs['correction_level_img2']
+    ds[DataVars.ImgPairInfo.NAME].attrs['mission_img1'] = old_attrs['mission_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['mission_img2'] = old_attrs['mission_img2']
+    ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img1'] = old_attrs['satellite_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['satellite_img2'] = old_attrs['satellite_img2']
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG2] = SENSOR_NAME
-    ds[DataVars.ImgPairInfo.NAME].attrs['correction_level_img2'] = old_attrs['correction_level_img2']
-    ds[DataVars.ImgPairInfo.NAME].attrs['acquisition_date_img2'] = old_attrs['acquisition_date_img2']
+    ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.SENSOR_IMG1] = SENSOR_NAME
+    ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img1'] = old_attrs['time_standard_img1']
     ds[DataVars.ImgPairInfo.NAME].attrs['time_standard_img2'] = old_attrs['time_standard_img2']
-    ds[DataVars.ImgPairInfo.NAME].attrs['date_dt'] = old_attrs['date_dt']
     ds[DataVars.ImgPairInfo.NAME].attrs['date_center'] = old_attrs['date_center']
+    ds[DataVars.ImgPairInfo.NAME].attrs['date_dt'] = old_attrs['date_dt']
     ds[DataVars.ImgPairInfo.NAME].attrs['latitude'] = old_attrs['latitude']
     ds[DataVars.ImgPairInfo.NAME].attrs['longitude'] = old_attrs['longitude']
     ds[DataVars.ImgPairInfo.NAME].attrs['roi_valid_percentage'] = old_attrs['roi_valid_percentage']
