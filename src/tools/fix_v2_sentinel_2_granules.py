@@ -221,7 +221,7 @@ class ASFTransfer:
 
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
             for id, out_name in jobs.iloc[start:start+num_tasks].itertuples(index=False):
-                logging.info(f"STARTING {id}: {out_name})
+                logging.info(f"STARTING {id}: {out_name}")
                 each_result, _ = ASFTransfer.copy_granule(id, out_name)
             # for id in job_ids[start:start+num_tasks]:
             #     each_result, _ = ASFTransfer.copy_granule(id)
