@@ -341,7 +341,7 @@ class ASFTransfer:
                         target = target.replace(ASFTransfer.POSTFIX_TO_RM, '')
 
                     if ASFTransfer.object_exists(bucket, target):
-                        msgs.append(f'WARNING: {bucket.name}/{target_key} already exists, skipping upload')
+                        msgs.append(f'WARNING: {bucket.name}/{target} already exists, skipping upload')
 
                     else:
                         # Fix granule
