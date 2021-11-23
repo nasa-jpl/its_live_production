@@ -16,15 +16,15 @@ channels:
   - nodefaults
 
 dependencies:
-  - python=3.9
+  - python=3.9.6
   - boto3
   - botocore
-  - dask
+  - dask==2.30.0
   - gdal
   - h5netcdf
   - pip
   - numpy
-  - xarray
+  - xarray==0.19.0
   - s3fs==0.4.2
   - fsspec==0.8.3
   - aiohttp
