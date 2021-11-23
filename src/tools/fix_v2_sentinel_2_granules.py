@@ -262,7 +262,7 @@ class ASFTransfer:
         bucket already.
         """
         job = ASFTransfer.HYP3.get_job_by_id(job_id)
-        msgs = [f'Processing {job}']
+        msgs = [f"Processing {job} url={job.files[0]['url']}"]
 
         if job.running():
             msgs.append(f'WARNING: Job is still running! Skipping {job}')
