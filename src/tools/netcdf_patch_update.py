@@ -121,6 +121,11 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
     """
     Main function to re-calculate stable_shift for the image velocity pair.
     """
+    # If granule is just for cataloging purposes when ROI=0, skip the
+    # stable shift and error corrections
+    if xds['img_pair_info'].attrs['roi_valid_percentage'] == 0.0:
+        raise ITSLiveException(f"WARNING: {ds_filename} is used for cataloging only, skipping correction.")
+
     param_info = find_jpl_parameter_info(xds)
 
     if vxref_file is None:
@@ -298,16 +303,13 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
 
 #   Update nc file
     try:
+        if isinstance(vx_error, np.ndarray) and vx_error.size == 1:
+            vx_error = vx_error[0]
+
         xds['vx'].attrs['vx_error'] = int(round(vx_error*10))/10
 
-    except TypeError as exc:
-        # If granule is just for cataloging purposes when ROI=0, skip the
-        # stable shift and error corrections
-        if xds['img_pair_info'].attrs['roi_valid_percentage'] == 0.0:
-            raise ITSLiveException(f"Error processing {ds_filename}: {exc}")
-
-        else:
-            raise RuntimeError(f"Error processing {ds_filename}: {exc}. vx_error={vx_error} stable_count={stable_count} stable_count1={stable_count1} stable_shift_applied={stable_shift_applied}")
+    except Exception as exc:
+        raise RuntimeError(f"Error processing {ds_filename}: {exc}. vx_error={vx_error} stable_count={stable_count} stable_count1={stable_count1} stable_shift_applied={stable_shift_applied}")
 
     if stable_shift_applied == 2:
         xds['vx'].attrs['stable_shift'] = int(round(vx_mean_shift1*10))/10
@@ -336,6 +338,8 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
     else:
         xds['vx'].attrs['vx_error_slow'] = np.nan
 
+    if isinstance(vy_error, np.ndarray) and vy_error.size == 1:
+        vy_error = vy_error[0]
 
     xds['vy'].attrs['vy_error'] = int(round(vy_error*10))/10
     if stable_shift_applied == 2:
