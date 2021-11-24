@@ -69,10 +69,20 @@ def rename_error_attrs(ds: xr.Dataset):
         "error_description",
         "error_mask",
         "error_mask_description",
-        "error_slow",
-        "error_slow_description",
         "error_modeled",
-        "error_modeled_description"
+        "error_modeled_description",
+        "error_slow",
+        "error_slow_description"
+    ]
+
+    stable_shift_attrs = [
+        'stable_shift',
+        'flag_stable_shift',
+        'flag_stable_shift_description',
+        'stable_shift_mask',
+        'stable_count_mask',
+        'stable_shift_slow',
+        'stable_count_slow'
     ]
 
     stable_shift_new_attrs = {
@@ -80,19 +90,55 @@ def rename_error_attrs(ds: xr.Dataset):
         'flag_stable_shift_description': 'stable_shift_flag_description'
     }
 
+    _rm_keys = ['stable', 'flag', 'grid_mapping']
+
+    # Should be:
+    # short vx(y, x) ;
+    #     :_FillValue = -32767s ;
+    #     :standard_name = "x_velocity" ;
+    #     :description = "velocity component in x direction" ;
+    #     :units = "m/y" ;
+    #     :grid_mapping = "mapping" ;
+    #     :error = 15.5 ;
+    #     :error_description = "best estimate of x_velocity error: vx_error is populated according to the approach used for the velocity bias correction as indicated in \"stable_shift_flag\"" ;
+    #     :error_mask = 15.5 ;
+    #     :error_mask_description = "RMSE over stable surfaces, stationary or slow-flowing surfaces with velocity < 15 m/yr identified from an external mask" ;
+    #     :error_modeled = 193.9 ;
+    #     :error_modeled_description = "1-sigma error calculated using a modeled error-dt relationship" ;
+    #     :error_slow = 15.5 ;
+    #     :error_slow_description = "RMSE over slowest 25% of retrieved velocities" ;
+    #     :stable_shift = 1.5 ;
+    #     :stable_shift_flag = 1LL ;
+    #     :stable_shift_flag_description = "flag for applying velocity bias correction: 0 = no correction; 1 = correction from overlapping stable surface mask (stationary or slow-flowing surfaces with velocity < 15 m/yr)(top priority); 2 = correction from slowest 25% of overlapping velocities (second priority)" ;
+    #     :stable_shift_mask = 1.5 ;
+    #     :stable_count_mask = 272579LL ;
+    #     :stable_shift_slow = 1.5 ;
+    #     :stable_count_slow = 275326LL ;
+
     # Rename attributes (and TODO: re-order them to be in alphabetic order)
     for each_var in ['vx', 'vy', 'va', 'vr']:
         if each_var in ds:
-            # Rename flag_stable_shift* attrs
-            for old_attr, new_attr in stable_shift_new_attrs.items():
-                ds[each_var].attrs[new_attr] = ds[each_var].attrs[old_attr]
-                del ds[each_var].attrs[old_attr]
+            # Save old attributes values
+            old_attrs = copy.deepcopy(ds[each_var].attrs)
+
+            for each_key in list(ds[each_var].attrs.keys()):
+                if each_key.startswith(_rm_keys):
+                    del ds[each_var].attrs[each_key]
 
             # Rename error attributes
             for each_attr in new_attrs:
-                old_attr = f'{each_var}_{each_attr}'
-                ds[each_var].attrs[each_attr] = ds[each_var].attrs[old_attr]
-                del ds[each_var].attrs[old_attr]
+                old_attr_name = f'{each_var}_{each_attr}'
+                ds[each_var].attrs[each_attr] = old_attrs[old_attr_name]
+                del ds[each_var].attrs[old_attr_name]
+
+            # Insert (and rename some) stable_shift* attrs
+            for each_attr in stable_shift_attrs:
+                new_attr = each_attr
+                if each_attr in stable_shift_new_attrs:
+                    new_attr = stable_shift_new_attrs[each_attr]
+
+                ds[each_var].attrs[new_attr] = old_attrs[each_attr]
+                del ds[each_var].attrs[each_attr]
 
     return ds
 
