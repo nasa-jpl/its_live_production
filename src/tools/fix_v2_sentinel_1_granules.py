@@ -284,14 +284,13 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             for target_ext in ['.png', '_thumb.png']:
                 # It's an extra file to transfer, replace extension
                 target_key = bucket_granule.replace(source_ext, target_ext)
-                source_key = granule_url.replace(source_ext, target_ext)
 
                 if FixSentinel1Granules.object_exists(bucket, target_key):
                     msgs.append(f'WARNING: {bucket.name}/{target_key} already exists, skipping upload')
 
                 else:
                     source_dict = {'Bucket': source_bucket,
-                                   'Key': source_key}
+                                   'Key': target_key}
 
                     msgs.append(f'Copying {source_dict["Bucket"]}/{source_dict["Key"]} to {bucket.name}/{target_key}')
                     if not FixSentinel1Granules.DRY_RUN:
