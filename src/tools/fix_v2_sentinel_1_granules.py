@@ -277,6 +277,26 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             except ClientError as exc:
                 msgs.append(f"ERROR: {exc}")
 
+            # There are corresponding browse and thumbprint images to transfer
+            bucket = boto3.resource('s3').Bucket(target_bucket)
+            source_ext = '.nc'
+
+            for target_ext in ['.png', '_thumb.png']:
+                # It's an extra file to transfer, replace extension
+                target_key = bucket_granule.replace(source_ext, target_ext)
+                source_key = granule_url.replace(source_ext, target_ext)
+
+                if FixSentinel1Granules.object_exists(bucket, target_key):
+                    msgs.append(f'WARNING: {bucket.name}/{target_key} already exists, skipping upload')
+
+                else:
+                    source_dict = {'Bucket': source_bucket,
+                                   'Key': source_key}
+
+                    msgs.append(f'Copying {source_dict["Bucket"]}/{source_dict["Key"]} to {bucket.name}/{target_key}')
+                    if not FixSentinel1Granules.DRY_RUN:
+                        bucket.copy(source_dict, target_key)
+
             return msgs
 
 
@@ -311,6 +331,16 @@ class FixSentinel1Granules:
         # Exclude granules previously fixed: the ones that have suffix
         # self.all_granules = [each for each in self.all_granules if 'LC08' in each]
         self.bucket = bucket
+
+    @staticmethod
+    def object_exists(bucket, key: str) -> bool:
+        try:
+            bucket.Object(key).load()
+
+        except ClientError:
+            return False
+
+        return True
 
     def __call__(self, target_bucket: str, local_dir: str, chunk_size: int, num_dask_workers: int, start_index: int):
         """
