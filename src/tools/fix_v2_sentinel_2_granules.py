@@ -228,7 +228,7 @@ class ASFTransfer:
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
             for id, out_name in jobs.iloc[start:start+num_tasks].itertuples(index=False):
                 logging.info(f"STARTING {id}: {out_name}")
-                each_result, _ = ASFTransfer.copy_granule(id, out_name)
+                each_result, _ = ASFTransfer.copy_granule(id, out_name, debug=True)
             # for id in job_ids[start:start+num_tasks]:
             #     each_result, _ = ASFTransfer.copy_granule(id)
                 logging.info("-->".join(each_result))
@@ -309,13 +309,16 @@ class ASFTransfer:
         return True
 
     @staticmethod
-    def copy_granule(job_id, out_name):
+    def copy_granule(job_id, out_name, debug=False):
         """
         Copy granule from source to target bucket if it does not exist in target
         bucket already.
         """
         job = ASFTransfer.HYP3.get_job_by_id(job_id)
         msgs = [f"Processing {job} url={job.files[0]['url']}"]
+
+        if debug is True:
+            logging.info(msgs)
 
         if job.running():
             msgs.append(f'WARNING: Job is still running! Skipping {job}')
