@@ -19,6 +19,7 @@ echo 'machine urs.earthdata.nasa.gov login USERNAME password PASSWORD' >& ~/.net
 Authors: Masha Liukis, Joe Kennedy, Mark Fahnestock
 """
 import argparse
+import boto3
 import copy
 import dask
 from dask.diagnostics import ProgressBar
@@ -30,8 +31,7 @@ import os
 import pandas as pd
 from pathlib import Path
 
-import boto3
-import fsspec
+import s3fs
 import xarray as xr
 from botocore.exceptions import ClientError
 
@@ -192,6 +192,8 @@ class ASFTransfer:
     def __init__(self, processed_jobs_file: str):
         self.processed_jobs_file = processed_jobs_file
 
+        self.s3 = s3fs.S3FileSystem()
+
     def run_sequentially(
         self,
         job_ids_file: str,
@@ -228,7 +230,7 @@ class ASFTransfer:
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
             for id, out_name in jobs.iloc[start:start+num_tasks].itertuples(index=False):
                 logging.info(f"STARTING {id}: {out_name}")
-                each_result, _ = ASFTransfer.copy_granule(id, out_name, debug=True)
+                each_result, _ = ASFTransfer.copy_granule(id, out_name, self.s3, debug=True)
             # for id in job_ids[start:start+num_tasks]:
             #     each_result, _ = ASFTransfer.copy_granule(id)
                 logging.info("-->".join(each_result))
@@ -276,7 +278,7 @@ class ASFTransfer:
 
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
             # tasks = [dask.delayed(ASFTransfer.copy_granule)(id) for id in job_ids[start:start+num_tasks]]
-            tasks = [dask.delayed(ASFTransfer.copy_granule)(id, out_name)
+            tasks = [dask.delayed(ASFTransfer.copy_granule)(id, out_name, self.s3)
                      for id, out_name in jobs.iloc[start:start+num_tasks].itertuples(index=False)]
             assert len(tasks) == num_tasks
             results = None
@@ -309,7 +311,7 @@ class ASFTransfer:
         return True
 
     @staticmethod
-    def copy_granule(job_id, out_name, debug=False):
+    def copy_granule(job_id, out_name, s3, debug=False):
         """
         Copy granule from source to target bucket if it does not exist in target
         bucket already.
@@ -334,8 +336,11 @@ class ASFTransfer:
             source_ext = '.nc'
             bucket = boto3.resource('s3').Bucket(ASFTransfer.TARGET_BUCKET)
 
+            s3_url = job.files[0]['url'].replace("https://", '')
+            s3_url = s3_url.replace('.s3.eu-central-1.amazonaws.com', '')
+
             # get center lat lon for target directory, and fix attributes
-            with fsspec.open(job.files[0]['url']) as f:
+            with s3.open(s3_url) as f:
                 with xr.open_dataset(f) as ds:
                     lat = ds.img_pair_info.latitude[0]
                     lon = ds.img_pair_info.longitude[0]
