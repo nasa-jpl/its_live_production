@@ -460,6 +460,9 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
         VA = np.round(np.clip(VA, -32768, 32767)).astype(np.int16)
 
         #   Update nc file
+        if isinstance(vr_error, np.ndarray) and vr_error.size == 1:
+            vr_error = vr_error[0]
+
         xds['vr'].attrs['vr_error'] = int(round(vr_error*10))/10
         if stable_shift_applied == 2:
             xds['vr'].attrs['stable_shift'] = int(round(vr_mean_shift1*10))/10
@@ -488,6 +491,9 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
         else:
             xds['vr'].attrs['vr_error_slow'] = np.nan
 
+
+        if isinstance(va_error, np.ndarray) and va_error.size == 1:
+            va_error = va_error[0]
 
         xds['va'].attrs['va_error'] = int(round(va_error*10))/10
         if stable_shift_applied == 2:
@@ -619,6 +625,9 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
         VP_error = np.round(np.clip(VP_error, -32768, 32767)).astype(np.int16)
 
         #   Update nc file
+        if isinstance(vxp_error, np.ndarray) and vxp_error.size == 1:
+            vxp_error = vxp_error[0]
+
         xds['vxp'].attrs['vxp_error'] = int(round(vxp_error*10))/10
         if stable_shift_applied_p == 2:
             xds['vxp'].attrs['stable_shift'] = int(round(vxp_mean_shift1*10))/10
@@ -647,6 +656,9 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
         else:
             xds['vxp'].attrs['vxp_error_slow'] = np.nan
 
+
+        if isinstance(vyp_error, np.ndarray) and vyp_error.size == 1:
+            vyp_error = vyp_error[0]
 
         xds['vyp'].attrs['vyp_error'] = int(round(vyp_error*10))/10
         if stable_shift_applied_p == 2:
