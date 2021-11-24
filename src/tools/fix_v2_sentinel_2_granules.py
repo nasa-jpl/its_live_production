@@ -318,7 +318,7 @@ class ASFTransfer:
         msgs = [f"Processing {job} url={job.files[0]['url']}"]
 
         if debug is True:
-            logging.info(msgs)
+            logging.info(f'{msgs}')
 
         if job.running():
             msgs.append(f'WARNING: Job is still running! Skipping {job}')
@@ -354,10 +354,16 @@ class ASFTransfer:
                         msgs.append(f'WARNING: {bucket.name}/{target} already exists, skipping upload')
 
                     else:
+                        if debug is True:
+                            logging.info("Before fix_all()")
+
                         # Fix granule
                         ds, warning_msg = fix_all(ds, granule_url)
                         if warning_msg is not None:
                             msgs.append(warning_msg)
+
+                        if debug is True:
+                            logging.info(f"After fix_all: {msgs}")
 
                         # Write the granule locally, upload it to the bucket, remove file
                         ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.LANDSAT_SENTINEL2)
