@@ -341,9 +341,15 @@ class ASFTransfer:
                     lon = ds.img_pair_info.longitude[0]
                     msgs.append(f'Image center (lat, lon): ({lat}, {lon})')
 
+                    if debug is True:
+                        logging.info(f"===>Lon/lat: {msgs[-1]}")
+
                     target_prefix = point_to_prefix(ASFTransfer.TARGET_BUCKET_DIR, lat, lon)
                     # target = f"{target_prefix}/{job.files[0]['filename']}"
                     target = f"{target_prefix}/{out_name}"
+
+                    if debug is True:
+                        logging.info(f"===>target: {target}")
 
                     # Remove filename postfix which should not make it to the
                     # filename in target bucket
@@ -352,6 +358,9 @@ class ASFTransfer:
 
                     if ASFTransfer.object_exists(bucket, target):
                         msgs.append(f'WARNING: {bucket.name}/{target} already exists, skipping upload')
+
+                        if debug is True:
+                            logging.info(f"===>object exists")
 
                     else:
                         if debug is True:
