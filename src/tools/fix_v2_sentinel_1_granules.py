@@ -125,6 +125,8 @@ def rename_error_attrs(ds: xr.Dataset):
                 if each_key.startswith(_rm_keys):
                     del ds[each_var].attrs[each_key]
 
+            ds[each_var].attrs['grid_mapping'] = old_attrs['grid_mapping']
+
             # Rename error attributes
             for each_attr in new_attrs:
                 old_attr_name = f'{each_var}_{each_attr}'
@@ -138,7 +140,6 @@ def rename_error_attrs(ds: xr.Dataset):
                     new_attr = stable_shift_new_attrs[each_attr]
 
                 ds[each_var].attrs[new_attr] = old_attrs[each_attr]
-                del ds[each_var].attrs[each_attr]
 
     return ds
 
