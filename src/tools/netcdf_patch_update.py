@@ -124,7 +124,7 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
     # If granule is just for cataloging purposes when ROI=0, skip the
     # stable shift and error corrections
     if xds['img_pair_info'].attrs['roi_valid_percentage'] == 0.0:
-        raise ITSLiveException(f"WARNING: {ds_filename} is used for cataloging only, skipping correction.")
+        raise ITSLiveException(f"{ds_filename} is used for cataloging only.")
 
     param_info = find_jpl_parameter_info(xds)
 
