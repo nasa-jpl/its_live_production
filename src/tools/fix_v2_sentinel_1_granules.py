@@ -90,7 +90,7 @@ def rename_error_attrs(ds: xr.Dataset):
         'flag_stable_shift_description': 'stable_shift_flag_description'
     }
 
-    _rm_keys = ['stable', 'flag', 'grid_mapping']
+    _rm_keys = ('stable', 'flag', 'grid_mapping')
 
     # Should be:
     # short vx(y, x) ;
