@@ -316,7 +316,7 @@ def main():
     parser.add_argument(
         '-l', '--local_dir',
         type=str,
-        default='sandbox_sentinel1',
+        default='sandbox_landsat8',
         help='Directory to store fixed granules before uploading them to the S3 bucket'
     )
     parser.add_argument(
