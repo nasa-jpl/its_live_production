@@ -328,7 +328,7 @@ def main():
         '-t', '--target_bucket',
         type=str,
         default='its-live-data',
-        help='AWS S3 bucket to store fixed ITS_LIVE granules (under the same "--bucket_dir" directory)'
+        help='AWS S3 bucket to store fixed ITS_LIVE granules (under the same "--bucket_dir" directory adjusted for "landsat8" sub-directory)'
     )
     parser.add_argument(
         '-w', '--dask-workers',
