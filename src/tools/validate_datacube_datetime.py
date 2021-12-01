@@ -278,7 +278,7 @@ def main():
         '-f', '--function',
         action='store',
         default='min_datetime',
-        help=f'Function to invoke to validate datacubes with [%(default)s]. One of {list(ValidateDatacubes.FUNCTION_MAP.keys())}')
+        help=f'Function to validate datacubes with [%(default)s]. One of {list(ValidateDatacubes.FUNCTION_MAP.keys())}')
 
     args = parser.parse_args()
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
