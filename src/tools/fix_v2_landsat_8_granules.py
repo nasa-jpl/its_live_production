@@ -49,7 +49,6 @@ from fix_v2_sentinel_1_granules import rename_error_attrs
 OLD_S3_NAME = '.jpl.nasa.gov'
 NEW_S3_NAME = ''
 
-
 def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir: str, s3):
     """
     Fix everything in the granule.
@@ -175,12 +174,12 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
 
             # Upload corrected granule to the bucket
             s3_client = boto3.client('s3')
+            bucket_granule = granule_url.replace(source_bucket+'/', '')
             try:
-                bucket_granule = granule_url.replace(source_bucket+'/', '')
                 # Store granules under 'landsat8' sub-directory
-                bucket_granule = bucket_granule.replace('landsat', 'landsat8')
+                bucket_granule = bucket_granule.replace(FixLandsat8Granules.OLD_SUBDIR, FixLandsat8Granules.NEW_SUBDIR)
 
-                msgs.append(f"Uploading {bucket_granule} to {target_bucket}/{bucket_granule}")
+                msgs.append(f"Uploading {fixed_file} to {target_bucket}/{bucket_granule}")
 
                 if not FixLandsat8Granules.DRY_RUN:
                     s3_client.upload_file(fixed_file, target_bucket, bucket_granule)
@@ -198,13 +197,14 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
             for target_ext in ['.png', '_thumb.png']:
                 # It's an extra file to transfer, replace extension
                 target_key = bucket_granule.replace(source_ext, target_ext)
+                source_key = target_key.replace(FixLandsat8Granules.NEW_SUBDIR, FixLandsat8Granules.OLD_SUBDIR)
 
                 if FixLandsat8Granules.object_exists(bucket, target_key):
                     msgs.append(f'WARNING: {bucket.name}/{target_key} already exists, skipping upload')
 
                 else:
                     source_dict = {'Bucket': source_bucket,
-                                   'Key': target_key}
+                                   'Key': source_key}
 
                     msgs.append(f'Copying {source_dict["Bucket"]}/{source_dict["Key"]} to {bucket.name}/{target_key}')
                     if not FixLandsat8Granules.DRY_RUN:
@@ -221,6 +221,9 @@ class FixLandsat8Granules:
     # Flag if dry run is requested - print information about to be done actions
     # without actually invoking commands.
     DRY_RUN = False
+
+    OLD_SUBDIR = 'landsat'
+    NEW_SUBDIR = 'landsat8'
 
     # Date and time format used by ITS_LIVE granules
     DATETIME_FORMAT = '%Y%m%dT%H:%M:%S.%f'
@@ -314,6 +317,13 @@ def main():
         help='AWS S3 directory that stores the granules'
     )
     parser.add_argument(
+        '-n', '--new_subdir',
+        type=str,
+        default='velocity_image_pair/landsat8/v02',
+        help='AWS S3 directory that stores target granules'
+    )
+
+    parser.add_argument(
         '-l', '--local_dir',
         type=str,
         default='sandbox_landsat8',
@@ -348,6 +358,9 @@ def main():
         help='Dry run, do not apply any fixes to the granules stored in AWS S3 bucket'
     )
     args = parser.parse_args()
+
+    FixLandsat8Granules.OLD_SUBDIR = args.bucket_dir
+    FixLandsat8Granules.NEW_SUBDIR = args.new_subdir
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
