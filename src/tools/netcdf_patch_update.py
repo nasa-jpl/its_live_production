@@ -58,7 +58,7 @@ def v_error_cal(vx_error, vy_error):
 
 
 # Authors: Joe Kennedy, Masha Liukis
-def find_jpl_parameter_info(ds: xr.Dataset) -> dict:
+def find_jpl_parameter_info(ds: xr.Dataset, ds_filename: str) -> dict:
     driver = ogr.GetDriverByName('ESRI Shapefile')
     parameter_file = ds.attrs['autoRIFT_parameter_file']
     shapes = driver.Open(f"/vsicurl/{parameter_file}", gdal.GA_ReadOnly)
@@ -70,41 +70,45 @@ def find_jpl_parameter_info(ds: xr.Dataset) -> dict:
     latitude  = np.float(ds.img_pair_info.attrs['latitude'])
     centroid.AddPoint(longitude, latitude)
 
-    for feature in shapes.GetLayer(0):
-        if feature.geometry().Contains(centroid):
-            parameter_info = {
-                'name': f'{feature["name"]}',
-                'epsg': feature['epsg'],
-                'geogrid': {
-                    'dem': f"/vsicurl/{feature['h']}",
-                    'ssm': f"/vsicurl/{feature['StableSurfa']}",
-                    'dhdx': f"/vsicurl/{feature['dhdx']}",
-                    'dhdy': f"/vsicurl/{feature['dhdy']}",
-                    'vx': f"/vsicurl/{feature['vx0']}",
-                    'vy': f"/vsicurl/{feature['vy0']}",
-                    'srx': f"/vsicurl/{feature['vxSearchRan']}",
-                    'sry': f"/vsicurl/{feature['vySearchRan']}",
-                    'csminx': f"/vsicurl/{feature['xMinChipSiz']}",
-                    'csminy': f"/vsicurl/{feature['yMinChipSiz']}",
-                    'csmaxx': f"/vsicurl/{feature['xMaxChipSiz']}",
-                    'csmaxy': f"/vsicurl/{feature['yMaxChipSiz']}",
-                    'sp': f"/vsicurl/{feature['sp']}",
-                    'dhdxs': f"/vsicurl/{feature['dhdxs']}",
-                    'dhdys': f"/vsicurl/{feature['dhdys']}",
-                },
-                'autorift': {
-                    'grid_location': 'window_location.tif',
-                    'init_offset': 'window_offset.tif',
-                    'search_range': 'window_search_range.tif',
-                    'chip_size_min': 'window_chip_size_min.tif',
-                    'chip_size_max': 'window_chip_size_max.tif',
-                    'offset2vx': 'window_rdr_off2vel_x_vec.tif',
-                    'offset2vy': 'window_rdr_off2vel_y_vec.tif',
-                    'stable_surface_mask': 'window_stable_surface_mask.tif',
-                    'mpflag': 0,
+    try:
+        for feature in shapes.GetLayer(0):
+            if feature.geometry().Contains(centroid):
+                parameter_info = {
+                    'name': f'{feature["name"]}',
+                    'epsg': feature['epsg'],
+                    'geogrid': {
+                        'dem': f"/vsicurl/{feature['h']}",
+                        'ssm': f"/vsicurl/{feature['StableSurfa']}",
+                        'dhdx': f"/vsicurl/{feature['dhdx']}",
+                        'dhdy': f"/vsicurl/{feature['dhdy']}",
+                        'vx': f"/vsicurl/{feature['vx0']}",
+                        'vy': f"/vsicurl/{feature['vy0']}",
+                        'srx': f"/vsicurl/{feature['vxSearchRan']}",
+                        'sry': f"/vsicurl/{feature['vySearchRan']}",
+                        'csminx': f"/vsicurl/{feature['xMinChipSiz']}",
+                        'csminy': f"/vsicurl/{feature['yMinChipSiz']}",
+                        'csmaxx': f"/vsicurl/{feature['xMaxChipSiz']}",
+                        'csmaxy': f"/vsicurl/{feature['yMaxChipSiz']}",
+                        'sp': f"/vsicurl/{feature['sp']}",
+                        'dhdxs': f"/vsicurl/{feature['dhdxs']}",
+                        'dhdys': f"/vsicurl/{feature['dhdys']}",
+                    },
+                    'autorift': {
+                        'grid_location': 'window_location.tif',
+                        'init_offset': 'window_offset.tif',
+                        'search_range': 'window_search_range.tif',
+                        'chip_size_min': 'window_chip_size_min.tif',
+                        'chip_size_max': 'window_chip_size_max.tif',
+                        'offset2vx': 'window_rdr_off2vel_x_vec.tif',
+                        'offset2vy': 'window_rdr_off2vel_y_vec.tif',
+                        'stable_surface_mask': 'window_stable_surface_mask.tif',
+                        'mpflag': 0,
+                    }
                 }
-            }
-            break
+                break
+    except Exception as exc:
+        # Debug failure to access feature's geometry
+        raise RuntimeError(f'Error accessing {parameter_file} for {ds_filename}: {exc}. Feature keys: {list(feature.keys())}')
 
     if parameter_info is None:
         raise RuntimeError('Could not determine appropriate DEM for:\n'
