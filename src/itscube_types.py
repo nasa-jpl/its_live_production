@@ -229,6 +229,8 @@ class DataVars:
         # Rename mid_date to date_center as they are the same, don't collect this
         DATE_CENTER               = 'date_center'
         ROI_VALID_PERCENTAGE      = 'roi_valid_percentage'
+        LONGITUDE                 = 'longitude'
+        LATITUDE                  = 'latitude'
 
         # New format defines these attributes, make them datacube attributes
         TIME_STANDARD_IMG1 = 'time_standard_img1'
