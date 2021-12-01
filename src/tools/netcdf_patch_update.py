@@ -130,7 +130,7 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
     if xds['img_pair_info'].attrs['roi_valid_percentage'] == 0.0:
         raise ITSLiveException(f"{ds_filename} is used for cataloging only.")
 
-    param_info = find_jpl_parameter_info(xds)
+    param_info = find_jpl_parameter_info(xds, ds_filename)
 
     if vxref_file is None:
         vxref_file = param_info['geogrid']['vx']
