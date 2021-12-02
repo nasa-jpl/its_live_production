@@ -108,7 +108,7 @@ def find_jpl_parameter_info(ds: xr.Dataset, ds_filename: str) -> dict:
                 break
     except Exception as exc:
         # Debug failure to access feature's geometry
-        raise RuntimeError(f'Error accessing {parameter_file} for {ds_filename}: {exc}. Feature keys: {list(feature.keys())}')
+        raise RuntimeError(f'Error accessing {parameter_file} for {ds_filename}: {exc}.')
 
     if parameter_info is None:
         raise RuntimeError('Could not determine appropriate DEM for:\n'
