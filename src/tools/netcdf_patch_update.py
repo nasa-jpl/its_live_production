@@ -62,11 +62,8 @@ def v_error_cal(vx_error, vy_error):
 
 # Authors: Joe Kennedy, Masha Liukis
 def find_jpl_parameter_info(ds: xr.Dataset, ds_filename: str) -> dict:
-    driver = ogr.GetDriverByName('ESRI Shapefile')
     parameter_file = ds.attrs['autoRIFT_parameter_file']
-    shapes = driver.Open(f"/vsicurl/{parameter_file}", gdal.GA_ReadOnly)
 
-    parameter_info = None
     # centroid = flip_point_coordinates(polygon.Centroid())
     centroid  = ogr.Geometry(ogr.wkbPoint)
     longitude = np.float(ds.img_pair_info.attrs['longitude'])
@@ -77,10 +74,16 @@ def find_jpl_parameter_info(ds: xr.Dataset, ds_filename: str) -> dict:
     num_retries = 0
     retry_errors = []
     params_are_read = False
+    parameter_info = None
 
     while not params_are_read and num_retries < READ_ATTEMPTS:
-
         try:
+            driver = ogr.GetDriverByName('ESRI Shapefile')
+            shapes = driver.Open(f"/vsicurl/{parameter_file}", gdal.GA_ReadOnly)
+
+            # Start fresh with each re-try
+            parameter_info = None
+
             for feature in shapes.GetLayer(0):
                 if feature.geometry().Contains(centroid):
                     parameter_info = {
