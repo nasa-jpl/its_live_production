@@ -357,12 +357,6 @@ def main():
         action='store_true',
         help='Dry run, do not apply any fixes to the granules stored in AWS S3 bucket'
     )
-    parser.add_argument(
-        '--enableDebug',
-        action='store_true',
-        default=False,
-        help='Enable debug mode: process jobs sequentially'
-    )
 
     args = parser.parse_args()
 
