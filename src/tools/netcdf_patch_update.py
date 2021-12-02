@@ -17,6 +17,7 @@ import shelve
 import os
 import datetime
 import pdb
+import time
 import xarray as xr
 from osgeo import ogr, gdal
 
@@ -27,6 +28,9 @@ class ITSLiveException (Exception):
     def __init__(self, msg):
         super().__init__(msg)
 
+# Number of attempts to read parameter file: getting intermitent failures
+# to read the same parameter file on kh9-vm2 EC2 instance
+READ_ATTEMPTS = 5
 
 def cmdLineParse():
     '''
@@ -49,7 +53,6 @@ def cmdLineParse():
     return parser.parse_args()
 
 
-
 def v_error_cal(vx_error, vy_error):
     vx = np.random.normal(0, vx_error, 1000000)
     vy = np.random.normal(0, vy_error, 1000000)
@@ -70,45 +73,64 @@ def find_jpl_parameter_info(ds: xr.Dataset, ds_filename: str) -> dict:
     latitude  = np.float(ds.img_pair_info.attrs['latitude'])
     centroid.AddPoint(longitude, latitude)
 
-    try:
-        for feature in shapes.GetLayer(0):
-            if feature.geometry().Contains(centroid):
-                parameter_info = {
-                    'name': f'{feature["name"]}',
-                    'epsg': feature['epsg'],
-                    'geogrid': {
-                        'dem': f"/vsicurl/{feature['h']}",
-                        'ssm': f"/vsicurl/{feature['StableSurfa']}",
-                        'dhdx': f"/vsicurl/{feature['dhdx']}",
-                        'dhdy': f"/vsicurl/{feature['dhdy']}",
-                        'vx': f"/vsicurl/{feature['vx0']}",
-                        'vy': f"/vsicurl/{feature['vy0']}",
-                        'srx': f"/vsicurl/{feature['vxSearchRan']}",
-                        'sry': f"/vsicurl/{feature['vySearchRan']}",
-                        'csminx': f"/vsicurl/{feature['xMinChipSiz']}",
-                        'csminy': f"/vsicurl/{feature['yMinChipSiz']}",
-                        'csmaxx': f"/vsicurl/{feature['xMaxChipSiz']}",
-                        'csmaxy': f"/vsicurl/{feature['yMaxChipSiz']}",
-                        'sp': f"/vsicurl/{feature['sp']}",
-                        'dhdxs': f"/vsicurl/{feature['dhdxs']}",
-                        'dhdys': f"/vsicurl/{feature['dhdys']}",
-                    },
-                    'autorift': {
-                        'grid_location': 'window_location.tif',
-                        'init_offset': 'window_offset.tif',
-                        'search_range': 'window_search_range.tif',
-                        'chip_size_min': 'window_chip_size_min.tif',
-                        'chip_size_max': 'window_chip_size_max.tif',
-                        'offset2vx': 'window_rdr_off2vel_x_vec.tif',
-                        'offset2vy': 'window_rdr_off2vel_y_vec.tif',
-                        'stable_surface_mask': 'window_stable_surface_mask.tif',
-                        'mpflag': 0,
+    # Allow for a number of retries as there are intermittent failures reading parameter file
+    num_retries = 0
+    retry_errors = []
+    params_are_read = False
+
+    while not params_are_read and num_retries < READ_ATTEMPTS:
+
+        try:
+            for feature in shapes.GetLayer(0):
+                if feature.geometry().Contains(centroid):
+                    parameter_info = {
+                        'name': f'{feature["name"]}',
+                        'epsg': feature['epsg'],
+                        'geogrid': {
+                            'dem': f"/vsicurl/{feature['h']}",
+                            'ssm': f"/vsicurl/{feature['StableSurfa']}",
+                            'dhdx': f"/vsicurl/{feature['dhdx']}",
+                            'dhdy': f"/vsicurl/{feature['dhdy']}",
+                            'vx': f"/vsicurl/{feature['vx0']}",
+                            'vy': f"/vsicurl/{feature['vy0']}",
+                            'srx': f"/vsicurl/{feature['vxSearchRan']}",
+                            'sry': f"/vsicurl/{feature['vySearchRan']}",
+                            'csminx': f"/vsicurl/{feature['xMinChipSiz']}",
+                            'csminy': f"/vsicurl/{feature['yMinChipSiz']}",
+                            'csmaxx': f"/vsicurl/{feature['xMaxChipSiz']}",
+                            'csmaxy': f"/vsicurl/{feature['yMaxChipSiz']}",
+                            'sp': f"/vsicurl/{feature['sp']}",
+                            'dhdxs': f"/vsicurl/{feature['dhdxs']}",
+                            'dhdys': f"/vsicurl/{feature['dhdys']}",
+                        },
+                        'autorift': {
+                            'grid_location': 'window_location.tif',
+                            'init_offset': 'window_offset.tif',
+                            'search_range': 'window_search_range.tif',
+                            'chip_size_min': 'window_chip_size_min.tif',
+                            'chip_size_max': 'window_chip_size_max.tif',
+                            'offset2vx': 'window_rdr_off2vel_x_vec.tif',
+                            'offset2vy': 'window_rdr_off2vel_y_vec.tif',
+                            'stable_surface_mask': 'window_stable_surface_mask.tif',
+                            'mpflag': 0,
+                        }
                     }
-                }
-                break
-    except Exception as exc:
-        # Debug failure to access feature's geometry
-        raise RuntimeError(f'Error accessing {parameter_file} for {ds_filename}: {exc}.')
+                    params_are_read = True
+                    break
+
+        except Exception as exc:
+            exc_str = str(exc)
+            if num_retries < READ_ATTEMPTS and ('Illegal field requested in GetField' in exc_str or 'object has no attribute' in exc_str):
+                retry_errors.append(exc_str)
+
+                # Sleep for 5 secs and try again
+                time.sleep(5)
+
+            else:
+                # Debug failure to access feature's geometry
+                raise RuntimeError(f'Error accessing {parameter_file} for {ds_filename} (after {num_retries} retries with errors {retry_errors}): {exc}.')
+
+        num_retries += 1
 
     if parameter_info is None:
         raise RuntimeError('Could not determine appropriate DEM for:\n'
