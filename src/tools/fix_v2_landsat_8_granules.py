@@ -55,7 +55,42 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
     """
     msgs = [f'Processing {granule_url}']
 
-    # get center lat lon
+    # Check if granule exists in target bucket
+    bucket = boto3.resource('s3').Bucket(target_bucket)
+    bucket_granule = granule_url.replace(source_bucket+'/', '')
+
+    done = False
+
+    # Store granules under 'landsat8' sub-directory in new S3 bucket
+    bucket_granule = bucket_granule.replace(FixLandsat8Granules.OLD_SUBDIR, FixLandsat8Granules.NEW_SUBDIR)
+    if FixLandsat8Granules.object_exists(bucket, bucket_granule):
+        msgs.append(f'WARNING: {bucket.name}/{bucket_granule} already exists, skipping upload')
+        done = True
+
+    # Check if the corresponding png's exist in target bucket:
+    # there are corresponding browse and thumbprint images to transfer
+    source_ext = '.nc'
+
+    for target_ext in ['.png', '_thumb.png']:
+        # It's an extra file to transfer, replace extension
+        target_key = bucket_granule.replace(source_ext, target_ext)
+        source_key = target_key.replace(FixLandsat8Granules.NEW_SUBDIR, FixLandsat8Granules.OLD_SUBDIR)
+
+        if FixLandsat8Granules.object_exists(bucket, target_key):
+            msgs.append(f'WARNING: {bucket.name}/{target_key} already exists, skipping upload')
+
+        else:
+            source_dict = {'Bucket': source_bucket,
+                           'Key': source_key}
+
+            msgs.append(f'Copying {source_dict["Bucket"]}/{source_dict["Key"]} to {bucket.name}/{target_key}')
+            if not FixLandsat8Granules.DRY_RUN:
+                bucket.copy(source_dict, target_key)
+
+    if done:
+        return msgs
+
+    # Fix and transfer the granule to new bucket
     with s3.open(granule_url) as fhandle:
         with xr.open_dataset(fhandle) as ds:
             img1_datetime = ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1]
@@ -189,26 +224,6 @@ def fix_all(source_bucket: str, target_bucket: str, granule_url: str, local_dir:
 
             except ClientError as exc:
                 msgs.append(f"ERROR: {exc}")
-
-            # There are corresponding browse and thumbprint images to transfer
-            bucket = boto3.resource('s3').Bucket(target_bucket)
-            source_ext = '.nc'
-
-            for target_ext in ['.png', '_thumb.png']:
-                # It's an extra file to transfer, replace extension
-                target_key = bucket_granule.replace(source_ext, target_ext)
-                source_key = target_key.replace(FixLandsat8Granules.NEW_SUBDIR, FixLandsat8Granules.OLD_SUBDIR)
-
-                if FixLandsat8Granules.object_exists(bucket, target_key):
-                    msgs.append(f'WARNING: {bucket.name}/{target_key} already exists, skipping upload')
-
-                else:
-                    source_dict = {'Bucket': source_bucket,
-                                   'Key': source_key}
-
-                    msgs.append(f'Copying {source_dict["Bucket"]}/{source_dict["Key"]} to {bucket.name}/{target_key}')
-                    if not FixLandsat8Granules.DRY_RUN:
-                        bucket.copy(source_dict, target_key)
 
             return msgs
 
