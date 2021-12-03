@@ -463,14 +463,14 @@ if __name__ == '__main__':
     parser.add_argument('-granule_dir',
                         action='store',
                         type=str,
-                        default='its-live-data.jpl.nasa.gov/velocity_image_pair/landsat/v02',
+                        default='its-live-data/velocity_image_pair/landsat/v02',
                         help='S3 path to tile catalog directories (not including the grid code for zone of tile) [%(default)s]')
 
     parser.add_argument('-catalog_dir',
                         action='store',
                         type=str,
-                        default='its-live-data.jpl.nasa.gov/catalog_geojson/landsat/v02',
-                        help='Output path for featurecollections [%(default)s]')
+                        default='its-live-data/catalog_geojson/landsat/v02',
+                        help='Output path for feature collections [%(default)s]')
 
     parser.add_argument('-chunk_by',
                         action='store',
@@ -487,13 +487,13 @@ if __name__ == '__main__':
     parser.add_argument('-skipped_granules_file',
                         action='store',
                         type=str,
-                        default='skipped_granules_landsat.json',
+                        default='skipped_granules.json',
                         help='Filename to keep track of skipped duplicate granules [%(default)s], file is stored in "-catalog_dir"')
 
     parser.add_argument('-catalog_granules_file',
                         action='store',
                         type=str,
-                        default='used_granules_landsat.json',
+                        default='used_granules.json',
                         help='Filename to keep track of granules used for the geojson catalog [%(default)s], file is stored in  "-catalog_dir"')
 
     parser.add_argument('-exclude_granules_file',
