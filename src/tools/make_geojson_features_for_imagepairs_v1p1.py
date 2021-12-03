@@ -349,15 +349,19 @@ class GranuleCatalog:
             imginfo_attrs = inh5['img_pair_info'].attrs
             # turn hdf5 img_pair_info attrs into a python dict to save below
             img_pair_info_dict = {}
-            for k in imginfo_attrs.keys():
-                if isinstance(imginfo_attrs[k], str):
-                    img_pair_info_dict[k] = imginfo_attrs[k]
+            try:
+                for k in imginfo_attrs.keys():
+                    if isinstance(imginfo_attrs[k], str):
+                        img_pair_info_dict[k] = imginfo_attrs[k]
 
-                elif imginfo_attrs[k].shape == ():
-                    img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
+                    elif imginfo_attrs[k].shape == ():
+                        img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
 
-                else:
-                    img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
+                    else:
+                        img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
+
+            except Exception as exc:
+                raise RuntimeError(f'Error processing {infilewithpath}: img_pair_info.{k}: {imginfo_attrs[k]} type={type(imginfo_attrs[k])} exc={exc} ({imginfo_attrs})')
 
             num_pix_x = len(xvals)
             num_pix_y = len(yvals)
