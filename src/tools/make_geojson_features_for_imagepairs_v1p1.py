@@ -354,8 +354,11 @@ class GranuleCatalog:
                     if isinstance(imginfo_attrs[k], str):
                         img_pair_info_dict[k] = imginfo_attrs[k]
 
-                    elif imginfo_attrs[k].shape == ():
+                    elif isinstance(imginfo_attrs[k], bytes):
                         img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
+
+                    elif imginfo_attrs[k].shape == ():
+                        img_pair_info_dict[k] = imginfo_attrs[k]
 
                     else:
                         img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
