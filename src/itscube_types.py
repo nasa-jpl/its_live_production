@@ -47,7 +47,6 @@ class DataVars:
 
 
     # Attributes that appear for multiple data variables
-    MISSING_VALUE_ATTR         = 'missing_value'
     FILL_VALUE_ATTR            = '_FillValue'
     DESCRIPTION_ATTR           = 'description'  # v, vx, vy
     GRID_MAPPING               = 'grid_mapping' # v, vx, vy - store only one per cube
@@ -57,20 +56,15 @@ class DataVars:
     # Per Yang: generally yes, though for vxp and vyp it was calculated again
     # but the number should not change quite a bit. so it should be okay to
     # use a single value for all variables
-    STABLE_COUNT               = 'stable_count'
     STABLE_COUNT_SLOW          = 'stable_count_slow' # New format
     STABLE_COUNT_MASK          = 'stable_count_mask' # New format
 
-    # Attributes for vx, vy, vxp, vyp, vr, va
-    FLAG_STABLE_SHIFT             = 'flag_stable_shift' # In Radar and updated Optical formats
-    FLAG_STABLE_SHIFT_DESCRIPTION = 'flag_stable_shift_description'
+    # Attributes for vx, vy, vr, va
+    FLAG_STABLE_SHIFT             = 'stable_shift_flag' # In Radar and updated Optical formats
+    FLAG_STABLE_SHIFT_DESCRIPTION = 'stable_shift_flag_description'
     STABLE_SHIFT                  = 'stable_shift'
     STABLE_SHIFT_SLOW             = 'stable_shift_slow' # New format
     STABLE_SHIFT_MASK             = 'stable_shift_mask' # New format
-
-    # Optical Legacy format only:
-    STABLE_SHIFT_APPLIED = 'stable_shift_applied' # vx, vy - remove from attributes
-    STABLE_APPLY_DATE    = 'stable_apply_date' # vx, vy    - remove from attributes
 
     STD_NAME    = 'standard_name'
     UNITS       = 'units'
@@ -78,17 +72,15 @@ class DataVars:
     COUNT_UNITS = 'count'
     BINARY_UNITS = 'binary'
 
-    # Original data variables and their a   ttributes per ITS_LIVE granules.
-    V = 'v'
-    # Attributes
-    MAP_SCALE_CORRECTED = 'map_scale_corrected'
+    # Original data variables and their attributes per ITS_LIVE granules.
+    V       = 'v'
+    V_ERROR = 'v_error'
+    VA      = 'va'
+    VR      = 'vr'
+    VX      = 'vx'
+    VY      = 'vy'
 
-    VX = 'vx'
-    # Attributes
-    VX_ERROR          = 'vx_error'          # In Radar and updated Optical formats
-    STABLE_RMSE       = 'stable_rmse'       # In Optical legacy format only
-
-    # New format: postfix to format velocity specific attributes, such as
+    # Postfix to format velocity specific attributes, such as
     # vx_error, vx_error_mask, vx_error_modeled, vx_error_slow,
     # vx_error_description, vx_error_mask_description, vx_error_modeled_description,
     # vx_error_slow_description
@@ -98,27 +90,13 @@ class DataVars:
     ERROR_MODELED     = 'error_modeled'
     ERROR_SLOW        = 'error_slow'
 
-    VY                = 'vy'
-    # Attributes
-    VY_ERROR          = 'vy_error'          # In Radar and updated Optical formats
-
     CHIP_SIZE_HEIGHT  = 'chip_size_height'
     CHIP_SIZE_WIDTH   = 'chip_size_width'
     # Attributes
     CHIP_SIZE_COORDS  = 'chip_size_coordinates'
 
     INTERP_MASK      = 'interp_mask'
-    V_ERROR          = 'v_error' # Optical and Radar formats only
-    # Radar format only:
-    VA               = 'va'
-    VP               = 'vp'
-    VP_ERROR         = 'vp_error'
-    VR               = 'vr'
-    VX               = 'vx'
-    VXP              = 'vxp'
-    VYP              = 'vyp'
-    VXP_ERROR        = 'vxp_error'
-    VYP_ERROR        = 'vyp_error'
+
 
     # Specific to the datacube
     URL = 'granule_url'
@@ -139,14 +117,18 @@ class DataVars:
     NAME = {
         INTERP_MASK: "interpolated_value_mask",
         VA: "azimuth_velocity",
-        VP: "projected_velocity",
         VR: "range_velocity",
-        VXP: "projected_x_velocity",
-        VYP: "projected_y_velocity",
         V_ERROR: 'velocity_error',
-        VP_ERROR: "projected_velocity_error",
     }
 
+    TYPE = {
+        INTERP_MASK: 'ubyte',
+        CHIP_SIZE_HEIGHT:  'ushort',
+        CHIP_SIZE_WIDTH:   'ushort',
+        FLAG_STABLE_SHIFT: 'long',
+        STABLE_COUNT_SLOW: 'long',
+        STABLE_COUNT_MASK: 'long'
+    }
 
     # Description strings for all data variables and some
     # of their attributes.
@@ -155,7 +137,6 @@ class DataVars:
         VX: "velocity component in x direction",
         VY: "velocity component in y direction",
 
-        STABLE_COUNT:      "number of stable points used to determine {} shift",
         STABLE_COUNT_SLOW: "number of valid pixels over slowest 25% of ice",
         STABLE_COUNT_MASK: "number of valid pixels over stationary or slow-flowing surfaces",
 
@@ -171,23 +152,7 @@ class DataVars:
         # picked up from the granules).
         VA: "velocity in radar azimuth direction",
         VR: "velocity in radar range direction",
-        VP: "velocity magnitude determined by projecting radar " \
-            "range measurements onto an a priori flow vector. Where projected " \
-            "errors are larger than those determined from range and azimuth " \
-            "measurements, unprojected v estimates are used",
-        VXP: "x-direction velocity determined by projecting radar " \
-             "range measurements onto an a priori flow vector. Where projected " \
-             "errors are larger than those determined from range and azimuth " \
-             "measurements, unprojected vx estimates are used",
-        VYP: "y-direction velocity determined by projecting radar " \
-             "range measurements onto an a priori flow vector. Where projected " \
-             "errors are larger than those determined from range and azimuth " \
-             "measurements, unprojected vy estimates are used",
         V_ERROR: "velocity magnitude error",
-        VP_ERROR: "velocity magnitude error determined by projecting " \
-                  "radar range measurements onto an a priori flow vector. " \
-                  "Where projected errors are larger than those determined from range " \
-                  "and azimuth measurements, unprojected v_error estimates are used",
         INTERP_MASK: "light interpolation mask",
         CHIP_SIZE_COORDS: \
             "Optical data: chip_size_coordinates = " \
@@ -195,7 +160,7 @@ class DataVars:
             "chip_size_coordinates = 'radar geometry: width = range, height = azimuth'",
         CHIP_SIZE_HEIGHT: "height of search template (chip)",
         CHIP_SIZE_WIDTH:  "width of search template (chip)",
-        FLAG_STABLE_SHIFT_DESCRIPTION: \
+        FLAG_STABLE_SHIFT: \
             "flag for applying velocity bias correction: " \
             "0 = no correction; " \
             "1 = correction from overlapping stable surface mask (stationary or " \
@@ -220,11 +185,9 @@ class DataVars:
         MISSION_IMG1              = 'mission_img1'
         SENSOR_IMG1               = 'sensor_img1'
         SATELLITE_IMG1            = 'satellite_img1'
-        ACQUISITION_IMG1          = 'acquisition_img1'
         MISSION_IMG2              = 'mission_img2'
         SENSOR_IMG2               = 'sensor_img2'
         SATELLITE_IMG2            = 'satellite_img2'
-        ACQUISITION_IMG2          = 'acquisition_img2'
         DATE_DT                   = 'date_dt'
         # Rename mid_date to date_center as they are the same, don't collect this
         DATE_CENTER               = 'date_center'
@@ -246,15 +209,17 @@ class DataVars:
         # ATTN: Sentinel-2 granules are using satellite_img1 and satellite_img2 instead
         # of sensor_img1 and sensor_img2
         ALL = [
+            ACQUISITION_DATE_IMG1,
+            ACQUISITION_DATE_IMG2,
             MISSION_IMG1,
-            # SENSOR_IMG1,
-            SATELLITE_IMG1,
             MISSION_IMG2,
-            # SENSOR_IMG2,
+            SATELLITE_IMG1,
             SATELLITE_IMG2,
-            DATE_DT,
+            SENSOR_IMG1,
+            SENSOR_IMG2,
             DATE_CENTER,
-            ROI_VALID_PERCENTAGE,
+            DATE_DT,
+            ROI_VALID_PERCENTAGE
         ]
 
         # Description strings for data variables.
@@ -306,7 +271,7 @@ class DataVars:
 
         UNITS = {
             DATE_DT: 'days',
-            # ACQUISITION_IMG1: DATE_UNITS,
-            # ACQUISITION_IMG2: DATE_UNITS,
+            # ACQUISITION_DATE_IMG1: DATE_UNITS,
+            # ACQUISITION_DATE_IMG2: DATE_UNITS,
             # DATE_CENTER: DATE_UNITS
         }
