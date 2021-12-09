@@ -231,7 +231,7 @@ class GranuleCatalog:
     EXCLUDE_GRANULES_FILE = None
     REMOVE_DUPLICATE_GRANULES = False
 
-    def __init__(self, granules_file: str, features_per_file: int, catalog_dir: str):
+    def __init__(self, granules_file: str, features_per_file: int, catalog_dir: str, start_index: int=0):
         """
         Initialize the object.
         """
@@ -256,6 +256,11 @@ class GranuleCatalog:
 
                 self.infiles = list(set(self.infiles).difference(exclude_files))
                 logging.info(f"{len(self.infiles)} new granules to catalog")
+
+        if start_index != 0:
+            # Start index is provided for the granule to begin with
+            self.infiles = self.infiles[start_index:]
+            logging.info(f"Starting with granule #{start_index}, remains {len(self.infiles)} granules to catalog")
 
         self.features_per_file = features_per_file
         self.catalog_dir = catalog_dir
@@ -516,6 +521,13 @@ if __name__ == '__main__':
                         help="Start index to use when formatting first catalog geojson filename [%(default)d]. " \
                              "Usefull if adding new granules to existing set of catalog geojson files.")
 
+    parser.add_argument('-granule_start_index',
+                        action='store',
+                        type=int,
+                        default=0,
+                        help="Start index for the granule to begin cataloging with [%(default)d]. " \
+                             "Usefull if continuing interrupted process cataloging the files.")
+
     parser.add_argument('-c', '--create_catalog_list',
                         action='store_true',
                         help='build a list of granules for catalog generation [%(default)s], otherwise read the list of granules from catalog_granules_file')
@@ -561,7 +573,8 @@ if __name__ == '__main__':
         catalog = GranuleCatalog(
             os.path.join(args.catalog_dir, args.catalog_granules_file),
             args.features_per_file,
-            args.catalog_dir
+            args.catalog_dir,
+            args.granule_start_index
         )
 
         catalog.create(
