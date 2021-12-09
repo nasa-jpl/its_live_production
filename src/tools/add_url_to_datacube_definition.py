@@ -195,7 +195,8 @@ class DataCubeGlobalDefinition:
                     cube_filename = f"{DataCubeGlobalDefinition.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
                     logging.info(f'Cube name: {cube_filename}')
 
-                    if cube_filename not in DataCubeGlobalDefinition.CUBES_TO_INCLUDE:
+                    if len(DataCubeGlobalDefinition.CUBES_TO_INCLUDE) and \
+                       cube_filename not in DataCubeGlobalDefinition.CUBES_TO_INCLUDE:
                         logging.info(f'Skipping cube filename: {cube_filename}')
                         continue
 
@@ -307,7 +308,9 @@ if __name__ == '__main__':
     DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG = args.disableReducedCatalog
     DataCubeGlobalDefinition.CUBES_S3_PATH = args.bucketDir
 
-    DataCubeGlobalDefinition.CUBES_TO_INCLUDE = [os.path.basename(each) for each in args.includeCubesFile.read_text().split('\n')]
+    if args.includeCubesFile is not None:
+        DataCubeGlobalDefinition.CUBES_TO_INCLUDE = [os.path.basename(each) for each in args.includeCubesFile.read_text().split('\n')]
+
     if len(DataCubeGlobalDefinition.CUBES_TO_INCLUDE):
         logging.info(f"Number of datacubes for catalog: {len(DataCubeGlobalDefinition.CUBES_TO_INCLUDE)}")
 
