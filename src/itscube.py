@@ -853,7 +853,7 @@ class ITSCube:
                 with xr.open_dataset(fhandle, engine=ITSCube.NC_ENGINE) as ds:
                     self.logger.info(f"Preprocess dataset from {s3_path}...")
                     results = self.preprocess_dataset(ds, each_url)
-                    ITSCube.show_memory_usage('after reading {s3_path}')
+                    ITSCube.show_memory_usage(f'after reading {s3_path}')
 
                     self.logger.info(f"Add layer for {s3_path}...")
                     self.add_layer(*results)
@@ -1950,8 +1950,8 @@ if __name__ == '__main__':
         '-u', '--urlPath',
         type=str,
         action='store',
-        default='',
-        help="URL for the datacube store in S3 bucket (to provide for easier download option: for example, http://its-live-data.s3.amazonaws.com) [%(default)s]"
+        default='https://its-live-data.s3.amazonaws.com',
+        help="URL for the datacube store in S3 bucket (to provide for easier download option: for example, https://its-live-data.s3.amazonaws.com) [%(default)s]"
     )
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
@@ -1975,18 +1975,16 @@ if __name__ == '__main__':
     ITSCube.DASK_SCHEDULER = args.scheduler
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
-    if len(args.urlPath):
-        ITSCube.URL = os.path.join(args.urlPath, args.outputStore)
-
-    else:
-        ITSCube.URL = ''
 
     if len(args.outputBucket):
         # S3 bucket is provided
         ITSCube.S3  = os.path.join(args.outputBucket, args.outputStore)
+        # URL is valid only if output S3 bucket is provided
+        ITSCube.URL = os.path.join(args.urlPath, args.outputStore)
 
     else:
         ITSCube.S3 = ''
+        ITSCube.URL = ''
 
     projection = args.targetProjection
 
