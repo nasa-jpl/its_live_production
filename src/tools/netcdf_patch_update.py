@@ -21,6 +21,10 @@ import time
 import xarray as xr
 from osgeo import ogr, gdal
 
+# Use exceptions instead of writing error and report None as result
+gdal.UseExceptions()
+
+
 class ITSLiveException (Exception):
     """
     Exception class to handle ITS_LIVE special cases.
@@ -193,31 +197,92 @@ def main(xds: xr.Dataset, vxref_file: str=None, vyref_file: str=None, ssm_file: 
             VXP += xds['vxp'].stable_shift
             VYP += xds['vyp'].stable_shift
 
+    params_are_read = False
+    num_retries = 0
+    retry_errors = []
 
-    ds = gdal.Open(vxref_file)
-    band = ds.GetRasterBand(1)
-    tran = ds.GetGeoTransform()
-    xoff = int(round((np.min(xds['vx'].x.data)-tran[0]-tran[1]/2)/tran[1]))
-    yoff = int(round((np.max(xds['vx'].y.data)-tran[3]-tran[5]/2)/tran[5]))
-    xcount = VX.shape[1]
-    ycount = VX.shape[0]
-#    pdb.set_trace()
-    VXref = band.ReadAsArray(xoff, yoff, xcount, ycount)
-    ds = None
-    band = None
+    while not params_are_read and num_retries < READ_ATTEMPTS:
+        try:
+            ds = gdal.Open(vxref_file)
+            band = ds.GetRasterBand(1)
+            tran = ds.GetGeoTransform()
+            xoff = int(round((np.min(xds['vx'].x.data)-tran[0]-tran[1]/2)/tran[1]))
+            yoff = int(round((np.max(xds['vx'].y.data)-tran[3]-tran[5]/2)/tran[5]))
+            xcount = VX.shape[1]
+            ycount = VX.shape[0]
+            #    pdb.set_trace()
+            VXref = band.ReadAsArray(xoff, yoff, xcount, ycount)
+            ds = None
+            band = None
+            params_are_read = True
 
-    ds = gdal.Open(vyref_file)
-    band = ds.GetRasterBand(1)
-    VYref = band.ReadAsArray(xoff, yoff, xcount, ycount)
-    ds = None
-    band = None
+        except Exception as exc:
+            exc_str = str(exc)
+            if num_retries < READ_ATTEMPTS:
+                retry_errors.append(exc_str)
 
-    ds = gdal.Open(ssm_file)
-    band = ds.GetRasterBand(1)
-    SSM = band.ReadAsArray(xoff, yoff, xcount, ycount)
-    SSM = SSM.astype('bool')
-    ds = None
-    band = None
+                # Sleep for 5 secs and try again
+                time.sleep(5)
+
+            else:
+                # Debug failure to access feature's geometry
+                raise RuntimeError(f'Error accessing {vxref_file} for {ds_filename} (after {num_retries} retries with errors {retry_errors}): {exc}.')
+
+        num_retries += 1
+
+    params_are_read = False
+    num_retries = 0
+    retry_errors = []
+
+    while not params_are_read and num_retries < READ_ATTEMPTS:
+        try:
+            ds = gdal.Open(vyref_file)
+            band = ds.GetRasterBand(1)
+            VYref = band.ReadAsArray(xoff, yoff, xcount, ycount)
+            ds = None
+            band = None
+            params_are_read = True
+
+        except Exception as exc:
+            exc_str = str(exc)
+            if num_retries < READ_ATTEMPTS:
+                retry_errors.append(exc_str)
+
+                # Sleep for 5 secs and try again
+                time.sleep(5)
+
+            else:
+                # Debug failure to access feature's geometry
+                raise RuntimeError(f'Error accessing {vyref_file} for {ds_filename} (after {num_retries} retries with errors {retry_errors}): {exc}.')
+
+        num_retries += 1
+
+    params_are_read = False
+    num_retries = 0
+    retry_errors = []
+
+    while not params_are_read and num_retries < READ_ATTEMPTS:
+        try:
+            ds = gdal.Open(ssm_file)
+            band = ds.GetRasterBand(1)
+            SSM = band.ReadAsArray(xoff, yoff, xcount, ycount)
+            SSM = SSM.astype('bool')
+            ds = None
+            band = None
+
+        except Exception as exc:
+            exc_str = str(exc)
+            if num_retries < READ_ATTEMPTS:
+                retry_errors.append(exc_str)
+
+                # Sleep for 5 secs and try again
+                time.sleep(5)
+
+            else:
+                # Debug failure to access feature's geometry
+                raise RuntimeError(f'Error accessing {ssm_file} for {ds_filename} (after {num_retries} retries with errors {retry_errors}): {exc}.')
+
+        num_retries += 1
 
 #    pdb.set_trace()
     if xds.attrs['scene_pair_type'] == 'radar':
