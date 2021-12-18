@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 # Local modules
 import itslive_utils
 from grid import Bounds, Grid
-from itscube_types import Coords, DataVars
+from itscube_types import Coords, DataVars, FileExtension
 import zarr_to_netcdf
 
 # Set up logging
@@ -89,6 +89,9 @@ class ITSCube:
 
     # S3 path to the target datacube
     S3 = ''
+
+    # Local path to the skipped granules info
+    SKIPPED_GRANULES_FILE = ''
 
     # Engine to read xarray data into from NetCDF filecompression
     NC_ENGINE = 'h5netcdf'
@@ -180,13 +183,20 @@ class ITSCube:
         self.urls = []
         self.num_urls_from_api = None
 
-        # Keep track of skipped granules due to the other than target projection
-        self.skipped_proj_granules = {}
-        # Keep track of skipped granules due to no data for the polygon of interest
-        self.skipped_empty_granules = []
-        # Keep track of "double" granules with older processing date which are
-        # not included into the cube
-        self.skipped_double_granules = []
+        # Keep track of skipped granules due to:
+        # * no data coverage for the cube
+        # * other than target projection
+        # * duplicate middle date
+        self.skipped_granules = {
+            DataVars.SKIP_EMPTY_DATA: [],
+            DataVars.SKIP_DUPLICATE: [],
+            DataVars.SKIP_PROJECTION: {}
+        }
+        # # Keep track of skipped granules due to no data for the polygon of interest
+        # self.skipped_empty_granules = []
+        # # Keep track of "double" granules with older processing date which are
+        # # not included into the cube
+        # self.skipped_double_granules = []
 
         # Constructed cube
         self.layers = None
@@ -216,9 +226,15 @@ class ITSCube:
         self.clear_vars()
 
         self.num_urls_from_api = None
-        self.skipped_proj_granules = {}
-        self.skipped_empty_granules = []
-        self.skipped_double_granules = []
+        # Keep track of skipped granules due to:
+        # * no data coverage for the cube
+        # * other than target projection
+        # * duplicate middle date
+        self.skipped_granules = {
+            DataVars.SKIP_EMPTY_DATA: [],
+            DataVars.SKIP_DUPLICATE: [],
+            DataVars.SKIP_PROJECTION: {}
+        }
 
     def request_granules(self, api_params: dict, num_granules: int):
         """
@@ -254,11 +270,11 @@ class ITSCube:
             found_urls = found_urls[:num_granules]
             self.logger.info(f"Examining only first {len(found_urls)} out of {total_num} found granules")
 
-        urls, self.skipped_double_granules = self.skip_duplicate_granules(found_urls)
+        urls, self.skipped_granules[DataVars.SKIP_DUPLICATE]  = self.skip_duplicate_l8_granules(found_urls)
 
         return urls
 
-    def skip_duplicate_granules(self, found_urls):
+    def skip_duplicate_l8_granules(self, found_urls):
         """
         Skip duplicate granules (the ones that have earlier processing date(s))
         for the same path row granule for Landsat8 data only.
@@ -283,7 +299,7 @@ class ITSCube:
             # Include non-Landsat8 granules into unique granules to return
             # as they don't need to be searched for duplicates
             granules = list(set(found_urls).difference(landsat8_granules))
-            self.logger.info(f'Non-Landsat8 granules: {len(granules)}')
+            self.logger.info(f'Number of non-Landsat8 granules: {len(granules)}')
 
         for each_url in tqdm(landsat8_granules, ascii=True, desc=f'Skipping duplicate Landsat8 granules out of {len(landsat8_granules)} granules...'):
             # Extract acquisition and processing dates
@@ -368,7 +384,7 @@ class ITSCube:
 
         return granules, skipped_double_granules
 
-    def exclude_processed_granules(self, found_urls: list, cube_ds: xr.Dataset):
+    def exclude_processed_granules(self, found_urls: list, cube_ds: xr.Dataset, skipped_granules: dict):
         """
         * Exclude datacube granules, and all skipped granules in existing datacube
         (empty data, wrong projection, duplicate middle date) from found granules.
@@ -388,55 +404,56 @@ class ITSCube:
         self.logger.info("Excluding known to datacube granules...")
         cube_granules = cube_ds[DataVars.URL].values.tolist()
         granules = set(found_urls).difference(cube_granules)
-        self.logger.info(f"Removed existing cube granules ({len(cube_granules)}): {len(granules)} granules left ")
+        self.logger.info(f"Removed known cube granules ({len(cube_granules)}): {len(granules)} granules remain")
 
         # Remove known empty granules (per cube) from found_urls
-        self.skipped_empty_granules = json.loads(cube_ds.attrs[DataVars.SKIP_EMPTY_DATA])
-        granules = granules.difference(self.skipped_empty_granules)
-        self.logger.info(f"Removed known empty data granules ({len(self.skipped_empty_granules)}): {len(granules)} granules left ")
+        self.skipped_granules[DataVars.SKIP_EMPTY_DATA] = skipped_granules[DataVars.SKIP_EMPTY_DATA]
+        granules = granules.difference(self.skipped_granules[DataVars.SKIP_EMPTY_DATA])
+        self.logger.info(f"Removed known empty data granules ({len(self.skipped_granules[DataVars.SKIP_EMPTY_DATA])}): {len(granules)} granules remain")
 
-        # Remove known wrong projection granules (per cube) from found_urls
-        self.skipped_proj_granules = json.loads(cube_ds.attrs[DataVars.SKIP_WRONG_PROJECTION])
+        # Remove known wrong projection granules (per projection) from found_urls
+        self.skipped_granules[DataVars.SKIP_PROJECTION] = skipped_granules[DataVars.SKIP_PROJECTION]
         known_granules = []
-        for each in self.skipped_proj_granules:
-            known_granules.extend(self.skipped_proj_granules[each])
+        for each in self.skipped_granules[DataVars.SKIP_PROJECTION].values():
+            known_granules.extend(each)
 
         granules = granules.difference(known_granules)
-        self.logger.info(f"Removed wrong projection granules ({len(known_granules)}): {len(granules)} granules left ")
+        self.logger.info(f"Removed known wrong projection granules ({len(known_granules)}): {len(granules)} granules remain")
 
-        # Identify cube granules that are now skipped due to double middle date
-        # in new found_urls granules
-        cube_layers_to_delete = list(set(self.skipped_double_granules).intersection(cube_granules))
-        self.logger.info(f"After found_urls::skipped_granules: {len(cube_layers_to_delete)} " \
+        # Identify if there are any cube granules that now need to be skipped
+        # due to double middle date in "new" found_urls granules
+        # (self.skipped_granules[DataVars.SKIP_DUPLICATE] is set by self.request_granules())
+        cube_layers_to_delete = list(set(self.skipped_granules[DataVars.SKIP_DUPLICATE]).intersection(cube_granules))
+        self.logger.info(f"{len(cube_layers_to_delete)} " \
                           f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
 
         # Remove known duplicate middle date granules from found_urls:
-        # if cube's skipped granules don't appear in found_urls:skipped_granules
+        # if cube's skipped granules don't appear in found_urls.skipped_granules
         # for whatever reason (different start/end dates are used for cube update)
-        # self.skipped_double_granules is populated by self.request_granules()
+        # self.skipped_granules[DataVars.SKIP_DUPLICATE] is populated by self.request_granules()
         # with skipped granules due to double date in "found_urls"
-        cube_skipped_double_granules = json.loads(cube_ds.attrs[DataVars.SKIP_DUPLICATE_MID_DATE])
+        cube_skipped_double_granules = skipped_granules[DataVars.SKIP_DUPLICATE]
         granules = granules.difference(cube_skipped_double_granules)
-        self.logger.info(f"Removed cube's duplicate middle date granules ({len(cube_skipped_double_granules)}): {len(granules)} granules left ")
+        self.logger.info(f"Removed known cube's duplicate middle date granules ({len(cube_skipped_double_granules)}): {len(granules)} granules remain")
 
         # Check if there are any granules between existing cube layers and found_urls
         # that have duplicate middle date
-        combined_cube_found_urls = cube_granules + list(granules)
-        _, skipped_granules = self.skip_duplicate_granules(combined_cube_found_urls)
+        cube_and_found_urls = cube_granules + list(granules)
+        _, skipped_l8_granules = self.skip_duplicate_l8_granules(cube_and_found_urls)
 
         # Check if any of the skipped granules are in the cube
-        cube_layers_to_delete.extend(list(set(cube_granules).intersection(skipped_granules)))
-        self.logger.info(f"After (cube+found_urls)::skipped_granules: {len(cube_layers_to_delete)} " \
-                         f"existing datacube layers to delete due to duplicate middle_date: {cube_layers_to_delete}")
+        cube_layers_to_delete.extend(list(set(cube_granules).intersection(skipped_l8_granules)))
+        self.logger.info(f"After (cube_granules+found_urls): total of {len(cube_layers_to_delete)} " \
+                         f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
 
         # Merge two lists of skipped granules (for existing cube, new list
         # of granules from search API, and duplicate granules b/w cube and new granules)
-        cube_skipped_double_granules.extend(self.skipped_double_granules)
-        cube_skipped_double_granules.extend(skipped_granules)
-        self.skipped_double_granules = list(set(cube_skipped_double_granules))
+        cube_skipped_double_granules.extend(self.skipped_granules[DataVars.SKIP_DUPLICATE])
+        cube_skipped_double_granules.extend(skipped_l8_granules)
+        self.skipped_granules[DataVars.SKIP_DUPLICATE] = list(set(cube_skipped_double_granules))
 
         # Skim down found_urls by newly skipped granules
-        granules = list(granules.difference(self.skipped_double_granules))
+        granules = list(granules.difference(self.skipped_granules[DataVars.SKIP_DUPLICATE]))
         self.logger.info(f"Leaving {len(granules)} granules...")
 
         return granules, cube_layers_to_delete
@@ -474,11 +491,11 @@ class ITSCube:
         else:
             if is_empty:
                 # Layer does not contain valid data for the region
-                self.skipped_empty_granules.append(url)
+                self.skipped_granules[DataVars.SKIP_EMPTY_DATA].append(url)
 
             else:
                 # Layer corresponds to other than target projection
-                self.skipped_proj_granules.setdefault(layer_projection, []).append(url)
+                self.skipped_granules[DataVars.SKIP_PROJECTION].setdefault(layer_projection, []).append(url)
 
     @staticmethod
     def init_output_store(output_dir: str):
@@ -518,7 +535,7 @@ class ITSCube:
         return cube_exists
 
     @staticmethod
-    def init_input_store(input_dir: str, s3_bucket: str):
+    def init_input_store(input_dir: str, s3_bucket: str, read_skipped_granules: bool=True):
         """
         Read datacube from provided store. The method detects if S3 bucket
         store or local Zarr archive is provided, and reads xarray.Dataset from
@@ -527,13 +544,21 @@ class ITSCube:
         ds_from_zarr = None
         s3_in = None
         cube_store = None
+        skipped_granules = None
 
         if len(s3_bucket) == 0:
             # If reading from the local directory, check if datacube store exists
             if ITSCube.exists(input_dir, s3_bucket):
-                logging.info(f"Reading existing {input_dir}")
+                logging.info(f"Reading existing {input_dir}...")
+
                 # Read dataset in
                 ds_from_zarr = xr.open_zarr(input_dir, decode_timedelta=False, consolidated=True)
+
+                # Read skipped granules info that corresponds to the cube
+                if read_skipped_granules:
+                    logging.info(f"Reading existing {ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]}...")
+                    with open(ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]) as skipped_fh:
+                        skipped_granules = json.load(skipped_fh)
 
         elif ITSCube.exists(input_dir, s3_bucket):
             # When datacube is in the AWS S3 bucket, check if it exists.
@@ -545,12 +570,17 @@ class ITSCube:
             cube_store = s3fs.S3Map(root=cube_path, s3=s3_in, check=False)
             ds_from_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True)
 
+            if read_skipped_granules:
+                logging.info(f"Reading existing {ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]}")
+                with s3_in.open(ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES], 'r') as skipped_fh:
+                    skipped_granules = json.load(skipped_fh)
+
         if ds_from_zarr is None:
             raise RuntimeError(f"Provided input datacube {input_dir} does not exist (s3={s3_bucket})")
 
         # Don't use cube_store - keep it in scope only to guarantee valid
         # file-like access.
-        return s3_in, cube_store, ds_from_zarr
+        return s3_in, cube_store, ds_from_zarr, skipped_granules
 
     def create_or_update(self, api_params: dict, output_dir: str, output_bucket: str, num_granules=None):
         """
@@ -565,6 +595,10 @@ class ITSCube:
         else:
             # Create new datacube
             self.create_parallel(api_params, output_dir, output_bucket, num_granules)
+
+        # Write skipped granules info to local file
+        with open(ITSCube.SKIPPED_GRANULES_FILE, 'w') as fh:
+            json.dump(self.skipped_granules, fh, indent=3)
 
     def update_parallel(self, api_params: dict, output_dir: str, output_bucket: str, num_granules=None):
         """
@@ -584,7 +618,7 @@ class ITSCube:
         self.logger.info(f"Updating {os.path.join(output_bucket, output_dir)}")
 
         ITSCube.show_memory_usage('update()')
-        s3, cube_store_in, cube_ds = ITSCube.init_input_store(output_dir, output_bucket)
+        s3, cube_store_in, cube_ds, skipped_granules = ITSCube.init_input_store(output_dir, output_bucket)
 
         self.date_updated = self.date_created
         self.date_created = cube_ds.attrs['date_created']
@@ -606,7 +640,7 @@ class ITSCube:
 
 
         # Remove already processed granules
-        found_urls, cube_layers_to_delete = self.exclude_processed_granules(found_urls, cube_ds)
+        found_urls, cube_layers_to_delete = self.exclude_processed_granules(found_urls, cube_ds, skipped_granules)
         num_cube_layers = len(cube_ds.mid_date.values)
 
         if len(found_urls) == 0:
@@ -897,7 +931,7 @@ class ITSCube:
             found_urls = found_urls[0: num_granules]
 
         self.num_urls_from_api = len(found_urls)
-        found_urls = self.skip_duplicate_granules(found_urls)
+        found_urls = self.skip_duplicate_l8_granules(found_urls)
         is_first_write = True
 
         # Number of granules to examine is specified (it's very slow to examine all granules sequentially)
@@ -940,7 +974,7 @@ class ITSCube:
         if num_granules is not None:
             found_urls = found_urls[0: num_granules]
 
-        found_urls = self.skip_duplicate_granules(found_urls)
+        found_urls = self.skip_duplicate_l8_granules(found_urls)
         self.num_urls_from_api = len(found_urls)
 
         num_to_process = len(found_urls)
@@ -1410,9 +1444,18 @@ class ITSCube:
         self.layers.attrs['proj_polygon'] = json.dumps(self.polygon)
         self.layers.attrs['projection'] = str(self.projection)
         self.layers.attrs['s3'] = ITSCube.S3
-        self.layers.attrs['skipped_duplicate_middle_date'] = json.dumps(self.skipped_double_granules)
-        self.layers.attrs['skipped_empty_data'] = json.dumps(self.skipped_empty_granules)
-        self.layers.attrs['skipped_wrong_projection'] = json.dumps(self.skipped_proj_granules)
+
+        # Store path to the file with skipped granules (the ones that didn't
+        # qualify to make it into the datacube)
+        if len(ITSCube.S3):
+            # Result datacube is to be stored in S3 bucket, record S3 location of the
+            # skipped granules file
+            self.layers.attrs[DataVars.SKIPPED_GRANULES] = ITSCube.S3.replace(FileExtension.ZARR, FileExtension.JSON)
+
+        else:
+            # Result datacube is to be stored locally, record location of the
+            # skipped granules file
+            self.layers.attrs[DataVars.SKIPPED_GRANULES] = output_dir.replace(FileExtension.ZARR, FileExtension.JSON)
 
         # Set time standard as datacube attributes
         for var_name in [
@@ -1767,13 +1810,13 @@ class ITSCube:
         """
         num_urls = self.num_urls_from_api
         # Total number of skipped granules due to wrong projection
-        sum_projs = sum([len(each) for each in self.skipped_proj_granules.values()])
+        sum_projs = sum([len(each) for each in self.skipped_granules[DataVars.SKIP_PROJECTION].values()])
 
-        self.logger.info(f"Skipped granules due to empty data: {len(self.skipped_empty_granules)} ({100.0 * len(self.skipped_empty_granules)/num_urls}%)")
-        self.logger.info(f"Skipped granules due to double mid_date: {len(self.skipped_double_granules)} ({100.0 * len(self.skipped_double_granules)/num_urls}%)")
+        self.logger.info(f"Skipped granules due to empty data: {len(self.skipped_granules[DataVars.SKIP_EMPTY_DATA])} ({100.0 * len(self.skipped_granules[DataVars.SKIP_EMPTY_DATA])/num_urls}%)")
+        self.logger.info(f"Skipped granules due to double mid_date: {len(self.skipped_granules[DataVars.SKIP_DUPLICATE])} ({100.0 * len(self.skipped_granules[DataVars.SKIP_DUPLICATE])/num_urls}%)")
         self.logger.info(f"Skipped granules due to wrong projection: {sum_projs} ({100.0 * sum_projs/num_urls}%)")
-        if len(self.skipped_proj_granules):
-            self.logger.info(f"Skipped wrong projections: {sorted(self.skipped_proj_granules.keys())}")
+        if len(self.skipped_granules[DataVars.SKIP_PROJECTION]):
+            self.logger.info(f"Skipped wrong projections: {sorted(self.skipped_granules[DataVars.SKIP_PROJECTION].keys())}")
 
     def read_dataset(self, url: str):
         """
@@ -1946,13 +1989,6 @@ if __name__ == '__main__':
         default=False,
         help='Disable datetime validation for created datacube. This is to identify corrupted Zarr stores at the time of creation.'
     )
-    parser.add_argument(
-        '-u', '--urlPath',
-        type=str,
-        action='store',
-        default='https://its-live-data.s3.amazonaws.com',
-        help="URL for the datacube store in S3 bucket (to provide for easier download option: for example, https://its-live-data.s3.amazonaws.com) [%(default)s]"
-    )
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
     group = parser.add_mutually_exclusive_group()
@@ -1971,20 +2007,33 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
+
+    # Enforce .zarr file extension for the datacube store
+    if not args.outputStore.endswith(FileExtension.ZARR):
+        raise RuntimeError(f'Output Zarr store is expected to have {FileExtension.ZARR} extension, got {args.outputStore}')
+
     ITSCube.NUM_THREADS = args.threads
     ITSCube.DASK_SCHEDULER = args.scheduler
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
 
     if len(args.outputBucket):
-        # S3 bucket is provided
-        ITSCube.S3  = os.path.join(args.outputBucket, args.outputStore)
+        # S3 bucket is provided, format S3 path to the target datacube
+        ITSCube.S3 = os.path.join(args.outputBucket, args.outputStore)
+        logging.info(f'Cube S3: {ITSCube.S3}')
+
         # URL is valid only if output S3 bucket is provided
-        ITSCube.URL = os.path.join(args.urlPath, args.outputStore)
+        ITSCube.URL = ITSCube.S3.replace(ITSCube.S3_PREFIX, ITSCube.HTTP_PREFIX)
+        url_tokens = urlparse(ITSCube.URL)
+        ITSCube.URL = url_tokens._replace(netloc=url_tokens.netloc+ITSCube.PATH_URL).geturl()
+        logging.info(f'Cube URL: {ITSCube.URL}')
 
     else:
         ITSCube.S3 = ''
         ITSCube.URL = ''
+
+    # Set local file path for skipped granules info
+    ITSCube.SKIPPED_GRANULES_FILE = args.outputStore.replace(FileExtension.ZARR, FileExtension.JSON)
 
     projection = args.targetProjection
 
@@ -2091,56 +2140,71 @@ if __name__ == '__main__':
                 if command_return.returncode != 0:
                     raise RuntimeError(f"Failed to remove original {args.outputStore} from {args.outputBucket}: {command_return.stdout}")
 
-            command_line = [
-                "awsv2", "s3", "cp", "--recursive",
-                args.outputStore,
-                os.path.join(args.outputBucket, os.path.basename(args.outputStore)),
-                "--acl", "bucket-owner-full-control"
-            ]
-
-            logging.info(' '.join(command_line))
-
             # Allow for multiple retries to avoid AWS triggered errors
-            cube_is_copied = False
-            num_retries = 0
-            command_return = None
+            for each_input, each_recursive_option, each_validate_flag in zip(
+                [args.outputStore, ITSCube.SKIPPED_GRANULES_FILE],
+                ['--recursive', None],
+                [True, False]
+            ):
+                file_is_copied = False
+                num_retries = 0
+                command_return = None
 
-            while not cube_is_copied and num_retries < ITSCube.NUM_AWS_COPY_RETRIES:
-                logging.info(f"Attempt #{num_retries+1} to copy {args.outputStore} to {args.outputBucket}")
-
-                command_return = subprocess.run(
-                    command_line,
-                    env=env_copy,
-                    check=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT
-                )
-
-                if command_return.returncode != 0:
-                    # Report the whole stdout stream as one logging message
-                    logging.error(f"Failed to copy {args.outputStore} to {args.outputBucket} with returncode={command_return.returncode}: {command_return.stdout}")
-
-                    num_retries += 1
-                    # If failed due to AWS SlowDown error, retry
-                    if num_retries != ITSCube.NUM_AWS_COPY_RETRIES and \
-                       AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
-                        # Sleep if not last attempt to copy
-                        time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
-
-                    else:
-                        # Don't retry otherwise
-                        num_retries = ITSCube.NUM_AWS_COPY_RETRIES
+                if each_recursive_option is not None:
+                    command_line = [
+                        "awsv2", "s3", "cp", "--recursive",
+                        each_input,
+                        os.path.join(args.outputBucket, os.path.basename(each_input)),
+                        "--acl", "bucket-owner-full-control"
+                    ]
 
                 else:
-                    cube_is_copied = True
+                    command_line = [
+                        "awsv2", "s3", "cp",
+                        each_input,
+                        os.path.join(args.outputBucket, os.path.basename(each_input)),
+                        "--acl", "bucket-owner-full-control"
+                    ]
 
-            if not cube_is_copied:
-                raise RuntimeError(f"Failed to copy {args.outputStore} to {args.outputBucket} with command.returncode={command_return.returncode}")
+                logging.info(' '.join(command_line))
 
-            elif not args.disableCubeValidation:
-                # Validate just copied to S3 datacube
-                s3_in, cube_store, ds_from_zarr = ITSCube.init_input_store(args.outputStore, args.outputBucket)
-                ITSCube.validate_cube_datetime(ds_from_zarr, args.searchAPIStartDate, os.path.join(args.outputBucket, args.outputStore))
+                while not file_is_copied and num_retries < ITSCube.NUM_AWS_COPY_RETRIES:
+                    logging.info(f"Attempt #{num_retries+1} to copy {each_input} to {args.outputBucket}")
+
+                    command_return = subprocess.run(
+                        command_line,
+                        env=env_copy,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT
+                    )
+
+                    if command_return.returncode != 0:
+                        # Report the whole stdout stream as one logging message
+                        logging.warning(f"Failed to copy {each_input} to {args.outputBucket} with returncode={command_return.returncode}: {command_return.stdout}")
+
+                        num_retries += 1
+                        # If failed due to AWS SlowDown error, retry
+                        if num_retries != ITSCube.NUM_AWS_COPY_RETRIES and \
+                           AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
+                            # Sleep if it's not a last attempt to copy
+                            time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
+
+                        else:
+                            # Don't retry otherwise
+                            num_retries = ITSCube.NUM_AWS_COPY_RETRIES
+
+                    else:
+                        file_is_copied = True
+
+                if not file_is_copied:
+                    raise RuntimeError(f"Failed to copy {each_input} to {args.outputBucket} with command.returncode={command_return.returncode}")
+
+                elif not args.disableCubeValidation:
+                    if each_validate_flag:
+                        # Validate just copied to S3 datacube
+                        s3_in, cube_store, ds_from_zarr, _ = ITSCube.init_input_store(each_input, args.outputBucket, read_skipped_granules=False)
+                        ITSCube.validate_cube_datetime(ds_from_zarr, args.searchAPIStartDate, os.path.join(args.outputBucket, each_input))
 
     finally:
         # Remove locally written Zarr store.
@@ -2150,6 +2214,15 @@ if __name__ == '__main__':
             logging.info(f"Removing local copy of {args.outputStore}")
             shutil.rmtree(args.outputStore)
 
+        # Remove locally skipped granules info file.
+        # This is to eliminate out of disk space failures when the same EC2 instance is
+        # being re-used by muliple Batch jobs.
+        if len(args.outputBucket) and len(ITSCube.SKIPPED_GRANULES_FILE) and \
+           os.path.exists(ITSCube.SKIPPED_GRANULES_FILE):
+            logging.info(f"Removing local copy of {ITSCube.SKIPPED_GRANULES_FILE}")
+            os.unlink(ITSCube.SKIPPED_GRANULES_FILE)
+
     # Write cube data to the NetCDF file
     # cube.to_netcdf('test_v_cube.nc')
+
     logging.info(f"Done.")

@@ -31,6 +31,12 @@ class Coords:
         Y:  "y coordinate of projection"
     }
 
+class FileExtension:
+    """
+    File extensions used by datacube related files.
+    """
+    ZARR = '.zarr'
+    JSON  = '.json'
 
 class DataVars:
     """
@@ -40,11 +46,11 @@ class DataVars:
     AUTORIFT_SOFTWARE_VERSION = 'autoRIFT_software_version'
     AUTORIFT_PARAMETER_FILE   = 'autoRIFT_parameter_file'
 
-    # Datacube attributes to store skipped granule information
+    # Datacube variable and its attributes to store skipped granule information
+    SKIPPED_GRANULES        = 'skipped_granules'
     SKIP_EMPTY_DATA         = 'skipped_empty_data'
-    SKIP_DUPLICATE_MID_DATE = 'skipped_duplicate_middle_date'
-    SKIP_WRONG_PROJECTION   = 'skipped_wrong_projection'
-
+    SKIP_DUPLICATE  = 'skipped_duplicate_middle_date'
+    SKIP_PROJECTION = 'skipped_wrong_projection'
 
     # Attributes that appear for multiple data variables
     FILL_VALUE_ATTR            = '_FillValue'
@@ -167,7 +173,8 @@ class DataVars:
             "slow-flowing surfaces with velocity < 15 m/yr)(top priority); " \
             "2 = correction from slowest 25% of overlapping velocities (second priority)",
         URL: "original granule URL",
-        AUTORIFT_SOFTWARE_VERSION: "version of autoRIFT software"
+        AUTORIFT_SOFTWARE_VERSION: "version of autoRIFT software",
+        SKIPPED_GRANULES: "skipped granules during datacube construction"
     }
 
 
