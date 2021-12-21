@@ -254,6 +254,11 @@ class ITSCube:
         self.logger.info(f"ITS_LIVE search API params: {params}")
         start_time = timeit.default_timer()
         found_urls = [each['url'] for each in itslive_utils.get_granule_urls(params)]
+
+        # Beware that entries in 'found_urls' list are not always returned in
+        # the same order as in previous query. This might result in excluding only
+        # some of existing datacube layers from 'found_urls' when trying to determine
+        # new granules to consider to add to the cube during the update.
         total_num = len(found_urls)
         time_delta = timeit.default_timer() - start_time
         self.logger.info(f"Number of found by API granules: {total_num} (took {time_delta} seconds)")
@@ -395,6 +400,7 @@ class ITSCube:
         mid_date - register these for deletion from the datacube if they appear
         as datacube layers.
 
+        as datacube layers.
         Return:
             granules: list
                 List of granules to update datacube with.
@@ -402,8 +408,12 @@ class ITSCube:
                 List of existing datacube layers to remove.
         """
         self.logger.info("Excluding known to datacube granules...")
+        self.logger.info(f"Got {len(found_urls)} total granules to consider ({len(set(found_urls))} unique granules)...")
         cube_granules = cube_ds[DataVars.URL].values.tolist()
+        self.logger.info(f"Existing datacube granules: {len(cube_granules)} ({len(set(cube_granules))} unique granules)")
         granules = set(found_urls).difference(cube_granules)
+        cube_in_found_urls = set(cube_granules).difference(found_urls)
+        self.logger.info(f"Cube granules not in found_urls: ({len(cube_in_found_urls)})")
         self.logger.info(f"Removed known cube granules ({len(cube_granules)}): {len(granules)} granules remain")
 
         # Remove known empty granules (per cube) from found_urls
@@ -595,10 +605,6 @@ class ITSCube:
         else:
             # Create new datacube
             self.create_parallel(api_params, output_dir, output_bucket, num_granules)
-
-        # Write skipped granules info to local file
-        with open(ITSCube.SKIPPED_GRANULES_FILE, 'w') as fh:
-            json.dump(self.skipped_granules, fh, indent=3)
 
     def update_parallel(self, api_params: dict, output_dir: str, output_bucket: str, num_granules=None):
         """
@@ -1371,6 +1377,10 @@ class ITSCube:
         """
         self.layers = {}
         wrote_layers = False
+
+        # Write skipped granules info to local file
+        with open(ITSCube.SKIPPED_GRANULES_FILE, 'w') as fh:
+            json.dump(self.skipped_granules, fh, indent=3)
 
         # Construct xarray to hold layers by concatenating layer objects along 'mid_date' dimension
         self.logger.info(f'Combine {len(self.urls)} layers to the {output_dir}...')
