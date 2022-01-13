@@ -22,7 +22,6 @@ from tqdm import tqdm
 import xarray as xr
 
 # Local imports
-from itscube import ITSCube
 from itscube_types import Coords, DataVars
 
 
@@ -132,7 +131,9 @@ class ITSLiveComposite:
     START_DECIMAL_YEAR = None
     STOP_DECIMAL_YEAR  = None
 
-    # Dimensions that correspond to the currently processed datacube
+    # Dimensions that correspond to the currently processed datacube chunk
+    START_X = None
+    STOP_X = None
     X_LEN = None
     Y_LEN = None
     MID_DATE_LEN = None
@@ -142,6 +143,20 @@ class ITSLiveComposite:
     NUM_VALID_POINTS = 5
 
     TWO_PI = np.pi * 2
+
+    # ------------------
+    # Dask related data
+    # ------------------
+    # Number of X coordinates to process in one "chunk" with Dask parallel scheduler
+    NUM_TO_PROCESS = 200
+
+    # Keep it constant static (so there is no command-line option for it to overwrite):
+    # don't want to use 'threads' to avoid Python’s Global Interpreter Lock (GIL)
+    # since we are processing Python's objects
+    DASK_SCHEDULER = 'processes'
+
+    # Number of Dask processes to run in parallel
+    NUM_THREADS = 4
 
     def __init__(self, cube_store: str, s3_bucket: str):
         """
@@ -160,6 +175,16 @@ class ITSLiveComposite:
         # Read in only specific data variables
         self.data = cube_ds[ITSLiveComposite.VARS]
         # self.data.load()
+
+        # Add systematic error based on level of co-registration
+        # Load Dask arrays before being able to modify their values
+        self.data.vx_error.load()
+        self.data.vy_error.load()
+
+        for value, error in ITSLiveComposite.CO_REGISTRATION_ERROR.items():
+            mask = (self.data.flag_stable_shift == value)
+            self.data.vx_error[mask] += error
+            self.data.vy_error[mask] += error
 
         # Sort cube data by datetime
         # self.data = self.data.sortby(Coords.MID_DATE)
@@ -196,19 +221,20 @@ class ITSLiveComposite:
         # Allocate memory for composite outputs
         dims = (ITSLiveComposite.YEARS_LEN, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
 
-        ITSCube.show_memory_usage('before initializing output variables')
         self.error = CompositeVariable(dims, 'error')
         self.count = CompositeVariable(dims, 'count')
         self.amplitude = CompositeVariable(dims, 'amplitude')
         self.phase = CompositeVariable(dims, 'phase')
         self.sigma = CompositeVariable(dims, 'sigma')
         self.mean = CompositeVariable(dims, 'mean')
-        ITSCube.show_memory_usage('after initializing output variables')
 
-        #
-        # dims = (self.y_len, self.x_len)
-        # self.outlier_frac = np.full(dims, np.nan)
-        # self.maxdt = np.full(dims, np.nan)
+        dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        self.outlier_fraction = np.full(dims, np.nan)
+
+        # Identify unique sensors within datacube
+        self.unique_sensors = list(set(self.data[DataVars.ImgPairInfo.SATELLITE_IMG1].values))
+        dims = (len(self.unique_sensors), ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        self.max_dt = np.full(dims, np.nan)
 
     def create(self, output_store: str, s3_bucket: str):
         """
@@ -225,43 +251,50 @@ class ITSLiveComposite:
                 dt = data.date_dt;
                 sensor = data.satellite_img1; % needs to be updated
         """
-        # TODO: loop through cube in chunks to minimize memory footprint
-        # number of slices to read
-        # x0 = 1:floor(sz(1)/ns):sz(1);
-        # x0(end) = sz(1)+1;
+        # Loop through cube in chunks to minimize memory footprint
+        start = 0
+        num_to_process = ITSLiveComposite.X_LEN
 
-        # % ML: To speed up trouble shooting, use one iteration only
-        # % for i = 1:(length(x0)-1)
-        # for i = 1:1
+        while num_to_process > 0:
+            # How many tasks to process at a time
+            num_tasks = ITSLiveComposite.NUM_TO_PROCESS if num_to_process > ITSLiveComposite.NUM_TO_PROCESS else num_to_process
+            self.cube_time_mean(start, start+num_tasks)
 
-            # %% compute time averages
-            # fprintf('------------------ CHUNK %.0f of %.0f --------------\n ', i, length(x0)-1)
-            #
-            # % read in data
-            # fprintf('reading velocity data from %s ... ', fileName)
-            #
-            # % define subset to read
-            # S.x =[x0(i),x0(i+1)-x0(i),1];
-            # S.y =[1,sz(2),1];
-            # S.mid_date =[1,sz(3),1];
-            #
-            # % read data
-            # data = ncstruct(datacube, S, vars{:});
-            # data
+            num_to_process -= num_tasks
+            start += num_tasks
 
-            # % form unique sensor_satellite ID to pass to "cubetimemean"... not
-            # % done in matlab verison because can't read in 'mission_img1'
+        # TODO: Save data to Zarr store
 
-            # % convert to singles (Float32) to reduce memory footprint
-            # for k = 1:length(vars)
-            #     if any(strcmp({'vx','vy','vx_error','vy_error'}, vars{k}))
-            #         data.(vars{k}) = single(data.(vars{k}));
-            #     end
-            # end
-            # fprintf('finished [%.1fmin]\n', (now-t0)*24*60)
+        # Save data to Zarr store
+        # self.to_zarr(output_store, s3_bucket, maxdt, outlier_frac)
 
-            # % convert to matlab date
-            # data.mid_date = data.mid_date + datenum(1970,1,1);
+        logging.info(f"Done.")
+
+    def cube_time_mean(self, start_x, stop_x):
+        """
+        Compute time average for the datacube [:, :, start_x:stop_index] coordinates.
+        Update corresponding entries in output data variables.
+        """
+        logging.info(f"Processing datacube[:, :, {start_x}:{stop_x}] coordinates out of [:, :, {self.data.x.size}]")
+
+        # Set current length for the X dimension
+        ITSLiveComposite.X_LEN = stop_x - start_x
+        ITSLiveComposite.START_X = start_x
+        ITSLiveComposite.STOP_X = stop_x
+
+        # % form unique sensor_satellite ID to pass to "cubetimemean"... not
+        # % done in matlab verison because can't read in 'mission_img1'
+
+        # % convert to singles (Float32) to reduce memory footprint
+        # for k = 1:length(vars)
+        #     if any(strcmp({'vx','vy','vx_error','vy_error'}, vars{k}))
+        #         data.(vars{k}) = single(data.(vars{k}));
+        #     end
+        # end
+        # fprintf('finished [%.1fmin]\n', (now-t0)*24*60)
+
+        # % convert to matlab date
+        # data.mid_date = data.mid_date + datenum(1970,1,1);
 
         #     % compute time averages
         #     [v_amp(x0(i):x0(i+1)-1,:,:), vx_amp(x0(i):x0(i+1)-1,:,:), vy_amp(x0(i):x0(i+1)-1,:,:), ...
@@ -273,8 +306,6 @@ class ITSLiveComposite:
         #     outlier_frac(x0(i):x0(i+1)-1,:)] = ...
         #     cubetimemean(data.vx,data.vy,data.vx_error,data.vy_error,data.mid_date,data.date_dt,data.satellite_img1,yrs);
         # end
-
-        # self.cube_time_mean(self.data, self.dates, self.years)
 
         # Start timer
         start_time = timeit.default_timer()
@@ -291,25 +322,26 @@ class ITSLiveComposite:
 
         # Loop for each unique sensor (those groupings image pairs that can be
         # expected to have different temporal decorelation)
-        unique_sensors = list(set(self.data[DataVars.ImgPairInfo.SATELLITE_IMG1].values))
-
-        num_sensors = len(unique_sensors)
-        dims = (num_sensors, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        dims = (len(self.unique_sensors), ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
         vx_maxdt = np.full(dims, np.nan)
         vy_maxdt = np.full(dims, np.nan)
-        maxdt    = np.full(dims, np.nan)
+        # maxdt    = np.full(dims, np.nan)
 
-        for i in range(len(unique_sensors)):
+        for i in range(len(self.unique_sensors)):
             # Find which layers correspond to each sensor
-            mask = (self.data[DataVars.ImgPairInfo.SATELLITE_IMG1] == unique_sensors[i])
+            mask = (self.data[DataVars.ImgPairInfo.SATELLITE_IMG1] == self.unique_sensors[i])
+
             logging.info(f'Filtering vx...')
-            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vx.where(mask), ITSLiveComposite.DATE_DT.where(mask))
+            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vx[:, :, start_x:stop_x].where(mask), ITSLiveComposite.DATE_DT.where(mask))
+
             logging.info(f'Filtering vy...')
-            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vy.where(mask), ITSLiveComposite.DATE_DT.where(mask))
+            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vy[:, :, start_x:stop_x].where(mask), ITSLiveComposite.DATE_DT.where(mask))
 
             # Get maximum value along sensor dimension: concatenate maxdt
             #  for vx and vy in new dimension
-            maxdt[i, :, :] = np.nanmax(np.stack((vx_maxdt[i, :, :], vy_maxdt[i, :, :]), axis=0), axis=0)
+            self.max_dt[i, :, start_x:stop_x] = np.nanmax(np.stack((vx_maxdt[i, :, :], vy_maxdt[i, :, :]), axis=0), axis=0)
+
+        # self.max_dt[:, :, start_x:stop_x] = maxdt
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
         logging.info(f'Compute invalid mask...')
@@ -323,30 +355,20 @@ class ITSLiveComposite:
 
         invalid = \
             vx_invalid | vy_invalid \
-            | (np.abs(self.data.vx) > ITSLiveComposite.V_COMPONENT_THRESHOLD) \
-            | (np.abs(self.data.vy) > ITSLiveComposite.V_COMPONENT_THRESHOLD)
+            | (np.abs(self.data.vx[:, :, start_x:stop_x]) > ITSLiveComposite.V_COMPONENT_THRESHOLD) \
+            | (np.abs(self.data.vy[:, :, start_x:stop_x]) > ITSLiveComposite.V_COMPONENT_THRESHOLD)
 
         # Mask data
         logging.info(f'Mask invalid entries for vx...')
-        vx = self.data.vx.where(~invalid)
+        vx = self.data.vx[:, :, start_x:stop_x].where(~invalid)
 
         logging.info(f'Mask invalid entries for vy...')
-        vy = self.data.vy.where(~invalid)
+        vy = self.data.vy[:, :, start_x:stop_x].where(~invalid)
 
         invalid = np.nansum(invalid, axis=0)
-        invalid = np.divide(invalid, np.sum(self.data.vx.isnull(), 0) + invalid)
+        invalid = np.divide(invalid, np.sum(self.data.vx[:, :, start_x:stop_x].isnull(), 0) + invalid)
 
         logging.info(f'Finished filtering ({timeit.default_timer() - start_time} seconds)')
-
-        # Add systematic error based on level of co-registration
-        # Load Dask arrays before being able to modify their values
-        self.data.vx_error.load()
-        self.data.vy_error.load()
-
-        for value, error in ITSLiveComposite.CO_REGISTRATION_ERROR.items():
-            mask = (self.data.flag_stable_shift == value)
-            self.data.vx_error[mask] += error
-            self.data.vy_error[mask] += error
 
         # %% Least-squares fits to detemine amplitude, phase and annual means
         logging.info(f'Find vx annual means using LSQ fit... ')
@@ -381,13 +403,10 @@ class ITSLiveComposite:
         logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
         logging.info(f'Find v annual means using LSQ fit... ')
-        ITSCube.show_memory_usage(f'before vxm')
+        start_time = timeit.default_timer()
         # Need to project velocity onto a unit flow vector to avoid biased (Change from Rician to Normal distribution)
-        vxm = np.nanmedian(self.mean.vx, axis=0)
-
-        ITSCube.show_memory_usage(f'before vym')
-        vym = np.nanmedian(self.mean.vy, axis=0)
-        ITSCube.show_memory_usage(f'before theta')
+        vxm = np.nanmedian(self.mean.vx[:, :, start_x:stop_x], axis=0)
+        vym = np.nanmedian(self.mean.vy[:, :, start_x:stop_x], axis=0)
         theta = np.arctan2(vxm, vym)
 
         # vx_sizes = vx.sizes
@@ -396,15 +415,12 @@ class ITSLiveComposite:
         # vx_y_dim = vx_sizes[Coords.Y]
 
         # Explicitly expand the value
-        ITSCube.show_memory_usage(f'before sin_theta')
         stheta = np.tile(np.sin(theta).astype('float32'), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
-        ITSCube.show_memory_usage(f'before cos_theta')
         ctheta = np.tile(np.cos(theta).astype('float32'), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
 
         theta = None
         gc.collect()
 
-        ITSCube.show_memory_usage(f'before vx')
         vx = vx*stheta + vy*ctheta
 
         stheta = None
@@ -412,56 +428,66 @@ class ITSLiveComposite:
         # Call Python's garbage collector
         gc.collect()
 
-        ITSCube.show_memory_usage(f'before vy')
-
         # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
         vxm = np.abs(vxm)
         vym = np.abs(vym)
 
-        # vy = (np.tile(
-        #         self.data.vx_error.data.reshape(
-        #             (ITSLiveComposite.MID_DATE_LEN, 1, 1)),
-        #         (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
-        #     )*np.abs(vxm) + \
-        #     np.tile(
-        #         self.data.vy_error.data.reshape(
-        #             (ITSLiveComposite.MID_DATE_LEN, 1, 1)
-        #         ),
-        #         (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
-        #     )*np.abs(vym)
-        # ) / np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
-
-        # Expand error data to be 3-d array
-        ITSCube.show_memory_usage(f'before vx expand')
+        # Expand dimensions of vectors
         vy = self.data.vx_error.expand_dims(Coords.Y)
         vy = vy.expand_dims(Coords.X)
         # Revert dimensions order: (mid_date, y, x)
         vy = vy.transpose()
 
-        vy = np.tile(
-                vy,
-                (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
-            )*vxm
-        logging.info(f"vy.shape: {vy.shape}")
-
-        ITSCube.show_memory_usage(f'before vy expand')
-
-        # Expand error data to be 3-d array
         vy_expand = self.data.vy_error.expand_dims(Coords.Y)
         vy_expand = vy_expand.expand_dims(Coords.X)
         # Revert dimensions order: (mid_date, y, x)
         vy_expand = vy_expand.transpose()
-        ITSCube.show_memory_usage(f'before vy += np.tile')
 
-        vy += np.tile(
-                vy_expand,
-                (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
-            )*vym
+        vy = (
+            np.tile(vy, (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN))*vxm + \
+            np.tile(vy_expand, (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN))*vym
+        ) / np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
 
-        ITSCube.show_memory_usage(f'before vy /=')
-        vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
+        logging.info(f"vy.shape: {vy.shape}")
 
-        ITSCube.show_memory_usage(f'before cubelsqfit2()')
+        # np.tile outputs np.ndarray type object, convert it back to xr.DataArray
+        # type as expected by cubelsqfit2() method
+        vy = xr.DataArray(
+            data=vy,
+            dims=(Coords.MID_DATE, Coords.Y, Coords.X),
+            coords=[vx.mid_date.values, vx.y.values, vx.x.values]
+        )
+
+        # # Expand error data to be 3-d array
+        # ITSCube.show_memory_usage(f'before vx expand')
+        # vy = self.data.vx_error.expand_dims(Coords.Y)
+        # vy = vy.expand_dims(Coords.X)
+        # # Revert dimensions order: (mid_date, y, x)
+        # vy = vy.transpose()
+        #
+        # vy = np.tile(
+        #         vy,
+        #         (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        #     )*vxm
+        # logging.info(f"vy.shape: {vy.shape}")
+        #
+        # ITSCube.show_memory_usage(f'before vy expand')
+        #
+        # # Expand error data to be 3-d array
+        # vy_expand = self.data.vy_error.expand_dims(Coords.Y)
+        # vy_expand = vy_expand.expand_dims(Coords.X)
+        # # Revert dimensions order: (mid_date, y, x)
+        # vy_expand = vy_expand.transpose()
+        # ITSCube.show_memory_usage(f'before vy += np.tile')
+        #
+        # vy += np.tile(
+        #         vy_expand,
+        #         (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        #     )*vym
+        #
+        # ITSCube.show_memory_usage(f'before vy /=')
+        # vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
+
         # vamp, vphase, vmean, verr, vsigma, vcnt, voutlier = ITSLiveComposite.cubelsqfit2(vx, vy)
         voutlier = ITSLiveComposite.cubelsqfit2(
             vx,
@@ -473,17 +499,13 @@ class ITSLiveComposite:
             self.sigma.v,
             self.count.v
         )
+        logging.info(f'Finished v LSQ fit (took {timeit.default_timer() - start_time} seconds)')
+
         # Because velocities have been projected onto a mean flow direction they can be negative
-        vmean = np.abs(vmean)
+        self.mean.v = np.abs(self.mean.v)
 
-        outlier = invalid + voutlier*(1-invalid)
-
-        logging.info(f"Done.")
-
-        # TODO: Save data to Zarr store
-
-        # Save data to Zarr store
-        self.to_zarr(output_store, s3_bucket, maxdt, outlier_frac)
+        # outlier = invalid + voutlier*(1-invalid)
+        self.outlier_fraction[:, start_x:stop_x] = invalid + voutlier*(1-invalid)
 
     def to_zarr(self, output_store: str, s3_bucket: str, maxdt, outlier_frac):
         """
@@ -622,25 +644,27 @@ class ITSLiveComposite:
         # tt = [t - dt/2, t+dt/2];
         #
         # Initialize output
-        ITSCube.show_memory_usage(f'starting cubelsqfit2()')
         dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
         outlier_frac = np.full(dims, np.nan)
-        ITSCube.show_memory_usage(f'after initialized output for cubelsqfit2()')
 
         # This is only done for generic parfor "slicing" may not be needed when
         # recoded
         v_err = v_err_data
         if len(v_err_data.sizes) != len(v.sizes):
-            # Populate the whole array with provided single value per cell
-            reshape_v_err = v_err_data.values[:, np.newaxis, np.newaxis]
+            # Expand vector to 3-d array
+            reshape_v_err = v_err_data.expand_dims(Coords.Y)
+            reshape_v_err = reshape_v_err.expand_dims(Coords.X)
+            # Revert dimensions order: (mid_date, y, x)
+            reshape_v_err = reshape_v_err.transpose()
+
             v_err = xr.DataArray(
-                np.tile(reshape_v_err, dims),
+                np.tile(reshape_v_err, (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)),
                 dims=(Coords.MID_DATE, Coords.Y, Coords.X),
                 coords={Coords.MID_DATE: v.mid_date.values, Coords.Y: v.y.values, Coords.X: v.x.values}
             )
 
-        # for j in range(y_dim):
-        #     for i in range(x_dim):
+        # for j in range(ITSLiveComposite.Y_LEN):
+        #     for i in range(ITSLiveComposite.X_LEN):
         for j in range(1):
             for i in range(1):
                 # TODO: parallelize
@@ -653,7 +677,16 @@ class ITSLiveComposite:
 
                 # Annual phase and amplitude for processed years
                 # amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_frac[j, i] = ITSLiveComposite.itslive_lsqfit_annual(x1, x_err1)
-                ind, amplitude[ind, j, i], phase[ind, j, i], sigma[ind, j, i], mean[ind, j, i], error[ind, j, i], count[ind, j, i], outlier_frac[j, i] = ITSLiveComposite.itslive_lsqfit_annual(x1, x_err1)
+                global_i = i + ITSLiveComposite.START_X
+
+                ind, \
+                amplitude[ind, j, global_i], \
+                phase[ind, j, global_i], \
+                sigma[ind, j, global_i], \
+                mean[ind, j, global_i], \
+                error[ind, j, global_i], \
+                count[ind, j, global_i], \
+                outlier_frac[j, i] = ITSLiveComposite.itslive_lsqfit_annual(x1, x_err1)
 
                 # _, _, ind = np.intersect1d(ITSLiveComposite.YEARS, t_int1, return_indices=True)
                 #
@@ -855,9 +888,10 @@ class ITSLiveComposite:
             outliers_fraction = outliers.values.sum() / totalnum
             if outliers_fraction < 0.01:
                 # There are less than 1% outliers, skip the rest of iterations
-                logging.info(f'{outliers_fraction*100}% ({np.sum(outliers)} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
+                logging.info(f'{outliers_fraction*100}% ({outliers.values.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
                 break
 
+        # Matlab: outlier_frac = length(yr)./totalnum;
         outlier_frac = (totalnum - len(start_year))/totalnum
 
         #
@@ -925,7 +959,7 @@ class ITSLiveComposite:
         # Identify year's indices to assign return values to in "global" variables
         _, _, ind = np.intersect1d(ITSLiveComposite.YEARS, y1, return_indices=True)
 
-        # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1,
+        # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_fraction
         return [ind, A, ph, A_err, v_int, v_int_err, N_int, outlier_frac]
 
 if __name__ == '__main__':
@@ -937,23 +971,18 @@ if __name__ == '__main__':
     # Command-line arguments parser
     parser = argparse.ArgumentParser(description=ITSLiveComposite.__doc__.split('\n')[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    # parser.add_argument(
-    #     '-t', '--threads',
-    #     type=int, default=4,
-    #     help='Number of Dask workers to use for parallel processing [%(default)d].'
-    # )
-    # parser.add_argument(
-    #     '-s', '--scheduler',
-    #     type=str,
-    #     default="processes",
-    #     help="Dask scheduler to use. One of ['threads', 'processes'] (effective only when --parallel option is specified) [%(default)s]."
-    # )
-    # parser.add_argument(
-    #     '-p', '--parallel',
-    #     action='store_true',
-    #     default=False,
-    #     help='Enable parallel processing, default is to process all cube spacial points in parallel'
-    # )
+    parser.add_argument(
+        '-t', '--threads',
+        type=int,
+        default=4,
+        help='Number of Dask workers to use for parallel processing [%(default)d].'
+    )
+    parser.add_argument(
+        '-c', '--daskChunkSize',
+        type=int,
+        default=200,
+        help='Number of X coordinates to process in parallel with Dask [%(default)d].'
+    )
     parser.add_argument(
         '-i', '--inputStore',
         type=str,
@@ -973,6 +1002,9 @@ if __name__ == '__main__':
         help="S3 bucket to copy Zarr format of the input datacube from, and to store cube composite to [%(default)s]."
     )
     args = parser.parse_args()
+
+    # Set static data for computation
+    ITSLiveComposite.NUM_TO_PROCESS = args.daskChunkSize
 
     # s3://its-live-data/test_datacubes/AGU2021/S70W100/ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.zarr
     # AGU21_ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.nc
