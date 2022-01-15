@@ -22,6 +22,7 @@ from tqdm import tqdm
 import xarray as xr
 
 # Local imports
+from itscube import ITSCube
 from itscube_types import Coords, DataVars
 
 
@@ -75,6 +76,7 @@ class CompositeVariable:
         self.vx = np.full(dims, np.nan)
         self.vy = np.full(dims, np.nan)
 
+
 class ITSLiveComposite:
     """
     CLass to build composites for ITS_LIVE datacubes.
@@ -114,6 +116,8 @@ class ITSLiveComposite:
     # Scalar relation between MAD and STD
     MAD_STD_RATIO = 1.4826
 
+    DTBIN_RATIO = DTBIN_MAD_THRESH * MAD_STD_RATIO
+
     # Systematic error based on level of co-registration
     CO_REGISTRATION_ERROR = {
         0: 100,
@@ -133,7 +137,10 @@ class ITSLiveComposite:
 
     # Dimensions that correspond to the currently processed datacube chunk
     START_X = None
-    STOP_X = None
+    STOP_X  = None
+    START_Y = None
+    STOP_Y  =  None
+
     X_LEN = None
     Y_LEN = None
     MID_DATE_LEN = None
@@ -151,12 +158,10 @@ class ITSLiveComposite:
     NUM_TO_PROCESS = 200
 
     # Keep it constant static (so there is no command-line option for it to overwrite):
-    # don't want to use 'threads' to avoid Python’s Global Interpreter Lock (GIL)
-    # since we are processing Python's objects
-    DASK_SCHEDULER = 'processes'
+    DASK_SCHEDULER = 'threads'
 
     # Number of Dask processes to run in parallel
-    NUM_THREADS = 4
+    NUM_DASK_THREADS = 4
 
     def __init__(self, cube_store: str, s3_bucket: str):
         """
@@ -252,36 +257,55 @@ class ITSLiveComposite:
                 sensor = data.satellite_img1; % needs to be updated
         """
         # Loop through cube in chunks to minimize memory footprint
-        start = 0
-        num_to_process = ITSLiveComposite.X_LEN
 
-        while num_to_process > 0:
+        x_start = 0
+        x_num_to_process = ITSLiveComposite.X_LEN
+        initial_y_num_to_process = ITSLiveComposite.Y_LEN
+
+        while x_num_to_process > 0:
             # How many tasks to process at a time
-            num_tasks = ITSLiveComposite.NUM_TO_PROCESS if num_to_process > ITSLiveComposite.NUM_TO_PROCESS else num_to_process
-            self.cube_time_mean(start, start+num_tasks)
+            x_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if x_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else x_num_to_process
 
-            num_to_process -= num_tasks
-            start += num_tasks
+            y_num_to_process = initial_y_num_to_process
+            y_start = 0
+
+            while y_num_to_process > 0:
+                y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
+
+                self.cube_time_mean(y_start, y_start+y_num_tasks, x_start, x_start+x_num_tasks)
+
+                y_num_to_process -= y_num_tasks
+                y_start += y_num_tasks
+
+
+            x_num_to_process -= x_num_tasks
+            x_start += x_num_tasks
 
         # TODO: Save data to Zarr store
 
         # Save data to Zarr store
-        # self.to_zarr(output_store, s3_bucket, maxdt, outlier_frac)
+        # self.to_zarr(output_store, s3_bucket)
 
         logging.info(f"Done.")
 
-    def cube_time_mean(self, start_x, stop_x):
+    def cube_time_mean(self, start_y, stop_y, start_x, stop_x):
         """
         Compute time average for the datacube [:, :, start_x:stop_index] coordinates.
         Update corresponding entries in output data variables.
         """
-        logging.info(f"Processing datacube[:, :, {start_x}:{stop_x}] coordinates out of [:, :, {self.data.x.size}]")
+        logging.info(f"Processing datacube[:, {start_y}:{stop_y}, {start_x}:{stop_x}] coordinates out of [:, {self.data.y.size}, {self.data.x.size}]")
 
         # Set current length for the X dimension
         ITSLiveComposite.X_LEN = stop_x - start_x
         ITSLiveComposite.START_X = start_x
         ITSLiveComposite.STOP_X = stop_x
 
+        # Set current length for the Y dimension
+        ITSLiveComposite.Y_LEN = stop_y - start_y
+        ITSLiveComposite.START_Y = start_y
+        ITSLiveComposite.STOP_Y = stop_y
+
+        # TODO:
         # % form unique sensor_satellite ID to pass to "cubetimemean"... not
         # % done in matlab verison because can't read in 'mission_img1'
 
@@ -325,28 +349,36 @@ class ITSLiveComposite:
         dims = (len(self.unique_sensors), ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
         vx_maxdt = np.full(dims, np.nan)
         vy_maxdt = np.full(dims, np.nan)
-        # maxdt    = np.full(dims, np.nan)
+
+        logging.info(f'Loading vx[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
+        vx = self.data.vx[:, start_y:stop_y, start_x:stop_x].load().astype(float)
+        logging.info(f'Loaded vx[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
+
+        logging.info(f'Loading vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
+        vy = self.data.vy[:, start_y:stop_y, start_x:stop_x].load().astype(float)
+        logging.info(f'Loaded vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
 
         for i in range(len(self.unique_sensors)):
+            logging.info(f'Creating layer for sensor "{self.unique_sensors[i]}" ({i+1} out of {len(self.unique_sensors)})')
             # Find which layers correspond to each sensor
             mask = (self.data[DataVars.ImgPairInfo.SATELLITE_IMG1] == self.unique_sensors[i])
 
             logging.info(f'Filtering vx...')
-            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vx[:, :, start_x:stop_x].where(mask), ITSLiveComposite.DATE_DT.where(mask))
+            # vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vx[:, :, start_x:stop_x].where(mask), ITSLiveComposite.DATE_DT.where(mask))
+            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx.where(mask), ITSLiveComposite.DATE_DT.where(mask))
 
             logging.info(f'Filtering vy...')
-            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vy[:, :, start_x:stop_x].where(mask), ITSLiveComposite.DATE_DT.where(mask))
+            # vy = self.data.vy[:, :, start_x:stop_x].load()
+            # logging.info(f'Loaded vy[:, :, {start_x}:{stop_x}]...')
+            # vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vy[:, :, start_x:stop_x].where(mask), ITSLiveComposite.DATE_DT.where(mask))
+            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy.where(mask), ITSLiveComposite.DATE_DT.where(mask))
 
             # Get maximum value along sensor dimension: concatenate maxdt
             #  for vx and vy in new dimension
-            self.max_dt[i, :, start_x:stop_x] = np.nanmax(np.stack((vx_maxdt[i, :, :], vy_maxdt[i, :, :]), axis=0), axis=0)
-
-        # self.max_dt[:, :, start_x:stop_x] = maxdt
+            self.max_dt[i, start_y:stop_y, start_x:stop_x] = np.nanmax(np.stack((vx_maxdt[i, :, :], vy_maxdt[i, :, :]), axis=0), axis=0)
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
         logging.info(f'Compute invalid mask...')
-        # self.data.vx.load()
-        # self.data.vy.load()
         # In case when no boolean values are inserted into the masking array,
         # ensure the array type is still boolean (will be float32 type otherwise)
         # ATTN: bool(np.nan) == True
@@ -355,18 +387,18 @@ class ITSLiveComposite:
 
         invalid = \
             vx_invalid | vy_invalid \
-            | (np.abs(self.data.vx[:, :, start_x:stop_x]) > ITSLiveComposite.V_COMPONENT_THRESHOLD) \
-            | (np.abs(self.data.vy[:, :, start_x:stop_x]) > ITSLiveComposite.V_COMPONENT_THRESHOLD)
+            | (np.fabs(vx) > ITSLiveComposite.V_COMPONENT_THRESHOLD) \
+            | (np.fabs(vy) > ITSLiveComposite.V_COMPONENT_THRESHOLD)
 
         # Mask data
         logging.info(f'Mask invalid entries for vx...')
-        vx = self.data.vx[:, :, start_x:stop_x].where(~invalid)
+        vx = vx.where(~invalid)
 
         logging.info(f'Mask invalid entries for vy...')
-        vy = self.data.vy[:, :, start_x:stop_x].where(~invalid)
+        vy = vy.where(~invalid)
 
         invalid = np.nansum(invalid, axis=0)
-        invalid = np.divide(invalid, np.sum(self.data.vx[:, :, start_x:stop_x].isnull(), 0) + invalid)
+        invalid = np.divide(invalid, np.sum(vx.isnull(), 0) + invalid)
 
         logging.info(f'Finished filtering ({timeit.default_timer() - start_time} seconds)')
 
@@ -405,8 +437,8 @@ class ITSLiveComposite:
         logging.info(f'Find v annual means using LSQ fit... ')
         start_time = timeit.default_timer()
         # Need to project velocity onto a unit flow vector to avoid biased (Change from Rician to Normal distribution)
-        vxm = np.nanmedian(self.mean.vx[:, :, start_x:stop_x], axis=0)
-        vym = np.nanmedian(self.mean.vy[:, :, start_x:stop_x], axis=0)
+        vxm = np.nanmedian(self.mean.vx[:, start_y:stop_y, start_x:stop_x], axis=0)
+        vym = np.nanmedian(self.mean.vy[:, start_y:stop_y, start_x:stop_x], axis=0)
         theta = np.arctan2(vxm, vym)
 
         # vx_sizes = vx.sizes
@@ -415,8 +447,8 @@ class ITSLiveComposite:
         # vx_y_dim = vx_sizes[Coords.Y]
 
         # Explicitly expand the value
-        stheta = np.tile(np.sin(theta).astype('float32'), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
-        ctheta = np.tile(np.cos(theta).astype('float32'), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        stheta = np.tile(np.sin(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        ctheta = np.tile(np.cos(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
 
         theta = None
         gc.collect()
@@ -429,10 +461,11 @@ class ITSLiveComposite:
         gc.collect()
 
         # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
-        vxm = np.abs(vxm)
-        vym = np.abs(vym)
+        vxm = np.fabs(vxm)
+        vym = np.fabs(vym)
 
         # Expand dimensions of vectors
+        # TODO: replace by xarray's native xr.broadcast()!!!
         vy = self.data.vx_error.expand_dims(Coords.Y)
         vy = vy.expand_dims(Coords.X)
         # Revert dimensions order: (mid_date, y, x)
@@ -458,37 +491,6 @@ class ITSLiveComposite:
             coords=[vx.mid_date.values, vx.y.values, vx.x.values]
         )
 
-        # # Expand error data to be 3-d array
-        # ITSCube.show_memory_usage(f'before vx expand')
-        # vy = self.data.vx_error.expand_dims(Coords.Y)
-        # vy = vy.expand_dims(Coords.X)
-        # # Revert dimensions order: (mid_date, y, x)
-        # vy = vy.transpose()
-        #
-        # vy = np.tile(
-        #         vy,
-        #         (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
-        #     )*vxm
-        # logging.info(f"vy.shape: {vy.shape}")
-        #
-        # ITSCube.show_memory_usage(f'before vy expand')
-        #
-        # # Expand error data to be 3-d array
-        # vy_expand = self.data.vy_error.expand_dims(Coords.Y)
-        # vy_expand = vy_expand.expand_dims(Coords.X)
-        # # Revert dimensions order: (mid_date, y, x)
-        # vy_expand = vy_expand.transpose()
-        # ITSCube.show_memory_usage(f'before vy += np.tile')
-        #
-        # vy += np.tile(
-        #         vy_expand,
-        #         (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
-        #     )*vym
-        #
-        # ITSCube.show_memory_usage(f'before vy /=')
-        # vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
-
-        # vamp, vphase, vmean, verr, vsigma, vcnt, voutlier = ITSLiveComposite.cubelsqfit2(vx, vy)
         voutlier = ITSLiveComposite.cubelsqfit2(
             vx,
             vy,
@@ -502,12 +504,12 @@ class ITSLiveComposite:
         logging.info(f'Finished v LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
         # Because velocities have been projected onto a mean flow direction they can be negative
-        self.mean.v = np.abs(self.mean.v)
+        self.mean.v = np.fabs(self.mean.v)
 
         # outlier = invalid + voutlier*(1-invalid)
-        self.outlier_fraction[:, start_x:stop_x] = invalid + voutlier*(1-invalid)
+        self.outlier_fraction[start_y:stop_y, start_x:stop_x] = invalid + voutlier*(1-invalid)
 
-    def to_zarr(self, output_store: str, s3_bucket: str, maxdt, outlier_frac):
+    def to_zarr(self, output_store: str, s3_bucket: str):
         """
         Store datacube annual composite to the Zarr store.
         """
@@ -550,7 +552,6 @@ class ITSLiveComposite:
 
         # Add data as variables
 
-
     @staticmethod
     def cube_filter(data, dt):
         """
@@ -568,58 +569,103 @@ class ITSLiveComposite:
         # date_dim = data_dims[Coords.MID_DATE]
         # dims = (date_dim, y_dim, x_dim)
 
-        # Initialize output and functions
-        # invalid = false(size(x));
-        # maxdt = nan([m,n]);
-        # madFun = @(x) median(abs(x - median(x))); % replaced on chad's suggestion
-        dims = (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
-        invalid = np.full(dims, False)
+        # Initialize output
+        # dims = (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        invalid = np.full_like(data, False)
 
         dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
         maxdt = np.full(dims, np.nan)
-        # madFun = @(x) median(abs(x - median(x))); % replaced on chad's suggestion
 
         # Loop through all spacial points
         # ATTN: debugging only - process 2 x cells only
-        # for j in tqdm(range(0, y_dim), ascii=True, desc='cube_filter: y'):
-        #     for i in range(0, x_dim):
-        for j in tqdm(range(0, 2), ascii=True, desc='cube_filter: y'):
-            for i in tqdm(range(0, 2), ascii=True, desc='cube_filter: x'):
-                # TODO: parallelize
-                # Select by X, Y
-                x0 = data.isel(x=i, y=j)
-                # Since we are dealing with Dask arrays, load data in memory,
-                # otherwise "groupby" functionality does not work
-                x0 = x0.load()
+        for j in tqdm(range(0, ITSLiveComposite.Y_LEN), ascii=True, desc='cube_filter: y'):
+        # for j in tqdm(range(0, 2), ascii=True, desc='cube_filter: y'):
+            # Process X coordinates in parallel
+            # Pass to the dask only the data it needs: data.isel() by X and Y
+            tasks = [dask.delayed(ITSLiveComposite.cube_filter_iteration)(data.isel(x=i, y=j), dt, i, j) for i in range(0, ITSLiveComposite.X_LEN)]
 
-                if np.all(x0.isnull()):
-                    continue
+            # results = None
+            # with ProgressBar():  # Does not work with Client() scheduler
+            results = dask.compute(
+                tasks,
+                threads_per_worker=1,
+                scheduler=ITSLiveComposite.DASK_SCHEDULER,
+                num_workers=ITSLiveComposite.NUM_DASK_THREADS
+            )
 
-                # Filter NAN values out
-                mask = ~x0.isnull()
-                x0 = x0.where(mask, drop=True)
-                x0_dt = dt.where(mask, drop=True)
+            del tasks
+            gc.collect()
 
-                np_digitize = np.digitize(x0_dt.values, ITSLiveComposite.DT_EDGE, right=False)
-                index_var = xr.IndexVariable(Coords.MID_DATE, np_digitize)
-                groups = x0.groupby(index_var)
+            # Process results
+            for each_output in results[0]:
+                iter_i, iter_j, iter_maxdt, iter_invalid = each_output
+                maxdt[iter_j, iter_i] = iter_maxdt
+                invalid[:, iter_j, iter_i] = iter_invalid
 
-                # Are means significantly different for various dt groupings?
-                median = groups.median()
-                xmad = groups.map(madFunction)
-
-                # Check if populations overlap (use first, smallest dt, bin as reference)
-                std_dev = xmad * ITSLiveComposite.DTBIN_MAD_THRESH * ITSLiveComposite.MAD_STD_RATIO
-                minBound = median - std_dev
-                maxBound = median + std_dev
-
-                exclude = (minBound > maxBound[0]) | (maxBound < minBound[0])
-
-                if np.any(exclude):
-                    maxdt[j, i] = np.take(ITSLiveComposite.DT_EDGE, np.take(np_digitize, exclude)).min()
-                    invalid[j, i] = dt > maxdt[j, i]
+            # Sequential processing for debugging only
+            # for i in range(start, start+num_tasks):
+            #     logging.info(f"Processing j={j} i={i}")
+            #     iter_i, iter_j, iter_maxdt, iter_invalid = ITSLiveComposite.cube_filter_iteration(data, dt, i, j)
+            #
+            #     maxdt[iter_j, iter_i] = iter_maxdt
+            #     invalid[:, iter_j, iter_i] = iter_invalid
+            #
+            # num_to_process -= num_tasks
+            # start += num_tasks
 
         return invalid, maxdt
+
+    @staticmethod
+    # def cube_filter_iteration(data, dt, i, j):
+    def cube_filter_iteration(x0, dt, i, j):
+        """
+        Filter one spacial point by dt (date separation) between the images.
+        This method is introduced to be able to parallelize cube_filter() method
+        using Dask scheduler.
+        """
+        # Output data variables
+        maxdt = np.nan
+        invalid = np.full_like(dt, False)
+
+        # Select by X, Y
+        # x0 = data.isel(x=i, y=j)
+
+        # Since we are dealing with Dask arrays, the data must be loaded in memory,
+        # otherwise "groupby" functionality does not work
+        # This is done priory each of the iterations when the whole chunk of
+        # data is loaded
+        # x0 = x0.load()
+
+        if np.all(x0.isnull()):
+            # No data to process
+            return (i, j, maxdt, invalid)
+
+        # Filter NAN values out
+        mask = ~x0.isnull()
+        x0 = x0.where(mask, drop=True)
+        x0_dt = dt.where(mask, drop=True)
+
+        np_digitize = np.digitize(x0_dt.values, ITSLiveComposite.DT_EDGE, right=False)
+        index_var = xr.IndexVariable(Coords.MID_DATE, np_digitize)
+        groups = x0.groupby(index_var)
+
+        # Are means significantly different for various dt groupings?
+        median = groups.median()
+        xmad = groups.map(madFunction)
+
+        # Check if populations overlap (use first, smallest dt, bin as reference)
+        std_dev = xmad * ITSLiveComposite.DTBIN_RATIO
+        minBound = median - std_dev
+        maxBound = median + std_dev
+
+        exclude = (minBound > maxBound[0]) | (maxBound < minBound[0])
+
+        if np.any(exclude):
+            maxdt = np.take(ITSLiveComposite.DT_EDGE, np.take(np_digitize, exclude)).min()
+            invalid = dt > maxdt
+
+        return (i, j, maxdt, invalid)
+
 
     @staticmethod
     def cubelsqfit2(
@@ -676,16 +722,16 @@ class ITSLiveComposite:
                     continue
 
                 # Annual phase and amplitude for processed years
-                # amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_frac[j, i] = ITSLiveComposite.itslive_lsqfit_annual(x1, x_err1)
                 global_i = i + ITSLiveComposite.START_X
+                global_j = i + ITSLiveComposite.START_Y
 
                 ind, \
-                amplitude[ind, j, global_i], \
-                phase[ind, j, global_i], \
-                sigma[ind, j, global_i], \
-                mean[ind, j, global_i], \
-                error[ind, j, global_i], \
-                count[ind, j, global_i], \
+                amplitude[ind, global_j, global_i], \
+                phase[ind, global_j, global_i], \
+                sigma[ind, global_j, global_i], \
+                mean[ind, global_j, global_i], \
+                error[ind, global_j, global_i], \
+                count[ind, global_j, global_i], \
                 outlier_frac[j, i] = ITSLiveComposite.itslive_lsqfit_annual(x1, x_err1)
 
                 # _, _, ind = np.intersect1d(ITSLiveComposite.YEARS, t_int1, return_indices=True)
@@ -980,8 +1026,9 @@ if __name__ == '__main__':
     parser.add_argument(
         '-c', '--daskChunkSize',
         type=int,
-        default=200,
-        help='Number of X coordinates to process in parallel with Dask [%(default)d].'
+        default=100,
+        help='Number of X coordinates to process in parallel with Dask [%(default)d]. ' \
+             'This should be the size of chunking used within the cube to optimize IO of the datacube data.'
     )
     parser.add_argument(
         '-i', '--inputStore',
@@ -1005,6 +1052,7 @@ if __name__ == '__main__':
 
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.daskChunkSize
+    ITSLiveComposite.NUM_DASK_THREADS = args.threads
 
     # s3://its-live-data/test_datacubes/AGU2021/S70W100/ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.zarr
     # AGU21_ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.nc
