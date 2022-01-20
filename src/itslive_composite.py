@@ -4,6 +4,7 @@ bounding polygon and datetime period provided by the caller.
 
 Authors: Masha Liukis, Alex Gardner, Chad Green
 """
+import collections
 import copy
 import dask
 from dask.diagnostics import ProgressBar
@@ -38,6 +39,19 @@ def madFunction(x):
     Compute median absolute deviation (MAD).
     """
     return (np.fabs(x - x.median(dim=Coords.MID_DATE))).median()
+
+def medianMadFunction(x):
+    """
+    Compute median and median absolute deviation (MAD) for the vector x.
+    """
+    xmed = 0
+    xmad = 0
+
+    if x.size:
+        xmed = np.median(x)
+        xmad = np.median(np.fabs(x - xmed))
+
+    return [xmed, xmad]
 
 def decimal_year(x):
     """
@@ -104,6 +118,7 @@ class ITSLiveComposite:
 
     # Define edges of dt bins
     DT_EDGE = [0, 32, 64, 128, 256, np.inf]
+    DT_EDGE_LEN = len(DT_EDGE)-1
 
     # Filter parameters for dt bins (default: 2 - TODO: ask Alex):
     # used to determine if dt means are significantly different
@@ -178,18 +193,25 @@ class ITSLiveComposite:
         # cube_ds = xr.open_dataset(cube_store, decode_timedelta=False)
 
         # Read in only specific data variables
-        self.data = cube_ds[ITSLiveComposite.VARS]
-        # self.data.load()
+        logging.info(f"Read only variables of interest from datacube...")
+        # Need to sort data by dt to be able to filter with np.searchsorted()
+        # (relies on date_dt vector being sorted)
+        # self.data = cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
+        cube_ds = cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
+
+        self.data = cube_ds[[DataVars.VX, DataVars.VY]]
+        logging.info(f"Done reading only variables of interest from datacube...")
 
         # Add systematic error based on level of co-registration
         # Load Dask arrays before being able to modify their values
-        self.data.vx_error.load()
-        self.data.vy_error.load()
+        logging.info(f"Add systematic error based on level of co-registration...")
+        self.vx_error = cube_ds.vx_error.load()
+        self.vy_error = cube_ds.vy_error.load()
 
         for value, error in ITSLiveComposite.CO_REGISTRATION_ERROR.items():
-            mask = (self.data.flag_stable_shift == value)
-            self.data.vx_error[mask] += error
-            self.data.vy_error[mask] += error
+            mask = (cube_ds[DataVars.FLAG_STABLE_SHIFT] == value)
+            self.vx_error[mask] += error
+            self.vy_error[mask] += error
 
         # Sort cube data by datetime
         # self.data = self.data.sortby(Coords.MID_DATE)
@@ -197,8 +219,8 @@ class ITSLiveComposite:
         # TODO: introduce a method to determine mosaics granularity
 
         # Images acquisition times and middle_date of each layer as datetime.datetime objects
-        acq_datetime_img1 = [t.astype('M8[ms]').astype('O') for t in self.data[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1].values]
-        acq_datetime_img2 = [t.astype('M8[ms]').astype('O') for t in self.data[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2].values]
+        acq_datetime_img1 = [t.astype('M8[ms]').astype('O') for t in cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1].values]
+        acq_datetime_img2 = [t.astype('M8[ms]').astype('O') for t in cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2].values]
 
         # Compute decimal year representation for start and end dates of each velocity pair
         ITSLiveComposite.START_DECIMAL_YEAR = [decimal_year(each) for each in acq_datetime_img1]
@@ -214,13 +236,13 @@ class ITSLiveComposite:
         logging.info(f'Years for composite: {ITSLiveComposite.YEARS}')
 
         # Day separation between images
-        ITSLiveComposite.DATE_DT = self.data[DataVars.ImgPairInfo.DATE_DT].load()
+        ITSLiveComposite.DATE_DT = cube_ds[DataVars.ImgPairInfo.DATE_DT].load()
 
         # Initialize variable to hold results
-        cube_sizes = self.data.sizes
-        ITSLiveComposite.X_LEN = cube_sizes[Coords.X]
-        ITSLiveComposite.Y_LEN = cube_sizes[Coords.Y]
-        ITSLiveComposite.MID_DATE_LEN = cube_sizes[Coords.MID_DATE]
+        self.cube_sizes = cube_ds.sizes
+        ITSLiveComposite.X_LEN = self.cube_sizes[Coords.X]
+        ITSLiveComposite.Y_LEN = self.cube_sizes[Coords.Y]
+        ITSLiveComposite.MID_DATE_LEN = self.cube_sizes[Coords.MID_DATE]
         ITSLiveComposite.YEARS_LEN = len(ITSLiveComposite.YEARS)
 
         # Allocate memory for composite outputs
@@ -236,8 +258,10 @@ class ITSLiveComposite:
         dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
         self.outlier_fraction = np.full(dims, np.nan)
 
+        self.sensors = cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].load()
+
         # Identify unique sensors within datacube
-        self.unique_sensors = list(set(self.data[DataVars.ImgPairInfo.SATELLITE_IMG1].values))
+        self.unique_sensors = list(set(self.sensors.values))
         dims = (len(self.unique_sensors), ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
         self.max_dt = np.full(dims, np.nan)
 
@@ -293,7 +317,7 @@ class ITSLiveComposite:
         Compute time average for the datacube [:, :, start_x:stop_index] coordinates.
         Update corresponding entries in output data variables.
         """
-        logging.info(f"Processing datacube[:, {start_y}:{stop_y}, {start_x}:{stop_x}] coordinates out of [:, {self.data.y.size}, {self.data.x.size}]")
+        logging.info(f"Processing datacube[:, {start_y}:{stop_y}, {start_x}:{stop_x}] coordinates out of [{self.cube_sizes[Coords.MID_DATE]}, {self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]")
 
         # Set current length for the X dimension
         ITSLiveComposite.X_LEN = stop_x - start_x
@@ -358,23 +382,34 @@ class ITSLiveComposite:
         vy = self.data.vy[:, start_y:stop_y, start_x:stop_x].load().astype(float)
         logging.info(f'Loaded vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
 
+        # # Digitize date_dt vector for the whole cube
+        # date_bins = xr.DataArray(
+        #     np.digitize(ITSLiveComposite.DATE_DT, ITSLiveComposite.DT_EDGE, right=False),
+        #     dims=(Coords.MID_DATE),
+        #     coords=[self.data.vx.mid_date.values]
+        # )
+
         for i in range(len(self.unique_sensors)):
-            logging.info(f'Creating layer for sensor "{self.unique_sensors[i]}" ({i+1} out of {len(self.unique_sensors)})')
+            logging.info(f'Filtering dt for sensor "{self.unique_sensors[i]}" ({i+1} out of {len(self.unique_sensors)})')
             # Find which layers correspond to each sensor
-            mask = (self.data[DataVars.ImgPairInfo.SATELLITE_IMG1] == self.unique_sensors[i])
+            mask = (self.sensors == self.unique_sensors[i])
+            dt_masked = ITSLiveComposite.DATE_DT.where(mask).values
+            # date_bins_masked = date_bins.where(mask)
 
             logging.info(f'Filtering vx...')
             # vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vx[:, :, start_x:stop_x].where(mask), ITSLiveComposite.DATE_DT.where(mask))
-            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx.where(mask), ITSLiveComposite.DATE_DT.where(mask))
+            # vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx.where(mask), date_bins_masked, ITSLiveComposite.DATE_DT.where(mask))
+            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx.where(mask), dt_masked)
 
             logging.info(f'Filtering vy...')
             # vy = self.data.vy[:, :, start_x:stop_x].load()
             # logging.info(f'Loaded vy[:, :, {start_x}:{stop_x}]...')
             # vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(self.data.vy[:, :, start_x:stop_x].where(mask), ITSLiveComposite.DATE_DT.where(mask))
-            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy.where(mask), ITSLiveComposite.DATE_DT.where(mask))
+            # vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy.where(mask), date_bins_masked, ITSLiveComposite.DATE_DT.where(mask))
+            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy.where(mask), dt_masked)
 
             # Get maximum value along sensor dimension: concatenate maxdt
-            #  for vx and vy in new dimension
+            # for vx and vy in new dimension
             self.max_dt[i, start_y:stop_y, start_x:stop_x] = np.nanmax(np.stack((vx_maxdt[i, :, :], vy_maxdt[i, :, :]), axis=0), axis=0)
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
@@ -409,7 +444,7 @@ class ITSLiveComposite:
         # vxamp, vxphase, vxmean, vxerr, vxsigma, vxcnt, _ = ITSLiveComposite.cubelsqfit2(vx, self.data.vx_error)
         _ = ITSLiveComposite.cubelsqfit2(
             vx,
-            self.data.vx_error,
+            self.vx_error,
             self.amplitude.vx,
             self.phase.vx,
             self.mean.vx,
@@ -424,7 +459,7 @@ class ITSLiveComposite:
         # vyamp, vyphase, vymean, vyerr, vysigma, vycnt, _ = ITSLiveComposite.cubelsqfit2(vy, self.data.vy_error)
         _ = ITSLiveComposite.cubelsqfit2(
             vy,
-            self.data.vy_error,
+            self.vy_error,
             self.amplitude.vy,
             self.phase.vy,
             self.mean.vy,
@@ -466,12 +501,12 @@ class ITSLiveComposite:
 
         # Expand dimensions of vectors
         # TODO: replace by xarray's native xr.broadcast()!!!
-        vy = self.data.vx_error.expand_dims(Coords.Y)
+        vy = self.vx_error.expand_dims(Coords.Y)
         vy = vy.expand_dims(Coords.X)
         # Revert dimensions order: (mid_date, y, x)
         vy = vy.transpose()
 
-        vy_expand = self.data.vy_error.expand_dims(Coords.Y)
+        vy_expand = self.vy_error.expand_dims(Coords.Y)
         vy_expand = vy_expand.expand_dims(Coords.X)
         # Revert dimensions order: (mid_date, y, x)
         vy_expand = vy_expand.transpose()
@@ -553,24 +588,11 @@ class ITSLiveComposite:
         # Add data as variables
 
     @staticmethod
-    def cube_filter(data, dt):
+    def seq_cube_filter(data, dt):
         """
         Filter data cube by dt (date separation) between the images.
         """
-        # %dtbin_mad_thresh: used to determine in dt means are significantly different
-        # %dtbin_mad_thresh = 2*1.4826;
-
-        # check if populations overlap (use first, smallest dt, bin as reference)
-        # Matlab
-        # [m, n, ~] = size(data);
-        # data_dims = data.sizes
-        # x_dim = data_dims[Coords.X]
-        # y_dim = data_dims[Coords.Y]
-        # date_dim = data_dims[Coords.MID_DATE]
-        # dims = (date_dim, y_dim, x_dim)
-
         # Initialize output
-        # dims = (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
         invalid = np.full_like(data, False)
 
         dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
@@ -578,29 +600,14 @@ class ITSLiveComposite:
 
         # Loop through all spacial points
         # ATTN: debugging only - process 2 x cells only
-        for j in tqdm(range(0, ITSLiveComposite.Y_LEN), ascii=True, desc='cube_filter: y'):
-        # for j in tqdm(range(0, 2), ascii=True, desc='cube_filter: y'):
-            # Process X coordinates in parallel
-            # Pass to the dask only the data it needs: data.isel() by X and Y
-            tasks = [dask.delayed(ITSLiveComposite.cube_filter_iteration)(data.isel(x=i, y=j), dt, i, j) for i in range(0, ITSLiveComposite.X_LEN)]
+        # for j in tqdm(range(0, ITSLiveComposite.Y_LEN), ascii=True, desc='cube_filter: y'):
+        for j in tqdm(range(0, 1), ascii=True, desc='cube_filter (debug_len=2): y'):
+            for i in tqdm(range(0, 1), ascii=True, desc='cube_filter_x'):
+                # _, _, iter_maxdt, iter_invalid = ITSLiveComposite.cube_filter_iteration(data.isel(x=i, y=j), dt, i, j)
+                _, _, iter_maxdt, iter_invalid = ITSLiveComposite.cube_filter_iteration(data.isel(x=i, y=j).values, dt, i, j)
 
-            # results = None
-            # with ProgressBar():  # Does not work with Client() scheduler
-            results = dask.compute(
-                tasks,
-                threads_per_worker=1,
-                scheduler=ITSLiveComposite.DASK_SCHEDULER,
-                num_workers=ITSLiveComposite.NUM_DASK_THREADS
-            )
-
-            del tasks
-            gc.collect()
-
-            # Process results
-            for each_output in results[0]:
-                iter_i, iter_j, iter_maxdt, iter_invalid = each_output
-                maxdt[iter_j, iter_i] = iter_maxdt
-                invalid[:, iter_j, iter_i] = iter_invalid
+                maxdt[j, i] = iter_maxdt
+                invalid[:, j, i] = iter_invalid
 
             # Sequential processing for debugging only
             # for i in range(start, start+num_tasks):
@@ -616,8 +623,60 @@ class ITSLiveComposite:
         return invalid, maxdt
 
     @staticmethod
-    # def cube_filter_iteration(data, dt, i, j):
-    def cube_filter_iteration(x0, dt, i, j):
+    def cube_filter(data, dt):
+    # def cube_filter(data, bin_dt, dt):
+        """
+        Filter data cube by dt (date separation) between the images.
+        """
+        # %dtbin_mad_thresh: used to determine in dt means are significantly different
+        # %dtbin_mad_thresh = 2*1.4826;
+
+        # check if populations overlap (use first, smallest dt, bin as reference)
+
+        # Initialize output
+        # dims = (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        invalid = np.full_like(data, False)
+
+        dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        maxdt = np.full(dims, np.nan)
+
+        # Loop through all spacial points
+        # ATTN: debugging only - process 2 x cells only
+        for j in tqdm(range(0, ITSLiveComposite.Y_LEN), ascii=True, desc='cube_filter: y'):
+        # for j in tqdm(range(0, 1), ascii=True, desc='cube_filter (debug_len=1): y'):
+            # Process X coordinates in parallel
+            # Pass to the dask only the data it needs: data.isel() by X and Y
+
+            # Sequential processing for debugging
+            # iter_i, iter_j, iter_maxdt, iter_invalid = ITSLiveComposite.cube_filter_iteration(data.isel(x=0, y=j).values, dt, 0, j)
+            # maxdt[iter_j, iter_i] = iter_maxdt
+            # invalid[:, iter_j, iter_i] = iter_invalid
+
+            tasks = [dask.delayed(ITSLiveComposite.cube_filter_iteration)(data.isel(x=i, y=j), dt, i, j) for i in range(0, ITSLiveComposite.X_LEN)]
+            # tasks = [dask.delayed(ITSLiveComposite.old_cube_filter_iteration)(data.isel(x=i, y=j), bin_dt, dt, i, j) for i in range(0, ITSLiveComposite.X_LEN)]
+
+            # results = None
+            # with ProgressBar():  # Does not work with Client() scheduler
+            results = dask.compute(
+                tasks,
+                # threads_per_worker=1,
+                scheduler=ITSLiveComposite.DASK_SCHEDULER,
+                num_workers=ITSLiveComposite.NUM_DASK_THREADS
+            )
+
+            del tasks
+            gc.collect()
+
+            # Process results
+            for each_output in results[0]:
+                iter_i, iter_j, iter_maxdt, iter_invalid = each_output
+                maxdt[iter_j, iter_i] = iter_maxdt
+                invalid[:, iter_j, iter_i] = iter_invalid
+
+        return invalid, maxdt
+
+    @staticmethod
+    def cube_filter_iteration(x0_in, dt, i, j):
         """
         Filter one spacial point by dt (date separation) between the images.
         This method is introduced to be able to parallelize cube_filter() method
@@ -626,6 +685,71 @@ class ITSLiveComposite:
         # Output data variables
         maxdt = np.nan
         invalid = np.full_like(dt, False)
+
+        # ATTN: Using native xarray functionality is much slower,
+        # convert data to numpy types and use numpy only
+        x0_in = x0_in.values
+
+        # x0_is_null = x0_in.isnull()
+        x0_is_null = np.isnan(x0_in)
+        if np.all(x0_is_null):
+            # No data to process
+            return (i, j, maxdt, invalid)
+
+        # Filter NAN values out
+        # logging.info(f'Before mask filter: type(x0)={type(x0_in)}')
+        mask = ~x0_is_null
+        # x0 = x0_in.where(mask, drop=True).values
+        # x0_dt = dt.where(mask, drop=True).values
+        x0 = x0_in[mask]
+        x0_dt = dt[mask]
+
+        # x0_dt = dt_.where(mask, drop=True)
+        # np_digitize = np.digitize(x0_dt.values, ITSLiveComposite.DT_EDGE, right=False)
+        # index_var = xr.IndexVariable(Coords.MID_DATE, np_digitize)
+        # groups = x0.groupby(index_var)
+
+        # Group data values by identified bins "manually":
+        # Since data is sorted by date_dt, we can identify index boundaries
+        # for each bin within the date_dt vector
+        # logging.info(f'Before searchsorted')
+        bin_index = np.searchsorted(x0_dt, ITSLiveComposite.DT_EDGE).tolist()
+
+        # logging.info(f'Before init xmed xmad')
+        num_bins = ITSLiveComposite.DT_EDGE_LEN
+        xmed = np.zeros(ITSLiveComposite.DT_EDGE_LEN)
+        xmad = np.zeros(ITSLiveComposite.DT_EDGE_LEN)
+
+        # for i in range(0, ITSLiveComposite.DT_EDGE_LEN):
+        for i in range(0, num_bins):
+            xmed[i], xmad[i] = np.apply_along_axis(medianMadFunction, 0, x0[bin_index[i]:bin_index[i+1]])
+
+        # Check if populations overlap (use first, smallest dt, bin as reference)
+        # logging.info(f'Before min/max bound')
+        std_dev = xmad * ITSLiveComposite.DTBIN_RATIO
+        minBound = xmed - std_dev
+        maxBound = xmed + std_dev
+
+        exclude = (minBound > maxBound[0]) | (maxBound < minBound[0])
+
+        if np.any(exclude):
+            # logging.info(f"Got exclude: i={i} j={j}")
+            maxdt = np.take(ITSLiveComposite.DT_EDGE, exclude).min()
+            invalid = dt > maxdt
+
+        return (i, j, maxdt, invalid)
+
+    @staticmethod
+    # def cube_filter_iteration(data, dt, i, j):
+    def old_cube_filter_iteration(x0, dt_bins, dt, i, j):
+        """
+        Filter one spacial point by dt (date separation) between the images.
+        This method is introduced to be able to parallelize cube_filter() method
+        using Dask scheduler.
+        """
+        # Output data variables
+        maxdt = np.nan
+        invalid = np.full_like(dt_bins, False)
 
         # Select by X, Y
         # x0 = data.isel(x=i, y=j)
@@ -643,15 +767,29 @@ class ITSLiveComposite:
         # Filter NAN values out
         mask = ~x0.isnull()
         x0 = x0.where(mask, drop=True)
-        x0_dt = dt.where(mask, drop=True)
+        dt_bins = dt_bins.where(mask, drop=True)
 
-        np_digitize = np.digitize(x0_dt.values, ITSLiveComposite.DT_EDGE, right=False)
-        index_var = xr.IndexVariable(Coords.MID_DATE, np_digitize)
-        groups = x0.groupby(index_var)
+        # x0_dt = dt_.where(mask, drop=True)
+        # np_digitize = np.digitize(x0_dt.values, ITSLiveComposite.DT_EDGE, right=False)
+        # index_var = xr.IndexVariable(Coords.MID_DATE, np_digitize)
+        # groups = x0.groupby(index_var)
+
+        # Group data values by identified bins "manually":
+        # numpy's xr.DataArray.groupby() is 4 times slower
+        bin_values = collections.OrderedDict()
+
+        # Iterate over all bins
+        for each_bin in range(1, ITSLiveComposite.DT_EDGE_LEN):
+            # TODO: handle case when no values correspond to the bin
+            value_indices, = np.where(dt_bins == each_bin)
+            bin_values[each_bin] = x0.isel(mid_date=value_indices, drop=True)
 
         # Are means significantly different for various dt groupings?
-        median = groups.median()
-        xmad = groups.map(madFunction)
+        median = [np.median(each_bin) for each_bin in bin_values.values()]
+        xmad = xr.DataArray([madFunction(each_bin).item() for each_bin in bin_values.values()])
+
+        # median = groups.median()
+        # xmad = groups.map(madFunction)
 
         # Check if populations overlap (use first, smallest dt, bin as reference)
         std_dev = xmad * ITSLiveComposite.DTBIN_RATIO
@@ -661,7 +799,7 @@ class ITSLiveComposite:
         exclude = (minBound > maxBound[0]) | (maxBound < minBound[0])
 
         if np.any(exclude):
-            maxdt = np.take(ITSLiveComposite.DT_EDGE, np.take(np_digitize, exclude)).min()
+            maxdt = np.take(ITSLiveComposite.DT_EDGE, np.take(dt_bins, exclude)).min()
             invalid = dt > maxdt
 
         return (i, j, maxdt, invalid)
@@ -1002,7 +1140,8 @@ class ITSLiveComposite:
         # logging.info(f"v_int_err: {v_int_err}")
         # logging.info(f"v_int_err.shape: {v_int_err.shape}")
 
-        # Identify year's indices to assign return values to in "global" variables
+        # Identify year's indices to assign return values to in "final" composite
+        # variables
         _, _, ind = np.intersect1d(ITSLiveComposite.YEARS, y1, return_indices=True)
 
         # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_fraction
