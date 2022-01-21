@@ -582,7 +582,7 @@ class ITSLiveComposite:
 
             results = dask.compute(
                 tasks,
-                # threads_per_worker=1,
+                threads_per_worker=1,
                 scheduler=ITSLiveComposite.DASK_SCHEDULER,
                 num_workers=ITSLiveComposite.NUM_DASK_THREADS
             )
@@ -692,32 +692,56 @@ class ITSLiveComposite:
             reshape_v_err = v_err_data.reshape((v_err_data.size, 1, 1))
             v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN))
 
-        # for j in range(ITSLiveComposite.Y_LEN):
-        #     for i in range(ITSLiveComposite.X_LEN):
-        for j in range(1):
-            for i in range(1):
-                # TODO: parallelize
-                x1 = v[:, j, i]
-                x_err1 = v_err[:, j, i]
+        for j in tqdm(range(0, ITSLiveComposite.Y_LEN), ascii=True, desc='cubelsqfit2: y'):
+        # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
+            tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, ITSLiveComposite.X_LEN)]
 
-                mask = ~np.isnan(x1)
-                if np.sum(mask) < ITSLiveComposite.NUM_VALID_POINTS:
-                    continue
+            results = dask.compute(
+                tasks,
+                threads_per_worker=1,
+                scheduler=ITSLiveComposite.DASK_SCHEDULER,
+                num_workers=ITSLiveComposite.NUM_DASK_THREADS
+            )
 
-                # Annual phase and amplitude for processed years
-                global_i = i + ITSLiveComposite.START_X
-                global_j = i + ITSLiveComposite.START_Y
+            del tasks
+            gc.collect()
 
-                ind, \
-                amplitude[ind, global_j, global_i], \
-                phase[ind, global_j, global_i], \
-                sigma[ind, global_j, global_i], \
-                mean[ind, global_j, global_i], \
-                error[ind, global_j, global_i], \
-                count[ind, global_j, global_i], \
-                outlier_frac[j, i] = ITSLiveComposite.itslive_lsqfit_annual(x1, x_err1)
+            # Process results
+            for each_output in results[0]:
+                iter_i, iter_j, skip_flag, results = each_output
+
+                if skip_flag is False:
+                    # Annual phase and amplitude for processed years
+                    global_i = iter_i + ITSLiveComposite.START_X
+                    global_j = iter_j + ITSLiveComposite.START_Y
+
+                    ind, \
+                    amplitude[ind, global_j, global_i], \
+                    phase[ind, global_j, global_i], \
+                    sigma[ind, global_j, global_i], \
+                    mean[ind, global_j, global_i], \
+                    error[ind, global_j, global_i], \
+                    count[ind, global_j, global_i], \
+                    outlier_frac[iter_j, iter_i] = results
 
         return outlier_frac
+
+    @staticmethod
+    def cubelsqfit2_iteration(x1, x_err1, i, j):
+        """
+        cubelsqfit2 processing of one spacial point - to be able to parallelize
+        the processing with dask.
+        """
+        # Flag if computations were skipped
+        skip_flag = True
+
+        mask = ~np.isnan(x1)
+        if np.sum(mask) < ITSLiveComposite.NUM_VALID_POINTS:
+            # Skip the point, return no computed results
+            return (i, j, skip_flag, ())
+
+        skip_flag = False
+        return (i, j, skip_flag, ITSLiveComposite.itslive_lsqfit_annual(x1, x_err1))
 
     @staticmethod
     def itslive_lsqfit_annual(v, v_err):
@@ -898,9 +922,10 @@ class ITSLiveComposite:
             M = M[:, hasdata]
 
             outliers_fraction = outliers.sum() / totalnum
-            if outliers_fraction < 0.01:
+            if outliers_fraction < 0.01 and (i+1) != ITSLiveComposite.MAD_FILTER_ITERATIONS:
                 # There are less than 1% outliers, skip the rest of iterations
-                logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
+                # if it's not the last iteration
+                # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
                 break
 
         # Matlab: outlier_frac = length(yr)./totalnum;
