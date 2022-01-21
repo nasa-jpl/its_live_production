@@ -27,13 +27,29 @@ import xarray as xr
 from itscube import ITSCube
 from itscube_types import Coords, DataVars
 
-
 # Set up logging
 logging.basicConfig(
     level = logging.INFO,
     format = '%(asctime)s - %(levelname)s - %(message)s',
     datefmt = '%Y-%m-%d %H:%M:%S'
 )
+
+# Define edges of dt bins
+DT_EDGE = [0, 32, 64, 128, 256, np.inf]
+DT_EDGE_LEN = len(DT_EDGE)-1
+
+# Filter parameters for dt bins (default: 2 - TODO: ask Alex):
+# used to determine if dt means are significantly different
+DTBIN_MAD_THRESH = 1
+
+# Filter parameters for lsq fit for outlier rejections
+MAD_THRESH = 3
+MAD_FILTER_ITERATIONS = 3
+
+# Scalar relation between MAD and STD
+MAD_STD_RATIO = 1.4826
+
+DTBIN_RATIO = DTBIN_MAD_THRESH * MAD_STD_RATIO
 
 def madFunction(x):
     """
@@ -66,8 +82,6 @@ class VariablesInfo:
     """
     Variables information to store in Zarr.
     """
-
-
     STD_NAME = {
         DataVars.VX: "x_velocity",
         DataVars.VY: "y_velocity",
@@ -181,7 +195,7 @@ class ITSLiveComposite:
 
     def __init__(self, cube_store: str, s3_bucket: str):
         """
-        Initialize mosaics object.
+        Initialize composites.
         """
         # Don't need to know skipped granules information for the purpose of composites
         read_skipped_granules_flag = False
@@ -198,7 +212,8 @@ class ITSLiveComposite:
         # Need to sort data by dt to be able to filter with np.searchsorted()
         # (relies on date_dt vector being sorted)
         # self.data = cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
-        cube_ds = cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
+        # cube_ds = cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
+        cube_ds = cube_ds.sortby(DataVars.ImgPairInfo.DATE_DT)
 
         self.data = cube_ds[[DataVars.VX, DataVars.VY]]
         logging.info(f"Done reading only variables of interest from datacube...")
@@ -206,8 +221,8 @@ class ITSLiveComposite:
         # Add systematic error based on level of co-registration
         # Load Dask arrays before being able to modify their values
         logging.info(f"Add systematic error based on level of co-registration...")
-        self.vx_error = cube_ds.vx_error.load().values
-        self.vy_error = cube_ds.vy_error.load().values
+        self.vx_error = cube_ds.vx_error.values
+        self.vy_error = cube_ds.vy_error.values
 
         for value, error in ITSLiveComposite.CO_REGISTRATION_ERROR.items():
             mask = (cube_ds[DataVars.FLAG_STABLE_SHIFT] == value)
@@ -365,11 +380,11 @@ class ITSLiveComposite:
         # ATTN: Using native xarray functionality is much slower,
         # convert data to numpy types and use numpy only
         logging.info(f'Loading vx[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
-        vx = self.data.vx[:, start_y:stop_y, start_x:stop_x].load().astype(float).values
+        vx = self.data.vx[:, start_y:stop_y, start_x:stop_x].astype(float).values
         logging.info(f'Loaded vx[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
 
         logging.info(f'Loading vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
-        vy = self.data.vy[:, start_y:stop_y, start_x:stop_x].load().astype(float).values
+        vy = self.data.vy[:, start_y:stop_y, start_x:stop_x].astype(float).values
         logging.info(f'Loaded vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
 
         for i in range(len(self.unique_sensors)):
@@ -396,11 +411,6 @@ class ITSLiveComposite:
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
         logging.info(f'Compute invalid mask...')
-        # In case when no boolean values are inserted into the masking array,
-        # ensure the array type is still boolean (will be float32 type otherwise)
-        # ATTN: bool(np.nan) == True
-        # vx_invalid = vx_invalid.astype(bool)
-        # vy_invalid = vx_invalid.astype(bool)
 
         invalid = \
             vx_invalid | vy_invalid \
@@ -423,8 +433,6 @@ class ITSLiveComposite:
         logging.info(f'Find vx annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
-        logging.info(f'vx.shape: {vx.shape}')
-        # vxamp, vxphase, vxmean, vxerr, vxsigma, vxcnt, _ = ITSLiveComposite.cubelsqfit2(vx, self.data.vx_error)
         _ = ITSLiveComposite.cubelsqfit2(
             vx,
             self.vx_error,
@@ -439,7 +447,6 @@ class ITSLiveComposite:
 
         logging.info(f'Find vy annual means using LSQ fit... ')
         start_time = timeit.default_timer()
-        # vyamp, vyphase, vymean, vyerr, vysigma, vycnt, _ = ITSLiveComposite.cubelsqfit2(vy, self.data.vy_error)
         _ = ITSLiveComposite.cubelsqfit2(
             vy,
             self.vy_error,
@@ -464,14 +471,11 @@ class ITSLiveComposite:
         ctheta = np.tile(np.cos(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
 
         theta = None
-        gc.collect()
-
         vx = vx*stheta + vy*ctheta
 
+        # Don't need variables anymore
         stheta = None
         ctheta = None
-        # Call Python's garbage collector
-        gc.collect()
 
         # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
         vxm = np.fabs(vxm)
@@ -485,7 +489,6 @@ class ITSLiveComposite:
             np.tile(vy, (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN))*vxm + \
             np.tile(vy_expand, (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN))*vym
         ) / np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
-        logging.info(f"vy.shape: {vy.shape}")
 
         voutlier = ITSLiveComposite.cubelsqfit2(
             vx,
@@ -560,7 +563,6 @@ class ITSLiveComposite:
         # check if populations overlap (use first, smallest dt, bin as reference)
 
         # Initialize output
-        # dims = (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
         invalid = np.full_like(data, False)
 
         dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
@@ -586,9 +588,6 @@ class ITSLiveComposite:
                 scheduler=ITSLiveComposite.DASK_SCHEDULER,
                 num_workers=ITSLiveComposite.NUM_DASK_THREADS
             )
-
-            del tasks
-            gc.collect()
 
             # Process results
             for each_output in results[0]:
@@ -640,8 +639,8 @@ class ITSLiveComposite:
         xmad = np.zeros(ITSLiveComposite.DT_EDGE_LEN)
 
         # for i in range(0, ITSLiveComposite.DT_EDGE_LEN):
-        for i in range(0, num_bins):
-            xmed[i], xmad[i] = np.apply_along_axis(medianMadFunction, 0, x0[bin_index[i]:bin_index[i+1]])
+        for bin_i in range(0, num_bins):
+            xmed[bin_i], xmad[bin_i] = np.apply_along_axis(medianMadFunction, 0, x0[bin_index[bin_i]:bin_index[bin_i+1]])
 
         # Check if populations overlap (use first, smallest dt, bin as reference)
         # logging.info(f'Before min/max bound')
@@ -702,9 +701,6 @@ class ITSLiveComposite:
                 scheduler=ITSLiveComposite.DASK_SCHEDULER,
                 num_workers=ITSLiveComposite.NUM_DASK_THREADS
             )
-
-            del tasks
-            gc.collect()
 
             # Process results
             for each_output in results[0]:
