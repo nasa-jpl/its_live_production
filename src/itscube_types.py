@@ -19,9 +19,6 @@ class Coords:
     X = 'x'
     Y = 'y'
 
-    # For composite cube
-    TIME ='time'
-
     STD_NAME = {
         MID_DATE: "image_pair_center_date_with_time_separation",
         X:        "projection_x_coordinate",
@@ -71,7 +68,8 @@ class DataVars:
 
     # Attributes for vx, vy, vr, va
     FLAG_STABLE_SHIFT             = 'flag_stable_shift' # In Radar and updated Optical formats
-    # FLAG_STABLE_SHIFT             = 'stable_shift_flag' # In Radar and updated Optical formats
+    # TODO:
+    NEW_FORMAT_FLAG_STABLE_SHIFT  = 'stable_shift_flag' # In Radar and updated Optical formats
     FLAG_STABLE_SHIFT_DESCRIPTION = 'stable_shift_flag_description'
     STABLE_SHIFT                  = 'stable_shift'
     STABLE_SHIFT_SLOW             = 'stable_shift_slow' # New format
