@@ -10,15 +10,11 @@ import copy
 import dask
 from dask.diagnostics import ProgressBar
 import datetime
-from enum import IntEnum, unique
 import gc
-import glob
 import logging
 import numpy  as np
 import os
-import pandas as pd
 import s3fs
-import shutil
 import timeit
 from tqdm import tqdm
 import xarray as xr
@@ -33,23 +29,6 @@ logging.basicConfig(
     format = '%(asctime)s - %(levelname)s - %(message)s',
     datefmt = '%Y-%m-%d %H:%M:%S'
 )
-
-# Define edges of dt bins
-DT_EDGE = [0, 32, 64, 128, 256, np.inf]
-DT_EDGE_LEN = len(DT_EDGE)-1
-
-# Filter parameters for dt bins (default: 2 - TODO: ask Alex):
-# used to determine if dt means are significantly different
-DTBIN_MAD_THRESH = 1
-
-# Filter parameters for lsq fit for outlier rejections
-MAD_THRESH = 3
-MAD_FILTER_ITERATIONS = 3
-
-# Scalar relation between MAD and STD
-MAD_STD_RATIO = 1.4826
-
-DTBIN_RATIO = DTBIN_MAD_THRESH * MAD_STD_RATIO
 
 def madFunction(x):
     """
@@ -78,20 +57,6 @@ def decimal_year(x):
     """
     return x.year + float(x.toordinal() - datetime.date(x.year, 1, 1).toordinal()) / (datetime.date(x.year+1, 1, 1).toordinal() - datetime.date(x.year, 1, 1).toordinal())
 
-class VariablesInfo:
-    """
-    Variables information to store in Zarr.
-    """
-    STD_NAME = {
-        DataVars.VX: "x_velocity",
-        DataVars.VY: "y_velocity",
-    }
-
-    DESCRIPTION = {
-        DataVars.VX: "error weighted velocity component in x direction",
-        DataVars.VY: "error weighted velocity component in y direction",
-    }
-
 class CompositeVariable:
     """
     Class to hold values for v, vx and vy components of the variables.
@@ -106,15 +71,15 @@ class CompositeVariable:
         self.vy = np.full(dims, np.nan)
 
 
+# Currently processed datacube chunk
+Chunk = collections.namedtuple("Chunk", ['start_x', 'stop_x', 'x_len', 'start_y', 'stop_y', 'y_len'])
+
 class ITSLiveComposite:
     """
-    CLass to build composites for ITS_LIVE datacubes.
-
-    Configurable parameters of the mosaics:
-    * Time interval
-    * Filters
-    * TODO
+    CLass to build annual composites for ITS_LIVE datacubes.
     """
+    VERSION = '1.0'
+
     # Only the following datacube variables are needed for composites/mosaics
     VARS = [
         DataVars.VX,
@@ -130,6 +95,9 @@ class ITSLiveComposite:
         DataVars.ImgPairInfo.MISSION_IMG1
     ]
     # % maltab can't read in 'mission_img1' but this needs to be implemented in python verson
+
+    # S3 store location for the Zarr composite
+    S3 = ''
 
     # Define edges of dt bins
     DT_EDGE = [0, 32, 64, 128, 256, np.inf]
@@ -166,28 +134,25 @@ class ITSLiveComposite:
     STOP_DECIMAL_YEAR  = None
 
     # Dimensions that correspond to the currently processed datacube chunk
-    START_X = None
-    STOP_X  = None
-    START_Y = None
-    STOP_Y  =  None
-
-    X_LEN = None
-    Y_LEN = None
+    CHUNK = None
     MID_DATE_LEN = None
     YEARS_LEN = None
 
-    # Minimum number of non-NAN values in the data to proceceed with processing
+    # Minimum number of non-NAN values in the data to proceed with LSQ fit processing
     NUM_VALID_POINTS = 5
 
     TWO_PI = np.pi * 2
 
-    # ------------------
-    # Dask related data
-    # ------------------
-    # Number of X coordinates to process in one "chunk" with Dask parallel scheduler
+    # ---------------------
+    # Dask related settings
+    # ---------------------
+    # Number of X and Y coordinates to load from the datacube at any given time,
+    # and to process in one "chunk" with Dask parallel scheduler
     NUM_TO_PROCESS = 200
 
     # Keep it constant static (so there is no command-line option for it to overwrite):
+    # using 'processes' scheduler results in deadlock
+    # (see https://docs.dask.org/en/latest/best-practices.html)
     DASK_SCHEDULER = 'threads'
 
     # Number of Dask processes to run in parallel
@@ -199,7 +164,7 @@ class ITSLiveComposite:
         """
         # Don't need to know skipped granules information for the purpose of composites
         read_skipped_granules_flag = False
-        self.s3, self.cube_store_in, cube_ds, _ = ITSCube.init_input_store(
+        self.s3, self.cube_store_in, self.cube_ds, _ = ITSCube.init_input_store(
             cube_store,
             s3_bucket,
             read_skipped_granules_flag
@@ -212,11 +177,10 @@ class ITSLiveComposite:
         # Need to sort data by dt to be able to filter with np.searchsorted()
         # (relies on date_dt vector being sorted)
         # self.data = cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
-        # cube_ds = cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
-        cube_ds = cube_ds.sortby(DataVars.ImgPairInfo.DATE_DT)
-
+        # Store "shallow" version of the cube for carrying over some of the metadata
+        # when writing composites to the Zarr store
+        cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
         self.data = cube_ds[[DataVars.VX, DataVars.VY]]
-        logging.info(f"Done reading only variables of interest from datacube...")
 
         # Add systematic error based on level of co-registration
         # Load Dask arrays before being able to modify their values
@@ -229,8 +193,6 @@ class ITSLiveComposite:
             self.vx_error[mask] += error
             self.vy_error[mask] += error
 
-        # TODO: introduce a method to determine mosaics granularity
-
         # Images acquisition times and middle_date of each layer as datetime.datetime objects
         acq_datetime_img1 = [t.astype('M8[ms]').astype('O') for t in cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1].values]
         acq_datetime_img2 = [t.astype('M8[ms]').astype('O') for t in cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2].values]
@@ -239,6 +201,8 @@ class ITSLiveComposite:
         ITSLiveComposite.START_DECIMAL_YEAR = np.array([decimal_year(each) for each in acq_datetime_img1])
         ITSLiveComposite.STOP_DECIMAL_YEAR = np.array([decimal_year(each) for each in acq_datetime_img2])
 
+        # TODO: introduce a method to determine composites granularity
+
         # Define time boundaries of composites
         # y1 = floor(min(yr(:,1))):floor(max(yr(:,2)));
         start_year = int(np.floor(np.min(ITSLiveComposite.START_DECIMAL_YEAR)))
@@ -246,6 +210,7 @@ class ITSLiveComposite:
 
         # Years to generate mosaics for
         ITSLiveComposite.YEARS = list(range(start_year, stop_year+1))
+        ITSLiveComposite.YEARS_LEN = len(ITSLiveComposite.YEARS)
         logging.info(f'Years for composite: {ITSLiveComposite.YEARS}')
 
         # Day separation between images (sorted per cube.sortby() call above)
@@ -254,15 +219,15 @@ class ITSLiveComposite:
         # Remember datacube dimensions
         self.cube_sizes = cube_ds.sizes
 
+        ITSLiveComposite.MID_DATE_LEN = self.cube_sizes[Coords.MID_DATE]
+
         # These data members will be set for each block of data being currently
         # processed ---> have to change the logic if want to parallelize blocks
-        ITSLiveComposite.X_LEN = self.cube_sizes[Coords.X]
-        ITSLiveComposite.Y_LEN = self.cube_sizes[Coords.Y]
-        ITSLiveComposite.MID_DATE_LEN = self.cube_sizes[Coords.MID_DATE]
-        ITSLiveComposite.YEARS_LEN = len(ITSLiveComposite.YEARS)
+        x_len = self.cube_sizes[Coords.X]
+        y_len = self.cube_sizes[Coords.Y]
 
         # Allocate memory for composite outputs
-        dims = (ITSLiveComposite.YEARS_LEN, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        dims = (ITSLiveComposite.YEARS_LEN, y_len, x_len)
 
         self.error = CompositeVariable(dims, 'error')
         self.count = CompositeVariable(dims, 'count')
@@ -271,16 +236,21 @@ class ITSLiveComposite:
         self.sigma = CompositeVariable(dims, 'sigma')
         self.mean = CompositeVariable(dims, 'mean')
 
-        dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        dims = (y_len, x_len)
         self.outlier_fraction = np.full(dims, np.nan)
 
         # Sensor data for the cube's layers
-        self.sensors = cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].load()
+        self.sensors = cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
 
         # Identify unique sensors within datacube
-        self.unique_sensors = list(set(self.sensors.values))
-        dims = (len(self.unique_sensors), ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        self.unique_sensors = list(set(self.sensors))
+        # Keep values sorted to be consistent
+        self.unique_sensors.sort()
+        dims = (len(self.unique_sensors), y_len, x_len)
         self.max_dt = np.full(dims, np.nan)
+
+        # Date when composites were created
+        self.date_created = datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')
 
     def create(self, output_store: str, s3_bucket: str):
         """
@@ -288,20 +258,19 @@ class ITSLiveComposite:
         """
         # Loop through cube in chunks to minimize memory footprint
         x_start = 0
-        x_num_to_process = ITSLiveComposite.X_LEN
-        initial_y_num_to_process = ITSLiveComposite.Y_LEN
+        x_num_to_process = self.cube_sizes[Coords.X]
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
             x_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if x_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else x_num_to_process
 
-            y_num_to_process = initial_y_num_to_process
+            y_num_to_process = self.cube_sizes[Coords.Y]
             y_start = 0
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
 
-                self.cube_time_mean(y_start, y_start+y_num_tasks, x_start, x_start+x_num_tasks)
+                self.cube_time_mean(x_start, x_num_tasks, y_start, y_num_tasks)
 
                 y_num_to_process -= y_num_tasks
                 y_start += y_num_tasks
@@ -315,22 +284,17 @@ class ITSLiveComposite:
 
         logging.info(f"Done.")
 
-    def cube_time_mean(self, start_y, stop_y, start_x, stop_x):
+    def cube_time_mean(self, start_x, num_x, start_y, num_y):
         """
         Compute time average for the datacube [:, :, start_x:stop_index] coordinates.
         Update corresponding entries in output data variables.
         """
+        # Set current block length for the X and Y dimensions
+        stop_y = start_y + num_y
+        stop_x = start_x + num_x
+        ITSLiveComposite.Chunk = Chunk(start_x, stop_x, num_x, start_y, stop_y, num_y)
+
         logging.info(f"Processing datacube[:, {start_y}:{stop_y}, {start_x}:{stop_x}] coordinates out of [{self.cube_sizes[Coords.MID_DATE]}, {self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]")
-
-        # Set current block length for the X dimension
-        ITSLiveComposite.X_LEN = stop_x - start_x
-        ITSLiveComposite.START_X = start_x
-        ITSLiveComposite.STOP_X = stop_x
-
-        # Set current block length for the Y dimension
-        ITSLiveComposite.Y_LEN = stop_y - start_y
-        ITSLiveComposite.START_Y = start_y
-        ITSLiveComposite.STOP_Y = stop_y
 
         # TODO:
         # % form unique sensor_satellite ID to pass to "cubetimemean"... not
@@ -344,20 +308,6 @@ class ITSLiveComposite:
         # end
         # fprintf('finished [%.1fmin]\n', (now-t0)*24*60)
 
-        # % convert to matlab date
-        # data.mid_date = data.mid_date + datenum(1970,1,1);
-
-        #     % compute time averages
-        #     [v_amp(x0(i):x0(i+1)-1,:,:), vx_amp(x0(i):x0(i+1)-1,:,:), vy_amp(x0(i):x0(i+1)-1,:,:), ...
-        #     v_phase(x0(i):x0(i+1)-1,:,:), vx_phase(x0(i):x0(i+1)-1,:,:), vy_phase(x0(i):x0(i+1)-1,:,:), ...
-        #     v(x0(i):x0(i+1)-1,:,:), vx(x0(i):x0(i+1)-1,:,:), vy(x0(i):x0(i+1)-1,:,:), v_err(x0(i):x0(i+1)-1,:,:), ...
-        #     vx_err(x0(i):x0(i+1)-1,:,:), vy_err(x0(i):x0(i+1)-1,:,:), v_sigma(x0(i):x0(i+1)-1,:,:), ...
-        #     vx_sigma(x0(i):x0(i+1)-1,:,:), vy_sigma(x0(i):x0(i+1)-1,:,:), v_cnt(x0(i):x0(i+1)-1,:,:), ...
-        #     vx_cnt(x0(i):x0(i+1)-1,:,:), vy_cnt(x0(i):x0(i+1)-1,:,:), maxdt(x0(i):x0(i+1)-1,:), ...
-        #     outlier_frac(x0(i):x0(i+1)-1,:)] = ...
-        #     cubetimemean(data.vx,data.vy,data.vx_error,data.vy_error,data.mid_date,data.date_dt,data.satellite_img1,yrs);
-        # end
-
         # Start timer
         start_time = timeit.default_timer()
 
@@ -367,30 +317,28 @@ class ITSLiveComposite:
         logging.info(f'Filtering data based on dt binned medians...')
 
         # Initialize variables
-        dims = (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        dims = (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
         vx_invalid = np.full(dims, False)
         vy_invalid = np.full(dims, False)
 
         # Loop for each unique sensor (those groupings image pairs that can be
         # expected to have different temporal decorelation)
-        dims = (len(self.unique_sensors), ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        dims = (len(self.unique_sensors), ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
         vx_maxdt = np.full(dims, np.nan)
         vy_maxdt = np.full(dims, np.nan)
 
-        # ATTN: Using native xarray functionality is much slower,
+        # ATTN: don't use native xarray functionality is much slower,
         # convert data to numpy types and use numpy only
         logging.info(f'Loading vx[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
         vx = self.data.vx[:, start_y:stop_y, start_x:stop_x].astype(float).values
-        logging.info(f'Loaded vx[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
 
         logging.info(f'Loading vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
         vy = self.data.vy[:, start_y:stop_y, start_x:stop_x].astype(float).values
-        logging.info(f'Loaded vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
 
         for i in range(len(self.unique_sensors)):
             logging.info(f'Filtering dt for sensor "{self.unique_sensors[i]}" ({i+1} out of {len(self.unique_sensors)})')
             # Find which layers correspond to each sensor
-            mask = (self.sensors == self.unique_sensors[i]).values
+            mask = (self.sensors == self.unique_sensors[i])
 
             # Filter current block's variables
             # TODO: Don't drop variables when masking - won't work on return assignment
@@ -398,11 +346,9 @@ class ITSLiveComposite:
             dt_masked = ITSLiveComposite.DATE_DT.values[mask]
 
             logging.info(f'Filtering vx...')
-            # vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx.where(mask), dt_masked)
             vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx[mask, ...], dt_masked)
 
             logging.info(f'Filtering vy...')
-            # vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy.where(mask), dt_masked)
             vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy[mask, ...], dt_masked)
 
             # Get maximum value along sensor dimension: concatenate maxdt
@@ -412,10 +358,11 @@ class ITSLiveComposite:
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
         logging.info(f'Compute invalid mask...')
 
-        invalid = \
-            vx_invalid | vy_invalid \
-            | (np.fabs(vx) > ITSLiveComposite.V_COMPONENT_THRESHOLD) \
-            | (np.fabs(vy) > ITSLiveComposite.V_COMPONENT_THRESHOLD)
+        # Break into a number of |= statements to avoid new array creation
+        invalid = vx_invalid
+        invalid |= vy_invalid
+        invalid |= (np.fabs(vx) > ITSLiveComposite.V_COMPONENT_THRESHOLD)
+        invalid |= (np.fabs(vy) > ITSLiveComposite.V_COMPONENT_THRESHOLD)
 
         # Mask data
         logging.info(f'Mask invalid entries for vx...')
@@ -469,13 +416,7 @@ class ITSLiveComposite:
         # Explicitly expand the value
         stheta = np.tile(np.sin(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
         ctheta = np.tile(np.cos(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
-
-        theta = None
         vx = vx*stheta + vy*ctheta
-
-        # Don't need variables anymore
-        stheta = None
-        ctheta = None
 
         # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
         vxm = np.fabs(vxm)
@@ -485,10 +426,9 @@ class ITSLiveComposite:
         vy = self.vx_error.reshape((len(self.vx_error), 1, 1))
         vy_expand = self.vy_error.reshape((len(self.vy_error), 1, 1))
 
-        vy = (
-            np.tile(vy, (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN))*vxm + \
-            np.tile(vy_expand, (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN))*vym
-        ) / np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
+        vy = np.tile(vy, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vxm
+        vy += np.tile(vy_expand, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vym
+        vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
 
         voutlier = ITSLiveComposite.cubelsqfit2(
             vx,
@@ -512,28 +452,62 @@ class ITSLiveComposite:
         """
         Store datacube annual composite to the Zarr store.
         """
+        # Variables information to store in Zarr.
+        TIME = 'time'
+        VX_ERROR = 'vx_error'
+        VY_ERROR = 'vy_error'
+        V_ERROR = 'v_error'
+        VX_SE = 'vx_se'
+        VY_SE = 'vy_se'
+        V_SE = 'v_se'
+
+        STD_NAME = {
+            DataVars.VX: 'x_velocity',
+            DataVars.VY: 'y_velocity',
+            DataVars.V:  'velocity',
+            TIME: 'time',
+            VX_ERROR: 'x_velocity_error',
+            VY_ERROR: 'y_velocity_error',
+            V_ERROR:  'velocity_error',
+            VX_SE: 'x_velocity_se',
+            VY_SE: 'y_velocity_se',
+            V_SE:  'velocity_se',
+        }
+
+        DESCRIPTION = {
+            DataVars.VX: 'error weighted velocity component in x direction',
+            DataVars.VY: 'error weighted velocity component in y direction',
+            DataVars.V:  'error weighted velocity magnitude',
+            TIME:        'time',
+            VX_ERROR:    'error weighted error for velocity component in x direction',
+            VY_ERROR:    'error weighted error for velocity component in y direction',
+            V_ERROR:     'error weighted error for velocity magnitude',
+            VX_SE:       'error weighted standard error for velocity component in x direction',
+            VY_SE:       'error weighted standard error for velocity component in y direction',
+            V_SE:        'error weighted standard error for velocity magnitude',
+        }
+
         ds = xr.Dataset(
-            data_vars = {DataVars.URL: ([Coords.MID_DATE], self.urls)},
             coords = {
-                Coords.TIME: (
-                    Coords.TIME,
+                TIME: (
+                    TIME,
                     ITSLiveComposite.YEARS,
                     {
-                        DataVars.STD_NAME: Coords.STD_NAME[Coords.TIME],
-                        DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.TIME]
+                        DataVars.STD_NAME: STD_NAME[Coords.TIME],
+                        DataVars.DESCRIPTION_ATTR: DESCRIPTION[Coords.TIME]
                     }
                 ),
                 Coords.X: (
                     Coords.X,
-                    self.grid_x,
+                    self.cube_ds.x.values,
                     {
-                        DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
-                        DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X]
+                        DataVars.STD_NAME: DataVars.STD_NAME[Coords.X],
+                        DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[Coords.X]
                     }
                 ),
                 Coords.Y: (
                     Coords.Y,
-                    self.grid_y,
+                    self.cube_ds.y.values,
                     {
                         DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
                         DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
@@ -545,11 +519,152 @@ class ITSLiveComposite:
             }
         )
 
+        ds.attrs['datacube_software_version'] = ITSLiveComposite.Version
+        ds.attrs['date_created'] = self.date_created
+        ds.attrs['datacube_s3'] = self.cube_ds.attrs['s3']
+        ds.attrs['GDAL_AREA_OR_POINT'] = 'Area'
+        ds.attrs['geo_polygon']  = self.cube_ds.attrs['geo_polygon']
         ds.attrs['institution'] = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
-        ds.attrs['title'] = 'autoRIFT surface velocities'
-        # TODO: Add any other attributes
+        ds.attrs['latitude']  = self.cube_ds.attrs['latitude']
+        ds.attrs['longitude'] = self.cube_ds.attrs['longitude']
+        ds.attrs['proj_polygon'] = self.cube_ds.attrs['proj_polygon']
+        ds.attrs['projection'] = self.cube_ds.attrs['projection']
+        ds.attrs['s3'] = ITSLiveComposite.S3
+        ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG1] = self.cube_ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG1]
+        ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG2] = self.cube_ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG2]
+
+        ds.attrs['institution'] = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
+        ds.attrs['title'] = 'ITS_LIVE annual image_pair velocities'
 
         # Add data as variables
+        composite_ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
+
+        years_coord = pd.Index(ITSLiveComposite.YEARS, name=ZarrDataVars.TIME)
+        var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
+        var_dims = [ZarrDataVars.TIME, Coords.Y, Coords.X]
+
+        # Create vx variable
+        ds[DataVars.VX] = xr.DataArray(
+            data=self.mean.vx,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[DataVars.VX],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[DataVars.VX],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.mean.vx = None
+        gc.collect()
+
+        ds[DataVars.VY] = xr.DataArray(
+            data=self.mean.vy,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[DataVars.VY],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[DataVars.VY],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.mean.vy = None
+        gc.collect()
+
+        ds[DataVars.V] = xr.DataArray(
+            data=self.mean.v,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[DataVars.V],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[DataVars.V],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.mean.v = None
+        gc.collect()
+
+        ds[VX_ERROR] = xr.DataArray(
+            data=self.error.vx,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VX_ERROR],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_ERROR],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.error.vx = None
+        gc.collect()
+
+        ds[VY_ERROR] = xr.DataArray(
+            data=self.error.vy,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VY_ERROR],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_ERROR],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.error.vy = None
+        gc.collect()
+
+        ds[V_ERROR] = xr.DataArray(
+            data=self.error.v,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[V_ERROR],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_ERROR],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.error.v = None
+        gc.collect()
+
+        ds[VX_SE] = xr.DataArray(
+            data=self.sigma.vx,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VX_SE],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_SE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.sigma.vx = None
+        gc.collect()
+
+        ds[VY_SE] = xr.DataArray(
+            data=self.sigma.vy,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VY_SE],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_SE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.sigma.vy = None
+        gc.collect()
+
+        ds[V_SE] = xr.DataArray(
+            data=self.sigma.v,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[V_SE],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_SE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.sigma.v = None
+        gc.collect()
+
+        # TODO:
+        # self.count = CompositeVariable(dims, 'count')
+        # self.amplitude = CompositeVariable(dims, 'amplitude')
+        # self.phase = CompositeVariable(dims, 'phase')
 
     @staticmethod
     def cube_filter(data, dt):
@@ -565,12 +680,12 @@ class ITSLiveComposite:
         # Initialize output
         invalid = np.full_like(data, False)
 
-        dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
         maxdt = np.full(dims, np.nan)
 
         # Loop through all spacial points
         # ATTN: debugging only - process 2 x cells only
-        for j in tqdm(range(0, ITSLiveComposite.Y_LEN), ascii=True, desc='cube_dt_filter: y'):
+        for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cube_dt_filter: y'):
         # for j in tqdm(range(0, 1), ascii=True, desc='cube_filter (debug_len=1): y'):
             # Process X coordinates in parallel
             # Pass to the dask only the data it needs: data.isel() by X and Y
@@ -580,7 +695,7 @@ class ITSLiveComposite:
             # maxdt[iter_j, iter_i] = iter_maxdt
             # invalid[:, iter_j, iter_i] = iter_invalid
 
-            tasks = [dask.delayed(ITSLiveComposite.cube_filter_iteration)(data[:, j, i], dt, i, j) for i in range(0, ITSLiveComposite.X_LEN)]
+            tasks = [dask.delayed(ITSLiveComposite.cube_filter_iteration)(data[:, j, i], dt, i, j) for i in range(0, ITSLiveComposite.Chunk.x_len)]
 
             results = dask.compute(
                 tasks,
@@ -617,15 +732,8 @@ class ITSLiveComposite:
         # Filter NAN values out
         # logging.info(f'Before mask filter: type(x0)={type(x0_in)}')
         mask = ~x0_is_null
-        # x0 = x0_in.where(mask, drop=True).values
-        # x0_dt = dt.where(mask, drop=True).values
         x0 = x0_in[mask]
         x0_dt = dt[mask]
-
-        # x0_dt = dt_.where(mask, drop=True)
-        # np_digitize = np.digitize(x0_dt.values, ITSLiveComposite.DT_EDGE, right=False)
-        # index_var = xr.IndexVariable(Coords.MID_DATE, np_digitize)
-        # groups = x0.groupby(index_var)
 
         # Group data values by identified bins "manually":
         # since data is sorted by date_dt, we can identify index boundaries
@@ -635,8 +743,8 @@ class ITSLiveComposite:
 
         # logging.info(f'Before init xmed xmad')
         num_bins = ITSLiveComposite.DT_EDGE_LEN
-        xmed = np.zeros(ITSLiveComposite.DT_EDGE_LEN)
-        xmad = np.zeros(ITSLiveComposite.DT_EDGE_LEN)
+        xmed = np.zeros(num_bins)
+        xmad = np.zeros(num_bins)
 
         # for i in range(0, ITSLiveComposite.DT_EDGE_LEN):
         for bin_i in range(0, num_bins):
@@ -680,7 +788,7 @@ class ITSLiveComposite:
         # tt = [t - dt/2, t+dt/2];
         #
         # Initialize output
-        dims = (ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN)
+        dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
         outlier_frac = np.full(dims, np.nan)
 
         # This is only done for generic parfor "slicing" may not be needed when
@@ -689,11 +797,12 @@ class ITSLiveComposite:
         if v_err_data.ndim != v.ndim:
             # Expand vector to 3-d array
             reshape_v_err = v_err_data.reshape((v_err_data.size, 1, 1))
-            v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Y_LEN, ITSLiveComposite.X_LEN))
+            v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
 
-        for j in tqdm(range(0, ITSLiveComposite.Y_LEN), ascii=True, desc='cubelsqfit2: y'):
+        for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
         # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
-            tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, ITSLiveComposite.X_LEN)]
+            tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, ITSLiveComposite.Chunk.x_len)]
+            # tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, 1)]
 
             results = dask.compute(
                 tasks,
@@ -704,12 +813,13 @@ class ITSLiveComposite:
 
             # Process results
             for each_output in results[0]:
+                # Each result carries info for which x, y indices it is for
                 iter_i, iter_j, skip_flag, results = each_output
 
                 if skip_flag is False:
-                    # Annual phase and amplitude for processed years
-                    global_i = iter_i + ITSLiveComposite.START_X
-                    global_j = iter_j + ITSLiveComposite.START_Y
+                    # Annual phase and amplitude for processed years were computed
+                    global_i = iter_i + ITSLiveComposite.Chunk.start_x
+                    global_j = iter_j + ITSLiveComposite.Chunk.start_y
 
                     ind, \
                     amplitude[ind, global_j, global_i], \
@@ -744,7 +854,7 @@ class ITSLiveComposite:
         # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,outlier_frac] data
         # variables.
         # Computes the amplitude and phase of seasonal velocity
-        # variability, and also gives interanual variability.
+        # variability, and also gives interannual variability.
         #
         # From original Matlab code:
         # %% Syntax
@@ -807,13 +917,15 @@ class ITSLiveComposite:
         # yr = decyear(t)
 
         # Weights for velocities
-        w_v = 1/v_err**2
+        w_v = 1/(v_err**2)
 
         # Weights (correspond to displacement error, not velocity error):
         w_d = 1/(v_err*dyr)  # Not squared because the p= line below would then have to include sqrt(w) on both accounts
+        # logging.info(f"w_d.shape: {w_d.shape}")
 
         # Observed displacement in meters
         d_obs = v*dyr
+        # logging.info(f"d_obs.shape: {d_obs.shape}")
 
         #
         # %% Initial outlier detection and removal:
@@ -844,20 +956,24 @@ class ITSLiveComposite:
         for k in range(len(y1)):
             # Set all measurements that begin before the first day of the year and end after the last
             # day of the year to 1:
-            ind = np.logical_and(start_year <= y1[k], stop_year >= (y1[k] + 1))
+            # ind = np.logical_and(start_year <= y1[k], stop_year >= (y1[k] + 1))
+            y1_value = y1[k]
+            y1_next_value = y1_value + 1
+            ind = (start_year <= y1_value)
+            ind &= (stop_year >= y1_next_value)
             M[ind, k] = 1
 
             # Within year:
-            ind = np.logical_and(start_year >= y1[k], stop_year < (y1[k] + 1))
+            ind = np.logical_and(start_year >= y1_value, stop_year < y1_next_value)
             M[ind, k] = dyr[ind]
 
             # Started before the beginning of the year and ends during the year:
-            ind = np.logical_and(start_year < y1[k], np.logical_and(stop_year >= y1[k], stop_year < (y1[k] + 1)))
-            M[ind, k] = stop_year[ind] - y1[k]
+            ind = np.logical_and(start_year < y1_value, np.logical_and(stop_year >= y1_value, stop_year < y1_next_value))
+            M[ind, k] = stop_year[ind] - y1_value
 
             # Started during the year and ends the next year:
-            ind = np.logical_and(start_year >= y1[k], np.logical_and(start_year < (y1[k] + 1), stop_year >= (y1[k]+1)))
-            M[ind, k] = (y1[k] + 1) - start_year[ind]
+            ind = np.logical_and(start_year >= y1_value, np.logical_and(start_year < y1_next_value, stop_year >= y1_next_value))
+            M[ind, k] = y1_next_value - start_year[ind]
 
         # Filter sum of each column
         hasdata = M.sum(axis=0) > 0
@@ -876,19 +992,18 @@ class ITSLiveComposite:
 
             # Add M: a different constant for each year (annual mean)
             D_M = np.concatenate([D, M], axis=1)
+            # logging.info(f"D_M.shape: {D_M.shape}")
 
             # Add ones: constant offset for all data (effectively the mean velocity)
             D = np.column_stack([D_M, np.ones(len(dyr))])
+            # logging.info(f"D.shape: {D.shape}")
 
             # Make numpy happy: have all data 2D
-            np_w_d = np.copy(w_d).reshape((len(w_d), 1))
-
-            # These both are of xarray type, so can multiply them
-            # w_d*d_obs
+            # w_d.reshape((len(w_d), 1))
 
             # TODO: Change later to have consistent iterations (use second iteration approach)
             # Solve for coefficients of each column in the Vandermonde:
-            p = np.linalg.lstsq(np_w_d * D, w_d*d_obs, rcond=None)[0]
+            p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
 
             # Find and remove outliers
             # d_model = sum(bsxfun(@times,D,p'),2); % modeled displacements (m)
@@ -924,7 +1039,7 @@ class ITSLiveComposite:
                 # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
                 break
 
-        # Matlab: outlier_frac = length(yr)./totalnum;
+        # ATTN: Matlab had it probably wrong, but confirm on output: outlier_frac = length(yr)./totalnum;
         outlier_frac = (totalnum - len(start_year))/totalnum
 
         #
@@ -937,18 +1052,14 @@ class ITSLiveComposite:
             ((np.cos(ITSLiveComposite.TWO_PI*start_year) - np.cos(ITSLiveComposite.TWO_PI*stop_year))/ITSLiveComposite.TWO_PI).reshape((len(M_pos), 1)) * M_pos,\
             ((np.sin(ITSLiveComposite.TWO_PI*stop_year) - np.sin(ITSLiveComposite.TWO_PI*start_year))/ITSLiveComposite.TWO_PI).reshape((len(M_pos), 1)) * M_pos])
 
-        # D = np.block([
-        #     ((np.cos(ITSLiveComposite.TWO_PI*start_year) - np.cos(ITSLiveComposite.TWO_PI*stop_year))/ITSLiveComposite.TWO_PI) * M_pos,\
-        #     ((np.sin(ITSLiveComposite.TWO_PI*stop_year) - np.sin(ITSLiveComposite.TWO_PI*start_year))/ITSLiveComposite.TWO_PI]) * M_pos])
-
         # Add M: a different constant for each year (annual mean)
         D = np.concatenate([D, M], axis=1)
 
         # Make numpy happy: have all data 2D
-        np_w_d = np.copy(w_d).reshape((len(w_d), 1))
+        # w_d.reshape((len(w_d), 1))
 
         # Solve for coefficients of each column in the Vandermonde:
-        p = np.linalg.lstsq(np_w_d * D, w_d*d_obs, rcond=None)[0]
+        p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
 
         # Postprocess
         #
@@ -976,18 +1087,14 @@ class ITSLiveComposite:
 
         v_int = p[2*Nyrs:]
 
-        # % Number of equivalent image pairs per year: (1 image pair equivalent means a full year of data. It takes about 23 16-day image pairs to make 1 year equivalent image pair.)
+        # Number of equivalent image pairs per year: (1 image pair equivalent means a full year of data. It takes about 23 16-day image pairs to make 1 year equivalent image pair.)
         N_int = np.sum(M>0)
         v_int = p[2*Nyrs:]
 
         # Reshape array to have the same number of dimensions as M for multiplication
         w_v = w_v.reshape((1, w_v.shape[0]))
 
-        # logging.info(f'w_v.shape={w_v.shape}')
-        # logging.info(f'M.type={M} M.shape={M.shape}')
         v_int_err = 1/np.sqrt((w_v@M).sum(axis=0))
-        # logging.info(f"v_int_err: {v_int_err}")
-        # logging.info(f"v_int_err.shape: {v_int_err.shape}")
 
         # Identify year's indices to assign return values to in "final" composite
         # variables
@@ -1015,8 +1122,8 @@ if __name__ == '__main__':
         '-c', '--daskChunkSize',
         type=int,
         default=100,
-        help='Number of X coordinates to process in parallel with Dask [%(default)d]. ' \
-             'This should be the size of chunking used within the cube to optimize IO of the datacube data.'
+        help='Number of X and Y coordinates to process in parallel with Dask. ' \
+             'This should be multiples of the size of chunking used within the cube to optimize data reads [%(default)d].'
     )
     parser.add_argument(
         '-i', '--inputStore',
@@ -1041,6 +1148,8 @@ if __name__ == '__main__':
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.daskChunkSize
     ITSLiveComposite.NUM_DASK_THREADS = args.threads
+
+    ITSLiveComposite.S3 = os.path.join(args.bucket, args.outputStore)
 
     # s3://its-live-data/test_datacubes/AGU2021/S70W100/ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.zarr
     # AGU21_ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.nc
