@@ -90,7 +90,7 @@ class ITSLiveComposite:
         Coords.MID_DATE,
         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
-        DataVars.NEW_FORMAT_FLAG_STABLE_SHIFT,
+        DataVars.FLAG_STABLE_SHIFT,
         DataVars.ImgPairInfo.SATELLITE_IMG1,
         DataVars.ImgPairInfo.MISSION_IMG1
     ]
