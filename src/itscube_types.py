@@ -25,16 +25,14 @@ class Coords:
     STD_NAME = {
         MID_DATE: "image_pair_center_date_with_time_separation",
         X:        "projection_x_coordinate",
-        Y:        "projection_y_coordinate",
-        TIME:     "time"
+        Y:        "projection_y_coordinate"
     }
 
     DESCRIPTION = {
         MID_DATE: "midpoint of image 1 and image 2 acquisition date and time " \
             "with granule's centroid longitude and latitude as microseconds",
         X:  "x coordinate of projection",
-        Y:  "y coordinate of projection",
-        TIME: "time"
+        Y:  "y coordinate of projection"
     }
 
 class FileExtension:
@@ -73,6 +71,7 @@ class DataVars:
 
     # Attributes for vx, vy, vr, va
     FLAG_STABLE_SHIFT             = 'flag_stable_shift' # In Radar and updated Optical formats
+    # FLAG_STABLE_SHIFT             = 'stable_shift_flag' # In Radar and updated Optical formats
     FLAG_STABLE_SHIFT_DESCRIPTION = 'stable_shift_flag_description'
     STABLE_SHIFT                  = 'stable_shift'
     STABLE_SHIFT_SLOW             = 'stable_shift_slow' # New format
