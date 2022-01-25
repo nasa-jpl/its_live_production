@@ -12,6 +12,7 @@ from dask.diagnostics import ProgressBar
 import datetime
 import gc
 import logging
+from numba import jit
 import numpy  as np
 import os
 import s3fs
@@ -30,12 +31,15 @@ logging.basicConfig(
     datefmt = '%Y-%m-%d %H:%M:%S'
 )
 
-def madFunction(x):
+def decimal_year(x):
     """
-    Compute median absolute deviation (MAD).
-    """
-    return (np.fabs(x - x.median(dim=Coords.MID_DATE))).median()
+    Return decimal year representation of the datetime object.
 
+    Reference: https://newbedev.com/how-to-convert-python-datetime-dates-to-decimal-float-years
+    """
+    return x.year + float(x.toordinal() - datetime.date(x.year, 1, 1).toordinal()) / (datetime.date(x.year+1, 1, 1).toordinal() - datetime.date(x.year, 1, 1).toordinal())
+
+@jit(nopython=True)
 def medianMadFunction(x):
     """
     Compute median and median absolute deviation (MAD) for the vector x.
@@ -49,13 +53,91 @@ def medianMadFunction(x):
 
     return [xmed, xmad]
 
-def decimal_year(x):
+@jit(nopython=True)
+def cube_filter_iteration(x0_in, dt):
     """
-    Return decimal year representation of the datetime object.
+    Filter one spacial point by dt (date separation) between the images.
+    """
+    # Filter parameters for dt bins (default: 2 - TODO: ask Alex):
+    # used to determine if dt means are significantly different
+    _dtbin_mad_thresh = 1
+    # Scalar relation between MAD and STD
+    _mad_std_ratio = 1.4826
 
-    Reference: https://newbedev.com/how-to-convert-python-datetime-dates-to-decimal-float-years
+    _dtbin_ratio = _dtbin_mad_thresh * _mad_std_ratio
+
+    _dt_edge = np.array([0, 32, 64, 128, 256, np.inf])
+    _num_bins = len(_dt_edge)-1
+
+    # Output data variables
+    maxdt = np.nan
+    # Make numba happy - use np.bool_ type
+    invalid = np.zeros_like(dt, dtype=np.bool_)
+
+    x0_is_null = np.isnan(x0_in)
+    if np.all(x0_is_null):
+        # No data to process
+        return (maxdt, invalid)
+
+    # Filter NAN values out
+    # logging.info(f'Before mask filter: type(x0)={type(x0_in)}')
+    mask = ~x0_is_null
+    x0 = x0_in[mask]
+    x0_dt = dt[mask]
+
+    # Group data values by identified bins "manually":
+    # since data is sorted by date_dt, we can identify index boundaries
+    # for each bin within the "date_dt" vector
+    # logging.info(f'Before searchsorted')
+    bin_index = np.searchsorted(x0_dt, _dt_edge)
+
+    # logging.info(f'Before init xmed xmad')
+    xmed = np.zeros(_num_bins)
+    xmad = np.zeros(_num_bins)
+
+    for bin_i in range(0, _num_bins):
+        # xmed[bin_i], xmad[bin_i] = np.apply_along_axis(medianMadFunction, 0, x0[bin_index[bin_i]:bin_index[bin_i+1]])
+        xmed[bin_i], xmad[bin_i] = medianMadFunction(x0[bin_index[bin_i]:bin_index[bin_i+1]])
+
+    # Check if populations overlap (use first, smallest dt, bin as reference)
+    # logging.info(f'Before min/max bound')
+    std_dev = xmad * _dtbin_ratio
+    minBound = xmed - std_dev
+    maxBound = xmed + std_dev
+
+    exclude = (minBound > maxBound[0]) | (maxBound < minBound[0])
+
+    if np.any(exclude):
+        # maxdt = np.take(DT_EDGE, exclude).min()
+        maxdt = _dt_edge[exclude].min()
+        invalid = dt > maxdt
+
+    return (maxdt, invalid)
+
+@jit(nopython=True)
+def cube_filter(data, dt):
     """
-    return x.year + float(x.toordinal() - datetime.date(x.year, 1, 1).toordinal()) / (datetime.date(x.year+1, 1, 1).toordinal() - datetime.date(x.year, 1, 1).toordinal())
+    Filter data cube by dt (date separation) between the images.
+    """
+    # Initialize output
+    # Make numba happy - use np.bool_ type
+    invalid = np.zeros_like(data, dtype=np.bool_)
+
+    _, y_len, x_len = data.shape
+    dims = (y_len, x_len)
+    maxdt = np.full(dims, np.nan)
+
+    # Loop through all spacial points
+    # ATTN: debugging only - process 2 x cells only
+    # for j in tqdm(range(0, 1), ascii=True, desc='cube_filter (debug_len=1): y'):
+    # for j_index in tqdm(range(0, y_len), ascii=True, desc='cube_dt_filter: y'):
+    for j_index in range(0, y_len):
+        for i_index in range(0, x_len):
+            maxdt[j_index, i_index], invalid[:, j_index, i_index] = cube_filter_iteration(data[:, j_index, i_index], dt)
+            # maxdt[j, i] = iter_maxdt
+            # invalid[:, j, i] = iter_invalid
+
+    return invalid, maxdt
 
 class CompositeVariable:
     """
@@ -100,12 +182,8 @@ class ITSLiveComposite:
     S3 = ''
 
     # Define edges of dt bins
-    DT_EDGE = [0, 32, 64, 128, 256, np.inf]
-    DT_EDGE_LEN = len(DT_EDGE)-1
-
-    # Filter parameters for dt bins (default: 2 - TODO: ask Alex):
-    # used to determine if dt means are significantly different
-    DTBIN_MAD_THRESH = 1
+    # DT_EDGE = [0, 32, 64, 128, 256, np.inf]
+    # DT_EDGE_LEN = len(DT_EDGE)-1
 
     # Filter parameters for lsq fit for outlier rejections
     MAD_THRESH = 3
@@ -113,8 +191,6 @@ class ITSLiveComposite:
 
     # Scalar relation between MAD and STD
     MAD_STD_RATIO = 1.4826
-
-    DTBIN_RATIO = DTBIN_MAD_THRESH * MAD_STD_RATIO
 
     # Systematic error based on level of co-registration
     CO_REGISTRATION_ERROR = {
@@ -346,10 +422,16 @@ class ITSLiveComposite:
             dt_masked = ITSLiveComposite.DATE_DT.values[mask]
 
             logging.info(f'Filtering vx...')
-            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx[mask, ...], dt_masked)
+            start_time = timeit.default_timer()
+            # vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx[mask, ...], dt_masked)
+            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = cube_filter(vx[mask, ...], dt_masked)
+            logging.info(f'Filtered vx (took {timeit.default_timer() - start_time} seconds)')
 
             logging.info(f'Filtering vy...')
-            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy[mask, ...], dt_masked)
+            start_time = timeit.default_timer()
+            # vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy[mask, ...], dt_masked)
+            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = cube_filter(vy[mask, ...], dt_masked)
+            logging.info(f'Filtered vy (took {timeit.default_timer() - start_time} seconds)')
 
             # Get maximum value along sensor dimension: concatenate maxdt
             # for vx and vy in new dimension
@@ -406,29 +488,60 @@ class ITSLiveComposite:
         )
         logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
-        logging.info(f'Find v annual means using LSQ fit... ')
+        logging.info(f'Prepare vx and vy for annual means v using LSQ fit... ')
         start_time = timeit.default_timer()
         # Need to project velocity onto a unit flow vector to avoid biased (Change from Rician to Normal distribution)
         vxm = np.nanmedian(self.mean.vx[:, start_y:stop_y, start_x:stop_x], axis=0)
+        # logging.info(f'Computed vxm (took {timeit.default_timer() - start_time} seconds)')
+
         vym = np.nanmedian(self.mean.vy[:, start_y:stop_y, start_x:stop_x], axis=0)
+        # logging.info(f'Computed vym (took {timeit.default_timer() - start_time} seconds)')
+
         theta = np.arctan2(vxm, vym)
+        # logging.info(f'theta.shape: {theta.shape}, vxm.shape: {vxm.shape} vym.shape: {vym.shape}')
+        # logging.info(f'Computed theta (took {timeit.default_timer() - start_time} seconds)')
 
         # Explicitly expand the value
-        stheta = np.tile(np.sin(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
-        ctheta = np.tile(np.cos(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        # stheta = np.tile(np.sin(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        # ctheta = np.tile(np.cos(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+
+
+        # stheta = np.tile(np.sin(theta), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        stheta = np.broadcast_to(np.sin(theta), (ITSLiveComposite.MID_DATE_LEN, stop_y - start_y, stop_x - start_x))
+        # logging.info(f'Computed stheta (took {timeit.default_timer() - start_time} seconds)')
+
+        # ctheta = np.tile(np.cos(theta), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        ctheta = np.broadcast_to(np.cos(theta), (ITSLiveComposite.MID_DATE_LEN, stop_y - start_y, stop_x - start_x))
+        # logging.info(f'Computed ctheta (took {timeit.default_timer() - start_time} seconds)')
+
         vx = vx*stheta + vy*ctheta
+        # logging.info(f'vx.shape: {vx.shape}')
+        # logging.info(f'Computed vx (took {timeit.default_timer() - start_time} seconds)')
 
         # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
         vxm = np.fabs(vxm)
         vym = np.fabs(vym)
+        # logging.info(f'Computed fabs (took {timeit.default_timer() - start_time} seconds)')
 
+        # logging.info(f'Tile vy for annual means v using LSQ fit... ')
         # Expand dimensions of vectors
         vy = self.vx_error.reshape((len(self.vx_error), 1, 1))
         vy_expand = self.vy_error.reshape((len(self.vy_error), 1, 1))
+        # logging.info(f'Reshaped vy and vy_expand (took {timeit.default_timer() - start_time} seconds)')
 
-        vy = np.tile(vy, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vxm
-        vy += np.tile(vy_expand, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vym
+        # vy = np.tile(vy, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vxm
+        # vy += np.tile(vy_expand, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vym
+        vy = np.broadcast_to(vy, (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vxm
+        vy += np.broadcast_to(vy_expand, (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vym
+
+        # logging.info(f'Tiled vy (took {timeit.default_timer() - start_time} seconds)')
+
         vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
+        # logging.info(f'vy.shape: {vy.shape}')
+        logging.info(f'Finished vx and vy for annual means v using LSQ fit (took {timeit.default_timer() - start_time} seconds)')
+
+        logging.info(f'Find v annual means using LSQ fit... ')
+        start_time = timeit.default_timer()
 
         voutlier = ITSLiveComposite.cubelsqfit2(
             vx,
@@ -667,105 +780,6 @@ class ITSLiveComposite:
         # self.phase = CompositeVariable(dims, 'phase')
 
     @staticmethod
-    def cube_filter(data, dt):
-    # def cube_filter(data, bin_dt, dt):
-        """
-        Filter data cube by dt (date separation) between the images.
-        """
-        # %dtbin_mad_thresh: used to determine in dt means are significantly different
-        # %dtbin_mad_thresh = 2*1.4826;
-
-        # check if populations overlap (use first, smallest dt, bin as reference)
-
-        # Initialize output
-        invalid = np.full_like(data, False)
-
-        dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
-        maxdt = np.full(dims, np.nan)
-
-        # Loop through all spacial points
-        # ATTN: debugging only - process 2 x cells only
-        for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cube_dt_filter: y'):
-        # for j in tqdm(range(0, 1), ascii=True, desc='cube_filter (debug_len=1): y'):
-            # Process X coordinates in parallel
-            # Pass to the dask only the data it needs: data.isel() by X and Y
-
-            # Sequential processing for debugging
-            # iter_i, iter_j, iter_maxdt, iter_invalid = ITSLiveComposite.cube_filter_iteration(data[:, j, i], dt, 0, j)
-            # maxdt[iter_j, iter_i] = iter_maxdt
-            # invalid[:, iter_j, iter_i] = iter_invalid
-
-            tasks = [dask.delayed(ITSLiveComposite.cube_filter_iteration)(data[:, j, i], dt, i, j) for i in range(0, ITSLiveComposite.Chunk.x_len)]
-
-            results = dask.compute(
-                tasks,
-                threads_per_worker=1,
-                scheduler=ITSLiveComposite.DASK_SCHEDULER,
-                num_workers=ITSLiveComposite.NUM_DASK_THREADS
-            )
-
-            # Process results
-            for each_output in results[0]:
-                iter_i, iter_j, iter_maxdt, iter_invalid = each_output
-                maxdt[iter_j, iter_i] = iter_maxdt
-                invalid[:, iter_j, iter_i] = iter_invalid
-
-        return invalid, maxdt
-
-    @staticmethod
-    def cube_filter_iteration(x0_in, dt, i, j):
-        """
-        Filter one spacial point by dt (date separation) between the images.
-        This method is introduced to be able to parallelize cube_filter() method
-        using Dask scheduler.
-        """
-        # Output data variables
-        maxdt = np.nan
-        invalid = np.full_like(dt, False)
-
-        # x0_is_null = x0_in.isnull()
-        x0_is_null = np.isnan(x0_in)
-        if np.all(x0_is_null):
-            # No data to process
-            return (i, j, maxdt, invalid)
-
-        # Filter NAN values out
-        # logging.info(f'Before mask filter: type(x0)={type(x0_in)}')
-        mask = ~x0_is_null
-        x0 = x0_in[mask]
-        x0_dt = dt[mask]
-
-        # Group data values by identified bins "manually":
-        # since data is sorted by date_dt, we can identify index boundaries
-        # for each bin within the "date_dt" vector
-        # logging.info(f'Before searchsorted')
-        bin_index = np.searchsorted(x0_dt, ITSLiveComposite.DT_EDGE).tolist()
-
-        # logging.info(f'Before init xmed xmad')
-        num_bins = ITSLiveComposite.DT_EDGE_LEN
-        xmed = np.zeros(num_bins)
-        xmad = np.zeros(num_bins)
-
-        # for i in range(0, ITSLiveComposite.DT_EDGE_LEN):
-        for bin_i in range(0, num_bins):
-            xmed[bin_i], xmad[bin_i] = np.apply_along_axis(medianMadFunction, 0, x0[bin_index[bin_i]:bin_index[bin_i+1]])
-
-        # Check if populations overlap (use first, smallest dt, bin as reference)
-        # logging.info(f'Before min/max bound')
-        std_dev = xmad * ITSLiveComposite.DTBIN_RATIO
-        minBound = xmed - std_dev
-        maxBound = xmed + std_dev
-
-        exclude = (minBound > maxBound[0]) | (maxBound < minBound[0])
-
-        if np.any(exclude):
-            # logging.info(f"Got exclude: i={i} j={j}")
-            maxdt = np.take(ITSLiveComposite.DT_EDGE, exclude).min()
-            invalid = dt > maxdt
-
-        return (i, j, maxdt, invalid)
-
-    @staticmethod
     def cubelsqfit2(
         v,
         v_err_data,
@@ -788,6 +802,7 @@ class ITSLiveComposite:
         # tt = [t - dt/2, t+dt/2];
         #
         # Initialize output
+        start_time = timeit.default_timer()
         dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
         outlier_frac = np.full(dims, np.nan)
 
@@ -797,25 +812,13 @@ class ITSLiveComposite:
         if v_err_data.ndim != v.ndim:
             # Expand vector to 3-d array
             reshape_v_err = v_err_data.reshape((v_err_data.size, 1, 1))
-            v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
+            # v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
+            v_err = np.broadcast_to(reshape_v_err, (v_err_data.size, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
 
         for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
+            for i in range(0, ITSLiveComposite.Chunk.x_len):
         # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
-            tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, ITSLiveComposite.Chunk.x_len)]
-            # tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, 1)]
-
-            results = dask.compute(
-                tasks,
-                threads_per_worker=1,
-                scheduler=ITSLiveComposite.DASK_SCHEDULER,
-                num_workers=ITSLiveComposite.NUM_DASK_THREADS
-            )
-
-            # Process results
-            for each_output in results[0]:
-                # Each result carries info for which x, y indices it is for
-                iter_i, iter_j, skip_flag, results = each_output
-
+                iter_i, iter_j, skip_flag, results = ITSLiveComposite.cubelsqfit2_iteration(v[:, j, i], v_err[:, j, i], i, j)
                 if skip_flag is False:
                     # Annual phase and amplitude for processed years were computed
                     global_i = iter_i + ITSLiveComposite.Chunk.start_x
@@ -829,6 +832,36 @@ class ITSLiveComposite:
                     error[ind, global_j, global_i], \
                     count[ind, global_j, global_i], \
                     outlier_frac[iter_j, iter_i] = results
+
+
+            # tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, ITSLiveComposite.Chunk.x_len)]
+            # tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, 1)]
+
+            # results = dask.compute(
+            #     tasks,
+            #     # threads_per_worker=1,
+            #     scheduler=ITSLiveComposite.DASK_SCHEDULER,
+            #     num_workers=ITSLiveComposite.NUM_DASK_THREADS
+            # )
+            #
+            # # Process results
+            # for each_output in results[0]:
+            #     # Each result carries info for which x, y indices it is for
+            #     iter_i, iter_j, skip_flag, results = each_output
+            #
+            #     if skip_flag is False:
+            #         # Annual phase and amplitude for processed years were computed
+            #         global_i = iter_i + ITSLiveComposite.Chunk.start_x
+            #         global_j = iter_j + ITSLiveComposite.Chunk.start_y
+            #
+            #         ind, \
+            #         amplitude[ind, global_j, global_i], \
+            #         phase[ind, global_j, global_i], \
+            #         sigma[ind, global_j, global_i], \
+            #         mean[ind, global_j, global_i], \
+            #         error[ind, global_j, global_i], \
+            #         count[ind, global_j, global_i], \
+            #         outlier_frac[iter_j, iter_i] = results
 
         return outlier_frac
 
@@ -894,6 +927,9 @@ class ITSLiveComposite:
         # % See also itslive_interannual.
         #
 
+        # start_time = timeit.default_timer()
+        # logging.info(f"Start init of itslive_lsqfit_annual")
+
         # Ensure we're starting with finite data
         isf_mask   = np.isfinite(v) & np.isfinite(v_err)
         start_year = ITSLiveComposite.START_DECIMAL_YEAR[isf_mask]
@@ -945,6 +981,10 @@ class ITSLiveComposite:
         # % % w_v = w_v(~outliers);
         #
 
+        # logging.info(f'Finished init of itslive_lsqfit_annual ({timeit.default_timer() - start_time} seconds)')
+        # start_time = timeit.default_timer()
+        # logging.info(f"Start building M")
+
         # Make matrix of percentages of years corresponding to each displacement measurement
         y_min = int(np.floor(start_year.min()))
         y_max = int(np.floor(stop_year.max())) + 1
@@ -979,6 +1019,10 @@ class ITSLiveComposite:
         hasdata = M.sum(axis=0) > 0
         y1 = y1[hasdata]
         M = M[:, hasdata]
+
+        # logging.info(f'Finished building M and filter by M ({timeit.default_timer() - start_time} seconds)')
+        # start_time = timeit.default_timer()
+        # logging.info(f"Start 1st iteration of LSQ")
 
         #
         # First LSQ iteration
@@ -1042,6 +1086,10 @@ class ITSLiveComposite:
         # ATTN: Matlab had it probably wrong, but confirm on output: outlier_frac = length(yr)./totalnum;
         outlier_frac = (totalnum - len(start_year))/totalnum
 
+        # logging.info(f'Finished 1st iteration of LSQ ({timeit.default_timer() - start_time} seconds)')
+        # start_time = timeit.default_timer()
+        # logging.info(f"Start 2nd iteration of LSQ")
+
         #
         # Second LSQ iteration
         #
@@ -1060,6 +1108,10 @@ class ITSLiveComposite:
 
         # Solve for coefficients of each column in the Vandermonde:
         p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
+
+        # logging.info(f'Finished 2nd iteration of LSQ ({timeit.default_timer() - start_time} seconds)')
+        # start_time = timeit.default_timer()
+        # logging.info(f"Start post-process")
 
         # Postprocess
         #
@@ -1099,6 +1151,9 @@ class ITSLiveComposite:
         # Identify year's indices to assign return values to in "final" composite
         # variables
         _, _, ind = np.intersect1d(ITSLiveComposite.YEARS, y1, return_indices=True)
+
+        # logging.info(f'Finished post-process ({timeit.default_timer() - start_time} seconds)')
+        # start_time = timeit.default_timer()
 
         # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_fraction
         return [ind, A, ph, A_err, v_int, v_int_err, N_int, outlier_frac]
