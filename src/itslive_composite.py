@@ -10,7 +10,7 @@ import copy
 import datetime
 import gc
 import logging
-from numba import jit
+import numba as nb
 import numpy  as np
 import os
 import s3fs
@@ -37,7 +37,7 @@ def decimal_year(x):
     """
     return x.year + float(x.toordinal() - datetime.date(x.year, 1, 1).toordinal()) / (datetime.date(x.year+1, 1, 1).toordinal() - datetime.date(x.year, 1, 1).toordinal())
 
-@jit(nopython=True)
+@nb.jit(nopython=True)
 def medianMadFunction(x):
     """
     Compute median and median absolute deviation (MAD) for the vector x.
@@ -51,18 +51,16 @@ def medianMadFunction(x):
 
     return [xmed, xmad]
 
-@jit(nopython=True)
-def cube_filter_iteration(x0_in, dt):
+@nb.jit(nopython=True)
+def cube_filter_iteration(x0_in, dt, mad_std_ratio):
     """
     Filter one spacial point by dt (date separation) between the images.
     """
     # Filter parameters for dt bins (default: 2 - TODO: ask Alex):
     # used to determine if dt means are significantly different
     _dtbin_mad_thresh = 1
-    # Scalar relation between MAD and STD
-    _mad_std_ratio = 1.4826
 
-    _dtbin_ratio = _dtbin_mad_thresh * _mad_std_ratio
+    _dtbin_ratio = _dtbin_mad_thresh * mad_std_ratio
 
     _dt_edge = np.array([0, 32, 64, 128, 256, np.inf])
     _num_bins = len(_dt_edge)-1
@@ -112,8 +110,8 @@ def cube_filter_iteration(x0_in, dt):
 
     return (maxdt, invalid)
 
-@jit(nopython=True)
-def cube_filter(data, dt):
+@nb.jit(nopython=True)
+def cube_filter(data, dt, mad_std_ratio):
     """
     Filter data cube by dt (date separation) between the images.
     """
@@ -131,7 +129,7 @@ def cube_filter(data, dt):
     # for j_index in tqdm(range(0, y_len), ascii=True, desc='cube_dt_filter: y'):
     for j_index in range(0, y_len):
         for i_index in range(0, x_len):
-            maxdt[j_index, i_index], invalid[:, j_index, i_index] = cube_filter_iteration(data[:, j_index, i_index], dt)
+            maxdt[j_index, i_index], invalid[:, j_index, i_index] = cube_filter_iteration(data[:, j_index, i_index], dt, mad_std_ratio)
             # maxdt[j, i] = iter_maxdt
             # invalid[:, j, i] = iter_invalid
 
@@ -149,7 +147,6 @@ class CompositeVariable:
         self.v = np.full(dims, np.nan)
         self.vx = np.full(dims, np.nan)
         self.vy = np.full(dims, np.nan)
-
 
 # Currently processed datacube chunk
 Chunk = collections.namedtuple("Chunk", ['start_x', 'stop_x', 'x_len', 'start_y', 'stop_y', 'y_len'])
@@ -178,10 +175,6 @@ class ITSLiveComposite:
 
     # S3 store location for the Zarr composite
     S3 = ''
-
-    # Define edges of dt bins
-    # DT_EDGE = [0, 32, 64, 128, 256, np.inf]
-    # DT_EDGE_LEN = len(DT_EDGE)-1
 
     # Filter parameters for lsq fit for outlier rejections
     MAD_THRESH = 3
@@ -414,13 +407,13 @@ class ITSLiveComposite:
             logging.info(f'Filtering vx...')
             start_time = timeit.default_timer()
             # vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx[mask, ...], dt_masked)
-            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = cube_filter(vx[mask, ...], dt_masked)
+            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = cube_filter(vx[mask, ...], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
             logging.info(f'Filtered vx (took {timeit.default_timer() - start_time} seconds)')
 
             logging.info(f'Filtering vy...')
             start_time = timeit.default_timer()
             # vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy[mask, ...], dt_masked)
-            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = cube_filter(vy[mask, ...], dt_masked)
+            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = cube_filter(vy[mask, ...], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
             logging.info(f'Filtered vy (took {timeit.default_timer() - start_time} seconds)')
 
             # Get maximum value along sensor dimension: concatenate maxdt
