@@ -7,8 +7,6 @@ Authors: Masha Liukis, Alex Gardner, Chad Green
 """
 import collections
 import copy
-import dask
-from dask.diagnostics import ProgressBar
 import datetime
 import gc
 import logging
@@ -223,16 +221,8 @@ class ITSLiveComposite:
     # Dask related settings
     # ---------------------
     # Number of X and Y coordinates to load from the datacube at any given time,
-    # and to process in one "chunk" with Dask parallel scheduler
-    NUM_TO_PROCESS = 200
-
-    # Keep it constant static (so there is no command-line option for it to overwrite):
-    # using 'processes' scheduler results in deadlock
-    # (see https://docs.dask.org/en/latest/best-practices.html)
-    DASK_SCHEDULER = 'threads'
-
-    # Number of Dask processes to run in parallel
-    NUM_DASK_THREADS = 4
+    # and to process in one "chunk" in parallel
+    NUM_TO_PROCESS = 100
 
     def __init__(self, cube_store: str, s3_bucket: str):
         """
@@ -833,43 +823,12 @@ class ITSLiveComposite:
                     count[ind, global_j, global_i], \
                     outlier_frac[iter_j, iter_i] = results
 
-
-            # tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, ITSLiveComposite.Chunk.x_len)]
-            # tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) for i in range(0, 1)]
-
-            # results = dask.compute(
-            #     tasks,
-            #     # threads_per_worker=1,
-            #     scheduler=ITSLiveComposite.DASK_SCHEDULER,
-            #     num_workers=ITSLiveComposite.NUM_DASK_THREADS
-            # )
-            #
-            # # Process results
-            # for each_output in results[0]:
-            #     # Each result carries info for which x, y indices it is for
-            #     iter_i, iter_j, skip_flag, results = each_output
-            #
-            #     if skip_flag is False:
-            #         # Annual phase and amplitude for processed years were computed
-            #         global_i = iter_i + ITSLiveComposite.Chunk.start_x
-            #         global_j = iter_j + ITSLiveComposite.Chunk.start_y
-            #
-            #         ind, \
-            #         amplitude[ind, global_j, global_i], \
-            #         phase[ind, global_j, global_i], \
-            #         sigma[ind, global_j, global_i], \
-            #         mean[ind, global_j, global_i], \
-            #         error[ind, global_j, global_i], \
-            #         count[ind, global_j, global_i], \
-            #         outlier_frac[iter_j, iter_i] = results
-
         return outlier_frac
 
     @staticmethod
     def cubelsqfit2_iteration(x1, x_err1, i, j):
         """
-        cubelsqfit2 processing of one spacial point - to be able to parallelize
-        the processing with dask.
+        cubelsqfit2 processing of one spacial point
         """
         # Flag if computations were skipped
         skip_flag = True
@@ -1168,13 +1127,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=ITSLiveComposite.__doc__.split('\n')[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        '-t', '--threads',
-        type=int,
-        default=4,
-        help='Number of Dask workers to use for parallel processing [%(default)d].'
-    )
-    parser.add_argument(
-        '-c', '--daskChunkSize',
+        '-c', '--chunkSize',
         type=int,
         default=100,
         help='Number of X and Y coordinates to process in parallel with Dask. ' \
@@ -1201,8 +1154,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Set static data for computation
-    ITSLiveComposite.NUM_TO_PROCESS = args.daskChunkSize
-    ITSLiveComposite.NUM_DASK_THREADS = args.threads
+    ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
 
     ITSLiveComposite.S3 = os.path.join(args.bucket, args.outputStore)
 
