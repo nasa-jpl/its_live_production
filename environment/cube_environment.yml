@@ -14,14 +14,13 @@ name: itslivecube
 channels:
   - conda-forge
 
-# Add accelleration packages for xarray (does not seem to make any
-# difference at runtime):
-# conda install -c conda-forge scipy bottleneck
+# scipy is required by numba
 dependencies:
   - python==3.9.6
   - dask==2.30.0
   - pandas
   - numpy
+  - numba
   - h5py
   - h5netcdf
   - requests
@@ -29,6 +28,7 @@ dependencies:
   - xarray==0.20.1
   - netcdf4
   - flake8
+  - scipy
   - s3fs==0.4.2
   - fsspec==0.8.3
   - tqdm
