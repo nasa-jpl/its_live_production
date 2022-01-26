@@ -3,7 +3,7 @@ ITSLiveComposite class creates yearly composites of ITS_LIVE datacubes with data
 within the same target projection, bounding polygon and datetime period
 specified at the time the datacube was constructed/updated.
 
-Authors: Masha Liukis, Alex Gardner, Chad Green
+Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Green (JPL)
 """
 import collections
 import copy
@@ -136,6 +136,17 @@ def cube_filter(data, dt, mad_std_ratio):
     return invalid, maxdt
 
 @nb.jit(nopython=True)
+def weighted_std(values, weights):
+    """
+    Return weighted standard deviation.
+
+    Reference: https://stackoverflow.com/questions/2413522/weighted-standard-deviation-in-numpy
+    """
+    average = np.average(values, weights=weights)
+    variance = np.average((values-average)**2, weights=weights)
+    return np.sqrt(variance)
+
+@nb.jit(nopython=True)
 def create_M(y1, start_year, stop_year, dyr):
     """
     Make matrix of percentages of years corresponding to each displacement measurement
@@ -166,8 +177,54 @@ def create_M(y1, start_year, stop_year, dyr):
 
     return M
 
-# @nb.jit(nopython=True)
-def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, mad_std_ratio):
+@nb.jit(nopython=True)
+def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr):
+    _two_pi = np.pi * 2
+
+    D = np.stack( \
+            ((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi, \
+             (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi), axis=-1)
+
+    # Add M: a different constant for each year (annual mean)
+    D_M = np.concatenate((D, M), axis=1)
+    # logging.info(f"D_M.shape: {D_M.shape}")
+
+    # Add ones: constant offset for all data (effectively the mean velocity)
+    D = np.column_stack((D_M, np.ones(len(dyr))))
+    # logging.info(f"D.shape: {D.shape}")
+
+    # Make numpy happy: have all data 2D
+    # w_d.reshape((len(w_d), 1))
+
+    # TODO: Change later to have consistent iterations (use second iteration approach)
+    # Solve for coefficients of each column in the Vandermonde:
+    # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
+    p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs)[0]
+
+    # Find and remove outliers
+    # d_model = sum(bsxfun(@times,D,p'),2); % modeled displacements (m)
+    d_model = (D * p).sum(axis=1)  # modeled displacements (m)
+
+    return d_model
+
+@nb.jit(nopython=True)
+def itersect_years(all_years, select_years):
+    """
+    Get indices of "select_years" into "all_years" array.
+    This is to replace built-in numpy.intersect1d which does not work with
+    numba.
+    """
+    lookup_table = {v:i for i, v in enumerate(all_years)}
+    return np.array([lookup_table[each] for each in select_years])
+
+@nb.jit(nopython=True)
+def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, mad_std_ratio,
+    amplitude,
+    phase,
+    sigma,
+    mean,
+    error,
+    count):
     # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,outlier_frac] data
     # variables.
     # Computes the amplitude and phase of seasonal velocity
@@ -201,6 +258,15 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     # Filter parameters for lsq fit for outlier rejections
     _mad_thresh = 3
     _mad_filter_iterations = 3
+
+    # Minimum number of non-NAN values in the data to proceed with LSQ fit processing
+    _num_valid_points = 5
+
+    mask = ~np.isnan(v)
+
+    if np.sum(mask) < _num_valid_points:
+        # Skip the point, return no outliers
+        return 0
 
     # start_time = timeit.default_timer()
     # logging.info(f"Start init of itslive_lsqfit_annual")
@@ -238,29 +304,6 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
 
     M = create_M(y1, start_year, stop_year, dyr)
 
-    # # Loop through each year:
-    # for k in range(len(y1)):
-    #     # Set all measurements that begin before the first day of the year and end after the last
-    #     # day of the year to 1:
-    #     # ind = np.logical_and(start_year <= y1[k], stop_year >= (y1[k] + 1))
-    #     y1_value = y1[k]
-    #     y1_next_value = y1_value + 1
-    #     ind = (start_year <= y1_value)
-    #     ind &= (stop_year >= y1_next_value)
-    #     M[ind, k] = 1
-    #
-    #     # Within year:
-    #     ind = np.logical_and(start_year >= y1_value, stop_year < y1_next_value)
-    #     M[ind, k] = dyr[ind]
-    #
-    #     # Started before the beginning of the year and ends during the year:
-    #     ind = np.logical_and(start_year < y1_value, np.logical_and(stop_year >= y1_value, stop_year < y1_next_value))
-    #     M[ind, k] = stop_year[ind] - y1_value
-    #
-    #     # Started during the year and ends the next year:
-    #     ind = np.logical_and(start_year >= y1_value, np.logical_and(start_year < y1_next_value, stop_year >= y1_next_value))
-    #     M[ind, k] = y1_next_value - start_year[ind]
-
     # Filter sum of each column
     hasdata = M.sum(axis=0) > 0
     y1 = y1[hasdata]
@@ -276,34 +319,36 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     totalnum = len(start_year)
     for i in range(0, _mad_filter_iterations):
         # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-        D = np.stack( \
-                ((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi, \
-                 (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi), axis=-1)
-
-        # Add M: a different constant for each year (annual mean)
-        D_M = np.concatenate((D, M), axis=1)
-        # logging.info(f"D_M.shape: {D_M.shape}")
-
-        # Add ones: constant offset for all data (effectively the mean velocity)
-        D = np.column_stack((D_M, np.ones(len(dyr))))
-        # logging.info(f"D.shape: {D.shape}")
-
-        # Make numpy happy: have all data 2D
-        # w_d.reshape((len(w_d), 1))
-
-        # TODO: Change later to have consistent iterations (use second iteration approach)
-        # Solve for coefficients of each column in the Vandermonde:
-        p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
-
-        # Find and remove outliers
-        # d_model = sum(bsxfun(@times,D,p'),2); % modeled displacements (m)
-        d_model = (D * p).sum(axis=1)  # modeled displacements (m)
+        d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr)
+        # D = np.stack( \
+        #         ((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi, \
+        #          (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi), axis=-1)
+        #
+        # # Add M: a different constant for each year (annual mean)
+        # D_M = np.concatenate((D, M), axis=1)
+        # # logging.info(f"D_M.shape: {D_M.shape}")
+        #
+        # # Add ones: constant offset for all data (effectively the mean velocity)
+        # D = np.column_stack((D_M, np.ones(len(dyr))))
+        # # logging.info(f"D.shape: {D.shape}")
+        #
+        # # Make numpy happy: have all data 2D
+        # # w_d.reshape((len(w_d), 1))
+        #
+        # # TODO: Change later to have consistent iterations (use second iteration approach)
+        # # Solve for coefficients of each column in the Vandermonde:
+        # # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
+        # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs)[0]
+        #
+        # # Find and remove outliers
+        # # d_model = sum(bsxfun(@times,D,p'),2); % modeled displacements (m)
+        # d_model = (D * p).sum(axis=1)  # modeled displacements (m)
 
         # Divide by dt to avoid penalizing long dt [asg]
         d_resid = np.abs(d_obs - d_model)/dyr
 
         # Robust standard deviation of errors, using median absolute deviation
-        d_sigma = np.median(d_resid, axis=0)*mad_std_ratio
+        d_sigma = np.median(d_resid)*mad_std_ratio
 
         outliers = d_resid > (_mad_thresh * d_sigma)
 
@@ -332,6 +377,9 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     # ATTN: Matlab had it probably wrong, but confirm on output: outlier_frac = length(yr)./totalnum;
     outlier_frac = (totalnum - len(start_year))/totalnum
 
+    if y1.size == 0:
+        return outlier_frac
+
     # logging.info(f'Finished 1st iteration of LSQ ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
     # logging.info(f"Start 2nd iteration of LSQ")
@@ -342,9 +390,10 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
     # D = [(cos(2*pi*yr(:,1)) - cos(2*pi*yr(:,2)))./(2*pi).*(M>0) (sin(2*pi*yr(:,2)) - sin(2*pi*yr(:,1)))./(2*pi).*(M>0) M];
     M_pos = M > 0
-    D = np.block([
-        ((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos,\
-        ((np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos])
+    D = np.column_stack( \
+        (((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos,\
+         ((np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos) \
+    )
 
     # Add M: a different constant for each year (annual mean)
     D = np.concatenate((D, M), axis=1)
@@ -353,7 +402,11 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     # w_d.reshape((len(w_d), 1))
 
     # Solve for coefficients of each column in the Vandermonde:
-    p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
+    # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
+    p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs)[0]
+
+    # Goodness of fit:
+    d_model = (D * p).sum(axis=1)  # modeled displacements (m)
 
     # logging.info(f'Finished 2nd iteration of LSQ ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
@@ -372,16 +425,13 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     # phase converted such that it reflects the day when value is maximized
     ph = 365.25*((0.25 - ph_rad/_two_pi) % 1)
 
-    # Goodness of fit:
-    d_model = (D * p).sum(axis=1)  # modeled displacements (m)
-
     # A_err is the *velocity* (not displacement) error, which is the displacement error divided by the weighted mean dt:
     A_err = np.full_like(A, np.nan)
 
     for k in range(Nyrs):
         ind = M[:, k] > 0
         # asg replaced call to wmean
-        A_err[k] = np.sqrt(np.cov(d_obs[ind]-d_model[ind], aweights=w_d[ind])) / (w_d[ind]*dyr[ind]).sum(axis=0) / dyr[ind].sum()
+        A_err[k] = weighted_std(d_obs[ind]-d_model[ind], w_d[ind]) / (w_d[ind]*dyr[ind]).sum() / dyr[ind].sum()
 
     v_int = p[2*Nyrs:]
 
@@ -396,32 +446,54 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
 
     # Identify year's indices to assign return values to in "final" composite
     # variables
-    _, _, ind = np.intersect1d(all_years, y1, return_indices=True)
+    ind = itersect_years(all_years, y1)
 
     # logging.info(f'Finished post-process ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
 
+    # try:
     # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_fraction
-    return [ind, A, ph, A_err, v_int, v_int_err, N_int, outlier_frac]
+    amplitude[ind] = A
+    phase[ind] = ph
+    sigma[ind] = A_err
+    mean[ind] = v_int
+    error[ind] = v_int_err
+    count[ind] = N_int
+
+    # except IndexError as exc:
+    #     logging.info(f'Got index error for ind={ind} A={A} ampl.shape={amplitude.shape} all_years={all_years} y1={y1} outlier_frac={outlier_frac}')
+    #     raise exc
+
+    return outlier_frac
 
 # @nb.jit(nopython=True)
-def cubelsqfit2_iteration(x1, x_err1, start_dec_year, stop_dec_year, all_years, mad_std_ratio):
-    """
-    cubelsqfit2 processing of one spacial point
-    """
-    # Minimum number of non-NAN values in the data to proceed with LSQ fit processing
-    _num_valid_points = 5
-
-    # Flag if computations were skipped
-    skip_flag = True
-
-    mask = ~np.isnan(x1)
-    if np.sum(mask) < _num_valid_points:
-        # Skip the point, return no computed results
-        return (skip_flag, ())
-
-    skip_flag = False
-    return (skip_flag, itslive_lsqfit_annual(x1, x_err1, start_dec_year, stop_dec_year, all_years, mad_std_ratio))
+# def cubelsqfit2_iteration(x1, x_err1, start_dec_year, stop_dec_year, all_years, mad_std_ratio,
+#     amplitude,
+#     phase,
+#     sigma,
+#     mean,
+#     error,
+#     count
+# ):
+#     """
+#     cubelsqfit2 processing of one spacial point
+#     """
+#     # Minimum number of non-NAN values in the data to proceed with LSQ fit processing
+#     _num_valid_points = 5
+#
+#     mask = ~np.isnan(x1)
+#
+#     if np.sum(mask) < _num_valid_points:
+#         # Skip the point, return no outliers
+#         return 0
+#
+#     return itslive_lsqfit_annual(x1, x_err1, start_dec_year, stop_dec_year, all_years, mad_std_ratio,
+#         amplitude,
+#         phase,
+#         sigma,
+#         mean,
+#         error,
+#         count)
 
 
 class CompositeVariable:
@@ -548,9 +620,9 @@ class ITSLiveComposite:
         stop_year = int(np.floor(np.max(ITSLiveComposite.STOP_DECIMAL_YEAR)))
 
         # Years to generate mosaics for
-        ITSLiveComposite.YEARS = list(range(start_year, stop_year+1))
-        ITSLiveComposite.YEARS_LEN = len(ITSLiveComposite.YEARS)
-        logging.info(f'Years for composite: {ITSLiveComposite.YEARS}')
+        ITSLiveComposite.YEARS = np.array(range(start_year, stop_year+1))
+        ITSLiveComposite.YEARS_LEN = ITSLiveComposite.YEARS.size
+        logging.info(f'Years for composite: {ITSLiveComposite.YEARS.tolist()}')
 
         # Day separation between images (sorted per cube.sortby() call above)
         ITSLiveComposite.DATE_DT = cube_ds[DataVars.ImgPairInfo.DATE_DT].load()
@@ -830,12 +902,22 @@ class ITSLiveComposite:
         """
         # Variables information to store in Zarr.
         TIME = 'time'
+        SENSORS = 'sensors'
         VX_ERROR = 'vx_error'
         VY_ERROR = 'vy_error'
         V_ERROR = 'v_error'
         VX_SE = 'vx_se'
         VY_SE = 'vy_se'
         V_SE = 'v_se'
+        VX_AMP = 'vx_amp'
+        VY_AMP = 'vy_amp'
+        V_AMP = 'v_amp'
+        VX_PHASE = 'vx_phase'
+        VY_PHASE = 'vy_phase'
+        V_PHASE = 'v_phase'
+        COUNT = 'count'
+        DT_MAX = 'dt_max'
+        NUM_LYR = 'num_lyr'
 
         STD_NAME = {
             DataVars.VX: 'x_velocity',
@@ -848,6 +930,15 @@ class ITSLiveComposite:
             VX_SE: 'x_velocity_se',
             VY_SE: 'y_velocity_se',
             V_SE:  'velocity_se',
+            VX_AMP: 'vx_amp',
+            VY_AMP: 'vy_amp',
+            V_AMP: 'v_amp',
+            VX_PHASE: 'vx_phase',
+            VY_PHASE: 'vy_phase',
+            V_PHASE: 'v_phase',
+            COUNT: 'count',
+            DT_MAX: 'dt_max',
+            NUM_LYR: 'num_lyr'
         }
 
         DESCRIPTION = {
@@ -861,6 +952,15 @@ class ITSLiveComposite:
             VX_SE:       'error weighted standard error for velocity component in x direction',
             VY_SE:       'error weighted standard error for velocity component in y direction',
             V_SE:        'error weighted standard error for velocity magnitude',
+            VX_AMP:      'mean seasonal amplitude in vx',
+            VY_AMP:      'mean seasonal amplitude in vy',
+            V_AMP:       'mean seasonal amplitude in v',
+            VX_PHASE:    'mean seasonal phase in vx',
+            VY_PHASE:    'mean seasonal phase in vy',
+            V_PHASE:     'mean seasonal phase in v',
+            COUNT:       'number of image pairs used in error weighted average',
+            DT_MAX:      'maximum allowable dt used in error weighting',
+            NUM_LYR:     'total number of image-pair layers fed into solution'
         }
 
         ds = xr.Dataset(
@@ -869,8 +969,16 @@ class ITSLiveComposite:
                     TIME,
                     ITSLiveComposite.YEARS,
                     {
-                        DataVars.STD_NAME: STD_NAME[Coords.TIME],
-                        DataVars.DESCRIPTION_ATTR: DESCRIPTION[Coords.TIME]
+                        DataVars.STD_NAME: STD_NAME[TIME],
+                        DataVars.DESCRIPTION_ATTR: DESCRIPTION[TIME]
+                    }
+                ),
+                SENSORS: (
+                    SENSORS,
+                    self.unique_sensors,
+                    {
+                        DataVars.STD_NAME: STD_NAME[SENSORS],
+                        DataVars.DESCRIPTION_ATTR: DESCRIPTION[SENSORS]
                     }
                 ),
                 Coords.X: (
@@ -915,9 +1023,9 @@ class ITSLiveComposite:
         # Add data as variables
         composite_ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
 
-        years_coord = pd.Index(ITSLiveComposite.YEARS, name=ZarrDataVars.TIME)
+        years_coord = pd.Index(ITSLiveComposite.YEARS, name=TIME)
         var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [ZarrDataVars.TIME, Coords.Y, Coords.X]
+        var_dims = [TIME, Coords.Y, Coords.X]
 
         # Create vx variable
         ds[DataVars.VX] = xr.DataArray(
@@ -1037,10 +1145,127 @@ class ITSLiveComposite:
         self.sigma.v = None
         gc.collect()
 
+        ds[VX_AMP] = xr.DataArray(
+            data=self.amplitude.vx,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VX_AMP],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_AMP],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.amplitude.vx = None
+        gc.collect()
+
+        ds[VY_AMP] = xr.DataArray(
+            data=self.amplitude.vy,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VY_AMP],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_AMP],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.amplitude.vy = None
+        gc.collect()
+
+        ds[V_AMP] = xr.DataArray(
+            data=self.amplitude.v,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[V_AMP],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_AMP],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.amplitude.v = None
+        gc.collect()
+
+        ds[VX_PHASE] = xr.DataArray(
+            data=self.phase.vx,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VX_PHASE],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_PHASE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.phase.vx = None
+        gc.collect()
+
+        ds[VY_PHASE] = xr.DataArray(
+            data=self.phase.vy,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VY_PHASE],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_PHASE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.phase.vy = None
+        gc.collect()
+
+        ds[V_PHASE] = xr.DataArray(
+            data=self.phase.v,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[V_PHASE],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_PHASE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.phase.v = None
+        gc.collect()
+
+        ds[COUNT] = xr.DataArray(
+            data=self.count.v,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[COUNT],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[COUNT],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.count = None
+        gc.collect()
+
+        ds[COUNT] = xr.DataArray(
+            data=self.count.v,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[COUNT],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[COUNT],
+                DataVars.GRID_MAPPING: DataVars.MAPPING
+            }
+        )
+        self.count = None
+        gc.collect()
+
+        sensor_coord = pd.Index(self.sensors, name=SENSORS)
+        var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
+        var_dims = [ZarrDataVars.TIME, Coords.Y, Coords.X]
+
         # TODO:
-        # self.count = CompositeVariable(dims, 'count')
-        # self.amplitude = CompositeVariable(dims, 'amplitude')
-        # self.phase = CompositeVariable(dims, 'phase')
+        dims = (y_len, x_len)
+        self.outlier_fraction = np.full(dims, np.nan)
+
+        # Sensor data for the cube's layers
+        self.sensors = cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
+
+        # Identify unique sensors within datacube
+        self.unique_sensors = list(set(self.sensors))
+        # Keep values sorted to be consistent
+        self.unique_sensors.sort()
+        dims = (len(self.unique_sensors), y_len, x_len)
+        self.max_dt = np.full(dims, np.nan)
 
     @staticmethod
     def cubelsqfit2(
@@ -1081,27 +1306,37 @@ class ITSLiveComposite:
         # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
         for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
             for i in range(0, ITSLiveComposite.Chunk.x_len):
-                skip_flag, results = cubelsqfit2_iteration(
+
+                global_i = i + ITSLiveComposite.Chunk.start_x
+                global_j = j + ITSLiveComposite.Chunk.start_y
+
+                outlier_frac[j, i] = itslive_lsqfit_annual(
                     v[:, j, i],
                     v_err[:, j, i],
                     ITSLiveComposite.START_DECIMAL_YEAR,
                     ITSLiveComposite.STOP_DECIMAL_YEAR,
                     ITSLiveComposite.YEARS,
-                    ITSLiveComposite.MAD_STD_RATIO
+                    ITSLiveComposite.MAD_STD_RATIO,
+                    amplitude[:, global_j, global_i],
+                    phase[:, global_j, global_i],
+                    sigma[:, global_j, global_i],
+                    mean[:, global_j, global_i],
+                    error[:, global_j, global_i],
+                    count[:, global_j, global_i]
                 )
-                if skip_flag is False:
-                    # Annual phase and amplitude for processed years were computed
-                    global_i = i + ITSLiveComposite.Chunk.start_x
-                    global_j = j + ITSLiveComposite.Chunk.start_y
-
-                    ind, \
-                    amplitude[ind, global_j, global_i], \
-                    phase[ind, global_j, global_i], \
-                    sigma[ind, global_j, global_i], \
-                    mean[ind, global_j, global_i], \
-                    error[ind, global_j, global_i], \
-                    count[ind, global_j, global_i], \
-                    outlier_frac[j, i] = results
+                # if skip_flag is False:
+                #     # Annual phase and amplitude for processed years were computed
+                #     global_i = i + ITSLiveComposite.Chunk.start_x
+                #     global_j = j + ITSLiveComposite.Chunk.start_y
+                #
+                #     ind, \
+                #     amplitude[ind, global_j, global_i], \
+                #     phase[ind, global_j, global_i], \
+                #     sigma[ind, global_j, global_i], \
+                #     mean[ind, global_j, global_i], \
+                #     error[ind, global_j, global_i], \
+                #     count[ind, global_j, global_i], \
+                #     outlier_frac[j, i] = results
 
         return outlier_frac
 
