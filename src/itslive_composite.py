@@ -13,10 +13,12 @@ import logging
 import numba as nb
 import numpy  as np
 import os
+import pandas as pd
 import s3fs
 import timeit
 from tqdm import tqdm
 import xarray as xr
+import zarr
 
 # Local imports
 from itscube import ITSCube
@@ -124,14 +126,10 @@ def cube_filter(data, dt, mad_std_ratio):
     maxdt = np.full(dims, np.nan)
 
     # Loop through all spacial points
-    # ATTN: debugging only - process 2 x cells only
     # for j in tqdm(range(0, 1), ascii=True, desc='cube_filter (debug_len=1): y'):
-    # for j_index in tqdm(range(0, y_len), ascii=True, desc='cube_dt_filter: y'):
     for j_index in range(0, y_len):
         for i_index in range(0, x_len):
             maxdt[j_index, i_index], invalid[:, j_index, i_index] = cube_filter_iteration(data[:, j_index, i_index], dt, mad_std_ratio)
-            # maxdt[j, i] = iter_maxdt
-            # invalid[:, j, i] = iter_invalid
 
     return invalid, maxdt
 
@@ -208,17 +206,88 @@ def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr):
     return d_model
 
 @nb.jit(nopython=True)
+def itslive_lsqfit_iteration2(start_year, stop_year, M, w_d, d_obs):
+    _two_pi = np.pi * 2
+    #
+    # Second LSQ iteration
+    #
+    # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
+    # D = [(cos(2*pi*yr(:,1)) - cos(2*pi*yr(:,2)))./(2*pi).*(M>0) (sin(2*pi*yr(:,2)) - sin(2*pi*yr(:,1)))./(2*pi).*(M>0) M];
+    M_pos = M > 0
+    D = np.column_stack( \
+        (((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos,\
+         ((np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos) \
+    )
+
+    # Add M: a different constant for each year (annual mean)
+    D = np.concatenate((D, M), axis=1)
+
+    # Make numpy happy: have all data 2D
+    # w_d.reshape((len(w_d), 1))
+
+    # Solve for coefficients of each column in the Vandermonde:
+    # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
+    p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs)[0]
+
+    # Goodness of fit:
+    d_model = (D * p).sum(axis=1)  # modeled displacements (m)
+
+    return (p, d_model)
+
+@nb.jit(nopython=True)
 def itersect_years(all_years, select_years):
     """
     Get indices of "select_years" into "all_years" array.
-    This is to replace built-in numpy.intersect1d which does not work with
+    This is to replace built-in numpy.intersect1d() which does not work with
     numba.
     """
     lookup_table = {v:i for i, v in enumerate(all_years)}
     return np.array([lookup_table[each] for each in select_years])
 
 @nb.jit(nopython=True)
-def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, mad_std_ratio,
+def init_lsq_fit(v_in, v_err_in, start_dec_year, stop_dec_year):
+    """
+    Initialize variables for LSQ fit.
+    """
+    # start_time = timeit.default_timer()
+    # logging.info(f"Start init of itslive_lsqfit_annual")
+
+    # Ensure we're starting with finite data
+    isf_mask   = np.isfinite(v_in) & np.isfinite(v_err_in)
+    start_year = start_dec_year[isf_mask]
+    stop_year  = stop_dec_year[isf_mask]
+
+    v = v_in[isf_mask]
+    v_err = v_err_in[isf_mask]
+
+    # dt in decimal years
+    dyr = stop_year - start_year
+
+    # Weights for velocities
+    w_v = 1/(v_err**2)
+
+    # Weights (correspond to displacement error, not velocity error):
+    w_d = 1/(v_err*dyr)  # Not squared because the p= line below would then have to include sqrt(w) on both accounts
+    # logging.info(f"w_d.shape: {w_d.shape}")
+
+    # Observed displacement in meters
+    d_obs = v*dyr
+    # logging.info(f"d_obs.shape: {d_obs.shape}")
+
+    # logging.info(f'Finished init of itslive_lsqfit_annual ({timeit.default_timer() - start_time} seconds)')
+    # start_time = timeit.default_timer()
+    # logging.info(f"Start building M")
+
+    # Make matrix of percentages of years corresponding to each displacement measurement
+    y_min = int(np.floor(start_year.min()))
+    y_max = int(np.floor(stop_year.max())) + 1
+    y1 = np.arange(y_min, y_max)
+
+    return (start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1)
+
+# Don't compile the whole function with numba - runs a bit slower (why???)
+# @nb.jit(nopython=True)
+def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_years, mad_std_ratio,
     amplitude,
     phase,
     sigma,
@@ -262,45 +331,13 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     # Minimum number of non-NAN values in the data to proceed with LSQ fit processing
     _num_valid_points = 5
 
-    mask = ~np.isnan(v)
+    mask = ~np.isnan(v_in)
 
-    if np.sum(mask) < _num_valid_points:
+    if mask.sum() < _num_valid_points:
         # Skip the point, return no outliers
         return 0
 
-    # start_time = timeit.default_timer()
-    # logging.info(f"Start init of itslive_lsqfit_annual")
-
-    # Ensure we're starting with finite data
-    isf_mask   = np.isfinite(v) & np.isfinite(v_err)
-    start_year = start_dec_year[isf_mask]
-    stop_year  = stop_dec_year[isf_mask]
-
-    v = v[isf_mask]
-    v_err = v_err[isf_mask]
-
-    # dt in years
-    dyr = stop_year - start_year
-
-    # Weights for velocities
-    w_v = 1/(v_err**2)
-
-    # Weights (correspond to displacement error, not velocity error):
-    w_d = 1/(v_err*dyr)  # Not squared because the p= line below would then have to include sqrt(w) on both accounts
-    # logging.info(f"w_d.shape: {w_d.shape}")
-
-    # Observed displacement in meters
-    d_obs = v*dyr
-    # logging.info(f"d_obs.shape: {d_obs.shape}")
-
-    # logging.info(f'Finished init of itslive_lsqfit_annual ({timeit.default_timer() - start_time} seconds)')
-    # start_time = timeit.default_timer()
-    # logging.info(f"Start building M")
-
-    # Make matrix of percentages of years corresponding to each displacement measurement
-    y_min = int(np.floor(start_year.min()))
-    y_max = int(np.floor(stop_year.max())) + 1
-    y1 = np.arange(y_min, y_max)
+    start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1 = init_lsq_fit(v_in, v_err_in, start_dec_year, stop_dec_year)
 
     M = create_M(y1, start_year, stop_year, dyr)
 
@@ -320,29 +357,6 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     for i in range(0, _mad_filter_iterations):
         # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
         d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr)
-        # D = np.stack( \
-        #         ((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi, \
-        #          (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi), axis=-1)
-        #
-        # # Add M: a different constant for each year (annual mean)
-        # D_M = np.concatenate((D, M), axis=1)
-        # # logging.info(f"D_M.shape: {D_M.shape}")
-        #
-        # # Add ones: constant offset for all data (effectively the mean velocity)
-        # D = np.column_stack((D_M, np.ones(len(dyr))))
-        # # logging.info(f"D.shape: {D.shape}")
-        #
-        # # Make numpy happy: have all data 2D
-        # # w_d.reshape((len(w_d), 1))
-        #
-        # # TODO: Change later to have consistent iterations (use second iteration approach)
-        # # Solve for coefficients of each column in the Vandermonde:
-        # # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
-        # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs)[0]
-        #
-        # # Find and remove outliers
-        # # d_model = sum(bsxfun(@times,D,p'),2); % modeled displacements (m)
-        # d_model = (D * p).sum(axis=1)  # modeled displacements (m)
 
         # Divide by dt to avoid penalizing long dt [asg]
         d_resid = np.abs(d_obs - d_model)/dyr
@@ -351,6 +365,9 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
         d_sigma = np.median(d_resid)*mad_std_ratio
 
         outliers = d_resid > (_mad_thresh * d_sigma)
+        if np.all(outliers):
+            # All are outliers, return from the function
+            return 1.0
 
         # Remove outliers
         non_outlier_mask = ~outliers
@@ -364,11 +381,16 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
 
         # Remove no-data columns from M
         hasdata = M.sum(axis=0) > 1
+
+        if not np.any(hasdata):
+            # TODO: confirm with Alex and Chad - still fails in second iteration as
+            # mask is determined by M.sum()
+            return (totalnum - len(start_year))/totalnum
+
         y1 = y1[hasdata]
         M = M[:, hasdata]
 
-        outliers_fraction = outliers.sum() / totalnum
-        if outliers_fraction < 0.01 and (i+1) !=  _mad_filter_iterations:
+        if (outliers.sum() / totalnum) < 0.01 and (i+1) !=  _mad_filter_iterations:
             # There are less than 1% outliers, skip the rest of iterations
             # if it's not the last iteration
             # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
@@ -377,8 +399,6 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     # ATTN: Matlab had it probably wrong, but confirm on output: outlier_frac = length(yr)./totalnum;
     outlier_frac = (totalnum - len(start_year))/totalnum
 
-    if y1.size == 0:
-        return outlier_frac
 
     # logging.info(f'Finished 1st iteration of LSQ ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
@@ -389,24 +409,25 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
     #
     # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
     # D = [(cos(2*pi*yr(:,1)) - cos(2*pi*yr(:,2)))./(2*pi).*(M>0) (sin(2*pi*yr(:,2)) - sin(2*pi*yr(:,1)))./(2*pi).*(M>0) M];
-    M_pos = M > 0
-    D = np.column_stack( \
-        (((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos,\
-         ((np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos) \
-    )
-
-    # Add M: a different constant for each year (annual mean)
-    D = np.concatenate((D, M), axis=1)
-
-    # Make numpy happy: have all data 2D
-    # w_d.reshape((len(w_d), 1))
-
-    # Solve for coefficients of each column in the Vandermonde:
-    # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
-    p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs)[0]
-
-    # Goodness of fit:
-    d_model = (D * p).sum(axis=1)  # modeled displacements (m)
+    p, d_model = itslive_lsqfit_iteration2(start_year, stop_year, M, w_d, d_obs)
+    # M_pos = M > 0
+    # D = np.column_stack( \
+    #     (((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos,\
+    #      ((np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos) \
+    # )
+    #
+    # # Add M: a different constant for each year (annual mean)
+    # D = np.concatenate((D, M), axis=1)
+    #
+    # # Make numpy happy: have all data 2D
+    # # w_d.reshape((len(w_d), 1))
+    #
+    # # Solve for coefficients of each column in the Vandermonde:
+    # # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
+    # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs)[0]
+    #
+    # # Goodness of fit:
+    # d_model = (D * p).sum(axis=1)  # modeled displacements (m)
 
     # logging.info(f'Finished 2nd iteration of LSQ ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
@@ -466,35 +487,49 @@ def itslive_lsqfit_annual(v, v_err, start_dec_year, stop_dec_year, all_years, ma
 
     return outlier_frac
 
-# @nb.jit(nopython=True)
-# def cubelsqfit2_iteration(x1, x_err1, start_dec_year, stop_dec_year, all_years, mad_std_ratio,
-#     amplitude,
-#     phase,
-#     sigma,
-#     mean,
-#     error,
-#     count
-# ):
-#     """
-#     cubelsqfit2 processing of one spacial point
-#     """
-#     # Minimum number of non-NAN values in the data to proceed with LSQ fit processing
-#     _num_valid_points = 5
-#
-#     mask = ~np.isnan(x1)
-#
-#     if np.sum(mask) < _num_valid_points:
-#         # Skip the point, return no outliers
-#         return 0
-#
-#     return itslive_lsqfit_annual(x1, x_err1, start_dec_year, stop_dec_year, all_years, mad_std_ratio,
-#         amplitude,
-#         phase,
-#         sigma,
-#         mean,
-#         error,
-#         count)
+@nb.jit(nopython=True)
+def prepare_v_components(vxm, vym, x_len, y_len, date_len, vx_error, vy_error, vx_in, vy_in):
+    """
+    """
+    # Does not work with numba
+    # # Need to project velocity onto a unit flow vector to avoid biased (Change from Rician to Normal distribution)
+    # vxm = np.nanmedian(mean_vx, axis=0)
+    # # logging.info(f'Computed vxm (took {timeit.default_timer() - start_time} seconds)')
+    #
+    # vym = np.nanmedian(mean_vy, axis=0)
+    # logging.info(f'Computed vym (took {timeit.default_timer() - start_time} seconds)')
 
+    theta = np.arctan2(vxm, vym)
+    # logging.info(f'theta.shape: {theta.shape}, vxm.shape: {vxm.shape} vym.shape: {vym.shape}')
+    # logging.info(f'Computed theta (took {timeit.default_timer() - start_time} seconds)')
+
+    # Explicitly expand the value
+    dims = (date_len, y_len, x_len)
+    stheta = np.broadcast_to(np.sin(theta), dims)
+    # logging.info(f'Computed stheta (took {timeit.default_timer() - start_time} seconds)')
+
+    ctheta = np.broadcast_to(np.cos(theta), dims)
+    # logging.info(f'Computed ctheta (took {timeit.default_timer() - start_time} seconds)')
+
+    vx = vx_in*stheta + vy_in*ctheta
+    # logging.info(f'vx.shape: {vx.shape}')
+    # logging.info(f'Computed vx (took {timeit.default_timer() - start_time} seconds)')
+
+    # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
+    vxm = np.fabs(vxm)
+    vym = np.fabs(vym)
+    # logging.info(f'Computed fabs (took {timeit.default_timer() - start_time} seconds)')
+
+    # logging.info(f'Tile vy for annual means v using LSQ fit... ')
+    # Expand dimensions of vectors
+    vy = vx_error.reshape((len(vx_error), 1, 1))
+    vy_expand = vy_error.reshape((len(vy_error), 1, 1))
+    # logging.info(f'Reshaped vy and vy_expand (took {timeit.default_timer() - start_time} seconds)')
+
+    vy = np.broadcast_to(vy, dims)*vxm + np.broadcast_to(vy_expand, dims)*vym
+    vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
+
+    return (vx, vy)
 
 class CompositeVariable:
     """
@@ -536,6 +571,8 @@ class ITSLiveComposite:
 
     # S3 store location for the Zarr composite
     S3 = ''
+    # URL location of the Zarr composite
+    URL = ''
 
     # Scalar relation between MAD and STD
     MAD_STD_RATIO = 1.4826
@@ -591,6 +628,7 @@ class ITSLiveComposite:
         # Store "shallow" version of the cube for carrying over some of the metadata
         # when writing composites to the Zarr store
         cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
+        logging.info(f'Cube has attributes: {self.cube_ds.attrs.keys()}')
         self.data = cube_ds[[DataVars.VX, DataVars.VY]]
 
         # Add systematic error based on level of co-registration
@@ -662,6 +700,10 @@ class ITSLiveComposite:
 
         # Date when composites were created
         self.date_created = datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')
+        self.date_updated = self.date_created
+
+        # TODO: take care of self.date_updated when support for composites updates
+        # is implemented
 
     def create(self, output_store: str, s3_bucket: str):
         """
@@ -669,13 +711,17 @@ class ITSLiveComposite:
         """
         # Loop through cube in chunks to minimize memory footprint
         x_start = 0
-        x_num_to_process = self.cube_sizes[Coords.X]
+        # x_num_to_process = self.cube_sizes[Coords.X]
+        # For debugging only
+        x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
             x_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if x_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else x_num_to_process
 
-            y_num_to_process = self.cube_sizes[Coords.Y]
+            # y_num_to_process = self.cube_sizes[Coords.Y]
+            # For debugging only
+            y_num_to_process = 100
             y_start = 0
 
             while y_num_to_process > 0:
@@ -691,7 +737,7 @@ class ITSLiveComposite:
             x_start += x_num_tasks
 
         # Save data to Zarr store
-        # self.to_zarr(output_store, s3_bucket)
+        self.to_zarr(output_store, s3_bucket)
 
         logging.info(f"Done.")
 
@@ -704,8 +750,6 @@ class ITSLiveComposite:
         stop_y = start_y + num_y
         stop_x = start_x + num_x
         ITSLiveComposite.Chunk = Chunk(start_x, stop_x, num_x, start_y, stop_y, num_y)
-
-        logging.info(f"Processing datacube[:, {start_y}:{stop_y}, {start_x}:{stop_x}] coordinates out of [{self.cube_sizes[Coords.MID_DATE]}, {self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]")
 
         # TODO:
         # % form unique sensor_satellite ID to pass to "cubetimemean"... not
@@ -825,53 +869,61 @@ class ITSLiveComposite:
 
         logging.info(f'Prepare vx and vy for annual means v using LSQ fit... ')
         start_time = timeit.default_timer()
-        # Need to project velocity onto a unit flow vector to avoid biased (Change from Rician to Normal distribution)
-        vxm = np.nanmedian(self.mean.vx[:, start_y:stop_y, start_x:stop_x], axis=0)
-        # logging.info(f'Computed vxm (took {timeit.default_timer() - start_time} seconds)')
 
-        vym = np.nanmedian(self.mean.vy[:, start_y:stop_y, start_x:stop_x], axis=0)
-        # logging.info(f'Computed vym (took {timeit.default_timer() - start_time} seconds)')
-
-        theta = np.arctan2(vxm, vym)
-        # logging.info(f'theta.shape: {theta.shape}, vxm.shape: {vxm.shape} vym.shape: {vym.shape}')
-        # logging.info(f'Computed theta (took {timeit.default_timer() - start_time} seconds)')
-
-        # Explicitly expand the value
-        # stheta = np.tile(np.sin(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
-        # ctheta = np.tile(np.cos(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
-
-
-        # stheta = np.tile(np.sin(theta), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
-        stheta = np.broadcast_to(np.sin(theta), (ITSLiveComposite.MID_DATE_LEN, stop_y - start_y, stop_x - start_x))
-        # logging.info(f'Computed stheta (took {timeit.default_timer() - start_time} seconds)')
-
-        # ctheta = np.tile(np.cos(theta), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
-        ctheta = np.broadcast_to(np.cos(theta), (ITSLiveComposite.MID_DATE_LEN, stop_y - start_y, stop_x - start_x))
-        # logging.info(f'Computed ctheta (took {timeit.default_timer() - start_time} seconds)')
-
-        vx = vx*stheta + vy*ctheta
-        # logging.info(f'vx.shape: {vx.shape}')
-        # logging.info(f'Computed vx (took {timeit.default_timer() - start_time} seconds)')
-
-        # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
-        vxm = np.fabs(vxm)
-        vym = np.fabs(vym)
-        # logging.info(f'Computed fabs (took {timeit.default_timer() - start_time} seconds)')
-
-        # logging.info(f'Tile vy for annual means v using LSQ fit... ')
-        # Expand dimensions of vectors
-        vy = self.vx_error.reshape((len(self.vx_error), 1, 1))
-        vy_expand = self.vy_error.reshape((len(self.vy_error), 1, 1))
-        # logging.info(f'Reshaped vy and vy_expand (took {timeit.default_timer() - start_time} seconds)')
-
-        # vy = np.tile(vy, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vxm
-        # vy += np.tile(vy_expand, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vym
-        vy = np.broadcast_to(vy, (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vxm
-        vy += np.broadcast_to(vy_expand, (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vym
-
-        # logging.info(f'Tiled vy (took {timeit.default_timer() - start_time} seconds)')
-
-        vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
+        vx, vy = prepare_v_components(
+            np.nanmedian(self.mean.vx[:, start_y:stop_y, start_x:stop_x], axis=0),
+            np.nanmedian(self.mean.vy[:, start_y:stop_y, start_x:stop_x], axis=0),
+            ITSLiveComposite.Chunk.x_len,
+            ITSLiveComposite.Chunk.y_len,
+            ITSLiveComposite.MID_DATE_LEN,
+            self.vx_error,
+            self.vy_error,
+            vx, vy
+        )
+        # # Need to project velocity onto a unit flow vector to avoid biased (Change from Rician to Normal distribution)
+        # vxm = np.nanmedian(self.mean.vx[:, start_y:stop_y, start_x:stop_x], axis=0)
+        # # logging.info(f'Computed vxm (took {timeit.default_timer() - start_time} seconds)')
+        #
+        # vym = np.nanmedian(self.mean.vy[:, start_y:stop_y, start_x:stop_x], axis=0)
+        # # logging.info(f'Computed vym (took {timeit.default_timer() - start_time} seconds)')
+        #
+        # theta = np.arctan2(vxm, vym)
+        # # logging.info(f'theta.shape: {theta.shape}, vxm.shape: {vxm.shape} vym.shape: {vym.shape}')
+        # # logging.info(f'Computed theta (took {timeit.default_timer() - start_time} seconds)')
+        #
+        # # Explicitly expand the value
+        # # stheta = np.tile(np.sin(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        # # ctheta = np.tile(np.cos(theta).astype(float), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        #
+        #
+        # # stheta = np.tile(np.sin(theta), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        # stheta = np.broadcast_to(np.sin(theta), (ITSLiveComposite.MID_DATE_LEN, stop_y - start_y, stop_x - start_x))
+        # # logging.info(f'Computed stheta (took {timeit.default_timer() - start_time} seconds)')
+        #
+        # # ctheta = np.tile(np.cos(theta), (ITSLiveComposite.MID_DATE_LEN, 1, 1))
+        # ctheta = np.broadcast_to(np.cos(theta), (ITSLiveComposite.MID_DATE_LEN, stop_y - start_y, stop_x - start_x))
+        # # logging.info(f'Computed ctheta (took {timeit.default_timer() - start_time} seconds)')
+        #
+        # vx = vx*stheta + vy*ctheta
+        # # logging.info(f'vx.shape: {vx.shape}')
+        # # logging.info(f'Computed vx (took {timeit.default_timer() - start_time} seconds)')
+        #
+        # # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
+        # vxm = np.fabs(vxm)
+        # vym = np.fabs(vym)
+        # # logging.info(f'Computed fabs (took {timeit.default_timer() - start_time} seconds)')
+        #
+        # # logging.info(f'Tile vy for annual means v using LSQ fit... ')
+        # # Expand dimensions of vectors
+        # vy = self.vx_error.reshape((len(self.vx_error), 1, 1))
+        # vy_expand = self.vy_error.reshape((len(self.vy_error), 1, 1))
+        # # logging.info(f'Reshaped vy and vy_expand (took {timeit.default_timer() - start_time} seconds)')
+        #
+        # # vy = np.tile(vy, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vxm
+        # # vy += np.tile(vy_expand, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vym
+        # vy = np.broadcast_to(vy, (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vxm
+        # vy += np.broadcast_to(vy_expand, (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))*vym
+        # vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
         # logging.info(f'vy.shape: {vy.shape}')
         logging.info(f'Finished vx and vy for annual means v using LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
@@ -900,6 +952,8 @@ class ITSLiveComposite:
         """
         Store datacube annual composite to the Zarr store.
         """
+        logging.info(f'Writing composites to {output_store}')
+
         # Variables information to store in Zarr.
         TIME = 'time'
         SENSORS = 'sensors'
@@ -916,8 +970,8 @@ class ITSLiveComposite:
         VY_PHASE = 'vy_phase'
         V_PHASE = 'v_phase'
         COUNT = 'count'
-        DT_MAX = 'dt_max'
-        NUM_LYR = 'num_lyr'
+        MAX_DT = 'dt_max'
+        OUTLIER_FRAC = 'outlier_frac'
 
         STD_NAME = {
             DataVars.VX: 'x_velocity',
@@ -937,8 +991,9 @@ class ITSLiveComposite:
             VY_PHASE: 'vy_phase',
             V_PHASE: 'v_phase',
             COUNT: 'count',
-            DT_MAX: 'dt_max',
-            NUM_LYR: 'num_lyr'
+            MAX_DT: 'dt_max',
+            OUTLIER_FRAC: 'outlier_frac',
+            SENSORS: 'sensors'   # TODO: confirm name
         }
 
         DESCRIPTION = {
@@ -959,9 +1014,31 @@ class ITSLiveComposite:
             VY_PHASE:    'mean seasonal phase in vy',
             V_PHASE:     'mean seasonal phase in v',
             COUNT:       'number of image pairs used in error weighted average',
-            DT_MAX:      'maximum allowable dt used in error weighting',
-            NUM_LYR:     'total number of image-pair layers fed into solution'
+            MAX_DT:      'maximum allowable dt used in error weighting',
+            OUTLIER_FRAC: 'fraction of data identified as outliers and excluded',
+            SENSORS:      'combinations of unique sensors and missions that are grouped together for data filtering'   # TODO: confirm name
         }
+
+        TIME_ATTRS = {
+            DataVars.STD_NAME: STD_NAME[TIME],
+            DataVars.DESCRIPTION_ATTR: DESCRIPTION[TIME]
+        }
+        SENSORS_ATTRS = {
+            DataVars.STD_NAME: STD_NAME[SENSORS],
+            DataVars.DESCRIPTION_ATTR: DESCRIPTION[SENSORS]
+        }
+        X_ATTRS = {
+            DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
+            DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X]
+        }
+        Y_ATTRS = {
+            DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
+            DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
+        }
+
+        # Convert years to datetime objects
+        ITSLiveComposite.YEARS = [datetime.datetime(each, 1, 1) for each in ITSLiveComposite.YEARS]
+        logging.info(f"Converted years to datetime objs: {ITSLiveComposite.YEARS}")
 
         ds = xr.Dataset(
             coords = {
@@ -985,8 +1062,8 @@ class ITSLiveComposite:
                     Coords.X,
                     self.cube_ds.x.values,
                     {
-                        DataVars.STD_NAME: DataVars.STD_NAME[Coords.X],
-                        DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[Coords.X]
+                        DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
+                        DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X]
                     }
                 ),
                 Coords.Y: (
@@ -1003,25 +1080,43 @@ class ITSLiveComposite:
             }
         )
 
-        ds.attrs['datacube_software_version'] = ITSLiveComposite.Version
+        ds.attrs['composites_software_version'] = ITSLiveComposite.VERSION
         ds.attrs['date_created'] = self.date_created
-        ds.attrs['datacube_s3'] = self.cube_ds.attrs['s3']
+        ds.attrs['date_updated'] = self.date_updated
+
+        # To support old format datacubes for testing
+        # TODO: remove once done testing with old cubes (to compare to Matlab)
+        if 's3' in self.cube_ds.attrs:
+            ds.attrs['datecube_s3'] = self.cube_ds.attrs['s3']
+            ds.attrs['datecube_url'] = self.cube_ds.attrs['url']
+
+        ds.attrs['datecube_created'] = self.cube_ds.attrs['date_created']
+        ds.attrs['datecube_updated'] = self.cube_ds.attrs['date_updated']
+        ds.attrs['datacube_software_version'] = self.cube_ds.attrs['datacube_software_version']
+        ds.attrs['datacube_autoRIFT_parameter_file'] = self.cube_ds.attrs['autoRIFT_parameter_file']
+
         ds.attrs['GDAL_AREA_OR_POINT'] = 'Area'
-        ds.attrs['geo_polygon']  = self.cube_ds.attrs['geo_polygon']
+
+        # To support old format datacubes for testing
+        # TODO: remove once done testing with old cubes (to compare to Matlab)
+        if 'geo_polygon' in self.cube_ds.attrs:
+            ds.attrs['geo_polygon']  = self.cube_ds.attrs['geo_polygon']
+            ds.attrs['proj_polygon'] = self.cube_ds.attrs['proj_polygon']
+
         ds.attrs['institution'] = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
         ds.attrs['latitude']  = self.cube_ds.attrs['latitude']
         ds.attrs['longitude'] = self.cube_ds.attrs['longitude']
-        ds.attrs['proj_polygon'] = self.cube_ds.attrs['proj_polygon']
+        # ds.attrs['proj_polygon'] = self.cube_ds.attrs['proj_polygon']
         ds.attrs['projection'] = self.cube_ds.attrs['projection']
-        ds.attrs['s3'] = ITSLiveComposite.S3
         ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG1] = self.cube_ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG1]
         ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG2] = self.cube_ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG2]
-
+        ds.attrs['s3'] = ITSLiveComposite.S3
+        ds.attrs['url'] = ITSLiveComposite.URL
         ds.attrs['institution'] = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
-        ds.attrs['title'] = 'ITS_LIVE annual image_pair velocities'
+        ds.attrs['title'] = 'ITS_LIVE annual composites of image_pair velocities'
 
         # Add data as variables
-        composite_ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
+        ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
 
         years_coord = pd.Index(ITSLiveComposite.YEARS, name=TIME)
         var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
@@ -1035,7 +1130,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[DataVars.VX],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[DataVars.VX],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
         self.mean.vx = None
@@ -1048,7 +1144,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[DataVars.VY],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[DataVars.VY],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
         self.mean.vy = None
@@ -1061,7 +1158,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[DataVars.V],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[DataVars.V],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
         self.mean.v = None
@@ -1074,7 +1172,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[VX_ERROR],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
         self.error.vx = None
@@ -1087,7 +1186,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[VY_ERROR],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
         self.error.vy = None
@@ -1100,7 +1200,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[V_ERROR],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
         self.error.v = None
@@ -1113,7 +1214,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[VX_SE],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_SE],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
         self.sigma.vx = None
@@ -1126,7 +1228,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[VY_SE],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_SE],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
         self.sigma.vy = None
@@ -1139,7 +1242,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[V_SE],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_SE],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
         self.sigma.v = None
@@ -1152,7 +1256,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[VX_AMP],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_AMP],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_UNITS
             }
         )
         self.amplitude.vx = None
@@ -1165,7 +1270,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[VY_AMP],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_AMP],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_UNITS
             }
         )
         self.amplitude.vy = None
@@ -1178,7 +1284,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[V_AMP],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_AMP],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_UNITS
             }
         )
         self.amplitude.v = None
@@ -1191,7 +1298,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[VX_PHASE],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_PHASE],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_UNITS
             }
         )
         self.phase.vx = None
@@ -1204,7 +1312,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[VY_PHASE],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_PHASE],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_UNITS
             }
         )
         self.phase.vy = None
@@ -1217,7 +1326,8 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[V_PHASE],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_PHASE],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_UNITS
             }
         )
         self.phase.v = None
@@ -1230,42 +1340,126 @@ class ITSLiveComposite:
             attrs={
                 DataVars.STD_NAME: STD_NAME[COUNT],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[COUNT],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.COUNT_UNITS
             }
         )
         self.count = None
         gc.collect()
 
-        ds[COUNT] = xr.DataArray(
-            data=self.count.v,
+        # Add max_dt (per sensor)
+        sensor_coord = pd.Index(self.unique_sensors, name=SENSORS)
+        var_coords = [sensor_coord, self.cube_ds.y.values, self.cube_ds.x.values]
+        var_dims = [SENSORS, Coords.Y, Coords.X]
+
+        ds[MAX_DT] = xr.DataArray(
+            data=self.max_dt,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[COUNT],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[COUNT],
-                DataVars.GRID_MAPPING: DataVars.MAPPING
+                DataVars.STD_NAME: STD_NAME[MAX_DT],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[MAX_DT],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.ImgPairInfo.UNITS[DataVars.ImgPairInfo.DATE_DT]
             }
         )
-        self.count = None
+        self.max_dt = None
         gc.collect()
 
-        sensor_coord = pd.Index(self.sensors, name=SENSORS)
-        var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [ZarrDataVars.TIME, Coords.Y, Coords.X]
+        var_coords = [self.cube_ds.y.values, self.cube_ds.x.values]
+        var_dims = [Coords.Y, Coords.X]
 
-        # TODO:
-        dims = (y_len, x_len)
-        self.outlier_fraction = np.full(dims, np.nan)
+        ds[OUTLIER_FRAC] = xr.DataArray(
+            data=self.outlier_fraction,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[OUTLIER_FRAC],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[OUTLIER_FRAC],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.FRACTION_UNITS
+            }
+        )
+        self.outlier_fraction = None
+        gc.collect()
 
-        # Sensor data for the cube's layers
-        self.sensors = cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
+        # ATTN: Set attributes for the Dataset coordinates as the very last step:
+        # when adding data variables that don't have the same attributes for the
+        # coordinates, originally set Dataset coordinates will be wiped out
+        # (xarray bug?)
+        ds[Coords.X].attrs = X_ATTRS
+        ds[Coords.Y].attrs = Y_ATTRS
+        ds[TIME].attrs = TIME_ATTRS
+        ds[SENSORS].attrs = SENSORS_ATTRS
 
-        # Identify unique sensors within datacube
-        self.unique_sensors = list(set(self.sensors))
-        # Keep values sorted to be consistent
-        self.unique_sensors.sort()
-        dims = (len(self.unique_sensors), y_len, x_len)
-        self.max_dt = np.full(dims, np.nan)
+        # Set encoding
+        encoding_settings = {}
+        encoding_settings.setdefault(TIME, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
+
+        for each in [TIME, SENSORS, Coords.X, Coords.Y]:
+            encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
+
+        # Compression for the data
+        compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
+
+        # Settings for "float" data types
+        for each in [
+            DataVars.VX,
+            DataVars.VY,
+            DataVars.V,
+            VX_ERROR,
+            VY_ERROR,
+            V_ERROR,
+            VX_SE,
+            VY_SE,
+            V_SE,
+            VX_AMP,
+            VY_AMP,
+            V_AMP,
+            VX_PHASE,
+            VY_PHASE,
+            V_PHASE,
+            OUTLIER_FRAC
+            ]:
+            encoding_settings.setdefault(each, {}).update({
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                'dtype': 'float',
+                'compressor': compressor
+            })
+
+        # Settings for "short" datatypes
+        for each in [COUNT, MAX_DT]:
+            encoding_settings.setdefault(each, {}).update({
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+                'dtype': 'short'
+            })
+
+        # Chunking to apply when writing datacube to the Zarr store
+        chunks_settings = (len(ITSLiveComposite.YEARS), 100, 100)
+
+        for each in [
+            DataVars.VX,
+            DataVars.VY,
+            DataVars.V,
+            VX_ERROR,
+            VY_ERROR,
+            V_ERROR,
+            VX_SE,
+            VY_SE,
+            V_SE,
+            VX_AMP,
+            VY_AMP,
+            V_AMP,
+            VX_PHASE,
+            VY_PHASE,
+            V_PHASE
+            ]:
+            encoding_settings[each].update({
+                'chunks': chunks_settings
+            })
+
+        logging.info(f"Encoding settings: {encoding_settings}")
+        ds.to_zarr(output_store, encoding=encoding_settings, consolidated=True)
 
     @staticmethod
     def cubelsqfit2(
@@ -1358,7 +1552,7 @@ if __name__ == '__main__':
              'This should be multiples of the size of chunking used within the cube to optimize data reads [%(default)d].'
     )
     parser.add_argument(
-        '-i', '--inputStore',
+        '-i', '--inputCube',
         type=str,
         default=None,
         help="Input Zarr datacube store to generate mosaics for [%(default)s]."
@@ -1370,20 +1564,34 @@ if __name__ == '__main__':
         help="Zarr output directory to write composite data to [%(default)s]."
     )
     parser.add_argument(
-        '-b', '--bucket',
+        '-b', '--inputBucket',
         type=str,
         default='',
-        help="S3 bucket to copy Zarr format of the input datacube from, and to store cube composite to [%(default)s]."
+        help="S3 bucket with input datacube Zarr store [%(default)s]."
+    )
+    parser.add_argument(
+        '-t', '--targetBucket',
+        type=str,
+        default='',
+        help="S3 bucket to store cube composite in Zarr format to [%(default)s]."
     )
     args = parser.parse_args()
 
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
 
-    ITSLiveComposite.S3 = os.path.join(args.bucket, args.outputStore)
+    if len(args.targetBucket):
+        ITSLiveComposite.S3 = os.path.join(args.targetBucket, args.outputStore)
+        logging.info(f'Composite S3: {ITSLiveComposite.S3}')
+
+        # URL is valid only if output S3 bucket is provided
+        ITSLiveComposite.URL = ITSCube.S3.replace(ITSCube.S3_PREFIX, ITSCube.HTTP_PREFIX)
+        url_tokens = urlparse(ITSLiveComposite.URL)
+        ITSLiveComposite.URL = url_tokens._replace(netloc=url_tokens.netloc+ITSCube.PATH_URL).geturl()
+        logging.info(f'Composite URL: {ITSLiveComposite.URL}')
 
     # s3://its-live-data/test_datacubes/AGU2021/S70W100/ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.zarr
     # AGU21_ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.nc
 
-    mosaics = ITSLiveComposite(args.inputStore, args.bucket)
-    mosaics.create(args.outputStore, args.bucket)
+    mosaics = ITSLiveComposite(args.inputCube, args.inputBucket)
+    mosaics.create(args.outputStore, args.targetBucket)
