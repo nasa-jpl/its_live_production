@@ -547,6 +547,39 @@ class CompositeVariable:
 # Currently processed datacube chunk
 Chunk = collections.namedtuple("Chunk", ['start_x', 'stop_x', 'x_len', 'start_y', 'stop_y', 'y_len'])
 
+class MissionSensor:
+    """
+    Mission and sensor combos that should be grouped during filtering by date_dt.
+    Group together:
+    Sentinel1: 1A and 1B sensors
+    Sentinel2: 2A and 2B sensors
+    Landsat8 and Landsat9
+    """
+    # Tuple to keep mission, sensors and string representation of the grouped
+    # mission/sensors information as to be written to the Zarr composites store
+    # filter
+    MSTuple = collections.namedtuple("MissionSensorTuple", ['mission', 'sensors', 'sensors_label'])
+
+    LANDSAT = MSTuple('L', ['8.', '9.'], 'L8_L9')
+    # If datacube contains only numeric sensor values (Landsat8 or Landsat9),
+    # sensor values are of type float, otherwise sensor values are of string type
+    # ---> support both
+    LANDSAT_NUM = MSTuple('L', [8.0, 9.0], 'L8_L9')
+    SENTINEL1 = MSTuple('S', ['1A', '1B'], 'S1A_S1B')
+    SENTINEL2 = MSTuple('S', ['2A', '2B'], 'S2A_S2B')
+
+    # TODO: update with granules information as new missions granules are added
+    GROUPS = {
+        '8.': LANDSAT,
+        '9.': LANDSAT,
+        8.0: LANDSAT_NUM,
+        9.0: LANDSAT_NUM,
+        '1A': SENTINEL1,
+        '1B': SENTINEL1,
+        '2A': SENTINEL2,
+        '2B': SENTINEL2
+    }
+
 class ITSLiveComposite:
     """
     CLass to build annual composites for ITS_LIVE datacubes.
@@ -690,12 +723,33 @@ class ITSLiveComposite:
 
         # Sensor data for the cube's layers
         self.sensors = cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
+        self.missions = cube_ds[DataVars.ImgPairInfo.MISSION_IMG1].values
 
-        # Identify unique sensors within datacube
-        self.unique_sensors = list(set(self.sensors))
+        # Identify unique sensors within datacube.
+        # ATTN: if the same sensor is present for multiple missions,
+        # this WON'T WORK - need to identify unique
+        # mission and sensor pairs present in the cube
+        unique_sensors = list(set(self.sensors))
         # Keep values sorted to be consistent
-        self.unique_sensors.sort()
-        dims = (len(self.unique_sensors), y_len, x_len)
+        unique_sensors.sort()
+        logging.info(f'Identified unique sensors: {unique_sensors}')
+
+        # Make sure each identified sensor is listed in the MissionSensor.GROUPS
+        for each in unique_sensors:
+            if each not in MissionSensor.GROUPS:
+                raise RuntimeError(f'Unknown sensor {each} is detected. " \
+                    f"Sensor value must be listed in MissionSensor.GROUPS ({MissionSensor.GROUPS}) " \
+                    f"to identify the group it belongs to for "date_dt" filtering.')
+
+        # Identify unique sensor groups
+        self.sensors_groups = []
+        collected_sensors = []
+        for each in unique_sensors:
+            if each not in collected_sensors:
+                self.sensors_groups.append(MissionSensor.GROUPS[each])
+                collected_sensors.extend(self.sensors_groups[-1].sensors)
+
+        dims = (len(self.sensors_groups), y_len, x_len)
         self.max_dt = np.full(dims, np.nan)
 
         # Date when composites were created
@@ -711,17 +765,17 @@ class ITSLiveComposite:
         """
         # Loop through cube in chunks to minimize memory footprint
         x_start = 0
-        # x_num_to_process = self.cube_sizes[Coords.X]
+        x_num_to_process = self.cube_sizes[Coords.X]
         # For debugging only
-        x_num_to_process = 100
+        # x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
             x_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if x_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else x_num_to_process
 
-            # y_num_to_process = self.cube_sizes[Coords.Y]
+            y_num_to_process = self.cube_sizes[Coords.Y]
             # For debugging only
-            y_num_to_process = 100
+            # y_num_to_process = 100
             y_start = 0
 
             while y_num_to_process > 0:
@@ -751,10 +805,6 @@ class ITSLiveComposite:
         stop_x = start_x + num_x
         ITSLiveComposite.Chunk = Chunk(start_x, stop_x, num_x, start_y, stop_y, num_y)
 
-        # TODO:
-        # % form unique sensor_satellite ID to pass to "cubetimemean"... not
-        # % done in matlab verison because can't read in 'mission_img1'
-
         # % convert to singles (Float32) to reduce memory footprint
         # for k = 1:length(vars)
         #     if any(strcmp({'vx','vy','vx_error','vy_error'}, vars{k}))
@@ -778,7 +828,7 @@ class ITSLiveComposite:
 
         # Loop for each unique sensor (those groupings image pairs that can be
         # expected to have different temporal decorelation)
-        dims = (len(self.unique_sensors), ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
+        dims = (len(self.sensors_groups), ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
         vx_maxdt = np.full(dims, np.nan)
         vy_maxdt = np.full(dims, np.nan)
 
@@ -790,10 +840,17 @@ class ITSLiveComposite:
         logging.info(f'Loading vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}]...')
         vy = self.data.vy[:, start_y:stop_y, start_x:stop_x].astype(float).values
 
-        for i in range(len(self.unique_sensors)):
-            logging.info(f'Filtering dt for sensor "{self.unique_sensors[i]}" ({i+1} out of {len(self.unique_sensors)})')
-            # Find which layers correspond to each sensor
-            mask = (self.sensors == self.unique_sensors[i])
+        for i in range(len(self.sensors_groups)):
+            sensor_group = self.sensors_groups[i]
+            logging.info(f'Filtering dt for sensors "{sensor_group.sensors}" ({i+1} out ' \
+                f'of {len(self.sensors_groups)} sensor groups)')
+
+            # Find which layers correspond to each sensor group
+            mask = np.zeros((ITSLiveComposite.MID_DATE_LEN), dtype=np.bool_)
+
+            for each in sensor_group.sensors:
+                # logging.info(f'Update mask with {each} as part of the sensor group')
+                mask |= (self.sensors == each)
 
             # Filter current block's variables
             # TODO: Don't drop variables when masking - won't work on return assignment
@@ -802,13 +859,11 @@ class ITSLiveComposite:
 
             logging.info(f'Filtering vx...')
             start_time = timeit.default_timer()
-            # vx_invalid[mask, :, :], vx_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vx[mask, ...], dt_masked)
             vx_invalid[mask, :, :], vx_maxdt[i, :, :] = cube_filter(vx[mask, ...], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
             logging.info(f'Filtered vx (took {timeit.default_timer() - start_time} seconds)')
 
             logging.info(f'Filtering vy...')
             start_time = timeit.default_timer()
-            # vy_invalid[mask, :, :], vy_maxdt[i, :, :] = ITSLiveComposite.cube_filter(vy[mask, ...], dt_masked)
             vy_invalid[mask, :, :], vy_maxdt[i, :, :] = cube_filter(vy[mask, ...], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
             logging.info(f'Filtered vy (took {timeit.default_timer() - start_time} seconds)')
 
@@ -1016,7 +1071,7 @@ class ITSLiveComposite:
             COUNT:       'number of image pairs used in error weighted average',
             MAX_DT:      'maximum allowable dt used in error weighting',
             OUTLIER_FRAC: 'fraction of data identified as outliers and excluded',
-            SENSORS:      'combinations of unique sensors and missions that are grouped together for data filtering'   # TODO: confirm name
+            SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering'   # TODO: confirm name
         }
 
         TIME_ATTRS = {
@@ -1040,6 +1095,8 @@ class ITSLiveComposite:
         ITSLiveComposite.YEARS = [datetime.datetime(each, 1, 1) for each in ITSLiveComposite.YEARS]
         logging.info(f"Converted years to datetime objs: {ITSLiveComposite.YEARS}")
 
+        # Create list of sensors groups labels
+        sensors_labels = [each.sensors_label for each in self.sensors_groups]
         ds = xr.Dataset(
             coords = {
                 TIME: (
@@ -1052,7 +1109,7 @@ class ITSLiveComposite:
                 ),
                 SENSORS: (
                     SENSORS,
-                    self.unique_sensors,
+                    sensors_labels,
                     {
                         DataVars.STD_NAME: STD_NAME[SENSORS],
                         DataVars.DESCRIPTION_ATTR: DESCRIPTION[SENSORS]
@@ -1348,7 +1405,8 @@ class ITSLiveComposite:
         gc.collect()
 
         # Add max_dt (per sensor)
-        sensor_coord = pd.Index(self.unique_sensors, name=SENSORS)
+        # Use "group" label for each of the sensors used to filter data
+        sensor_coord = pd.Index(sensors_labels, name=SENSORS)
         var_coords = [sensor_coord, self.cube_ds.y.values, self.cube_ds.x.values]
         var_dims = [SENSORS, Coords.Y, Coords.X]
 
