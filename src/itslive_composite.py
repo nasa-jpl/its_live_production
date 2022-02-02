@@ -457,7 +457,7 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
     v_int = p[2*Nyrs:]
 
     # Number of equivalent image pairs per year: (1 image pair equivalent means a full year of data. It takes about 23 16-day image pairs to make 1 year equivalent image pair.)
-    N_int = np.sum(M>0)
+    N_int = (M>0).sum(axis=0)
     v_int = p[2*Nyrs:]
 
     # Reshape array to have the same number of dimensions as M for multiplication
@@ -1068,8 +1068,8 @@ class ITSLiveComposite:
             VX_PHASE:    'mean seasonal phase in vx',
             VY_PHASE:    'mean seasonal phase in vy',
             V_PHASE:     'mean seasonal phase in v',
-            COUNT:       'number of image pairs used in error weighted average',
-            MAX_DT:      'maximum allowable dt used in error weighting',
+            COUNT:       'number of image pairs used in error weighted least squares fit',
+            MAX_DT:      'maximum allowable time separation between image pair acquisitions included in least squares fit',
             OUTLIER_FRAC: 'fraction of data identified as outliers and excluded',
             SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering'   # TODO: confirm name
         }
@@ -1091,8 +1091,8 @@ class ITSLiveComposite:
             DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
         }
 
-        # Convert years to datetime objects
-        ITSLiveComposite.YEARS = [datetime.datetime(each, 1, 1) for each in ITSLiveComposite.YEARS]
+        # Convert years to datetime objects to represent the center of calendar year
+        ITSLiveComposite.YEARS = [datetime.datetime(each, 7, 2) for each in ITSLiveComposite.YEARS]
         logging.info(f"Converted years to datetime objs: {ITSLiveComposite.YEARS}")
 
         # Create list of sensors groups labels
@@ -1165,8 +1165,6 @@ class ITSLiveComposite:
         ds.attrs['longitude'] = self.cube_ds.attrs['longitude']
         # ds.attrs['proj_polygon'] = self.cube_ds.attrs['proj_polygon']
         ds.attrs['projection'] = self.cube_ds.attrs['projection']
-        ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG1] = self.cube_ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG1]
-        ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG2] = self.cube_ds.attrs[DataVars.ImgPairInfo.TIME_STANDARD_IMG2]
         ds.attrs['s3'] = ITSLiveComposite.S3
         ds.attrs['url'] = ITSLiveComposite.URL
         ds.attrs['institution'] = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
