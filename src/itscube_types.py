@@ -67,20 +67,21 @@ class DataVars:
     STABLE_COUNT_MASK          = 'stable_count_mask' # New format
 
     # Attributes for vx, vy, vr, va
-    # FLAG_STABLE_SHIFT             = 'flag_stable_shift' # In Radar and updated Optical formats
+    # FLAG_STABLE_SHIFT             = 'flag_stable_shift' # Old granule format: In Radar and updated Optical formats
     FLAG_STABLE_SHIFT             = 'stable_shift_flag' # In Radar and updated Optical formats
     FLAG_STABLE_SHIFT_DESCRIPTION = 'stable_shift_flag_description'
     STABLE_SHIFT                  = 'stable_shift'
     STABLE_SHIFT_SLOW             = 'stable_shift_slow' # New format
     STABLE_SHIFT_MASK             = 'stable_shift_mask' # New format
 
-    STD_NAME       = 'standard_name'
-    UNITS          = 'units'
-    M_Y_UNITS      = 'm/y'
-    M_UNITS        = 'm'
-    COUNT_UNITS    = 'count'
-    BINARY_UNITS   = 'binary'
-    FRACTION_UNITS = 'fraction'
+    STD_NAME          = 'standard_name'
+    UNITS             = 'units'
+    M_Y_UNITS         = 'm/y'
+    M_UNITS           = 'm'
+    COUNT_UNITS       = 'count'
+    BINARY_UNITS      = 'binary'
+    FRACTION_UNITS    = 'fraction'
+    DAY_OF_YEAR_UNITS = 'day of year'
 
     # Original data variables and their attributes per ITS_LIVE granules.
     V       = 'v'
