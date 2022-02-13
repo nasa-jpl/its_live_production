@@ -22,6 +22,7 @@ from botocore.exceptions import ClientError
 
 import hyp3_sdk as sdk
 import numpy as np
+import pandas as pd
 
 
 #
@@ -85,14 +86,15 @@ class ASFTransfer:
         If provided, don't process job IDs listed in exclude_job_ids_file (
         as previously processed).
         """
-        job_ids = json.loads(job_ids_file.read_text())
+        jobs = pd.read_csv(job_ids_file)
+
         if exclude_job_ids_file is not None:
             exclude_ids = json.loads(exclude_job_ids_file.read_text())
 
             # Remove exclude_ids from the jobs to process
-            job_ids = list(set(job_ids).difference(exclude_ids))
+            jobs = jobs.loc[~jobs.job_id.isin(exclude_ids)].copy()
 
-        total_num_to_copy = len(job_ids)
+        total_num_to_copy = len(jobs)
         num_to_copy = total_num_to_copy - start_job
         start = start_job
         logging.info(f"{num_to_copy} out of {total_num_to_copy} granules to copy...")
@@ -102,8 +104,8 @@ class ASFTransfer:
             num_tasks = chunks_to_copy if num_to_copy > chunks_to_copy else num_to_copy
 
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
-            for id in job_ids[start:start+num_tasks]:
-                each_result, _ = ASFTransfer.copy_granule(id)
+            for id, out_name in jobs.iloc[start:start+num_tasks].itertuples(index=False):
+                each_result, _ = ASFTransfer.copy_granule(id, out_name)
                 logging.info("-->".join(each_result))
                 ASFTransfer.PROCESSED_JOB_IDS.append(id)
 
@@ -128,14 +130,15 @@ class ASFTransfer:
         If provided, don't process job IDs listed in exclude_job_ids_file (
         as previously processed).
         """
-        job_ids = json.loads(job_ids_file.read_text())
+        jobs = pd.read_csv(job_ids_file)
+
         if exclude_job_ids_file is not None:
             exclude_ids = json.loads(exclude_job_ids_file.read_text())
 
             # Remove exclude_ids from the jobs to process
-            job_ids = list(set(job_ids).difference(exclude_ids))
+            jobs = jobs.loc[~jobs.job_id.isin(exclude_ids)].copy()
 
-        total_num_to_copy = len(job_ids)
+        total_num_to_copy = len(jobs)
         num_to_copy = total_num_to_copy - start_job
         start = start_job
         logging.info(f"{num_to_copy} out of {total_num_to_copy} granules to copy...")
@@ -144,7 +147,8 @@ class ASFTransfer:
             num_tasks = chunks_to_copy if num_to_copy > chunks_to_copy else num_to_copy
 
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
-            tasks = [dask.delayed(ASFTransfer.copy_granule)(id) for id in job_ids[start:start+num_tasks]]
+            tasks = [dask.delayed(ASFTransfer.copy_granule)(id, out_name)
+                     for id, out_name in jobs.iloc[start:start+num_tasks].itertuples(index=False)]
             assert len(tasks) == num_tasks
             results = None
 
@@ -176,7 +180,7 @@ class ASFTransfer:
         return True
 
     @staticmethod
-    def copy_granule(job_id):
+    def copy_granule(job_id, out_name):
         """
         Copy granule from source to target bucket if it does not exist in target
         bucket already.
@@ -198,10 +202,10 @@ class ASFTransfer:
 
             target_prefix = point_to_prefix(ASFTransfer.TARGET_BUCKET_DIR, lat, lon)
             bucket = boto3.resource('s3').Bucket(ASFTransfer.TARGET_BUCKET)
-            target = f"{target_prefix}/{job.files[0]['filename']}"
+            target = f"{target_prefix}/{out_name}"
 
             # Remove filename postfix which should not make it to the
-            if target.endswith('_IL_ASF_OD.nc'):
+            if target.endswith(f'{ASFTransfer.POSTFIX_TO_RM}.nc'):
                 target = target.replace(ASFTransfer.POSTFIX_TO_RM, '')
 
             source = job.files[0]['s3']['key']
