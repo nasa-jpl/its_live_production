@@ -307,17 +307,6 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
     # variability, and also gives interannual variability.
     #
     # From original Matlab code:
-    # %% Syntax
-    # %
-    # %  [A,ph] = itslive_sinefit_lsq(t,v,v_err)
-    # %  [A,ph,A_err,t_int,v_int,v_int_err,N_int] = itslive_sinefit_lsq(t,v,v_err)
-    # %
-    # %% Description
-    # %
-    # % [A,ph] = itslive_sinefit_lsq(t,v,v_err) gives the amplitude and phase of a seasonal
-    # % cycle for a single-pixel itslive time series. Times t are Nx2, velocities v
-    # % are Nx1 and velocity error v_err are Nx1.
-    # %
     # % [A,ph,A_err,t_int,v_int,v_int_err,N_int] = itslive_sinefit_lsq(t,v,v_err)
     # % also returns the standard deviation of amplitude residuals A_err. Outputs
     # % t_int and v_int describe interannual velocity variability, and can then
@@ -334,15 +323,6 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
     # Filter parameters for lsq fit for outlier rejections
     _mad_thresh = 3
     _mad_filter_iterations = 3
-
-    # Minimum number of non-NAN values in the data to proceed with LSQ fit processing
-    _num_valid_points = 5
-
-    mask = ~np.isnan(v_in)
-
-    if mask.sum() < _num_valid_points:
-        # Skip the point, return no outliers
-        return 0
 
     start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1 = init_lsq_fit(v_in, v_err_in, start_dec_year, stop_dec_year)
 
@@ -433,7 +413,7 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
     for k in range(Nyrs):
         ind = M[:, k] > 0
         # asg replaced call to wmean
-        A_err[k] = weighted_std(d_obs[ind]-d_model[ind], w_d[ind]) / (w_d[ind]*dyr[ind]).sum() / dyr[ind].sum()
+        A_err[k] = weighted_std(d_obs[ind]-d_model[ind], w_d[ind]) / ((w_d[ind]*dyr[ind]).sum() / dyr[ind].sum())
 
     v_int = p[2*Nyrs:]
 
@@ -743,7 +723,7 @@ class ITSLiveComposite:
         self.max_dt = np.full(dims, np.nan)
 
         # Date when composites were created
-        self.date_created = datetime.datetime.now().strftime('%d-%m-%Y %H:%M:%S')
+        self.date_created = datetime.datetime.now().strftime('%d-%b-%Y %H:%M:%S')
         self.date_updated = self.date_created
 
         # TODO: take care of self.date_updated when support for composites updates
@@ -964,7 +944,7 @@ class ITSLiveComposite:
         V_ERROR = 'v_error'
         VX_SE = 'vx_amp_error'
         VY_SE = 'vy_amp_error'
-        V_SE = 'v_amp_error'
+        V_SE  = 'v_amp_error'
         VX_AMP = 'vx_amp'
         VY_AMP = 'vy_amp'
         V_AMP = 'v_amp'
@@ -983,41 +963,41 @@ class ITSLiveComposite:
             VX_ERROR: 'x_velocity_error',
             VY_ERROR: 'y_velocity_error',
             V_ERROR:  'velocity_error',
-            VX_SE: 'x_velocity_se',
-            VY_SE: 'y_velocity_se',
-            V_SE:  'velocity_se',
-            VX_AMP: 'vx_amp',
-            VY_AMP: 'vy_amp',
-            V_AMP: 'v_amp',
+            VX_SE:  'vx_amplitude_error',
+            VY_SE:  'vy_amplitude_error',
+            V_SE:   'v_amplitude_error',
+            VX_AMP: 'vx_amplitude',
+            VY_AMP: 'vy_amplitude',
+            V_AMP:  'v_amp',
             VX_PHASE: 'vx_phase',
             VY_PHASE: 'vy_phase',
-            V_PHASE: 'v_phase',
-            COUNT: 'count',
+            V_PHASE:  'v_phase',
+            COUNT:  'count',
             MAX_DT: 'dt_max',
             OUTLIER_FRAC: 'outlier_frac',
-            SENSORS: 'sensors'   # TODO: confirm name
+            SENSORS: 'sensors'
         }
 
         DESCRIPTION = {
-            DataVars.VX: 'error weighted velocity component in x direction',
-            DataVars.VY: 'error weighted velocity component in y direction',
-            DataVars.V:  'error weighted velocity magnitude',
+            DataVars.VX: 'mean annual velocity component of sinusoidal fit to vx',
+            DataVars.VY: 'mean annual velocity component of sinusoidal fit to vy',
+            DataVars.V:  'mean annual velocity of sinusoidal fit to v',
             TIME:        'time',
-            VX_ERROR:    'error weighted error for velocity component in x direction',
-            VY_ERROR:    'error weighted error for velocity component in y direction',
-            V_ERROR:     'error weighted error for velocity magnitude',
-            VX_SE:       'error weighted standard error for velocity component in x direction',
-            VY_SE:       'error weighted standard error for velocity component in y direction',
-            V_SE:        'error weighted standard error for velocity magnitude',
-            VX_AMP:      'mean seasonal amplitude in vx',
-            VY_AMP:      'mean seasonal amplitude in vy',
-            V_AMP:       'mean seasonal amplitude in v',
-            VX_PHASE:    'day of maximum velocity in sinusoidal fit in vx',
-            VY_PHASE:    'day of maximum velocity in sinusoidal fit in vy',
-            V_PHASE:     'day of maximum velocity in sinusoidal fit in v',
+            VX_ERROR:    'error weighted error for vx',
+            VY_ERROR:    'error weighted error for vy',
+            V_ERROR:     'error weighted error for v',
+            VX_SE:       'error weighted standard error for vx_amp',
+            VY_SE:       'error weighted standard error for vy_amp',
+            V_SE:        'error weighted standard error v_amp',
+            VX_AMP:      'mean seasonal amplitude of sinusoidal fit to vx',
+            VY_AMP:      'mean seasonal amplitude in sinusoidal fit in vy',
+            V_AMP:       'mean seasonal amplitude of sinusoidal fit to v',
+            VX_PHASE:    'day of maximum velocity of sinusoidal fit to vx',
+            VY_PHASE:    'day of maximum velocity of sinusoidal fit to vy',
+            V_PHASE:     'day of maximum velocity of sinusoidal fit to v',
             COUNT:       'number of image pairs used in error weighted least squares fit',
-            MAX_DT:      'maximum allowable time separation between image pair acquisitions included in least squares fit',
-            OUTLIER_FRAC: 'fraction of data identified as outliers and excluded',
+            MAX_DT:      'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
+            OUTLIER_FRAC: 'fraction of data identified as outliers and excluded from error weighted least squares fit',
             SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering'   # TODO: confirm name
         }
 
@@ -1031,11 +1011,13 @@ class ITSLiveComposite:
         }
         X_ATTRS = {
             DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
-            DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X]
+            DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X],
+            DataVars.UNITS: DataVars.M_UNITS
         }
         Y_ATTRS = {
             DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
-            DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
+            DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y],
+            DataVars.UNITS: DataVars.M_UNITS
         }
 
         # Convert years to datetime objects to represent the center of calendar year
@@ -1485,10 +1467,9 @@ class ITSLiveComposite:
 
         Return: outlier_frac
         """
-        #
-        # Get start and end dates
-        # tt = [t - dt/2, t+dt/2];
-        #
+        # Minimum number of non-NAN values in the data to proceed with LSQ fit
+        _num_valid_points = 5
+
         # Initialize output
         start_time = timeit.default_timer()
         dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
@@ -1506,6 +1487,10 @@ class ITSLiveComposite:
         # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
         for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
             for i in range(0, ITSLiveComposite.Chunk.x_len):
+                mask = ~np.isnan(v[:, j, i])
+                if mask.sum() < _num_valid_points:
+                    # Skip the point, return no outliers
+                    continue
 
                 global_i = i + ITSLiveComposite.Chunk.start_x
                 global_j = j + ITSLiveComposite.Chunk.start_y
@@ -1524,19 +1509,6 @@ class ITSLiveComposite:
                     error[:, global_j, global_i],
                     count[:, global_j, global_i]
                 )
-                # if skip_flag is False:
-                #     # Annual phase and amplitude for processed years were computed
-                #     global_i = i + ITSLiveComposite.Chunk.start_x
-                #     global_j = j + ITSLiveComposite.Chunk.start_y
-                #
-                #     ind, \
-                #     amplitude[ind, global_j, global_i], \
-                #     phase[ind, global_j, global_i], \
-                #     sigma[ind, global_j, global_i], \
-                #     mean[ind, global_j, global_i], \
-                #     error[ind, global_j, global_i], \
-                #     count[ind, global_j, global_i], \
-                #     outlier_frac[j, i] = results
 
         return outlier_frac
 
