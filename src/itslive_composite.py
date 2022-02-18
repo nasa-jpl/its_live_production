@@ -413,7 +413,7 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
     for k in range(Nyrs):
         ind = M[:, k] > 0
         # asg replaced call to wmean
-        A_err[k] = weighted_std(d_obs[ind]-d_model[ind], w_d[ind]) / ((w_d[ind]*dyr[ind]).sum() / dyr[ind].sum())
+        A_err[k] = weighted_std(d_obs[ind]-d_model[ind], w_d[ind]) / ((w_d[ind]*dyr[ind]).sum() / w_d[ind].sum())
 
     v_int = p[2*Nyrs:]
 
@@ -938,13 +938,13 @@ class ITSLiveComposite:
 
         # Variables information to store in Zarr.
         TIME = 'time'
-        SENSORS = 'sensors'
+        SENSORS = 'sensor'
         VX_ERROR = 'vx_error'
         VY_ERROR = 'vy_error'
         V_ERROR = 'v_error'
-        VX_SE = 'vx_amp_error'
-        VY_SE = 'vy_amp_error'
-        V_SE  = 'v_amp_error'
+        VX_AMP_ERROR = 'vx_amp_error'
+        VY_AMP_ERROR = 'vy_amp_error'
+        V_AMP_ERROR = 'v_amp_error'
         VX_AMP = 'vx_amp'
         VY_AMP = 'vy_amp'
         V_AMP = 'v_amp'
@@ -959,44 +959,44 @@ class ITSLiveComposite:
             DataVars.VX: 'x_velocity',
             DataVars.VY: 'y_velocity',
             DataVars.V:  'velocity',
-            TIME: 'time',
             VX_ERROR: 'x_velocity_error',
             VY_ERROR: 'y_velocity_error',
             V_ERROR:  'velocity_error',
-            VX_SE:  'vx_amplitude_error',
-            VY_SE:  'vy_amplitude_error',
-            V_SE:   'v_amplitude_error',
+            VX_AMP_ERROR: 'vx_amplitude_error',
+            VY_AMP_ERROR: 'vy_amplitude_error',
+            V_AMP_ERROR:  'v_amplitude_error',
             VX_AMP: 'vx_amplitude',
             VY_AMP: 'vy_amplitude',
-            V_AMP:  'v_amp',
+            V_AMP:  'v_amplitude',
             VX_PHASE: 'vx_phase',
             VY_PHASE: 'vy_phase',
             V_PHASE:  'v_phase',
-            COUNT:  'count',
-            MAX_DT: 'dt_max',
-            OUTLIER_FRAC: 'outlier_frac',
-            SENSORS: 'sensors'
+            SENSORS: 'sensors',
+            TIME: 'time',
+            COUNT: 'count',
+            MAX_DT: 'dt_maximum',
+            OUTLIER_FRAC: 'outlier_fraction'
         }
 
         DESCRIPTION = {
-            DataVars.VX: 'mean annual velocity component of sinusoidal fit to vx',
-            DataVars.VY: 'mean annual velocity component of sinusoidal fit to vy',
-            DataVars.V:  'mean annual velocity of sinusoidal fit to v',
-            TIME:        'time',
-            VX_ERROR:    'error weighted error for vx',
-            VY_ERROR:    'error weighted error for vy',
-            V_ERROR:     'error weighted error for v',
-            VX_SE:       'error weighted standard error for vx_amp',
-            VY_SE:       'error weighted standard error for vy_amp',
-            V_SE:        'error weighted standard error v_amp',
-            VX_AMP:      'mean seasonal amplitude of sinusoidal fit to vx',
-            VY_AMP:      'mean seasonal amplitude in sinusoidal fit in vy',
-            V_AMP:       'mean seasonal amplitude of sinusoidal fit to v',
-            VX_PHASE:    'day of maximum velocity of sinusoidal fit to vx',
-            VY_PHASE:    'day of maximum velocity of sinusoidal fit to vy',
-            V_PHASE:     'day of maximum velocity of sinusoidal fit to v',
-            COUNT:       'number of image pairs used in error weighted least squares fit',
-            MAX_DT:      'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
+            DataVars.VX:  'mean annual velocity of sinusoidal fit to vx',
+            DataVars.VY:  'mean annual velocity of sinusoidal fit to vy',
+            DataVars.V:   'mean annual velocity of sinusoidal fit to v',
+            TIME:         'time',
+            VX_ERROR:     'error weighted error for vx',
+            VY_ERROR:     'error weighted error for vy',
+            V_ERROR:      'error weighted error for v',
+            VX_AMP_ERROR: 'error weighted standard error for vx_amp',
+            VY_AMP_ERROR: 'error weighted standard error for vy_amp',
+            V_AMP_ERROR:  'error weighted standard error for v_amp',
+            VX_AMP:       'mean seasonal amplitude of sinusoidal fit to vx',
+            VY_AMP:       'mean seasonal amplitude in sinusoidal fit in vy',
+            V_AMP:        'mean seasonal amplitude of sinusoidal fit to v',
+            VX_PHASE:     'day of maximum velocity of sinusoidal fit to vx',
+            VY_PHASE:     'day of maximum velocity of sinusoidal fit to vy',
+            V_PHASE:      'day of maximum velocity of sinusoidal fit to v',
+            COUNT:        'number of image pairs used in error weighted least squares fit',
+            MAX_DT:       'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
             OUTLIER_FRAC: 'fraction of data identified as outliers and excluded from error weighted least squares fit',
             SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering'   # TODO: confirm name
         }
@@ -1206,13 +1206,13 @@ class ITSLiveComposite:
         self.amplitude.v = None
         gc.collect()
 
-        ds[V_SE] = xr.DataArray(
+        ds[V_AMP_ERROR] = xr.DataArray(
             data=self.sigma.v,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[V_SE],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_SE],
+                DataVars.STD_NAME: STD_NAME[V_AMP_ERROR],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_AMP_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1248,13 +1248,13 @@ class ITSLiveComposite:
         self.amplitude.vx = None
         gc.collect()
 
-        ds[VX_SE] = xr.DataArray(
+        ds[VX_AMP_ERROR] = xr.DataArray(
             data=self.sigma.vx,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VX_SE],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_SE],
+                DataVars.STD_NAME: STD_NAME[VX_AMP_ERROR],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_AMP_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1290,13 +1290,13 @@ class ITSLiveComposite:
         self.amplitude.vy = None
         gc.collect()
 
-        ds[VY_SE] = xr.DataArray(
+        ds[VY_AMP_ERROR] = xr.DataArray(
             data=self.sigma.vy,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VY_SE],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_SE],
+                DataVars.STD_NAME: STD_NAME[VY_AMP_ERROR],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_AMP_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1398,9 +1398,9 @@ class ITSLiveComposite:
             VX_ERROR,
             VY_ERROR,
             V_ERROR,
-            VX_SE,
-            VY_SE,
-            V_SE,
+            VX_AMP_ERROR,
+            VY_AMP_ERROR,
+            V_AMP_ERROR,
             VX_AMP,
             VY_AMP,
             V_AMP,
@@ -1432,9 +1432,9 @@ class ITSLiveComposite:
             VX_ERROR,
             VY_ERROR,
             V_ERROR,
-            VX_SE,
-            VY_SE,
-            V_SE,
+            VX_AMP_ERROR,
+            VY_AMP_ERROR,
+            V_AMP_ERROR,
             VX_AMP,
             VY_AMP,
             V_AMP,
