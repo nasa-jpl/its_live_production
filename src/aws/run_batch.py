@@ -4,12 +4,14 @@ Script to drive Batch processing for datacube generation at AWS.
 It accepts geojson file with datacube definitions and submits one AWS Batch job
 per each datacube which has ROI (region of interest) != 0.
 """
+import argparse
 import boto3
 import json
 import logging
 import math
 import os
 from pathlib import Path
+import sys
 
 from grid import Bounds
 import itslive_utils
@@ -244,6 +246,10 @@ class DataCubeBatch:
 
 def main(
     dry_run: bool,
+    epsg_code: str,
+    exclude_epsg: str,
+    process_cubes_file: Path,
+    process_cubes: str,
     cube_definition_file: str,
     grid_size: int,
     batch_job: str,
@@ -255,6 +261,33 @@ def main(
     """
     Driver to submit multiple Batch jobs to AWS.
     """
+    epsg_codes = list(map(str, json.loads(epsg_code))) if epsg_code is not None else None
+    if epsg_codes and len(epsg_codes):
+        logging.info(f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes")
+        DataCubeBatch.EPSG_TO_GENERATE = epsg_codes
+
+    epsg_codes = list(map(str, json.loads(exclude_epsg))) if exclude_epsg is not None else None
+    if epsg_codes and len(epsg_codes):
+        logging.info(f"Got EPSG codes to exclude: {epsg_codes}")
+        DataCubeBatch.EPSG_TO_EXCLUDE = epsg_codes
+
+    # Make sure there is no overlap in EPSG_TO_GENERATE and EPSG_TO_EXCLUDE
+    diff = set(DataCubeBatch.EPSG_TO_GENERATE).intersection(DataCubeBatch.EPSG_TO_EXCLUDE)
+    if len(diff):
+        raise RuntimeError(f"The same code is specified for DataCubeBatch.EPSG_TO_EXCLUDE={DataCubeBatch.EPSG_TO_EXCLUDE} and DataCubeBatch.EPSG_TO_GENERATE={DataCubeBatch.EPSG_TO_GENERATE}")
+
+    if process_cubes_file:
+        # Check for this option first as another mutually exclusive option has a default value
+        DataCubeBatch.CUBES_TO_GENERATE = process_cubes_file.read_text().split('\n')
+        # Replace each path by the datacube basename
+        DataCubeBatch.CUBES_TO_GENERATE = [os.path.basename(each) for each in DataCubeBatch.CUBES_TO_GENERATE if len(each)]
+        logging.info(f"Found {len(DataCubeBatch.CUBES_TO_GENERATE)} of datacubes to generate from {process_cubes_file}: {DataCubeBatch.CUBES_TO_GENERATE}")
+
+    elif process_cubes:
+        DataCubeBatch.CUBES_TO_GENERATE = json.loads(process_cubes)
+        if len(DataCubeBatch.CUBES_TO_GENERATE):
+            logging.info(f"Found {len(DataCubeBatch.CUBES_TO_GENERATE)} of datacubes to generate from {process_cubes}: {DataCubeBatch.CUBES_TO_GENERATE}")
+
     # Submit Batch job to AWS for each datacube which has ROI!=0
     run_batch = DataCubeBatch(
         grid_size,
@@ -265,13 +298,10 @@ def main(
     run_batch(cube_definition_file, s3_bucket, bucket_dir, output_job_file, number_of_cubes)
 
 
-if __name__ == '__main__':
-    import argparse
-    import sys
-    import warnings
-
-    warnings.filterwarnings('ignore')
-
+def parse_args():
+    """
+    Create command-line argument parser and parse arguments.
+    """
     # Set up logging
     logging.basicConfig(
         level = logging.INFO,
@@ -294,21 +324,21 @@ if __name__ == '__main__':
         '-b', '--bucket',
         type=str,
         action='store',
-        default='s3://its-live-data.jpl.nasa.gov',
+        default='s3://its-live-data',
         help="Destination S3 bucket for the datacubes [%(default)s]"
     )
     parser.add_argument(
         '-u', '--urlPath',
         type=str,
         action='store',
-        default='http://its-live-data.jpl.nasa.gov.s3.amazonaws.com',
+        default='http://its-live-data.s3.amazonaws.com',
         help="URL for the datacube store in S3 bucket (to provide for easier download option) [%(default)s]"
     )
     parser.add_argument(
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='datacubes/v01',
+        default='datacubes/v02',
         help="Destination S3 bucket for the datacubes [%(default)s]"
     )
     parser.add_argument(
@@ -399,40 +429,23 @@ if __name__ == '__main__':
     args = parser.parse_args()
     logging.info(f"Command-line arguments: {sys.argv}")
 
-    epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
-    if epsg_codes and len(epsg_codes):
-        logging.info(f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes")
-        DataCubeBatch.EPSG_TO_GENERATE = epsg_codes
-
-    epsg_codes = list(map(str, json.loads(args.excludeEPSG))) if args.excludeEPSG is not None else None
-    if epsg_codes and len(epsg_codes):
-        logging.info(f"Got EPSG codes to exclude: {epsg_codes}")
-        DataCubeBatch.EPSG_TO_EXCLUDE = epsg_codes
-
-    # Make sure there is no overlap in EPSG_TO_GENERATE and EPSG_TO_EXCLUDE
-    diff = set(DataCubeBatch.EPSG_TO_GENERATE).intersection(DataCubeBatch.EPSG_TO_EXCLUDE)
-    if len(diff):
-        raise RuntimeError(f"The same code is specified for DataCubeBatch.EPSG_TO_EXCLUDE={DataCubeBatch.EPSG_TO_EXCLUDE} and DataCubeBatch.EPSG_TO_GENERATE={DataCubeBatch.EPSG_TO_GENERATE}")
-
     DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
     DataCubeBatch.HTTP_PREFIX       = args.urlPath
     DataCubeBatch.PATH_TOKEN        = args.pathToken
 
-    if args.processCubesFile:
-        # Check for this option first as another mutually exclusive option has a default value
-        DataCubeBatch.CUBES_TO_GENERATE = args.processCubesFile.read_text().split('\n')
-        # Replace each path by the datacube basename
-        DataCubeBatch.CUBES_TO_GENERATE = [os.path.basename(each) for each in DataCubeBatch.CUBES_TO_GENERATE if len(each)]
-        logging.info(f"Found {len(DataCubeBatch.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubesFile}")
+    return args
 
-    elif args.processCubes:
-        DataCubeBatch.CUBES_TO_GENERATE = json.loads(args.processCubes)
-        if len(DataCubeBatch.CUBES_TO_GENERATE):
-            logging.info(f"Found {len(DataCubeBatch.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubes}")
 
+if __name__ == '__main__':
+
+    args = parse_args()
 
     main(
         args.dry,
+        args.epsgCode,
+        args.excludeEPSG,
+        args.processCubesFile,
+        args.processCubes,
         args.cubeDefinitionFile,
         args.gridSize,
         args.batchJobDefinition,
