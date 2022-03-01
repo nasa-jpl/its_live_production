@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import sys
+from shapely import geometry
 
 from grid import Bounds
 import itslive_utils
@@ -57,6 +58,9 @@ class DataCubeBatch:
     # List of datacube filenames to generate if only specific datacubes should be generated.
     # If an empty list then generate all qualifying datacubes.
     CUBES_TO_GENERATE = []
+
+    # Generate datacubes which centers fall within provided polygon
+    POLYGON_SHAPE = None
 
     # Number of granules to process in parallel at a time (to avoid out of memory
     # failures)
@@ -167,6 +171,12 @@ class DataCubeBatch:
                         DataCubeBatch.LON_LAT_PROJECTION,
                         mid_x, mid_y
                     )
+
+                    if not DataCubeBatch.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1])):
+                        logging.info(f"Skipping non-polygon point: {mid_lon_lat}")
+                        # Provided polygon does not contain cube's center point
+                        continue
+
                     bucket_dir = itslive_utils.point_to_prefix(mid_lon_lat[1], mid_lon_lat[0], bucket_dir_path)
                     if len(DataCubeBatch.PATH_TOKEN) and DataCubeBatch.PATH_TOKEN not in bucket_dir:
                         # A way to pick specific 10x10 grid cell for the datacube
@@ -250,6 +260,7 @@ def main(
     exclude_epsg: str,
     process_cubes_file: Path,
     process_cubes: str,
+    process_cubes_within_polygon: str,
     cube_definition_file: str,
     grid_size: int,
     batch_job: str,
@@ -287,6 +298,16 @@ def main(
         DataCubeBatch.CUBES_TO_GENERATE = json.loads(process_cubes)
         if len(DataCubeBatch.CUBES_TO_GENERATE):
             logging.info(f"Found {len(DataCubeBatch.CUBES_TO_GENERATE)} of datacubes to generate from {process_cubes}: {DataCubeBatch.CUBES_TO_GENERATE}")
+
+    if process_cubes_within_polygon:
+        with open(process_cubes_within_polygon, 'r') as fhandle:
+            shape_file = json.load(fhandle)
+
+            logging.info(f'Reading region polygon the datacube\'s central point should fall into: {process_cubes_within_polygon}')
+            shapefile_coords = shape_file[CubeJson.FEATURES][0]['geometry']['coordinates']
+            logging.info(f'Got polygon coordinates: {shapefile_coords}')
+            line = geometry.LineString(shapefile_coords[0][0])
+            DataCubeBatch.POLYGON_SHAPE = geometry.Polygon(line)
 
     # Submit Batch job to AWS for each datacube which has ROI!=0
     run_batch = DataCubeBatch(
@@ -352,14 +373,14 @@ def parse_args():
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-30Gb:1',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-convert-4vCPU-32GB',
+        default='datacube-convert-8vCPU-64GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
@@ -377,7 +398,7 @@ def parse_args():
         help="JSON list to specify EPSG codes of interest for the datacubes to generate [%(default)s]"
     )
     parser.add_argument(
-        '--dry',
+        '--dryrun',
         action='store_true',
         help='Dry run, do not actually submit any AWS Batch jobs'
     )
@@ -417,6 +438,13 @@ def parse_args():
         default=None,
         help="File that contains JSON list of filenames for datacube to generate [%(default)s]."
     )
+    group.add_argument(
+        '--processCubesWithinPolygon',
+        type=str,
+        action='store',
+        default=None,
+        help="GeoJSON file that stores polygon the cubes centers should belong to [%(default)s]."
+    )
 
     parser.add_argument(
         '--excludeEPSG',
@@ -441,11 +469,12 @@ if __name__ == '__main__':
     args = parse_args()
 
     main(
-        args.dry,
+        args.dryrun,
         args.epsgCode,
         args.excludeEPSG,
         args.processCubesFile,
         args.processCubes,
+        args.processCubesWithinPolygon,
         args.cubeDefinitionFile,
         args.gridSize,
         args.batchJobDefinition,
