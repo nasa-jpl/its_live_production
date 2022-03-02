@@ -1,5 +1,11 @@
 [default]
+retry_mode = standard
+max_attempts = 20
 region = us-west-2
 output = json
 s3 =
-    max_concurrent_requests = 100
+  max_concurrent_requests = 40
+  max_queue_size = 20000
+  multipart_threshold = 64MB
+  multipart_chunksize = 32MB
+  max_bandwidth = 50MB/s
