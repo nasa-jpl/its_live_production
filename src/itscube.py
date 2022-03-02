@@ -2,7 +2,7 @@
 ITSCube class creates ITS_LIVE datacube based on target projection,
 bounding polygon and datetime period provided by the caller.
 
-Authors: Masha Liukis
+Authors: Masha Liukis, Alex Gardner, Mark Fahnestock
 """
 import copy
 from dateutil.parser import parse
@@ -25,6 +25,7 @@ from dask.diagnostics import ProgressBar
 import numpy  as np
 import pandas as pd
 import s3fs
+import subprocess
 from tqdm import tqdm
 import xarray as xr
 from urllib.parse import urlparse
@@ -120,7 +121,8 @@ class ITSCube:
     AWS_COPY_SLEEP_SECONDS = 60
 
     # Chunking to apply when writing datacube to the Zarr store
-    CHUNKS_SETTINGS_3D = (250, 100, 100)
+    TIME_CHUNK_VALUE = 20000
+    X_Y_CHUNK_VALUE = 10
 
     # Landsat8 filename prefixes to use when we need to remove duplicate
     # reprocessed granules for Landsat8
@@ -202,8 +204,11 @@ class ITSCube:
         self.layers = None
 
         # Dates when datacube was created or updated
-        self.date_created = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
+        self.date_created = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
         self.date_updated = None
+
+        # Number of layers for cube generation based on the searchAPI query return
+        self.max_number_of_layers = 0
 
     def clear_vars(self):
         """
@@ -267,6 +272,8 @@ class ITSCube:
             self.logger.info(f"No granules are found for the search API parameters: {params}, " \
                               "skipping datacube generation or update")
             return found_urls
+
+        self.max_number_of_layers = len(urls)
 
         # Number of granules to examine is specified
         # ATTN: just a way to limit number of granules to be considered for the
@@ -1736,6 +1743,13 @@ class ITSCube:
                          Coords.MID_DATE]:
                 encoding_settings.setdefault(each, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
+            # Determine optimal chunking for the cube
+            chunking_settings_3d = (
+                min(self.max_number_of_layers, ITSCube.TIME_CHUNK_VALUE),
+                ITSCube.X_Y_CHUNK_VALUE,
+                ITSCube.X_Y_CHUNK_VALUE
+            )
+
             # Set chunking for writing to the store
             for each in [DataVars.INTERP_MASK,
                          DataVars.CHIP_SIZE_HEIGHT,
@@ -1746,7 +1760,7 @@ class ITSCube:
                          DataVars.VR,
                          DataVars.VX,
                          DataVars.VY]:
-                encoding_settings.setdefault(each, {})['chunks'] = ITSCube.CHUNKS_SETTINGS_3D
+                encoding_settings.setdefault(each, {})['chunks'] = chunking_settings_3d
 
             # Does not work:
             # for each in [
@@ -1898,12 +1912,65 @@ class ITSCube:
         if values.min() < start_date:
             raise RuntimeError(f"Unexpected mid_date: {values.min()}")
 
+    @staticmethod
+    def remove_s3_datacube(cube_store: str, skipped_granules_file: str, s3_bucket: str):
+        """
+        Remove Zarr store and corresponding json file (with records of skipped
+        granules for the cube) in S3 if they exists - this is done to replace existing
+        cube with newly generated one:
+            * at the beginning of the processing if --removeExistingCube command-line
+              option is provided
+            * at the end of the processing if destination location of created
+              cube is in S3 bucket. This is done to avoid lingering Zarr objects
+              generated with other settings which will result in different
+              "directory" structure of the Zarr store.
+        """
+        # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
+        # resulting in as many error messages as there are files in Zarr store
+        # to copy
+        env_copy = os.environ.copy()
+        if ITSCube.exists(cube_store, s3_bucket):
+            cube_s3_path = os.path.join(s3_bucket, cube_store)
+
+            command_line = [
+                "awsv2", "s3", "rm", "--recursive",
+                cube_s3_path
+            ]
+            logging.info(f'Removing existing cube {cube_s3_path}: {" ".join(command_line)}')
+
+            command_return = subprocess.run(
+                command_line,
+                env=env_copy,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
+            if command_return.returncode != 0:
+                raise RuntimeError(f"Failed to remove original {cube_s3_path}: {command_return.stdout}")
+
+            json_s3_path = os.path.join(s3_bucket, skipped_granules_file)
+
+            command_line = [
+                "awsv2", "s3", "rm",
+                json_s3_path
+            ]
+            logging.info(f'Removing existing skipped granules json {json_s3_path}: {" ".join(command_line)}')
+
+            command_return = subprocess.run(
+                command_line,
+                env=env_copy,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
+            if command_return.returncode != 0:
+                raise RuntimeError(f"Failed to remove original {json_s3_path}: {command_return.stdout}")
+
 
 if __name__ == '__main__':
     import argparse
     import warnings
     import sys
-    import subprocess
     import time
 
     warnings.filterwarnings('ignore')
@@ -1913,19 +1980,14 @@ if __name__ == '__main__':
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         '-t', '--threads',
-        type=int, default=4,
+        type=int, default=8,
         help='number of Dask workers to use for parallel processing [%(default)d].'
     )
     parser.add_argument(
-        '-s', '--scheduler',
-        type=str,
-        default="processes",
-        help="Dask scheduler to use. One of ['threads', 'processes'] (effective only when --parallel option is specified) [%(default)s]."
-    )
-    parser.add_argument(
-        '-p', '--parallel',
+        '-r', '--removeExistingCube',
         action='store_true',
-        help='Enable parallel processing, default is to process all granules in parallel'
+        default=False,
+        help='Flag to remove existing datacube in S3 bucket, default is to update existing datacube.'
     )
     parser.add_argument(
         '-n', '--numberGranules',
@@ -1934,12 +1996,12 @@ if __name__ == '__main__':
         help="number of ITS_LIVE granules to consider for the cube (due to runtime limitations). "
              " If none is provided, process all found granules."
     )
-    parser.add_argument(
-        '-l', '--localPath',
-        type=str,
-        default=None,
-        help='Local path that stores ITS_LIVE granules.'
-    )
+    # parser.add_argument(
+    #     '-l', '--localPath',
+    #     type=str,
+    #     default=None,
+    #     help='Local path that stores ITS_LIVE granules.'
+    # )
     parser.add_argument(
         '-o', '--outputStore',
         type=str,
@@ -1973,7 +2035,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-g', '--gridCellSize',
         type=int,
-        default=240,
+        default=120,
         help="Grid cell size of input ITS_LIVE granules [%(default)d]."
     )
     parser.add_argument(
@@ -2023,7 +2085,6 @@ if __name__ == '__main__':
         raise RuntimeError(f'Output Zarr store is expected to have {FileExtension.ZARR} extension, got {args.outputStore}')
 
     ITSCube.NUM_THREADS = args.threads
-    ITSCube.DASK_SCHEDULER = args.scheduler
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
 
@@ -2042,8 +2103,14 @@ if __name__ == '__main__':
         ITSCube.S3 = ''
         ITSCube.URL = ''
 
+
     # Set local file path for skipped granules info
     ITSCube.SKIPPED_GRANULES_FILE = args.outputStore.replace(FileExtension.ZARR, FileExtension.JSON)
+
+    if args.removeExistingCube and len(args.outputBucket):
+        # Remove Zarr store in S3 if it exists - this is done to replace existing
+        # cube with newly generated one
+        ITSCube.remove_s3_datacube(args.outputStore, ITSCube.SKIPPED_GRANULES_FILE, args.outputBucket)
 
     projection = args.targetProjection
 
@@ -2132,49 +2199,30 @@ if __name__ == '__main__':
             # "sub-directory" structure. This will result in original "sub-directories"
             # and "new" ones to co-exist for the same Zarr store. This doubles up
             # the Zarr disk usage in S3 bucket.
-            env_copy = os.environ.copy()
-            if ITSCube.exists(args.outputStore, args.outputBucket):
-                command_line = [
-                    "awsv2", "s3", "rm", "--recursive",
-                    os.path.join(args.outputBucket, args.outputStore)
-                ]
-                logging.info(' '.join(command_line))
+            ITSCube.remove_s3_datacube(args.outputStore, ITSCube.SKIPPED_GRANULES_FILE, args.outputBucket)
 
-                command_return = subprocess.run(
-                    command_line,
-                    env=env_copy,
-                    check=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT
-                )
-                if command_return.returncode != 0:
-                    raise RuntimeError(f"Failed to remove original {args.outputStore} from {args.outputBucket}: {command_return.stdout}")
+            env_copy = os.environ.copy()
 
             # Allow for multiple retries to avoid AWS triggered errors
             for each_input, each_recursive_option, each_validate_flag in zip(
                 [args.outputStore, ITSCube.SKIPPED_GRANULES_FILE],
-                ['--recursive', None],
+                [True, False],
                 [True, False]
             ):
                 file_is_copied = False
                 num_retries = 0
                 command_return = None
 
-                if each_recursive_option is not None:
-                    command_line = [
-                        "awsv2", "s3", "cp", "--recursive",
-                        each_input,
-                        os.path.join(args.outputBucket, os.path.basename(each_input)),
-                        "--acl", "bucket-owner-full-control"
-                    ]
+                command_line = ["awsv2", "s3", "cp"]
 
-                else:
-                    command_line = [
-                        "awsv2", "s3", "cp",
-                        each_input,
-                        os.path.join(args.outputBucket, os.path.basename(each_input)),
-                        "--acl", "bucket-owner-full-control"
-                    ]
+                if each_recursive_option:
+                    command_line.append('--recursive')
+
+                command_line.extend([
+                    each_input,
+                    os.path.join(args.outputBucket, os.path.basename(each_input)),
+                    "--acl", "bucket-owner-full-control"
+                ])
 
                 logging.info(' '.join(command_line))
 
