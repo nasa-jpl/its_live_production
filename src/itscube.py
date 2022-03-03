@@ -273,7 +273,7 @@ class ITSCube:
                               "skipping datacube generation or update")
             return found_urls
 
-        self.max_number_of_layers = len(urls)
+        self.max_number_of_layers = len(found_urls)
 
         # Number of granules to examine is specified
         # ATTN: just a way to limit number of granules to be considered for the
