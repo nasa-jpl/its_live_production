@@ -453,8 +453,7 @@ class GranuleCatalog:
                                             # date_deldays_strrep is a string version of center date and time interval that will sort by date and then by interval length (shorter intervals first) - relies on "string" comparisons by byte
                                             'date_deldays_strrep': img_pair_info_dict['date_center'] + f"{img_pair_info_dict['date_dt']:07.1f}".replace('.',''),
                                             'img_pair_info_dict': img_pair_info_dict,
-                                            'vx_error': vx_error,
-                                            'vy_error': vy_error,
+                                            'v_err': (vx_error+vy_error)/2.0,
                                             'version': data_version
                                             }
                                 )
