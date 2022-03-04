@@ -379,12 +379,12 @@ class GranuleCatalog:
             epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
 
             # Will add maximum error
-            vx_error = inh5['vx'].attrs['error'][0]
-            vy_error = inh5['vy'].attrs['error'][0]
+            vx_error = inh5['vx'].attrs['error']
+            vy_error = inh5['vy'].attrs['error']
             v_error_max = max(vx_error, vy_error)
 
             # Will add stable_shift as rms of vx.stable_shift and vy.stable_shift
-            stable_shift = np.array([inh5['vx'].attrs['stable_shift'][0], inh5['vy'].attrs['stable_shift'][0]])
+            stable_shift = np.array([inh5['vx'].attrs['stable_shift'], inh5['vy'].attrs['stable_shift']])
 
             inh5.close()
 
