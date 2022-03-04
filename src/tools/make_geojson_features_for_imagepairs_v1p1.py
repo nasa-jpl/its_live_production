@@ -438,8 +438,11 @@ class GranuleCatalog:
         deldays = img_pair_info_dict['date_dt']
         percent_valid_pix = img_pair_info_dict['roi_valid_percentage']
 
-        vx_error = inh5['vx'].attrs['error']
-        vy_error = inh5['vy'].attrs['error']
+        # Add maximum error
+        v_error_max = max(inh5['vx'].attrs['error'], inh5['vy'].attrs['error'])
+
+        # Add stable_shift as rms of vx.stable_shift and vy.stable_shift
+        stable_shift = np.array([inh5['vx'].attrs['stable_shift'], inh5['vy'].attrs['stable_shift']])
 
         feat = geojson.Feature( geometry=poly,
                                 properties={
@@ -453,7 +456,8 @@ class GranuleCatalog:
                                             # date_deldays_strrep is a string version of center date and time interval that will sort by date and then by interval length (shorter intervals first) - relies on "string" comparisons by byte
                                             'date_deldays_strrep': img_pair_info_dict['date_center'] + f"{img_pair_info_dict['date_dt']:07.1f}".replace('.',''),
                                             'img_pair_info_dict': img_pair_info_dict,
-                                            'v_err': (vx_error+vy_error)/2.0,
+                                            'v_error_max': v_error_max,
+                                            'stable_shift': np.sqrt(stable_shift.dot(stable_shift)/stable_shift.size),
                                             'version': data_version
                                             }
                                 )
