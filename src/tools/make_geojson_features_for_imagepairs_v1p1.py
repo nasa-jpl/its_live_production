@@ -20,8 +20,8 @@ import s3fs
 import sys
 import time
 from tqdm import tqdm
+from shapely.geometry import mapping
 import xarray as xr
-
 
 # Date format as it appears in granules filenames of optical format:
 # LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc
@@ -314,7 +314,12 @@ class GranuleCatalog:
                 outfilename = f'imgpair_{base_dir}_{block_start}_{cum_read_num_files-1}.json'
 
                 with s3_out.open(f'{self.catalog_dir}/{outfilename}', 'w') as outf:
-                    geojson.dump(featureColl, outf)
+                    # ATTN: Use shapely.geometry.mapping to write geojson to the file.
+                    # Using geojson.dump() raises ValueError: Out of range float values are not JSON compliant: nan
+                    # for dictionaries with nan's (newly introduced stable_shift
+                    # can be set to NaN)
+                    # WAS: geojson.dump(featureColl, outf)
+                    json.dump(mapping(featureColl), outf)
 
                 # mt.meminfo(f'wrote {args.catalog_dir}/{outfilename}')
                 logging.info(f'Wrote {self.catalog_dir}/{outfilename}')
@@ -325,6 +330,26 @@ class GranuleCatalog:
                 block_start = cum_read_num_files
 
     @staticmethod
+    def get_h5_attribute_value(h5_attr):
+        """
+        Extract value of the hd5 data variable attribute.
+        """
+        value = None
+        if isinstance(h5_attr, str):
+            value = h5_attr
+
+        elif isinstance(h5_attr, bytes):
+            value = h5_attr.decode('utf-8')  # h5py returns byte values, turn into byte characters
+
+        elif h5_attr.shape == ():
+            value = h5_attr
+
+        else:
+            value = h5_attr[0] # h5py returns lists of numbers - all 1 element lists here, so dereference to number
+
+        return value
+
+    @staticmethod
     def image_pair_feature_from_path(infilewithpath: str, s3):
         filename_tokens = infilewithpath.split('/')
         directory = '/'.join(filename_tokens[1:-1])
@@ -333,6 +358,9 @@ class GranuleCatalog:
         data_version = GranuleCatalog.DATA_VERSION
         if data_version is None:
             data_version = filename_tokens[-2]
+
+        stable_shift_value = np.nan
+        v_error_max = np.nan
 
         with s3.open(f"s3://{infilewithpath}", "rb") as ins3:
             inh5 = h5py.File(ins3, mode = 'r')
@@ -356,17 +384,7 @@ class GranuleCatalog:
             img_pair_info_dict = {}
             try:
                 for k in imginfo_attrs.keys():
-                    if isinstance(imginfo_attrs[k], str):
-                        img_pair_info_dict[k] = imginfo_attrs[k]
-
-                    elif isinstance(imginfo_attrs[k], bytes):
-                        img_pair_info_dict[k] = imginfo_attrs[k].decode('utf-8')  # h5py returns byte values, turn into byte characters
-
-                    elif imginfo_attrs[k].shape == ():
-                        img_pair_info_dict[k] = imginfo_attrs[k]
-
-                    else:
-                        img_pair_info_dict[k] = imginfo_attrs[k][0]    # h5py returns lists of numbers - all 1 element lists here, so dereference to number
+                    img_pair_info_dict[k] = GranuleCatalog.get_h5_attribute_value(imginfo_attrs[k])
 
             except Exception as exc:
                 raise RuntimeError(f'Error processing {infilewithpath}: img_pair_info.{k}: {imginfo_attrs[k]} type={type(imginfo_attrs[k])} exc={exc} ({imginfo_attrs})')
@@ -378,13 +396,17 @@ class GranuleCatalog:
 
             epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
 
-            # Will add maximum error
-            vx_error = inh5['vx'].attrs['error']
-            vy_error = inh5['vy'].attrs['error']
-            v_error_max = max(vx_error, vy_error)
+            # Maximum v error
+            v_error_max = max(
+                GranuleCatalog.get_h5_attribute_value(inh5['vx'].attrs['error']),
+                GranuleCatalog.get_h5_attribute_value(inh5['vy'].attrs['error'])
+            )
+            vx_stable_shift = GranuleCatalog.get_h5_attribute_value(inh5['vx'].attrs['stable_shift'])
+            vy_stable_shift = GranuleCatalog.get_h5_attribute_value(inh5['vy'].attrs['stable_shift'])
 
-            # Will add stable_shift as rms of vx.stable_shift and vy.stable_shift
-            stable_shift = np.array([inh5['vx'].attrs['stable_shift'], inh5['vy'].attrs['stable_shift']])
+            if not np.isnan(vx_stable_shift) and not np.isnan(vy_stable_shift):
+                # stable_shift = rms of vx.stable_shift and vy.stable_shift
+                stable_shift_value = np.sqrt((vx_stable_shift**2 + vy_stable_shift**2)/2)
 
             inh5.close()
 
@@ -460,7 +482,7 @@ class GranuleCatalog:
                                             'date_deldays_strrep': img_pair_info_dict['date_center'] + f"{img_pair_info_dict['date_dt']:07.1f}".replace('.',''),
                                             'img_pair_info_dict': img_pair_info_dict,
                                             'v_error_max': v_error_max,
-                                            'stable_shift': np.sqrt(stable_shift.dot(stable_shift)/stable_shift.size),
+                                            'stable_shift': stable_shift_value,
                                             'version': data_version
                                             }
                                 )
