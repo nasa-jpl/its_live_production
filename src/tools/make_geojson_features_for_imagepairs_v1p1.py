@@ -439,10 +439,10 @@ class GranuleCatalog:
         percent_valid_pix = img_pair_info_dict['roi_valid_percentage']
 
         # Add maximum error
-        v_error_max = max(inh5['vx'].attrs['error'], inh5['vy'].attrs['error'])
+        v_error_max = max(inh5['vx'].attrs['error'][0], inh5['vy'].attrs['error'][0])
 
         # Add stable_shift as rms of vx.stable_shift and vy.stable_shift
-        stable_shift = np.array([inh5['vx'].attrs['stable_shift'], inh5['vy'].attrs['stable_shift']])
+        stable_shift = np.array([inh5['vx'].attrs['stable_shift'][0], inh5['vy'].attrs['stable_shift'][0]])
 
         feat = geojson.Feature( geometry=poly,
                                 properties={
