@@ -377,6 +377,15 @@ class GranuleCatalog:
             minval_x, pix_size_x, rot_x_ignored, maxval_y, rot_y_ignored, pix_size_y = [float(x) for x in projection_cf.attrs['GeoTransform'].split()]
 
             epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
+
+            # Will add maximum error
+            vx_error = inh5['vx'].attrs['error'][0]
+            vy_error = inh5['vy'].attrs['error'][0]
+            v_error_max = max(vx_error, vy_error)
+
+            # Will add stable_shift as rms of vx.stable_shift and vy.stable_shift
+            stable_shift = np.array([inh5['vx'].attrs['stable_shift'][0], inh5['vy'].attrs['stable_shift'][0]])
+
             inh5.close()
 
         # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
@@ -437,12 +446,6 @@ class GranuleCatalog:
         middate = img_pair_info_dict['date_center']
         deldays = img_pair_info_dict['date_dt']
         percent_valid_pix = img_pair_info_dict['roi_valid_percentage']
-
-        # Add maximum error
-        v_error_max = max(inh5['vx'].attrs['error'][0], inh5['vy'].attrs['error'][0])
-
-        # Add stable_shift as rms of vx.stable_shift and vy.stable_shift
-        stable_shift = np.array([inh5['vx'].attrs['stable_shift'][0], inh5['vy'].attrs['stable_shift'][0]])
 
         feat = geojson.Feature( geometry=poly,
                                 properties={
