@@ -474,12 +474,6 @@ def itslive_lsqfit_annual(v_input, v_err_input, start_dec_year, stop_dec_year, a
     for k in range(Nyrs):
         ind = M[:, k] > 0
 
-        # DEBUG:
-        _ = d_obs[ind]
-        _ = d_model[ind]
-        _ = w_d[ind]
-        _ = dyr[ind]
-
         # asg replaced call to wmean
         A_err[k] = weighted_std(d_obs[ind]-d_model[ind], w_d[ind]) / ((w_d[ind]*dyr[ind]).sum() / w_d[ind].sum())
 
