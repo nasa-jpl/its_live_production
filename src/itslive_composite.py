@@ -1585,7 +1585,9 @@ class ITSLiveComposite:
 if __name__ == '__main__':
     import argparse
     import warnings
+    import shutil
     import subprocess
+    from urllib.parse import urlparse
 
     warnings.filterwarnings('ignore')
 
@@ -1679,7 +1681,7 @@ if __name__ == '__main__':
                     num_retries += 1
                     # If failed due to AWS SlowDown error, retry
                     if num_retries != ITSCube.NUM_AWS_COPY_RETRIES and \
-                       AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
+                       ITSCube.AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
                         # Sleep if it's not a last attempt to copy
                         time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
 
