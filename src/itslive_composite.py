@@ -805,7 +805,7 @@ class ITSLiveComposite:
         x_start = 0
         x_num_to_process = self.cube_sizes[Coords.X]
         # For debugging only
-        x_num_to_process = 100
+        # x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -813,7 +813,7 @@ class ITSLiveComposite:
 
             y_num_to_process = self.cube_sizes[Coords.Y]
             # For debugging only
-            y_num_to_process = 100
+            # y_num_to_process = 100
             y_start = 0
 
             while y_num_to_process > 0:
