@@ -15,6 +15,7 @@ import numpy  as np
 import os
 import pandas as pd
 import s3fs
+import scipy.signal as sp_signal
 import timeit
 from tqdm import tqdm
 import xarray as xr
@@ -186,16 +187,26 @@ def create_M(y1, start_year, stop_year, dyr):
 def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr):
     _two_pi = np.pi * 2
 
-    D = np.stack( \
-            ((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi, \
-             (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi), axis=-1)
+    M_pos = M > 0
+    D = np.column_stack( \
+        (((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos,\
+         ((np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos) \
+    )
 
+    # Original 1st iteration
+    # D = np.stack( \
+    #         ((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi, \
+    #          (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi), axis=-1)
+
+    # Original 1st iteration
     # Add M: a different constant for each year (annual mean)
-    D_M = np.concatenate((D, M), axis=1)
+    # D_M = np.concatenate((D, M), axis=1)
+    D = np.concatenate((D, M), axis=1)
     # logging.info(f"D_M.shape: {D_M.shape}")
 
+    # Original 1st iteration
     # Add ones: constant offset for all data (effectively the mean velocity)
-    D = np.column_stack((D_M, np.ones(len(dyr))))
+    # D = np.column_stack((D_M, np.ones(len(dyr))))
     # logging.info(f"D.shape: {D.shape}")
 
     # Make numpy happy: have all data 2D
@@ -210,7 +221,7 @@ def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr):
     # d_model = sum(bsxfun(@times,D,p'),2); % modeled displacements (m)
     d_model = (D * p).sum(axis=1)  # modeled displacements (m)
 
-    return d_model
+    return (p, d_model)
 
 @nb.jit(nopython=True)
 def itslive_lsqfit_iteration2(start_year, stop_year, M, w_d, d_obs):
@@ -252,20 +263,12 @@ def itersect_years(all_years, select_years):
     return np.array([lookup_table[each] for each in select_years])
 
 @nb.jit(nopython=True)
-def init_lsq_fit(v_in, v_err_in, start_dec_year, stop_dec_year):
+def init_lsq_fit(v, v_err, start_year, stop_year):
     """
     Initialize variables for LSQ fit.
     """
     # start_time = timeit.default_timer()
     # logging.info(f"Start init of itslive_lsqfit_annual")
-
-    # Ensure we're starting with finite data
-    isf_mask   = np.isfinite(v_in) & np.isfinite(v_err_in)
-    start_year = start_dec_year[isf_mask]
-    stop_year  = stop_dec_year[isf_mask]
-
-    v = v_in[isf_mask]
-    v_err = v_err_in[isf_mask]
 
     # dt in decimal years
     dyr = stop_year - start_year
@@ -294,7 +297,8 @@ def init_lsq_fit(v_in, v_err_in, start_dec_year, stop_dec_year):
 
 # Don't compile the whole function with numba - runs a bit slower (why???)
 # @nb.jit(nopython=True)
-def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_years, mad_std_ratio,
+def itslive_lsqfit_annual(v_input, v_err_input, start_dec_year, stop_dec_year, all_years,
+    mad_std_ratio,
     amplitude,
     phase,
     sigma,
@@ -321,10 +325,58 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
     _two_pi = np.pi * 2
 
     # Filter parameters for lsq fit for outlier rejections
-    _mad_thresh = 3
-    _mad_filter_iterations = 3
+    _mad_thresh = 6
+    _mad_filter_iterations = 2
+    # original: _mad_filter_iterations = 3
 
-    start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1 = init_lsq_fit(v_in, v_err_in, start_dec_year, stop_dec_year)
+    # Ensure we're starting with finite data
+    isf_mask   = np.isfinite(v_input) & np.isfinite(v_err_input)
+    start_year = start_dec_year[isf_mask]
+    stop_year  = stop_dec_year[isf_mask]
+    v_in = v_input[isf_mask]
+    v_err_in = v_err_input[isf_mask]
+
+    totalnum = len(start_year)
+
+    # Apply MAD filter to input v
+    _mad_kernel_size = 15
+
+    # Sort arrays based on the mid_date
+    mid_date = start_year + (stop_year - start_year)/2.0
+    sort_indices = np.argsort(mid_date)
+
+    # Sort inputs
+    start_year = start_year[sort_indices]
+    stop_year = stop_year[sort_indices]
+    v_in = v_in[sort_indices]
+    v_err_in = v_err_in[sort_indices]
+
+    # Apply 15-point moving median to v, subtract from v to get residual
+    v_median = sp_signal.medfilt(v_in, _mad_kernel_size)
+    v_residual = np.abs(v_in - v_median)
+
+    # Take median of residual, multiply median of residual * 1.4826 = sigma
+    v_sigma = np.median(v_residual)*mad_std_ratio
+
+    # outlier_mask = abs(residual)>12*sigma
+    non_outlier_mask  = ~(v_residual > (2.0 * _mad_thresh * v_sigma))
+
+    # remove ouliers from v_in, v_error_in, start_dec_year, stop_dec_year
+    start_year = start_year[non_outlier_mask]
+    stop_year = stop_year[non_outlier_mask]
+    v_in = v_in[non_outlier_mask]
+    v_err_in = v_err_in[non_outlier_mask]
+    # done with initial MAD filter
+
+    start_year, \
+    stop_year, \
+    v, \
+    v_err, \
+    dyr, \
+    w_v, \
+    w_d, \
+    d_obs, \
+    y1 = init_lsq_fit(v_in, v_err_in, start_year, stop_year)
 
     M = create_M(y1, start_year, stop_year, dyr)
 
@@ -338,12 +390,18 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
     # logging.info(f"Start 1st iteration of LSQ")
 
     #
-    # First LSQ iteration
+    # LSQ iterations
     # Iterative mad filter
-    totalnum = len(start_year)
+    p = None
+    d_model = None
+
+    # Last iteration of LSQ should always skip the outlier filter
+    last_iteration = _mad_filter_iterations - 1
+
     for i in range(0, _mad_filter_iterations):
         # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-        d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr)
+        # p, d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr)
+        p, d_model = itslive_lsqfit_iteration2(start_year, stop_year, M, w_d, d_obs)
 
         # Divide by dt to avoid penalizing long dt [asg]
         d_resid = np.abs(d_obs - d_model)/dyr
@@ -356,31 +414,33 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
             # All are outliers, return from the function
             return 1.0
 
-        # Remove outliers
-        non_outlier_mask = ~outliers
-        start_year = start_year[non_outlier_mask]
-        stop_year = stop_year[non_outlier_mask]
-        dyr = dyr[non_outlier_mask]
-        d_obs = d_obs[non_outlier_mask]
-        w_d = w_d[non_outlier_mask]
-        w_v = w_v[non_outlier_mask]
-        M = M[non_outlier_mask]
-
-        # Remove no-data columns from M
-        hasdata = M.sum(axis=0) > 1
-
-        if not np.any(hasdata):
-            # Since we are throwing away everything, report all as outliers
-            return 1.0
-
-        y1 = y1[hasdata]
-        M = M[:, hasdata]
-
-        if (outliers.sum() / totalnum) < 0.01 and (i+1) !=  _mad_filter_iterations:
+        if (outliers.sum() / totalnum) < 0.01 and i != last_iteration:
             # There are less than 1% outliers, skip the rest of iterations
             # if it's not the last iteration
             # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
             break
+
+        if i < last_iteration:
+            # Remove outliers
+            non_outlier_mask = ~outliers
+            start_year = start_year[non_outlier_mask]
+            stop_year = stop_year[non_outlier_mask]
+            dyr = dyr[non_outlier_mask]
+            d_obs = d_obs[non_outlier_mask]
+            w_d = w_d[non_outlier_mask]
+            w_v = w_v[non_outlier_mask]
+            M = M[non_outlier_mask]
+
+            # Remove no-data columns from M
+            hasdata = M.sum(axis=0) > 1
+
+            if not np.any(hasdata):
+                # Since we are throwing away everything, report all as outliers
+                return 1.0
+
+            y1 = y1[hasdata]
+            M = M[:, hasdata]
+
 
     # ATTN: Matlab had it probably wrong, but confirm on output: outlier_frac = length(yr)./totalnum;
     outlier_frac = (totalnum - len(start_year))/totalnum
@@ -394,7 +454,8 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
     #
     # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
     # D = [(cos(2*pi*yr(:,1)) - cos(2*pi*yr(:,2)))./(2*pi).*(M>0) (sin(2*pi*yr(:,2)) - sin(2*pi*yr(:,1)))./(2*pi).*(M>0) M];
-    p, d_model = itslive_lsqfit_iteration2(start_year, stop_year, M, w_d, d_obs)
+
+    # p, d_model = itslive_lsqfit_iteration2(start_year, stop_year, M, w_d, d_obs)
 
     # Convert coefficients to amplitude and phase of a single sinusoid:
     Nyrs = len(y1)
@@ -412,6 +473,13 @@ def itslive_lsqfit_annual(v_in, v_err_in, start_dec_year, stop_dec_year, all_yea
 
     for k in range(Nyrs):
         ind = M[:, k] > 0
+
+        # DEBUG:
+        _ = d_obs[ind]
+        _ = d_model[ind]
+        _ = w_d[ind]
+        _ = dyr[ind]
+
         # asg replaced call to wmean
         A_err[k] = weighted_std(d_obs[ind]-d_model[ind], w_d[ind]) / ((w_d[ind]*dyr[ind]).sum() / w_d[ind].sum())
 
@@ -735,7 +803,7 @@ class ITSLiveComposite:
         """
         # Loop through cube in chunks to minimize memory footprint
         x_start = 0
-        # x_num_to_process = self.cube_sizes[Coords.X]
+        x_num_to_process = self.cube_sizes[Coords.X]
         # For debugging only
         x_num_to_process = 100
 
@@ -743,7 +811,7 @@ class ITSLiveComposite:
             # How many tasks to process at a time
             x_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if x_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else x_num_to_process
 
-            # y_num_to_process = self.cube_sizes[Coords.Y]
+            y_num_to_process = self.cube_sizes[Coords.Y]
             # For debugging only
             y_num_to_process = 100
             y_start = 0
@@ -1411,7 +1479,8 @@ class ITSLiveComposite:
             ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                'dtype': 'float',
+                # 'dtype': 'float',
+                'dtype': np.float,
                 'compressor': compressor
             })
 
@@ -1516,6 +1585,7 @@ class ITSLiveComposite:
 if __name__ == '__main__':
     import argparse
     import warnings
+    import subprocess
 
     warnings.filterwarnings('ignore')
 
@@ -1568,8 +1638,65 @@ if __name__ == '__main__':
         ITSLiveComposite.URL = url_tokens._replace(netloc=url_tokens.netloc+ITSCube.PATH_URL).geturl()
         logging.info(f'Composite URL: {ITSLiveComposite.URL}')
 
-    # s3://its-live-data/test_datacubes/AGU2021/S70W100/ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.zarr
-    # AGU21_ITS_LIVE_vel_EPSG3031_G0120_X-1550000_Y-450000.nc
-
     mosaics = ITSLiveComposite(args.inputCube, args.inputBucket)
     mosaics.create(args.outputStore, args.targetBucket)
+
+    # Copy generated composites to the S3 bucket if provided
+    if os.path.exists(args.outputStore) and len(args.targetBucket):
+        try:
+            # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
+            # resulting in as many error messages as there are files in Zarr store
+            # to copy
+            command_line = [
+                "awsv2", "s3", "cp", "--recursive",
+                args.outputStore,
+                os.path.join(args.targetBucket, os.path.basename(args.outputStore)),
+                "--acl", "bucket-owner-full-control"
+            ]
+
+            logging.info(' '.join(command_line))
+
+            file_is_copied = False
+            num_retries = 0
+            command_return = None
+            env_copy = os.environ.copy()
+
+            while not file_is_copied and num_retries < ITSCube.NUM_AWS_COPY_RETRIES:
+                logging.info(f"Attempt #{num_retries+1} to copy {args.outputStore} to {args.targetBucket}")
+
+                command_return = subprocess.run(
+                    command_line,
+                    env=env_copy,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT
+                )
+
+                if command_return.returncode != 0:
+                    # Report the whole stdout stream as one logging message
+                    logging.warning(f"Failed to copy {args.outputStore} to {args.targetBucket} with returncode={command_return.returncode}: {command_return.stdout}")
+
+                    num_retries += 1
+                    # If failed due to AWS SlowDown error, retry
+                    if num_retries != ITSCube.NUM_AWS_COPY_RETRIES and \
+                       AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
+                        # Sleep if it's not a last attempt to copy
+                        time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
+
+                    else:
+                        # Don't retry otherwise
+                        num_retries = ITSCube.NUM_AWS_COPY_RETRIES
+
+                else:
+                    file_is_copied = True
+
+            if not file_is_copied:
+                raise RuntimeError(f"Failed to copy {args.outputStore} to {args.targetBucket} with command.returncode={command_return.returncode}")
+
+        finally:
+            # Remove locally written Zarr store.
+            # This is to eliminate out of disk space failures when the same EC2 instance is
+            # being re-used by muliple Batch jobs.
+            if os.path.exists(args.outputStore):
+                logging.info(f"Removing local copy of {args.outputStore}")
+                shutil.rmtree(args.outputStore)
