@@ -18,29 +18,30 @@ import timeit
 import warnings
 import xarray as xr
 import zarr
-
+import numpy as np
 
 # Encoding settings for NetCDF format
 ENCODING = {
-    'v':                         {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vx':                        {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vy':                        {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vx_error':                  {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vy_error':                  {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'v_error':                   {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vx_se':                     {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vy_se':                     {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'v_se':                      {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vx_amp':                    {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vy_amp':                    {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'v_amp':                     {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vx_phase':                  {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'vy_phase':                  {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'v_phase':                   {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
-    'outlier_frac':              {'_FillValue': -32767.0, 'dtype': 'float', "zlib": True, "complevel": 2, "shuffle": True},
+    'v':                         {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx':                        {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy':                        {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_error':                  {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_error':                  {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'v_error':                   {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_amp_error':              {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_amp_error':              {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'v_amp_error':               {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_amp':                    {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_amp':                    {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'v_amp':                     {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_phase':                  {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_phase':                  {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'v_phase':                   {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'outlier_frac':              {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
     'count':                     {'_FillValue': 0, 'dtype': 'short'},
     'dt_max':                    {'_FillValue': 0, 'dtype': 'short'},
     'time':                      {'_FillValue': None, 'units': 'days since 1970-01-01'},
+    'sensor':                    {'_FillValue': None, 'dtype': 'S1'},
     'x':                         {'_FillValue': None},
     'y':                         {'_FillValue': None}
 }
@@ -54,6 +55,11 @@ def convert(ds_zarr: xr.Dataset, output_file: str, nc_engine: str):
     Store datacube to NetCDF format file.
     """
     start_time = timeit.default_timer()
+
+    # Workaround for QGIS: add an attribute to map band index to the band label:
+    sensors = ds_zarr.sensor.values
+    sensors_labels = [f'Band {index+1}: {sensors[index]}' for index in range(len(sensors))]
+    ds_zarr.attrs['sensors_labels'] = f'{"; ".join(sensors_labels)}'
 
     ds_zarr.to_netcdf(
         output_file,
