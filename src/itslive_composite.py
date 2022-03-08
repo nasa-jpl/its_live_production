@@ -262,26 +262,70 @@ def itersect_years(all_years, select_years):
     lookup_table = {v:i for i, v in enumerate(all_years)}
     return np.array([lookup_table[each] for each in select_years])
 
-@nb.jit(nopython=True)
-def init_lsq_fit(v, v_err, start_year, stop_year):
+# @nb.jit(nopython=True)
+@nb.jit
+def init_lsq_fit(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input, mad_thresh, mad_std_ratio):
     """
     Initialize variables for LSQ fit.
     """
     # start_time = timeit.default_timer()
     # logging.info(f"Start init of itslive_lsqfit_annual")
 
+    # Ensure we're starting with finite data
+    isf_mask   = np.isfinite(v_input) & np.isfinite(v_err_input)
+    start_year = start_dec_year[isf_mask]
+    stop_year  = stop_dec_year[isf_mask]
     # dt in decimal years
-    dyr = stop_year - start_year
+    dyr = dec_dt[isf_mask]
+
+    v_in = v_input[isf_mask]
+    v_err_in = v_err_input[isf_mask]
+    M_in = M_input[isf_mask]
+
+    totalnum = len(start_year)
+
+    # Apply MAD filter to input v
+    _mad_kernel_size = 15
+
+    # Sort arrays based on the mid_date
+    mid_date = start_year + (stop_year - start_year)/2.0
+    sort_indices = np.argsort(mid_date)
+
+    # Sort inputs
+    start_year = start_year[sort_indices]
+    stop_year = stop_year[sort_indices]
+    dyr = dyr[sort_indices]
+
+    v_in = v_in[sort_indices]
+    v_err_in = v_err_in[sort_indices]
+    M_in = M_in[sort_indices]
+
+    # Apply 15-point moving median to v, subtract from v to get residual
+    v_median = sp_signal.medfilt(v_in, _mad_kernel_size)
+    v_residual = np.abs(v_in - v_median)
+
+    # Take median of residual, multiply median of residual * 1.4826 = sigma
+    v_sigma = np.median(v_residual)*mad_std_ratio
+
+    non_outlier_mask  = ~(v_residual > (2.0 * mad_thresh * v_sigma))
+
+    # remove ouliers from v_in, v_error_in, start_dec_year, stop_dec_year
+    start_year = start_year[non_outlier_mask]
+    stop_year = stop_year[non_outlier_mask]
+    dyr = dyr[non_outlier_mask]
+    v_in = v_in[non_outlier_mask]
+    v_err_in = v_err_in[non_outlier_mask]
+    M_in = M_in[non_outlier_mask]
 
     # Weights for velocities
-    w_v = 1/(v_err**2)
+    w_v = 1/(v_err_in**2)
 
     # Weights (correspond to displacement error, not velocity error):
-    w_d = 1/(v_err*dyr)  # Not squared because the p= line below would then have to include sqrt(w) on both accounts
+    w_d = 1/(v_err_in*dyr)  # Not squared because the p= line below would then have to include sqrt(w) on both accounts
     # logging.info(f"w_d.shape: {w_d.shape}")
 
     # Observed displacement in meters
-    d_obs = v*dyr
+    d_obs = v_in*dyr
     # logging.info(f"d_obs.shape: {d_obs.shape}")
 
     # logging.info(f'Finished init of itslive_lsqfit_annual ({timeit.default_timer() - start_time} seconds)')
@@ -293,13 +337,24 @@ def init_lsq_fit(v, v_err, start_year, stop_year):
     y_max = int(np.floor(stop_year.max())) + 1
     y1 = np.arange(y_min, y_max)
 
-    return (start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1)
+    # Reduce M matrix to the years considered for the spacial point
+    year_indices = np.searchsorted(all_years, y1)
+    M_in = M_in[:, year_indices]
+
+    return (start_year, stop_year, v_in, v_err_in, dyr, w_v, w_d, d_obs, y1, totalnum, M_in)
 
 # Don't compile the whole function with numba - runs a bit slower (why???)
 # @nb.jit(nopython=True)
-def itslive_lsqfit_annual(v_input, v_err_input, start_dec_year, stop_dec_year, all_years,
+def itslive_lsqfit_annual(
+    v_input,
+    v_err_input,
+    start_dec_year,
+    stop_dec_year,
+    dec_dt,
+    all_years,
+    M_input,
     mad_std_ratio,
-    amplitude,
+    amplitude, # outputs to populate
     phase,
     sigma,
     mean,
@@ -327,46 +382,44 @@ def itslive_lsqfit_annual(v_input, v_err_input, start_dec_year, stop_dec_year, a
     # Filter parameters for lsq fit for outlier rejections
     _mad_thresh = 6
     _mad_filter_iterations = 2
-    # original: _mad_filter_iterations = 3
 
-    # Ensure we're starting with finite data
-    isf_mask   = np.isfinite(v_input) & np.isfinite(v_err_input)
-    start_year = start_dec_year[isf_mask]
-    stop_year  = stop_dec_year[isf_mask]
-    v_in = v_input[isf_mask]
-    v_err_in = v_err_input[isf_mask]
-
-    totalnum = len(start_year)
-
-    # Apply MAD filter to input v
-    _mad_kernel_size = 15
-
-    # Sort arrays based on the mid_date
-    mid_date = start_year + (stop_year - start_year)/2.0
-    sort_indices = np.argsort(mid_date)
-
-    # Sort inputs
-    start_year = start_year[sort_indices]
-    stop_year = stop_year[sort_indices]
-    v_in = v_in[sort_indices]
-    v_err_in = v_err_in[sort_indices]
-
-    # Apply 15-point moving median to v, subtract from v to get residual
-    v_median = sp_signal.medfilt(v_in, _mad_kernel_size)
-    v_residual = np.abs(v_in - v_median)
-
-    # Take median of residual, multiply median of residual * 1.4826 = sigma
-    v_sigma = np.median(v_residual)*mad_std_ratio
-
-    # outlier_mask = abs(residual)>12*sigma
-    non_outlier_mask  = ~(v_residual > (2.0 * _mad_thresh * v_sigma))
-
-    # remove ouliers from v_in, v_error_in, start_dec_year, stop_dec_year
-    start_year = start_year[non_outlier_mask]
-    stop_year = stop_year[non_outlier_mask]
-    v_in = v_in[non_outlier_mask]
-    v_err_in = v_err_in[non_outlier_mask]
-    # done with initial MAD filter
+    # # Ensure we're starting with finite data
+    # isf_mask   = np.isfinite(v_input) & np.isfinite(v_err_input)
+    # start_year = start_dec_year[isf_mask]
+    # stop_year  = stop_dec_year[isf_mask]
+    # v_in = v_input[isf_mask]
+    # v_err_in = v_err_input[isf_mask]
+    #
+    # totalnum = len(start_year)
+    #
+    # # Apply MAD filter to input v
+    # _mad_kernel_size = 15
+    #
+    # # Sort arrays based on the mid_date
+    # mid_date = start_year + (stop_year - start_year)/2.0
+    # sort_indices = np.argsort(mid_date)
+    #
+    # # Sort inputs
+    # start_year = start_year[sort_indices]
+    # stop_year = stop_year[sort_indices]
+    # v_in = v_in[sort_indices]
+    # v_err_in = v_err_in[sort_indices]
+    #
+    # # Apply 15-point moving median to v, subtract from v to get residual
+    # v_median = sp_signal.medfilt(v_in, _mad_kernel_size)
+    # v_residual = np.abs(v_in - v_median)
+    #
+    # # Take median of residual, multiply median of residual * 1.4826 = sigma
+    # v_sigma = np.median(v_residual)*mad_std_ratio
+    #
+    # non_outlier_mask  = ~(v_residual > (2.0 * _mad_thresh * v_sigma))
+    #
+    # # remove ouliers from v_in, v_error_in, start_dec_year, stop_dec_year
+    # start_year = start_year[non_outlier_mask]
+    # stop_year = stop_year[non_outlier_mask]
+    # v_in = v_in[non_outlier_mask]
+    # v_err_in = v_err_in[non_outlier_mask]
+    # # done with initial MAD filter
 
     start_year, \
     stop_year, \
@@ -376,9 +429,9 @@ def itslive_lsqfit_annual(v_input, v_err_input, start_dec_year, stop_dec_year, a
     w_v, \
     w_d, \
     d_obs, \
-    y1 = init_lsq_fit(v_in, v_err_in, start_year, stop_year)
+    y1, totalnum, M = init_lsq_fit(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input, _mad_thresh, mad_std_ratio)
 
-    M = create_M(y1, start_year, stop_year, dyr)
+    # M = create_M(y1, start_year, stop_year, dyr)
 
     # Filter sum of each column
     hasdata = M.sum(axis=0) > 0
@@ -652,6 +705,8 @@ class ITSLiveComposite:
 
     START_DECIMAL_YEAR = None
     STOP_DECIMAL_YEAR  = None
+    DECIMAL_DT = None
+    M = None
 
     # Dimensions that correspond to the currently processed datacube chunk
     CHUNK = None
@@ -707,6 +762,7 @@ class ITSLiveComposite:
         # Compute decimal year representation for start and end dates of each velocity pair
         ITSLiveComposite.START_DECIMAL_YEAR = np.array([decimal_year(each) for each in acq_datetime_img1])
         ITSLiveComposite.STOP_DECIMAL_YEAR = np.array([decimal_year(each) for each in acq_datetime_img2])
+        ITSLiveComposite.DECIMAL_DT = ITSLiveComposite.STOP_DECIMAL_YEAR - ITSLiveComposite.START_DECIMAL_YEAR
 
         # logging.info('DEBUG: Reading date values from Matlab files')
         # Read Matlab values instead of generating them internally
@@ -726,6 +782,17 @@ class ITSLiveComposite:
         ITSLiveComposite.YEARS = np.array(range(start_year, stop_year+1))
         ITSLiveComposite.YEARS_LEN = ITSLiveComposite.YEARS.size
         logging.info(f'Years for composite: {ITSLiveComposite.YEARS.tolist()}')
+
+
+        # Create M matrix for the cube:
+        start_time = timeit.default_timer()
+        ITSLiveComposite.M = create_M(
+            ITSLiveComposite.YEARS,
+            ITSLiveComposite.START_DECIMAL_YEAR,
+            ITSLiveComposite.STOP_DECIMAL_YEAR,
+            ITSLiveComposite.DECIMAL_DT
+        )
+        logging.info(f'Computed M (took {timeit.default_timer() - start_time} seconds)')
 
         # Day separation between images (sorted per cube.sortby() call above)
         ITSLiveComposite.DATE_DT = cube_ds[DataVars.ImgPairInfo.DATE_DT].load()
@@ -799,7 +866,7 @@ class ITSLiveComposite:
         x_start = 0
         x_num_to_process = self.cube_sizes[Coords.X]
         # For debugging only
-        # x_num_to_process = 100
+        x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -807,7 +874,7 @@ class ITSLiveComposite:
 
             y_num_to_process = self.cube_sizes[Coords.Y]
             # For debugging only
-            # y_num_to_process = 100
+            y_num_to_process = 100
             y_start = 0
 
             while y_num_to_process > 0:
@@ -1563,7 +1630,9 @@ class ITSLiveComposite:
                     v_err[:, j, i],
                     ITSLiveComposite.START_DECIMAL_YEAR,
                     ITSLiveComposite.STOP_DECIMAL_YEAR,
+                    ITSLiveComposite.DECIMAL_DT,
                     ITSLiveComposite.YEARS,
+                    ITSLiveComposite.M,
                     ITSLiveComposite.MAD_STD_RATIO,
                     amplitude[:, global_j, global_i],
                     phase[:, global_j, global_i],
