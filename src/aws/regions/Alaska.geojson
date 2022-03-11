@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "Alaska",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "id": null }, "geometry": { "type": "MultiPolygon", "coordinates": [ [ [ [ -179.97446727619851, 54.372925744824343 ], [ -179.97446727619851, 72.491722836164158 ], [ -127.5975486404474, 73.179463913845439 ], [ -107.620604510025544, 54.115978461355397 ], [ -179.97446727619851, 54.372925744824343 ] ] ] ] } }
+]
+}

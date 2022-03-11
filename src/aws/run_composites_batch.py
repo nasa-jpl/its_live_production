@@ -1,8 +1,10 @@
 """
-Script to drive Batch processing for datacube generation at AWS.
+Script to drive Batch processing for datacube's annual composites generation at AWS.
 
-It accepts geojson file with datacube definitions and submits one AWS Batch job
-per each datacube which has ROI (region of interest) != 0.
+It accepts shape file with region definition and generates annual composites for
+the datacubes which centers fall within the region.
+If no shape file is provided, then it generates annual composites for all
+existing datacubes as found in the source S3 bucket.
 """
 import argparse
 import boto3
@@ -11,11 +13,13 @@ import logging
 import math
 import os
 from pathlib import Path
-import sys
 from shapely import geometry
+import sys
+import s3fs
 
 from grid import Bounds
 import itslive_utils
+from run_batch import parse_args, DataCubeBatch
 
 
 class CubeJson:
@@ -32,39 +36,14 @@ class CubeJson:
     EPSG_PREFIX = 'EPSG'
 
 
-class DataCubeBatch:
+class DataCubeCompositeBatch:
     """
-    Class to manage one Batch job submission at AWS.
+    Class to manage one Batch job submission at AWS for datacube composite generation.
     """
-    CLIENT = boto3.client('batch', region_name='us-west-2')
+    FILENAME_PREFIX = 'ITS_LIVE_vel_annual'
 
-    # HTTP URL for the datacube full path
-    HTTP_PREFIX = ''
-
-    FILENAME_PREFIX = 'ITS_LIVE_vel'
-    MID_POINT_RESOLUTION = 50.0
-
-    # String representation of longitude/latitude projection
-    LON_LAT_PROJECTION = '4326'
-
-    # List of EPSG codes to generate datacubes for. If this list is empty,
-    # then generate all ROI!=0 datacubes.
-    EPSG_TO_GENERATE = []
-
-    # List of EPSG codes to exclude from datacubes generation. If this list is empty,
-    # then generate all ROI!=0 datacubes.
-    EPSG_TO_EXCLUDE = []
-
-    # List of datacube filenames to generate if only specific datacubes should be generated.
-    # If an empty list then generate all qualifying datacubes.
-    CUBES_TO_GENERATE = []
-
-    # Generate datacubes which centers fall within provided polygon
-    POLYGON_SHAPE = None
-
-    # Number of granules to process in parallel at a time (to avoid out of memory
-    # failures)
-    PARALLEL_GRANULES = 700
+    # Chunk size in X and Y dimensions to load data in at one time: [:, 100, 100]
+    X_Y_CHUNK = 100
 
     def __init__(self, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
@@ -76,11 +55,20 @@ class DataCubeBatch:
         self.batch_queue = batch_queue
         self.is_dry_run = is_dry_run
 
-    def __call__(self, cube_file: str, s3_bucket: str, bucket_dir_path: str, job_file: str, num_cubes: int):
+        self.s3 = s3fs.S3FileSystem(anon=True)
+
+    def __call__(self,
+        cube_file: str,
+        s3_bucket: str,
+        bucket_dir_path: str,
+        output_bucket_dir: str,
+        job_file: str,
+        num_cubes: int
+    ):
         """
         Submit Batch jobs to AWS.
         """
-        # List of submitted datacube Batch jobs and AWS response
+        # List of submitted datacube composite Batch jobs and AWS response
         jobs = []
 
         with open(cube_file, 'r') as fhandle:
@@ -136,7 +124,7 @@ class DataCubeBatch:
 
                 roi = properties[CubeJson.ROI_PERCENT_COVERAGE]
                 if roi != 0.0:
-                    # Submit AWS Batch to generate the cube
+                    # Submit AWS Batch to generate the cube composite
                     # Format filename for the cube
                     epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
                     # Extract int EPSG code
@@ -187,19 +175,32 @@ class DataCubeBatch:
                     cube_filename = f"{DataCubeBatch.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
                     logging.info(f'Cube name: {cube_filename}')
 
-                    # Hack to run specific jobs
-                    # to test s3fs problem: 'ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr'
+                    # Process specific datacubes only
                     if len(DataCubeBatch.CUBES_TO_GENERATE) and cube_filename not in DataCubeBatch.CUBES_TO_GENERATE:
                         logging.info(f"Skipping as not provided in DataCubeBatch.CUBES_TO_GENERATE")
                         continue
 
+                    # Check if datacube exists in S3 bucket as not all cubes
+                    # are most likely generated
+                    cube_exists = self.s3.ls(os.path.join(s3_bucket, bucket_dir, cube_filename))
+                    if len(cube_exists) == 0:
+                        logging.info(f"Datacube {os.path.join(s3_bucket, bucket_dir, cube_filename)} does not exist, skipping composite.")
+                        continue
+
+                    # Format cube composites filename:
+                    # s3://its-live-data/composites/annual/v02/N60W130/ITS_LIVE_vel_annual_EPSG3413_G0120_X-3250000_Y250000.zarr
+                    composite_filename = cube_filename.replace(DataCubeBatch.FILENAME_PREFIX, DataCubeCompositeBatch.FILENAME_PREFIX)
+                    logging.info(f'Cube composite name: {composite_filename}')
+
+                    composite_dir = bucket_dir.replace(bucket_dir_path, output_bucket_dir)
+                    logging.info(f'Cube composite S3 directory: {composite_dir}')
+
                     cube_params = {
-                        'outputStore': cube_filename,
-                        'outputBucket': os.path.join(s3_bucket, bucket_dir),
-                        'targetProjection': epsg_code,
-                        'polygon': json.dumps(coords),
-                        'gridCellSize': str(self.grid_size),
-                        'chunks': str(DataCubeBatch.PARALLEL_GRANULES)
+                        'inputCube': cube_filename,
+                        'inputCubeBucket': os.path.join(s3_bucket, bucket_dir),
+                        'outputStore': composite_filename,
+                        'outputStoreBucket': os.path.join(s3_bucket, composite_dir),
+                        'chunks': str(DataCubeCompositeBatch.X_Y_CHUNK)
                     }
                     logging.info(f'Cube params: {cube_params}')
 
@@ -207,7 +208,7 @@ class DataCubeBatch:
                     response = None
                     if self.is_dry_run is False:
                         response = DataCubeBatch.CLIENT.submit_job(
-                            jobName=cube_filename.replace('.zarr', ''),
+                            jobName=composite_filename.replace('.zarr', ''),
                             jobQueue=self.batch_queue,
                             jobDefinition=self.batch_job,
                             parameters=cube_params,
@@ -236,8 +237,8 @@ class DataCubeBatch:
 
                     num_jobs += 1
                     jobs.append({
-                        'filename': os.path.join(DataCubeBatch.HTTP_PREFIX, bucket_dir, cube_filename),
-                        's3_filename': os.path.join(s3_bucket, bucket_dir, cube_filename),
+                        'filename': os.path.join(DataCubeBatch.HTTP_PREFIX, composite_dir, composite_filename),
+                        's3_filename': os.path.join(s3_bucket, composite_dir, composite_filename),
                         'roi_percent': roi,
                         'aws_params': cube_params,
                         'aws': {'queue': self.batch_queue,
@@ -263,19 +264,20 @@ def main(
     batch_queue: str,
     s3_bucket: str,
     bucket_dir: str,
+    output_bucket_dir: str,
     output_job_file: str,
     number_of_cubes: int):
     """
     Driver to submit multiple Batch jobs to AWS.
     """
     # Submit Batch job to AWS for each datacube which has ROI!=0
-    run_batch = DataCubeBatch(
+    run_batch = DataCubeCompositeBatch(
         grid_size,
         batch_job,
         batch_queue,
         dry_run
     )
-    run_batch(cube_definition_file, s3_bucket, bucket_dir, output_job_file, number_of_cubes)
+    run_batch(cube_definition_file, s3_bucket, bucket_dir, output_bucket_dir, output_job_file, number_of_cubes)
 
 def parse_args():
     """
@@ -300,25 +302,39 @@ def parse_args():
         help="GeoJson file that stores cube polygon definitions [%(default)s]."
     )
     parser.add_argument(
+        '--processCubesWithinPolygon',
+        type=str,
+        action='store',
+        default=None,
+        help="GeoJSON file that stores polygon the cubes centers should belong to [%(default)s]."
+    )
+    parser.add_argument(
         '-b', '--bucket',
         type=str,
         action='store',
         default='s3://its-live-data',
-        help="Destination S3 bucket for the datacubes [%(default)s]"
+        help="Destination S3 bucket for the datacubes composites [%(default)s]"
     )
     parser.add_argument(
         '-u', '--urlPath',
         type=str,
         action='store',
         default='http://its-live-data.s3.amazonaws.com',
-        help="URL for the datacube store in S3 bucket (to provide for easier download option) [%(default)s]"
+        help="URL for the store in S3 bucket (to provide for easier download option) [%(default)s]"
     )
     parser.add_argument(
         '-d', '--bucketDir',
         type=str,
         action='store',
         default='datacubes/v02',
-        help="Destination S3 bucket for the datacubes [%(default)s]"
+        help="S3 directory for the datacubes [%(default)s]"
+    )
+    parser.add_argument(
+        '-o', '--outputBucketDir',
+        type=str,
+        action='store',
+        default='composites/annual/v02',
+        help="Destination S3 directory for the composites [%(default)s]"
     )
     parser.add_argument(
         '-g', '--gridSize',
@@ -331,8 +347,7 @@ def parse_args():
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:1',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-from-scratch-64Gb:1',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-64Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
@@ -343,18 +358,25 @@ def parse_args():
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
-        '-o', '--outputJobFile',
+        '-f', '--outputJobFile',
         type=str,
         action='store',
-        default='datacube_batch_jobs.json',
-        help="File to capture submitted datacube AWS Batch jobs [%(default)s]"
+        default='annual_composite_batch_jobs.json',
+        help="File to capture submitted composites AWS Batch jobs [%(default)s]"
     )
     parser.add_argument(
         '-e', '--epsgCode',
         type=str,
         action='store',
         default=None,
-        help="JSON list to specify EPSG codes of interest for the datacubes to generate [%(default)s]"
+        help="JSON list to specify EPSG codes of interest for the datacubes to process [%(default)s]"
+    )
+    parser.add_argument(
+        '--excludeEPSG',
+        type=str,
+        action='store',
+        default=None,
+        help="JSON list of EPSG codes to exclude from the datacube processing [%(default)s]"
     )
     parser.add_argument(
         '--dryrun',
@@ -366,33 +388,19 @@ def parse_args():
         type=int,
         action='store',
         default=-1,
-        help="Number of datacubes to generate [%(default)d]. If left at default value, then generate all qualifying datacubes."
+        help="Number of datacubes to process [%(default)d]. If left at default value, then process all qualifying datacubes."
     )
     parser.add_argument(
-        '-p', '--parallelGranules',
+        '-s', '--chunkSize',
         type=int,
-        default=700,
-        help="Number of granules to process in parallel at one time [%(default)d]."
+        default=100,
+        help="Size of x and y dimensions for the chunk of spacial points to process at one time [%(default)d]."
     )
     parser.add_argument(
         '-t', '--pathToken',
         type=str,
         default='',
-        help="Path token to be present in datacube S3 target path in order for the datacube to be generated [%(default)s]."
-    )
-    parser.add_argument(
-        '--processCubesWithinPolygon',
-        type=str,
-        action='store',
-        default=None,
-        help="GeoJSON file that stores polygon the cubes centers should belong to [%(default)s]."
-    )
-    parser.add_argument(
-        '--excludeEPSG',
-        type=str,
-        action='store',
-        default=None,
-        help="JSON list of EPSG codes to exclude from the datacube generation [%(default)s]"
+        help="Path token to be present in datacube S3 target path in order for the datacube to be processed [%(default)s]."
     )
 
     # One of --processCubes or --processCubesFile options is allowed for the datacube names
@@ -402,23 +410,22 @@ def parse_args():
         type=str,
         action='store',
         default='[]',
-        help="JSON list of filenames to generate [%(default)s]."
+        help="JSON list of filenames to process [%(default)s]."
     )
     group.add_argument(
         '--processCubesFile',
         type=Path,
         action='store',
         default=None,
-        help="File that contains JSON list of filenames for datacube to generate [%(default)s]."
+        help="File that contains JSON list of filenames for datacube to process [%(default)s]."
     )
-
 
     args = parser.parse_args()
     logging.info(f"Command-line arguments: {sys.argv}")
 
-    DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
-    DataCubeBatch.HTTP_PREFIX       = args.urlPath
-    DataCubeBatch.PATH_TOKEN        = args.pathToken
+    DataCubeBatch.HTTP_PREFIX = args.urlPath
+    DataCubeBatch.PATH_TOKEN  = args.pathToken
+    DataCubeCompositeBatch.X_Y_CHUNK = args.chunkSize
 
     epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
@@ -456,6 +463,7 @@ def parse_args():
             logging.info(f'Got polygon coordinates: {shapefile_coords}')
             line = geometry.LineString(shapefile_coords[0][0])
             DataCubeBatch.POLYGON_SHAPE = geometry.Polygon(line)
+            logging.info(f'Set polygon: {DataCubeBatch.POLYGON_SHAPE}')
 
     return args
 
@@ -472,6 +480,7 @@ if __name__ == '__main__':
         args.batchJobQueue,
         args.bucket,
         args.bucketDir,
+        args.outputBucketDir,
         args.outputJobFile,
         args.numberOfCubes
     )
