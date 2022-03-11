@@ -12,15 +12,18 @@
 name: itslivecube
 
 channels:
+  - defaults
   - conda-forge
 
 # scipy is required by numba
+# Use MKL installation of numpy: from "defaults" channel,
+# as "conda-forge" channel provides OpenBLAS installation of numpy (slower)
 dependencies:
   - python==3.9.6
   - dask==2.30.0
   - pandas
-  - numpy
-  - numba
+  - defaults::numpy
+  - numba==0.55.0
   - h5py
   - h5netcdf
   - requests
