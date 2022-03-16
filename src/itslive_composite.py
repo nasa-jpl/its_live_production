@@ -5,6 +5,9 @@ specified at the time the datacube was constructed/updated.
 
 Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Green (JPL)
 """
+import mkl
+mkl.set_num_threads(1)
+
 import collections
 import copy
 import datetime
@@ -20,6 +23,9 @@ import timeit
 from tqdm import tqdm
 import xarray as xr
 import zarr
+import dask
+# from dask.distributed import Client, performance_report
+from dask.diagnostics import ProgressBar
 
 # Local imports
 from itscube import ITSCube
@@ -327,10 +333,7 @@ def itslive_lsqfit_annual(
     all_years,
     M_input,
     mad_std_ratio,
-    sigma,  # outputs to populate
-    mean,
-    error,
-    count):
+):
     # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,outlier_frac] data
     # variables.
     # Computes the amplitude and phase of seasonal velocity
@@ -357,64 +360,19 @@ def itslive_lsqfit_annual(
     # Apply MAD filter to input v
     _mad_kernel_size = 15
 
-    # # Ensure we're starting with finite data
-    # isf_mask   = np.isfinite(v_input) & np.isfinite(v_err_input)
-    # start_year = start_dec_year[isf_mask]
-    # stop_year  = stop_dec_year[isf_mask]
-    # v_in = v_input[isf_mask]
-    # v_err_in = v_err_input[isf_mask]
-    #
-    # totalnum = len(start_year)
-    #
-    # # Apply MAD filter to input v
-    # _mad_kernel_size = 15
-    #
-    # # Sort arrays based on the mid_date
-    # mid_date = start_year + (stop_year - start_year)/2.0
-    # sort_indices = np.argsort(mid_date)
-    #
-    # # Sort inputs
-    # start_year = start_year[sort_indices]
-    # stop_year = stop_year[sort_indices]
-    # v_in = v_in[sort_indices]
-    # v_err_in = v_err_in[sort_indices]
-    #
-    # # Apply 15-point moving median to v, subtract from v to get residual
-    # v_median = sp_signal.medfilt(v_in, _mad_kernel_size)
-    # v_residual = np.abs(v_in - v_median)
-    #
-    # # Take median of residual, multiply median of residual * 1.4826 = sigma
-    # v_sigma = np.median(v_residual)*mad_std_ratio
-    #
-    # non_outlier_mask  = ~(v_residual > (2.0 * _mad_thresh * v_sigma))
-    #
-    # # remove ouliers from v_in, v_error_in, start_dec_year, stop_dec_year
-    # start_year = start_year[non_outlier_mask]
-    # stop_year = stop_year[non_outlier_mask]
-    # v_in = v_in[non_outlier_mask]
-    # v_err_in = v_err_in[non_outlier_mask]
-    # # done with initial MAD filter
-
-    init_runtime = timeit.default_timer()
-
     start_year, stop_year, v, v_err, dyr, totalnum, M = init_lsq_fit1(
         v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input
     )
-    init_runtime1 = timeit.default_timer() - init_runtime
 
     # Compute outside of numba-compiled code as numba does not support a lot of scipy
     # functionality
     # Apply 15-point moving median to v, subtract from v to get residual
-    init_runtime = timeit.default_timer()
     # v_median = sp_signal.medfilt(v, _mad_kernel_size)
     v_median = ndimage.median_filter(v, _mad_kernel_size)
-    init_runtime2 = timeit.default_timer() - init_runtime
 
-    init_runtime = timeit.default_timer()
     start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1, M = init_lsq_fit2(
         v_median, v, v_err, start_year, stop_year, dyr, all_years, M, _mad_thresh, mad_std_ratio
     )
-    init_runtime3 = timeit.default_timer() - init_runtime
 
     # start_year, \
     # stop_year, \
@@ -445,13 +403,10 @@ def itslive_lsqfit_annual(
     # Last iteration of LSQ should always skip the outlier filter
     last_iteration = _mad_filter_iterations - 1
 
-    iter_runtime = 0
     for i in range(0, _mad_filter_iterations):
         # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
         # p, d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr)
-        runtime = timeit.default_timer()
         p, d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs)
-        iter_runtime += (timeit.default_timer() - runtime)
 
         # Divide by dt to avoid penalizing long dt [asg]
         d_resid = np.abs(d_obs - d_model)/dyr
@@ -542,16 +497,16 @@ def itslive_lsqfit_annual(
     # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_fraction
     # amplitude[ind] = A
     # phase[ind] = ph
-    sigma[ind] = A_err
-    mean[ind] = v_int
-    error[ind] = v_int_err
-    count[ind] = N_int
+    # sigma[ind] = A_err
+    # mean[ind] = v_int
+    # error[ind] = v_int_err
+    # count[ind] = N_int
 
     # except IndexError as exc:
     #     logging.info(f'Got index error for ind={ind} A={A} ampl.shape={amplitude.shape} all_years={all_years} y1={y1} outlier_frac={outlier_frac}')
     #     raise exc
 
-    return A, ph, outlier_frac, init_runtime1, init_runtime2, init_runtime3, iter_runtime
+    return [ind, A, ph, A_err, v_int, v_int_err, N_int, outlier_frac]
 
 @nb.jit(nopython=True)
 def prepare_v_components(vxm, vym, x_len, y_len, date_len, vx_error, vy_error, vx_in, vy_in):
@@ -860,7 +815,7 @@ class ITSLiveComposite:
         x_start = 0
         x_num_to_process = self.cube_sizes[Coords.X]
         # For debugging only
-        # x_num_to_process = 100
+        x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -868,7 +823,7 @@ class ITSLiveComposite:
 
             y_num_to_process = self.cube_sizes[Coords.Y]
             # For debugging only
-            # y_num_to_process = 100
+            y_num_to_process = 100
             y_start = 0
 
             while y_num_to_process > 0:
@@ -1586,6 +1541,37 @@ class ITSLiveComposite:
         logging.info(f"Encoding settings: {encoding_settings}")
         ds.to_zarr(output_store, encoding=encoding_settings, consolidated=True)
 
+
+    @staticmethod
+    def cubelsqfit2_iteration(x1, x_err1, i, j):
+        """
+        cubelsqfit2 processing of one spacial point - to be able to parallelize
+        the processing with dask.
+        """
+        # Minimum number of non-NAN values in the data to proceed with LSQ fit
+        _num_valid_points = 5
+
+        # Flag if computations were skipped
+        skip_flag = True
+
+        mask = ~np.isnan(x1)
+        if np.sum(mask) < _num_valid_points:
+            # Skip the point, return no computed results
+            return (i, j, skip_flag, ())
+
+        skip_flag = False
+        return (i, j,
+            skip_flag,
+            itslive_lsqfit_annual(
+                x1, x_err1, ITSLiveComposite.START_DECIMAL_YEAR,
+                ITSLiveComposite.STOP_DECIMAL_YEAR,
+                ITSLiveComposite.DECIMAL_DT,
+                ITSLiveComposite.YEARS,
+                ITSLiveComposite.M,
+                ITSLiveComposite.MAD_STD_RATIO
+            )
+        )
+
     @staticmethod
     def cubelsqfit2(
         v,
@@ -1604,9 +1590,6 @@ class ITSLiveComposite:
 
         Return: outlier_frac
         """
-        # Minimum number of non-NAN values in the data to proceed with LSQ fit
-        _num_valid_points = 5
-
         # Initialize output
         start_time = timeit.default_timer()
         dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
@@ -1621,48 +1604,53 @@ class ITSLiveComposite:
             # v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
             v_err = np.broadcast_to(reshape_v_err, (v_err_data.size, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
 
-        init_time1 = 0
-        init_time2 = 0
-        init_time3 = 0
-        lsq_time = 0
+        # Make data continuous in time
 
         # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
         for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
-            for i in range(0, ITSLiveComposite.Chunk.x_len):
-                mask = ~np.isnan(v[:, j, i])
-                if mask.sum() < _num_valid_points:
-                    # Skip the point, return no outliers
-                    continue
+            # num_to_process = ITSLiveComposite.Chunk.x_len
 
-                global_i = i + ITSLiveComposite.Chunk.start_x
-                global_j = j + ITSLiveComposite.Chunk.start_y
+            # num_tasks = chunk_to_process if num_to_process > chunk_to_process else num_to_process
+            tasks = [dask.delayed(ITSLiveComposite.cubelsqfit2_iteration)(v[:, j, i], v_err[:, j, i], i, j) \
+                     for i in range(0, ITSLiveComposite.Chunk.x_len)]
+            # logging.info(f"Processing {len(tasks)} tasks out of {num_to_process} remaining")
 
-                amplitude[global_j, global_i], \
-                phase[global_j, global_i], \
-                outlier_frac[j, i], \
-                init_runtime1, \
-                init_runtime2, \
-                init_runtime3, \
-                lsq_runtime = itslive_lsqfit_annual(
-                    v[:, j, i],
-                    v_err[:, j, i],
-                    ITSLiveComposite.START_DECIMAL_YEAR,
-                    ITSLiveComposite.STOP_DECIMAL_YEAR,
-                    ITSLiveComposite.DECIMAL_DT,
-                    ITSLiveComposite.YEARS,
-                    ITSLiveComposite.M,
-                    ITSLiveComposite.MAD_STD_RATIO,
-                    sigma[:, global_j, global_i],
-                    mean[:, global_j, global_i],
-                    error[:, global_j, global_i],
-                    count[:, global_j, global_i]
-                )
-                init_time1 += init_runtime1
-                init_time2 += init_runtime2
-                init_time3 += init_runtime3
-                lsq_time += lsq_runtime
+            results = None
+            # with ProgressBar():  # Does not work with Client() scheduler
+            #     # If to collect performance report (need to define global Client - see above)
+            #     # with performance_report(filename=f"dask-report-{num_granules}.html"):
+            #     #     results = dask.compute(tasks)
+            results = dask.compute(
+                tasks,
+                scheduler='threads',
+                num_workers=8
+            )
 
-        logging.info(f'Init_time1: {init_time1} sec, Init_time2: {init_time2} sec, Init_time3: {init_time3} sec, lsq_time: {lsq_time} seconds')
+            del tasks
+            gc.collect()
+
+            for each_output in results[0]:
+                iter_i, iter_j, skip_flag, results = each_output
+                if skip_flag is False:
+                    # Annual phase and amplitude for processed years were computed
+                    global_i = iter_i + ITSLiveComposite.Chunk.start_x
+                    global_j = iter_j + ITSLiveComposite.Chunk.start_y
+
+                    ind, \
+                    amplitude[global_j, global_i], \
+                    phase[global_j, global_i], \
+                    sigma[ind, global_j, global_i], \
+                    mean[ind, global_j, global_i], \
+                    error[ind, global_j, global_i], \
+                    count[ind, global_j, global_i], \
+                    outlier_frac[iter_j, iter_i] = results
+
+            del results
+            gc.collect()
+
+                # num_to_process -= num_tasks
+                # start += num_tasks
+
         return outlier_frac
 
 
