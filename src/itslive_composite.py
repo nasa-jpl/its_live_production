@@ -129,7 +129,7 @@ def cube_filter(data, dt, mad_std_ratio):
     # Make numba happy - use np.bool_ type
     invalid = np.zeros_like(data, dtype=np.bool_)
 
-    _, y_len, x_len = data.shape
+    y_len, x_len, _ = data.shape
     dims = (y_len, x_len)
     maxdt = np.full(dims, np.nan)
 
@@ -137,7 +137,9 @@ def cube_filter(data, dt, mad_std_ratio):
     # for j in tqdm(range(0, 1), ascii=True, desc='cube_filter (debug_len=1): y'):
     for j_index in nb.prange(y_len):
         for i_index in nb.prange(x_len):
-            maxdt[j_index, i_index], invalid[:, j_index, i_index] = cube_filter_iteration(data[:, j_index, i_index], dt, mad_std_ratio)
+    # for j_index in range(0, y_len):
+    #     for i_index in range(0, x_len):
+            maxdt[j_index, i_index], invalid[j_index, i_index, :] = cube_filter_iteration(data[j_index, i_index, :], dt, mad_std_ratio)
 
     return invalid, maxdt
 
@@ -330,7 +332,8 @@ def itslive_lsqfit_annual(
     sigma,  # outputs to populate
     mean,
     error,
-    count):
+    count,
+    compute_offset):
     # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,outlier_frac] data
     # variables.
     # Computes the amplitude and phase of seasonal velocity
@@ -357,44 +360,6 @@ def itslive_lsqfit_annual(
     # Apply MAD filter to input v
     _mad_kernel_size = 15
 
-    # # Ensure we're starting with finite data
-    # isf_mask   = np.isfinite(v_input) & np.isfinite(v_err_input)
-    # start_year = start_dec_year[isf_mask]
-    # stop_year  = stop_dec_year[isf_mask]
-    # v_in = v_input[isf_mask]
-    # v_err_in = v_err_input[isf_mask]
-    #
-    # totalnum = len(start_year)
-    #
-    # # Apply MAD filter to input v
-    # _mad_kernel_size = 15
-    #
-    # # Sort arrays based on the mid_date
-    # mid_date = start_year + (stop_year - start_year)/2.0
-    # sort_indices = np.argsort(mid_date)
-    #
-    # # Sort inputs
-    # start_year = start_year[sort_indices]
-    # stop_year = stop_year[sort_indices]
-    # v_in = v_in[sort_indices]
-    # v_err_in = v_err_in[sort_indices]
-    #
-    # # Apply 15-point moving median to v, subtract from v to get residual
-    # v_median = sp_signal.medfilt(v_in, _mad_kernel_size)
-    # v_residual = np.abs(v_in - v_median)
-    #
-    # # Take median of residual, multiply median of residual * 1.4826 = sigma
-    # v_sigma = np.median(v_residual)*mad_std_ratio
-    #
-    # non_outlier_mask  = ~(v_residual > (2.0 * _mad_thresh * v_sigma))
-    #
-    # # remove ouliers from v_in, v_error_in, start_dec_year, stop_dec_year
-    # start_year = start_year[non_outlier_mask]
-    # stop_year = stop_year[non_outlier_mask]
-    # v_in = v_in[non_outlier_mask]
-    # v_err_in = v_err_in[non_outlier_mask]
-    # # done with initial MAD filter
-
     init_runtime = timeit.default_timer()
 
     start_year, stop_year, v, v_err, dyr, totalnum, M = init_lsq_fit1(
@@ -406,7 +371,6 @@ def itslive_lsqfit_annual(
     # functionality
     # Apply 15-point moving median to v, subtract from v to get residual
     init_runtime = timeit.default_timer()
-    # v_median = sp_signal.medfilt(v, _mad_kernel_size)
     v_median = ndimage.median_filter(v, _mad_kernel_size)
     init_runtime2 = timeit.default_timer() - init_runtime
 
@@ -538,7 +502,6 @@ def itslive_lsqfit_annual(
     # logging.info(f'Finished post-process ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
 
-    # try:
     # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_fraction
     # amplitude[ind] = A
     # phase[ind] = ph
@@ -547,15 +510,19 @@ def itslive_lsqfit_annual(
     error[ind] = v_int_err
     count[ind] = N_int
 
-    # except IndexError as exc:
-    #     logging.info(f'Got index error for ind={ind} A={A} ampl.shape={amplitude.shape} all_years={all_years} y1={y1} outlier_frac={outlier_frac}')
-    #     raise exc
+    offset, slope, se = None, None, None
+    if compute_offset:
+        offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
+        # logging.info(f'Offset: {offset}')
+        # logging.info(f'slope: {slope}')
+        # logging.info(f'se: {se}')
 
-    return A, ph, outlier_frac, init_runtime1, init_runtime2, init_runtime3, iter_runtime
+    return A, ph, offset, slope, se, outlier_frac, init_runtime1, init_runtime2, init_runtime3, iter_runtime
 
 @nb.jit(nopython=True)
 def prepare_v_components(vxm, vym, x_len, y_len, date_len, vx_error, vy_error, vx_in, vy_in):
     """
+    Prepare v and v_error components for the LSQ fit to compute mean.v
     """
     # Does not work with numba
     # # Need to project velocity onto a unit flow vector to avoid biased (Change from Rician to Normal distribution)
@@ -569,16 +536,23 @@ def prepare_v_components(vxm, vym, x_len, y_len, date_len, vx_error, vy_error, v
     # logging.info(f'theta.shape: {theta.shape}, vxm.shape: {vxm.shape} vym.shape: {vym.shape}')
     # logging.info(f'Computed theta (took {timeit.default_timer() - start_time} seconds)')
 
-    # Explicitly expand the value
-    dims = (date_len, y_len, x_len)
-    stheta = np.broadcast_to(np.sin(theta), dims)
+    # Explicitly expand the value: expand in (t, y, x) first, then transpose to (y,x,t).
+    # Can't broadcast right away as getting
+    # ValueError: operands could not be broadcast together with remapped shapes [original->remapped]: (100,100)  and requested shape (100,100,41740)
+    expand_dims = (date_len, y_len, x_len)
+    dims = (1, 2, 0)
+    stheta = np.broadcast_to(np.sin(theta), expand_dims)
+    # logging.info(f"stheta.shape: {stheta.shape}, transpose to {dims}")
+    stheta = stheta.transpose(dims)
     # logging.info(f'Computed stheta (took {timeit.default_timer() - start_time} seconds)')
 
-    ctheta = np.broadcast_to(np.cos(theta), dims)
+    ctheta = np.broadcast_to(np.cos(theta), expand_dims)
+    ctheta = ctheta.transpose(dims)
     # logging.info(f'Computed ctheta (took {timeit.default_timer() - start_time} seconds)')
 
+    # logging.info(f"vx_in.shape: {vx_in.shape} stheta.shape: {stheta.shape} vy_in.shape: {vy_in.shape} ctheta.shape: {ctheta.shape}")
     vx = vx_in*stheta + vy_in*ctheta
-    # logging.info(f'vx.shape: {vx.shape}')
+
     # logging.info(f'Computed vx (took {timeit.default_timer() - start_time} seconds)')
 
     # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
@@ -590,12 +564,62 @@ def prepare_v_components(vxm, vym, x_len, y_len, date_len, vx_error, vy_error, v
     # Expand dimensions of vectors
     vy = vx_error.reshape((len(vx_error), 1, 1))
     vy_expand = vy_error.reshape((len(vy_error), 1, 1))
-    # logging.info(f'Reshaped vy and vy_expand (took {timeit.default_timer() - start_time} seconds)')
 
-    vy = np.broadcast_to(vy, dims)*vxm + np.broadcast_to(vy_expand, dims)*vym
+    vy = np.broadcast_to(vy, expand_dims)
+    vy = vy.transpose(dims)
+
+    vy_expand = np.broadcast_to(vy_expand, expand_dims)
+    vy_expand = vy_expand.transpose(dims)
+
+    # logging.info(f'Reshaped vy and vy_expand (took {timeit.default_timer() - start_time} seconds)')
+    # vy.shape: (100, 100, 11036) vxm.shape: (100, 100) vym.shape: (100, 100)
+    # logging.info(f"vy.shape: {vy.shape} vxm.shape: {vxm.shape} vym.shape: {vym.shape}")
+    # OR vy = vxm[..., np.newaxis]*vy + vym[..., np.newaxis]*vy_expand
+    _trans_dims = (2,0,1)
+    vy = vy.transpose(_trans_dims)*vxm + vy_expand.transpose(_trans_dims)*vym
+
+    # vy = np.broadcast_to(vy, dims)*vxm + np.broadcast_to(vy_expand, dims)*vym
     vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
 
-    return (vx, vy)
+    # Transpose back to [y,x,t] dimensions
+    return (vx, vy.transpose(dims))
+
+def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2017, 7, 2)):
+    """
+    Returns the offset, slope, and se for a weighted linear fit to v with an intercept of datetime0.
+
+   - t: date of input estimates
+   - v: estimates
+   - v_err: estimate errors
+   - datetime0: model intercept
+   """
+    yr = np.array([decimal_year(datetime.datetime(each, 7, 2)) for each in t])
+    yr0 = decimal_year(datetime0)
+    yr = yr - yr0
+
+    # weights for velocities:
+    w_v = 1 / (v_err**2)
+
+    # create design matrix
+    D = np.ones((len(yr), 2))
+    D[:, 1] = yr
+
+    # Solve for coefficients of each column in the Vandermonde:
+    valid = ~np.isnan(v)
+    w_v = w_v[valid]
+    D = D[valid, :]
+
+    # Julia: offset, slope = (w_v[valid].*D[valid,:]) \ (w_v[valid].*v[valid]);
+    offset, slope = np.linalg.lstsq(w_v.reshape((len(w_v), 1)) * D, w_v*v[valid])[0]
+    # offset = p[0]
+    # slope = p[1]
+
+    # RMSE from fit
+    res = v - (yr*slope + offset)
+    # Julia: se = sqrt(sum(res.^2) ./ (sum(valid)-1))
+    se = np.sqrt((res**2).sum() / (valid.sum()-1))
+
+    return offset, slope, se
 
 class CompositeVariable:
     """
@@ -704,12 +728,13 @@ class ITSLiveComposite:
     MID_DATE_LEN = None
     YEARS_LEN = None
 
-    # ---------------------
-    # Dask related settings
-    # ---------------------
     # Number of X and Y coordinates to load from the datacube at any given time,
-    # and to process in one "chunk" in parallel
+    # and to process in one "chunk"
     NUM_TO_PROCESS = 100
+
+    # Dimensions order of the data to guarantee continuous memory in time dimension
+    # Original data as stored in [time, y, x] dimension order.
+    CONT_TIME_ORDER = [1, 2, 0]
 
     def __init__(self, cube_store: str, s3_bucket: str):
         """
@@ -800,7 +825,7 @@ class ITSLiveComposite:
         y_len = self.cube_sizes[Coords.Y]
 
         # Allocate memory for composite outputs
-        dims = (ITSLiveComposite.YEARS_LEN, y_len, x_len)
+        dims = (y_len, x_len, ITSLiveComposite.YEARS_LEN)
 
         self.error = CompositeVariable(dims, 'error')
         self.count = CompositeVariable(dims, 'count')
@@ -813,6 +838,9 @@ class ITSLiveComposite:
         self.outlier_fraction = np.full(dims, np.nan)
         self.amplitude = CompositeVariable(dims, 'amplitude')
         self.phase = CompositeVariable(dims, 'phase')
+        self.offset = CompositeVariable(dims, 'offset')
+        self.slope = CompositeVariable(dims, 'slope')
+        self.se = CompositeVariable(dims, 'se')
 
         # Sensor data for the cube's layers
         self.sensors = cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
@@ -842,7 +870,7 @@ class ITSLiveComposite:
                 self.sensors_groups.append(MissionSensor.GROUPS[each])
                 collected_sensors.extend(self.sensors_groups[-1].sensors)
 
-        dims = (len(self.sensors_groups), y_len, x_len)
+        dims = (y_len, x_len, len(self.sensors_groups))
         self.max_dt = np.full(dims, np.nan)
 
         # Date when composites were created
@@ -915,23 +943,30 @@ class ITSLiveComposite:
         logging.info(f'Filter data based on dt binned medians...')
 
         # Initialize variables
-        dims = (ITSLiveComposite.MID_DATE_LEN, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
+        dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, ITSLiveComposite.MID_DATE_LEN)
         vx_invalid = np.full(dims, False)
         vy_invalid = np.full(dims, False)
 
         # Loop for each unique sensor (those groupings image pairs that can be
         # expected to have different temporal decorelation)
-        dims = (len(self.sensors_groups), ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
+        dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, len(self.sensors_groups))
         vx_maxdt = np.full(dims, np.nan)
         vy_maxdt = np.full(dims, np.nan)
 
         # ATTN: don't use native xarray functionality is much slower,
         # convert data to numpy types and use numpy only
         logging.info(f'Loading vx[:, {start_y}:{stop_y}, {start_x}:{stop_x}] out of [{self.cube_sizes[Coords.MID_DATE]}, {self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]...')
-        vx = self.data.vx[:, start_y:stop_y, start_x:stop_x].astype(np.float32).values
+        vx_org = self.data.vx[:, start_y:stop_y, start_x:stop_x].astype(np.float32).values
+
+        # Transpose data to make it continuous in time
+        vx = np.zeros((ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, ITSLiveComposite.MID_DATE_LEN))
+        vx.flat = np.transpose(vx_org, ITSLiveComposite.CONT_TIME_ORDER)
 
         logging.info(f'Loading vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}] out of [{self.cube_sizes[Coords.MID_DATE]}, {self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]...')
-        vy = self.data.vy[:, start_y:stop_y, start_x:stop_x].astype(np.float32).values
+        vy_org = self.data.vy[:, start_y:stop_y, start_x:stop_x].astype(np.float32).values
+
+        vy = np.zeros((ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, ITSLiveComposite.MID_DATE_LEN))
+        vy.flat = np.transpose(vy_org, ITSLiveComposite.CONT_TIME_ORDER)
 
         for i in range(len(self.sensors_groups)):
             sensor_group = self.sensors_groups[i]
@@ -952,17 +987,17 @@ class ITSLiveComposite:
 
             logging.info(f'Filtering vx...')
             start_time = timeit.default_timer()
-            vx_invalid[mask, :, :], vx_maxdt[i, :, :] = cube_filter(vx[mask, ...], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
+            vx_invalid[:, :, mask], vx_maxdt[:, :, i] = cube_filter(vx[..., mask], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
             logging.info(f'Filtered vx (took {timeit.default_timer() - start_time} seconds)')
 
             logging.info(f'Filtering vy...')
             start_time = timeit.default_timer()
-            vy_invalid[mask, :, :], vy_maxdt[i, :, :] = cube_filter(vy[mask, ...], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
+            vy_invalid[:, :, mask], vy_maxdt[:, :, i] = cube_filter(vy[..., mask], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
             logging.info(f'Filtered vy (took {timeit.default_timer() - start_time} seconds)')
 
             # Get maximum value along sensor dimension: concatenate maxdt
             # for vx and vy in new dimension
-            self.max_dt[i, start_y:stop_y, start_x:stop_x] = np.nanmax(np.stack((vx_maxdt[i, :, :], vy_maxdt[i, :, :]), axis=0), axis=0)
+            self.max_dt[start_y:stop_y, start_x:stop_x, i] = np.nanmax(np.stack((vx_maxdt[:, :, i], vy_maxdt[:, :, i]), axis=2), axis=2)
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
         logging.info(f'Compute invalid mask...')
@@ -977,8 +1012,8 @@ class ITSLiveComposite:
         logging.info(f'Mask invalid entries for vy...')
         vy[invalid] = np.nan
 
-        invalid = np.nansum(invalid, axis=0)
-        invalid = np.divide(invalid, np.sum(np.isnan(vx), 0) + invalid)
+        invalid = np.nansum(invalid, axis=2)
+        invalid = np.divide(invalid, np.sum(np.isnan(vx), 2) + invalid)
 
         logging.info(f'Finished filtering ({timeit.default_timer() - start_time} seconds)')
 
@@ -986,6 +1021,7 @@ class ITSLiveComposite:
         logging.info(f'Find vx annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
+        # Transform vx data to make time series continuous in memory: [y, x, t]
         _ = ITSLiveComposite.cubelsqfit2(
             vx,
             self.vx_error,
@@ -994,12 +1030,16 @@ class ITSLiveComposite:
             self.mean.vx,
             self.error.vx,
             self.sigma.vx,
-            self.count.vx
+            self.count.vx,
+            self.offset.vx,
+            self.slope.vx,
+            self.se.vx
         )
         logging.info(f'Finished vx LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
         logging.info(f'Find vy annual means using LSQ fit... ')
         start_time = timeit.default_timer()
+
         _ = ITSLiveComposite.cubelsqfit2(
             vy,
             self.vy_error,
@@ -1008,7 +1048,10 @@ class ITSLiveComposite:
             self.mean.vy,
             self.error.vy,
             self.sigma.vy,
-            self.count.vy
+            self.count.vy,
+            self.offset.vy,
+            self.slope.vy,
+            self.se.vy
         )
         logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
@@ -1016,8 +1059,8 @@ class ITSLiveComposite:
         start_time = timeit.default_timer()
 
         vx, vy = prepare_v_components(
-            np.nanmedian(self.mean.vx[:, start_y:stop_y, start_x:stop_x], axis=0),
-            np.nanmedian(self.mean.vy[:, start_y:stop_y, start_x:stop_x], axis=0),
+            np.nanmedian(self.mean.vx[start_y:stop_y, start_x:stop_x, :], axis=2),
+            np.nanmedian(self.mean.vy[start_y:stop_y, start_x:stop_x, :], axis=2),
             ITSLiveComposite.Chunk.x_len,
             ITSLiveComposite.Chunk.y_len,
             ITSLiveComposite.MID_DATE_LEN,
@@ -1025,6 +1068,8 @@ class ITSLiveComposite:
             self.vy_error,
             vx, vy
         )
+
+        logging.info(f"vx.shape: {vx.shape} vy.shape: {vy.shape}")
         logging.info(f'Finished preparing vx and vy for annual means v (took {timeit.default_timer() - start_time} seconds)')
 
         logging.info(f'Find v annual means using LSQ fit... ')
@@ -1080,6 +1125,15 @@ class ITSLiveComposite:
         COUNT = 'count'
         MAX_DT = 'dt_max'
         OUTLIER_FRAC = 'outlier_frac'
+        VX0 = 'vx0'
+        VY0 = 'vy0'
+        V0  = 'v0'
+        VX0_ERROR = 'vx0_error'
+        VY0_ERROR = 'vy0_error'
+        V0_ERROR  = 'v0_error'
+        SLOPE_VX  = 'dvx_dt'
+        SLOPE_VY  = 'dvy_dt'
+        SLOPE_V   = 'dv_dt'
 
         STD_NAME = {
             DataVars.VX: 'x_velocity',
@@ -1101,7 +1155,16 @@ class ITSLiveComposite:
             TIME: 'time',
             COUNT: 'count',
             MAX_DT: 'dt_maximum',
-            OUTLIER_FRAC: 'outlier_fraction'
+            OUTLIER_FRAC: 'outlier_fraction',
+            VX0: 'climatological_x_velocity',
+            VY0: 'climatological_y_velocity',
+            V0: 'climatological_velocity',
+            VX0_ERROR: 'vx0_velocity_error',
+            VY0_ERROR: 'vy0_velocity_error',
+            V0_ERROR: 'v0_velocity_error',
+            SLOPE_VX: 'dvx_dt',
+            SLOPE_VY: 'dvy_dt',
+            SLOPE_V:  'dv_dt'
         }
 
         DESCRIPTION = {
@@ -1124,7 +1187,16 @@ class ITSLiveComposite:
             COUNT:        'number of image pairs used in error weighted least squares fit',
             MAX_DT:       'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
             OUTLIER_FRAC: 'fraction of data identified as outliers and excluded from error weighted least squares fit',
-            SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering'   # TODO: confirm name
+            SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering',
+            VX0:          'climatological mean annual velocity vx',
+            VY0:          'climatological mean annual velocity vy',
+            V0:           'climatological mean annual velocity v',
+            VX0_ERROR:    'standard error for vx0',
+            VY0_ERROR:    'standard error for vy0',
+            V0_ERROR:     'standard error for v0',
+            SLOPE_VX:     'climatological trend in vx',
+            SLOPE_VY:     'climatological trend in vy',
+            SLOPE_V:      'climatological trend in v'
         }
 
         TIME_ATTRS = {
@@ -1231,8 +1303,8 @@ class ITSLiveComposite:
         ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
 
         years_coord = pd.Index(ITSLiveComposite.YEARS, name=TIME)
-        var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [TIME, Coords.Y, Coords.X]
+        var_coords = [self.cube_ds.y.values, self.cube_ds.x.values, years_coord]
+        var_dims = [Coords.Y, Coords.X, TIME]
 
         twodim_var_coords = [self.cube_ds.y.values, self.cube_ds.x.values]
         twodim_var_dims = [Coords.Y, Coords.X]
@@ -1464,8 +1536,8 @@ class ITSLiveComposite:
         # Add max_dt (per sensor)
         # Use "group" label for each of the sensors used to filter data
         sensor_coord = pd.Index(sensors_labels, name=SENSORS)
-        var_coords = [sensor_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [SENSORS, Coords.Y, Coords.X]
+        var_coords = [self.cube_ds.y.values, self.cube_ds.x.values, sensor_coord]
+        var_dims = [Coords.Y, Coords.X, SENSORS]
 
         ds[MAX_DT] = xr.DataArray(
             data=self.max_dt,
@@ -1493,6 +1565,136 @@ class ITSLiveComposite:
             }
         )
         self.outlier_fraction = None
+        gc.collect()
+
+        v0 = np.sqrt(self.offset.vx**2 + self.offset.vy**2)
+        v0_error = ((self.se.vx * self.offset.vx) + (self.se.vy * self.offset.vy)) / v0
+
+        ds[VX0] = xr.DataArray(
+            data=self.offset.vx,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VX0],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX0],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
+            }
+        )
+        self.offset.vx = None
+        gc.collect()
+
+        ds[VY0] = xr.DataArray(
+            data=self.offset.vy,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VY0],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY0],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
+            }
+        )
+        self.offset.vy = None
+        gc.collect()
+
+        ds[V0] = xr.DataArray(
+            data=v0,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[V0],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V0],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
+            }
+        )
+        v0 = None
+        gc.collect()
+
+        ds[VX0_ERROR] = xr.DataArray(
+            data=self.se.vx,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VX0_ERROR],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX0_ERROR],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
+            }
+        )
+        self.se.vx = None
+        gc.collect()
+
+        ds[VY0_ERROR] = xr.DataArray(
+            data=self.se.vy,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[VY0_ERROR],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY0_ERROR],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
+            }
+        )
+        self.se.vy = None
+        gc.collect()
+
+        ds[V0_ERROR] = xr.DataArray(
+            data=v0_error,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[V0_ERROR],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V0_ERROR],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y_UNITS
+            }
+        )
+        v0_error = None
+        gc.collect()
+
+        dv_dt = np.sqrt(self.slope.vx**2 + self.slope.vy**2)
+        ds[SLOPE_V] = xr.DataArray(
+            data=dv_dt,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[SLOPE_V],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[SLOPE_V],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y2_UNITS
+            }
+        )
+        dv_dt = None
+        gc.collect()
+
+        ds[SLOPE_VX] = xr.DataArray(
+            data=self.slope.vx,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[SLOPE_VX],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[SLOPE_VX],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y2_UNITS
+            }
+        )
+        self.slope.vx = None
+        gc.collect()
+
+        ds[SLOPE_VY] = xr.DataArray(
+            data=self.slope.vy,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[SLOPE_VY],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[SLOPE_VY],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.M_Y2_UNITS
+            }
+        )
+        self.slope.vy = None
         gc.collect()
 
         # ATTN: Set attributes for the Dataset coordinates as the very last step:
@@ -1533,7 +1735,16 @@ class ITSLiveComposite:
             VX_PHASE,
             VY_PHASE,
             V_PHASE,
-            OUTLIER_FRAC
+            OUTLIER_FRAC,
+            VX0,
+            VY0,
+            V0,
+            VX0_ERROR,
+            VY0_ERROR,
+            V0_ERROR,
+            SLOPE_VX,
+            SLOPE_VY,
+            SLOPE_V
             ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
@@ -1577,7 +1788,16 @@ class ITSLiveComposite:
             VX_PHASE,
             VY_PHASE,
             V_PHASE,
-            OUTLIER_FRAC
+            OUTLIER_FRAC,
+            VX0,
+            VY0,
+            V0,
+            VX0_ERROR,
+            VY0_ERROR,
+            V0_ERROR,
+            SLOPE_VX,
+            SLOPE_VY,
+            SLOPE_V
             ]:
             encoding_settings[each].update({
                 'chunks': chunks_settings
@@ -1595,7 +1815,10 @@ class ITSLiveComposite:
         mean,
         error,
         sigma,
-        count
+        count,
+        offset = None,
+        slope = None,
+        se = None,
     ):
         """
         Cube LSQ fit with 2 iterations.
@@ -1617,9 +1840,9 @@ class ITSLiveComposite:
         v_err = v_err_data
         if v_err_data.ndim != v.ndim:
             # Expand vector to 3-d array
-            reshape_v_err = v_err_data.reshape((v_err_data.size, 1, 1))
+            reshape_v_err = v_err_data.reshape((1,1,v_err_data.size))
             # v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
-            v_err = np.broadcast_to(reshape_v_err, (v_err_data.size, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
+            v_err = np.broadcast_to(reshape_v_err, (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, v_err_data.size))
 
         init_time1 = 0
         init_time2 = 0
@@ -1629,7 +1852,8 @@ class ITSLiveComposite:
         # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
         for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
             for i in range(0, ITSLiveComposite.Chunk.x_len):
-                mask = ~np.isnan(v[:, j, i])
+                # mask = ~np.isnan(v[:, j, i])
+                mask = ~np.isnan(v[j, i, :])
                 if mask.sum() < _num_valid_points:
                     # Skip the point, return no outliers
                     continue
@@ -1639,28 +1863,39 @@ class ITSLiveComposite:
 
                 amplitude[global_j, global_i], \
                 phase[global_j, global_i], \
+                offset_iter, \
+                slope_iter, \
+                se_iter, \
                 outlier_frac[j, i], \
                 init_runtime1, \
                 init_runtime2, \
                 init_runtime3, \
                 lsq_runtime = itslive_lsqfit_annual(
-                    v[:, j, i],
-                    v_err[:, j, i],
+                    v[j, i, :],
+                    v_err[j, i, :],
                     ITSLiveComposite.START_DECIMAL_YEAR,
                     ITSLiveComposite.STOP_DECIMAL_YEAR,
                     ITSLiveComposite.DECIMAL_DT,
                     ITSLiveComposite.YEARS,
                     ITSLiveComposite.M,
                     ITSLiveComposite.MAD_STD_RATIO,
-                    sigma[:, global_j, global_i],
-                    mean[:, global_j, global_i],
-                    error[:, global_j, global_i],
-                    count[:, global_j, global_i]
+                    sigma[global_j, global_i, :],
+                    mean[global_j, global_i, :],
+                    error[global_j, global_i, :],
+                    count[global_j, global_i, :],
+                    offset is not None  # Flag if offset, slope and se should be computed
                 )
                 init_time1 += init_runtime1
                 init_time2 += init_runtime2
                 init_time3 += init_runtime3
                 lsq_time += lsq_runtime
+
+                if offset is not None:
+                    # Populate results if values were calculated
+                    offset[global_j, global_i] = offset_iter
+                    slope[global_j, global_i] = slope_iter
+                    se[global_j, global_i] = se_iter
+
 
         logging.info(f'Init_time1: {init_time1} sec, Init_time2: {init_time2} sec, Init_time3: {init_time3} sec, lsq_time: {lsq_time} seconds')
         return outlier_frac
