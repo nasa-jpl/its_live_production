@@ -625,6 +625,8 @@ class CompositeVariable:
     """
     Class to hold values for v, vx and vy components of the variables.
     """
+    CONT_IN_X = (2, 0, 1)
+
     def __init__(self, dims: list, name: str):
         """
         Initialize data variables to hold results.
@@ -633,6 +635,20 @@ class CompositeVariable:
         self.v = np.full(dims, np.nan)
         self.vx = np.full(dims, np.nan)
         self.vy = np.full(dims, np.nan)
+
+    def transpose(self, dims=CONT_IN_X):
+        """
+        dims: a tuple of dimension indices for new data layout, i.e. if original
+              dimension indices are [y, x, t], then to get [t, y, x] dimensions,
+              tuple has to be (2, 0, 1).
+
+        Traspose data variables to new dimensions.
+        This is used to switch from continuous memory layout approach (for
+        time dimension calculations) to end result data access ([time, y,x]).
+        """
+        self.v = self.v.transpose(dims)
+        self.vx = self.vx.transpose(dims)
+        self.vy = self.vy.transpose(dims)
 
 # Currently processed datacube chunk
 Chunk = collections.namedtuple("Chunk", ['start_x', 'stop_x', 'x_len', 'start_y', 'stop_y', 'y_len'])
@@ -1303,11 +1319,18 @@ class ITSLiveComposite:
         ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
 
         years_coord = pd.Index(ITSLiveComposite.YEARS, name=TIME)
-        var_coords = [self.cube_ds.y.values, self.cube_ds.x.values, years_coord]
-        var_dims = [Coords.Y, Coords.X, TIME]
+        var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
+        var_dims = [TIME, Coords.Y, Coords.X]
 
         twodim_var_coords = [self.cube_ds.y.values, self.cube_ds.x.values]
         twodim_var_dims = [Coords.Y, Coords.X]
+
+        self.mean.transpose()
+        self.error.transpose()
+        self.sigma.transpose()
+        self.count.transpose()
+
+        logging.info(f"self.mean.v.shape: {self.mean.v.shape}")
 
         ds[DataVars.V] = xr.DataArray(
             data=self.mean.v,
@@ -1536,8 +1559,10 @@ class ITSLiveComposite:
         # Add max_dt (per sensor)
         # Use "group" label for each of the sensors used to filter data
         sensor_coord = pd.Index(sensors_labels, name=SENSORS)
-        var_coords = [self.cube_ds.y.values, self.cube_ds.x.values, sensor_coord]
-        var_dims = [Coords.Y, Coords.X, SENSORS]
+        var_coords = [sensor_coord, self.cube_ds.y.values, self.cube_ds.x.values]
+        var_dims = [SENSORS, Coords.Y, Coords.X]
+
+        self.max_dt = self.max_dt.transpose(CompositeVariable.CONT_IN_X)
 
         ds[MAX_DT] = xr.DataArray(
             data=self.max_dt,
