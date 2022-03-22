@@ -4,6 +4,9 @@ within the same target projection, bounding polygon and datetime period as
 specified at the time the datacube was constructed/updated.
 
 Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Green (JPL)
+
+Jet Propulsion Laboratory, California Institute of Technology, Pasadena, California
+March 21, 2022
 """
 import collections
 import copy
@@ -332,8 +335,7 @@ def itslive_lsqfit_annual(
     sigma,  # outputs to populate
     mean,
     error,
-    count,
-    compute_offset):
+    count):
     # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,outlier_frac] data
     # variables.
     # Computes the amplitude and phase of seasonal velocity
@@ -510,14 +512,160 @@ def itslive_lsqfit_annual(
     error[ind] = v_int_err
     count[ind] = N_int
 
-    offset, slope, se = None, None, None
-    if compute_offset:
-        offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
-        # logging.info(f'Offset: {offset}')
-        # logging.info(f'slope: {slope}')
-        # logging.info(f'se: {se}')
+    offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
+    # logging.info(f'Offset: {offset}')
+    # logging.info(f'slope: {slope}')
+    # logging.info(f'se: {se}')
 
     return A, ph, offset, slope, se, outlier_frac, init_runtime1, init_runtime2, init_runtime3, iter_runtime
+
+# @nb.jit(nopython=True)
+def annual_magnitude(
+    vx0,
+    vy0,
+    vx_fit,
+    vy_fit,
+    vx_fit_err,
+    vy_fit_err,
+    vx_fit_count,
+    vy_fit_count,
+    vx_fit_outlier_frac,
+    vy_fit_outlier_frac,
+    v_fit, # outputs
+    v_fit_err,
+    v_fit_count
+):
+    """
+    Computes and returns the annual mean, error, count, and outlier fraction
+    from component values projected on the unit flow vector defined by vx0 and vy0.
+
+    Inputs:
+        vx0: mean flow in x direction
+        vy0: mean flow in y direction
+        vx_fit: annual mean flow in x direction
+        vy_fit: annual mean flow in y direction
+        vx_fit_err: error in annual mean flow in x direction
+        vy_fit_err: error in annual mean flow in y direction
+        vx_fit_count: number of values used to determine annual mean flow in x direction
+        vy_fit_count: number of values used to determine annual mean flow in y direction
+        vx_fit_outlier_frac: fraction of data identified as outliers and removed
+            when calculating annual mean flow in x direction
+        vy_fit_outlier_frac: fraction of data identified as outliers and removed
+            when calculating annual mean flow in y direction
+    """
+    # solve for velocity magnitude
+    v_fit = np.sqrt(vx_fit**2 + vy_fit**2) # velocity magnitude
+
+    y_len, x_len, years_len = v_fit.shape
+    expand_dims = (y_len, x_len, years_len)
+
+    vx0_exp = np.broadcast_to(vx0.reshape((y_len, x_len, 1)), expand_dims)
+    vy0_exp = np.broadcast_to(vy0.reshape((y_len, x_len, 1)), expand_dims)
+
+    # logging.info(f'vx0_exp: {vx0_exp.shape} vy0_exp: {vy0_exp.shape}')
+    uv_x = vx0_exp/v_fit # unit flow vector
+    uv_y = vy0_exp/v_fit
+
+    v_fit_err = np.abs(vx_fit_err) * np.abs(uv_x) # flow acceleration in direction of unit flow vector, take absolute values
+    v_fit_err += np.abs(vy_fit_err) * np.abs(uv_y)
+
+    v_fit_count = np.ceil((vx_fit_count + vy_fit_count) / 2)
+    v_fit_outlier_frac = (vx_fit_outlier_frac + vy_fit_outlier_frac) / 2
+
+    return v_fit_outlier_frac
+
+@nb.jit(nopython=True)
+def climatology_magnitude(
+    vx0,
+    vy0,
+    dvx_dt,
+    dvy_dt,
+    vx_amp,
+    vy_amp,
+    vx_amp_err,
+    vy_amp_err,
+    vx_phase,
+    vy_phase,
+    v,
+    dv_dt,
+    v_amp,
+    v_amp_error,
+    v_phase
+):
+    """
+    Computes and populates the mean, trend, seasonal amplitude, error in seasonal amplitude,
+    and seasonal phase from component values projected on the unit flow  vector defined by vx0 and vy0
+
+    Input:
+    ======
+    vx0: mean flow in x direction
+    vy0: mean flow in y direction
+    dvx_dt: trend in flow in x direction
+    dvy_dt: trend in flow in y direction
+    vx_amp: seasonal amplitude in x direction
+    vy_amp: seasonal amplitude in y direction
+    vx_amp_err: error in seasonal amplitude in x direction
+    vy_amp_err: error in seasonal amplitude in y direction
+    vx_phase: seasonal phase in x direction [day of maximum flow]
+    vy_phase: seasonal phase in y direction [day of maximum flow]
+
+    Output:
+    =======
+    v
+    dv_dt
+    v_amp
+    v_amp_error
+    v_phase
+    """
+    _two_pi = np.pi * 2
+
+    # solve for velcity magnitude and acceleration
+    # [do this using vx and vy as to not bias the result due to the Rician distribution of v]
+    v = np.sqrt(vx0**2 + vy0**2) # velocity magnitude
+    uv_x = vx0/v # unit flow vector in x direction
+    uv_y = vy0/v # unit flow vector in y direction
+
+    dv_dt = dvx_dt * uv_x # flow acceleration in direction of unit flow vector
+    dv_dt += dvy_dt * uv_y
+
+    y_len, x_len, years_len = vx_amp_err.shape
+    expand_dims = (y_len, x_len, years_len)
+
+    uv_x_exp = np.broadcast_to(uv_x.reshape((y_len, x_len, 1)), expand_dims)
+    uv_y_exp = np.broadcast_to(uv_y.reshape((y_len, x_len, 1)), expand_dims)
+
+    v_amp_err = np.abs(vx_amp_err) * np.abs(uv_x_exp) # flow acceleration in direction of unit flow vector, take absolute values
+    v_amp_err += np.abs(vy_amp_err) * np.abs(uv_y_exp) # flow acceleration in direction of unit flow vector, take absolute values
+    # v_amp_err = v_amp_err[0] # convert from vector to number
+
+    # solve for amplitude and phase in unit flow direction
+    t0 = np.arange(0, 1+0.1, 0.1)
+
+    # Design matrix for LSQ fit
+    D = np.stack((np.cos(t0 * _two_pi), np.sin(t0 * _two_pi)), axis=-1)
+    # logging.info(f'D: {D}')
+
+    # Step through all spacial points
+    y_len, x_len = vx_amp.shape
+
+    for j in range(0, y_len):
+        for i in range(0, x_len):
+            # Skip [y, x] point if unit vector value is nan
+            if np.isnan(uv_x[j, i]) or np.isnan(uv_y[j, i]):
+                continue
+
+            vx_sin = vx_amp[j, i] * np.sin((t0 + (-vx_phase[j, i]/365.25 + 0.25))*_two_pi)  # must convert phase to fraction of a year and adjust from peak to phase
+            vy_sin = vy_amp[j, i] * np.sin((t0 + (-vy_phase[j, i]/365.25 + 0.25))*_two_pi)  # must convert phase to fraction of a year and adjust from peak to phase
+
+            v_sin  = vx_sin * uv_x[j, i]  # seasonality in direction of unit flow vector
+            v_sin += vy_sin * uv_y[j, i]
+
+            # Solve for coefficients of each column:
+            a1, a2 = np.linalg.lstsq(D, v_sin)[0]
+
+            v_amp[j, i] = np.hypot(a1, a2) # amplitude of sinusoid from trig identity a*sin(t) + b*cos(t) = d*sin(t+phi), where d=hypot(a,b) and phi=atan2(b,a).
+            phase_rad = np.arctan2(a1, a2) # phase in radians
+            v_phase[j, i] = 365.25*((0.25 - phase_rad/_two_pi) % 1) # phase converted such that it reflects the day when value is maximized
 
 @nb.jit(nopython=True)
 def prepare_v_components(vxm, vym, x_len, y_len, date_len, vx_error, vy_error, vx_in, vy_in):
@@ -856,7 +1004,7 @@ class ITSLiveComposite:
         self.phase = CompositeVariable(dims, 'phase')
         self.offset = CompositeVariable(dims, 'offset')
         self.slope = CompositeVariable(dims, 'slope')
-        self.se = CompositeVariable(dims, 'se')
+        self.trend = CompositeVariable(dims, 'trend')
 
         # Sensor data for the cube's layers
         self.sensors = cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
@@ -1038,7 +1186,7 @@ class ITSLiveComposite:
         start_time = timeit.default_timer()
 
         # Transform vx data to make time series continuous in memory: [y, x, t]
-        _ = ITSLiveComposite.cubelsqfit2(
+        vx_outlier = ITSLiveComposite.cubelsqfit2(
             vx,
             self.vx_error,
             self.amplitude.vx,
@@ -1049,14 +1197,14 @@ class ITSLiveComposite:
             self.count.vx,
             self.offset.vx,
             self.slope.vx,
-            self.se.vx
+            self.trend.vx
         )
         logging.info(f'Finished vx LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
         logging.info(f'Find vy annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
-        _ = ITSLiveComposite.cubelsqfit2(
+        vy_outlier = ITSLiveComposite.cubelsqfit2(
             vy,
             self.vy_error,
             self.amplitude.vy,
@@ -1067,44 +1215,52 @@ class ITSLiveComposite:
             self.count.vy,
             self.offset.vy,
             self.slope.vy,
-            self.se.vy
+            self.trend.vy
         )
         logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
-        logging.info(f'Prepare vx and vy for annual means v using LSQ fit... ')
+        logging.info(f'Find annual magnitude... ')
         start_time = timeit.default_timer()
 
-        vx, vy = prepare_v_components(
-            np.nanmedian(self.mean.vx[start_y:stop_y, start_x:stop_x, :], axis=2),
-            np.nanmedian(self.mean.vy[start_y:stop_y, start_x:stop_x, :], axis=2),
-            ITSLiveComposite.Chunk.x_len,
-            ITSLiveComposite.Chunk.y_len,
-            ITSLiveComposite.MID_DATE_LEN,
-            self.vx_error,
-            self.vy_error,
-            vx, vy
+        voutlier = \
+        annual_magnitude(
+            self.offset.vx[start_y:stop_y, start_x:stop_x],
+            self.offset.vy[start_y:stop_y, start_x:stop_x],
+            self.mean.vx[start_y:stop_y, start_x:stop_x, :],
+            self.mean.vy[start_y:stop_y, start_x:stop_x, :],
+            self.error.vx[start_y:stop_y, start_x:stop_x, :],
+            self.error.vy[start_y:stop_y, start_x:stop_x, :],
+            self.count.vx[start_y:stop_y, start_x:stop_x, :],
+            self.count.vy[start_y:stop_y, start_x:stop_x, :],
+            vx_outlier,
+            vy_outlier,
+            self.mean.v[start_y:stop_y, start_x:stop_x, :],
+            self.error.v[start_y:stop_y, start_x:stop_x, :],
+            self.count.v[start_y:stop_y, start_x:stop_x, :],
         )
+        logging.info(f'Finished annual magnitude (took {timeit.default_timer() - start_time} seconds)')
 
-        logging.info(f"vx.shape: {vx.shape} vy.shape: {vy.shape}")
-        logging.info(f'Finished preparing vx and vy for annual means v (took {timeit.default_timer() - start_time} seconds)')
-
-        logging.info(f'Find v annual means using LSQ fit... ')
+        logging.info(f'Find climatology magnitude...')
         start_time = timeit.default_timer()
 
-        voutlier = ITSLiveComposite.cubelsqfit2(
-            vx,
-            vy,
-            self.amplitude.v,
-            self.phase.v,
-            self.mean.v,
-            self.error.v,
-            self.sigma.v,
-            self.count.v
+        climatology_magnitude(
+            self.offset.vx[start_y:stop_y, start_x:stop_x],
+            self.offset.vy[start_y:stop_y, start_x:stop_x],
+            self.slope.vx[start_y:stop_y, start_x:stop_x],
+            self.slope.vy[start_y:stop_y, start_x:stop_x],
+            self.amplitude.vx[start_y:stop_y, start_x:stop_x],
+            self.amplitude.vy[start_y:stop_y, start_x:stop_x],
+            self.sigma.vx[start_y:stop_y, start_x:stop_x],
+            self.sigma.vy[start_y:stop_y, start_x:stop_x],
+            self.phase.vx[start_y:stop_y, start_x:stop_x],
+            self.phase.vy[start_y:stop_y, start_x:stop_x],
+            self.offset.v[start_y:stop_y, start_x:stop_x], # outputs
+            self.slope.v[start_y:stop_y, start_x:stop_x],
+            self.amplitude.v[start_y:stop_y, start_x:stop_x],
+            self.sigma.v[start_y:stop_y, start_x:stop_x],
+            self.phase.v[start_y:stop_y, start_x:stop_x]
         )
-        logging.info(f'Finished v LSQ fit (took {timeit.default_timer() - start_time} seconds)')
-
-        # Because velocities have been projected onto a mean flow direction they can be negative
-        self.mean.v = np.fabs(self.mean.v)
+        logging.info(f'Finished climatology magnitude (took {timeit.default_timer() - start_time} seconds)')
 
         # Nan out invalid values
         # WAS: invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT) | (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
@@ -1593,7 +1749,7 @@ class ITSLiveComposite:
         gc.collect()
 
         v0 = np.sqrt(self.offset.vx**2 + self.offset.vy**2)
-        v0_error = ((self.se.vx * self.offset.vx) + (self.se.vy * self.offset.vy)) / v0
+        v0_error = ((self.trend.vx * self.offset.vx) + (self.trend.vy * self.offset.vy)) / v0
 
         ds[VX0] = xr.DataArray(
             data=self.offset.vx,
@@ -1638,7 +1794,7 @@ class ITSLiveComposite:
         gc.collect()
 
         ds[VX0_ERROR] = xr.DataArray(
-            data=self.se.vx,
+            data=self.trend.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
@@ -1648,11 +1804,11 @@ class ITSLiveComposite:
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
-        self.se.vx = None
+        self.trend.vx = None
         gc.collect()
 
         ds[VY0_ERROR] = xr.DataArray(
-            data=self.se.vy,
+            data=self.trend.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
@@ -1662,7 +1818,7 @@ class ITSLiveComposite:
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
-        self.se.vy = None
+        self.trend.vy = None
         gc.collect()
 
         ds[V0_ERROR] = xr.DataArray(
@@ -1841,9 +1997,9 @@ class ITSLiveComposite:
         error,
         sigma,
         count,
-        offset = None,
-        slope = None,
-        se = None,
+        offset,
+        slope,
+        se
     ):
         """
         Cube LSQ fit with 2 iterations.
@@ -1888,9 +2044,9 @@ class ITSLiveComposite:
 
                 amplitude[global_j, global_i], \
                 phase[global_j, global_i], \
-                offset_iter, \
-                slope_iter, \
-                se_iter, \
+                offset[global_j, global_i], \
+                slope[global_j, global_i], \
+                se[global_j, global_i], \
                 outlier_frac[j, i], \
                 init_runtime1, \
                 init_runtime2, \
@@ -1907,20 +2063,12 @@ class ITSLiveComposite:
                     sigma[global_j, global_i, :],
                     mean[global_j, global_i, :],
                     error[global_j, global_i, :],
-                    count[global_j, global_i, :],
-                    offset is not None  # Flag if offset, slope and se should be computed
+                    count[global_j, global_i, :]
                 )
                 init_time1 += init_runtime1
                 init_time2 += init_runtime2
                 init_time3 += init_runtime3
                 lsq_time += lsq_runtime
-
-                if offset is not None:
-                    # Populate results if values were calculated
-                    offset[global_j, global_i] = offset_iter
-                    slope[global_j, global_i] = slope_iter
-                    se[global_j, global_i] = se_iter
-
 
         logging.info(f'Init_time1: {init_time1} sec, Init_time2: {init_time2} sec, Init_time3: {init_time3} sec, lsq_time: {lsq_time} seconds')
         return outlier_frac
