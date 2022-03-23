@@ -203,19 +203,6 @@ def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs):
 
     # Add M: a different constant for each year (annual mean)
     D = np.concatenate((D, M), axis=1)
-    # logging.info(f"D_M.shape: {D_M.shape}")
-
-    # Add ones: constant offset for all data (effectively the mean velocity)
-    # WAS: D = np.column_stack((D_M, np.ones(len(start_year))))
-
-    # M_pos = M > 0
-    # D = np.column_stack( \
-    #     (((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos,\
-    #      ((np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi).reshape((len(M_pos), 1)) * M_pos) \
-    # )
-    #
-    # # Add M: a different constant for each year (annual mean)
-    # D = np.concatenate((D, M), axis=1)
 
     # Make numpy happy: have all data 2D
     # w_d.reshape((len(w_d), 1))
@@ -332,8 +319,7 @@ def itslive_lsqfit_annual(
     all_years,
     M_input,
     mad_std_ratio,
-    sigma,  # outputs to populate
-    mean,
+    mean,  # outputs to populate
     error,
     count):
     # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,outlier_frac] data
@@ -381,16 +367,6 @@ def itslive_lsqfit_annual(
         v_median, v, v_err, start_year, stop_year, dyr, all_years, M, _mad_thresh, mad_std_ratio
     )
     init_runtime3 = timeit.default_timer() - init_runtime
-
-    # start_year, \
-    # stop_year, \
-    # v, \
-    # v_err, \
-    # dyr, \
-    # w_v, \
-    # w_d, \
-    # d_obs, \
-    # y1, totalnum, M = init_lsq_fit(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input, _mad_thresh, mad_std_ratio)
 
     # Filter sum of each column
     # WAS: hasdata = M.sum(axis=0) > 0
@@ -486,6 +462,9 @@ def itslive_lsqfit_annual(
         # asg replaced call to wmean
         A_err[k] = weighted_std(d_obs[ind]-d_model[ind], w_d[ind]) / ((w_d[ind]*dyr[ind]).sum() / w_d[ind].sum())
 
+    # Compute climatology amplitude error based on annual values
+    amp_error = np.sqrt((A_err**2).sum())/(Nyrs-1)
+
     # WAS: v_int = p[2*Nyrs:]
     v_int = p[2:]
 
@@ -507,17 +486,14 @@ def itslive_lsqfit_annual(
     # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_fraction
     # amplitude[ind] = A
     # phase[ind] = ph
-    sigma[ind] = A_err
+    # sigma[ind] = A_err
     mean[ind] = v_int
     error[ind] = v_int_err
     count[ind] = N_int
 
     offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
-    # logging.info(f'Offset: {offset}')
-    # logging.info(f'slope: {slope}')
-    # logging.info(f'se: {se}')
 
-    return A, ph, offset, slope, se, outlier_frac, init_runtime1, init_runtime2, init_runtime3, iter_runtime
+    return A, amp_error, ph, offset, slope, se, outlier_frac, init_runtime1, init_runtime2, init_runtime3, iter_runtime
 
 # @nb.jit(nopython=True)
 def annual_magnitude(
@@ -552,6 +528,12 @@ def annual_magnitude(
             when calculating annual mean flow in x direction
         vy_fit_outlier_frac: fraction of data identified as outliers and removed
             when calculating annual mean flow in y direction
+
+    Outputs:
+        self.mean.v[start_y:stop_y, start_x:stop_x, :]
+        self.error.v[start_y:stop_y, start_x:stop_x, :]
+        self.count.v[start_y:stop_y, start_x:stop_x, :]
+        voutlier
     """
     # solve for velocity magnitude
     v_fit = np.sqrt(vx_fit**2 + vy_fit**2) # velocity magnitude
@@ -574,7 +556,7 @@ def annual_magnitude(
 
     return v_fit, v_fit_err, v_fit_count, v_fit_outlier_frac
 
-@nb.jit(nopython=True)
+@nb.jit(nopython=True, parallel=True)
 def climatology_magnitude(
     vx0,
     vy0,
@@ -605,6 +587,23 @@ def climatology_magnitude(
     vy_amp_err: error in seasonal amplitude in y direction
     vx_phase: seasonal phase in x direction [day of maximum flow]
     vy_phase: seasonal phase in y direction [day of maximum flow]
+    vx_trend:
+    vy_trend:
+
+    Correlation to actual inputs:
+    =============================
+    self.offset.vx[start_y:stop_y, start_x:stop_x],
+    self.offset.vy[start_y:stop_y, start_x:stop_x],
+    self.slope.vx[start_y:stop_y, start_x:stop_x],
+    self.slope.vy[start_y:stop_y, start_x:stop_x],
+    self.amplitude.vx[start_y:stop_y, start_x:stop_x],
+    self.amplitude.vy[start_y:stop_y, start_x:stop_x],
+    self.sigma.vx[start_y:stop_y, start_x:stop_x],
+    self.sigma.vy[start_y:stop_y, start_x:stop_x],
+    self.phase.vx[start_y:stop_y, start_x:stop_x],
+    self.phase.vy[start_y:stop_y, start_x:stop_x],
+    self.trend.vx[start_y:stop_y, start_x:stop_x],
+    self.trend.vy[start_y:stop_y, start_x:stop_x]
 
     Output:
     =======
@@ -613,6 +612,16 @@ def climatology_magnitude(
     v_amp
     v_amp_err
     v_phase
+    v_trend
+
+    Correlation to actual outputs:
+    =============================
+    self.offset.v[start_y:stop_y, start_x:stop_x]
+    self.slope.v[start_y:stop_y, start_x:stop_x]
+    self.amplitude.v[start_y:stop_y, start_x:stop_x]
+    self.sigma.v[start_y:stop_y, start_x:stop_x]
+    self.phase.v[start_y:stop_y, start_x:stop_x]
+    self.trend.v[start_y:stop_y, start_x:stop_x]
     """
     _two_pi = np.pi * 2
 
@@ -625,15 +634,8 @@ def climatology_magnitude(
     dv_dt = dvx_dt * uv_x # flow acceleration in direction of unit flow vector
     dv_dt += dvy_dt * uv_y
 
-    y_len, x_len, years_len = vx_amp_err.shape
-    expand_dims = (y_len, x_len, years_len)
-
-    uv_x_exp = np.broadcast_to(uv_x.reshape((y_len, x_len, 1)), expand_dims)
-    uv_y_exp = np.broadcast_to(uv_y.reshape((y_len, x_len, 1)), expand_dims)
-
-    v_amp_err = np.abs(vx_amp_err) * np.abs(uv_x_exp) # flow acceleration in direction of unit flow vector, take absolute values
-    v_amp_err += np.abs(vy_amp_err) * np.abs(uv_y_exp) # flow acceleration in direction of unit flow vector, take absolute values
-    # v_amp_err = v_amp_err[0] # convert from vector to number
+    v_amp_err = np.abs(vx_amp_err) * np.abs(uv_x) # flow acceleration in direction of unit flow vector, take absolute values
+    v_amp_err += np.abs(vy_amp_err) * np.abs(uv_y)
 
     # solve for amplitude and phase in unit flow direction
     t0 = np.arange(0, 1+0.1, 0.1)
@@ -652,8 +654,11 @@ def climatology_magnitude(
     v_amp = np.full_like(vx_amp, np.nan)
     v_phase = np.full_like(vx_phase, np.nan)
 
-    for j in range(0, y_len):
-        for i in range(0, x_len):
+    for j in nb.prange(y_len):
+        for i in nb.prange(x_len):
+    #
+    # for j in range(0, y_len):
+    #     for i in range(0, x_len):
             # Skip [y, x] point if unit vector value is nan
             if np.isnan(uv_x[j, i]) or np.isnan(uv_y[j, i]):
                 continue
@@ -675,7 +680,7 @@ def climatology_magnitude(
 
 def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2017, 7, 2)):
     """
-    Returns the offset, slope, and se for a weighted linear fit to v with an intercept of datetime0.
+    Returns the offset, slope, and error for a weighted linear fit to v with an intercept of datetime0.
 
    - t: date of input estimates
    - v: estimates
@@ -703,12 +708,10 @@ def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2017, 7, 2)):
     # offset = p[0]
     # slope = p[1]
 
-    # RMSE from fit
-    res = v - (yr*slope + offset)
-    # Julia: se = sqrt(sum(res.^2) ./ (sum(valid)-1))
-    se = np.sqrt((res**2).sum() / (valid.sum()-1))
+    # Julia: error = sqrt(sum(v_err[valid].^2))/(sum(valid)-1)
+    error = np.sqrt((v_err[valid]**2).sum())/(valid.sum()-1)
 
-    return offset, slope, se
+    return offset, slope, error
 
 class CompositeVariable:
     """
@@ -936,12 +939,12 @@ class ITSLiveComposite:
         self.count = CompositeVariable(dims, 'count')
         # WAS: self.amplitude = CompositeVariable(dims, 'amplitude')
         # WAS: self.phase = CompositeVariable(dims, 'phase')
-        self.sigma = CompositeVariable(dims, 'sigma')
         self.mean = CompositeVariable(dims, 'mean')
 
         dims = (y_len, x_len)
         self.outlier_fraction = np.full(dims, np.nan)
         self.amplitude = CompositeVariable(dims, 'amplitude')
+        self.sigma = CompositeVariable(dims, 'sigma')
         self.phase = CompositeVariable(dims, 'phase')
         self.offset = CompositeVariable(dims, 'offset')
         self.slope = CompositeVariable(dims, 'slope')
@@ -1244,6 +1247,7 @@ class ITSLiveComposite:
         VX0 = 'vx0'
         VY0 = 'vy0'
         V0  = 'v0'
+        COUNT0 = 'count0'
         VX0_ERROR = 'vx0_error'
         VY0_ERROR = 'vy0_error'
         V0_ERROR  = 'v0_error'
@@ -1275,6 +1279,7 @@ class ITSLiveComposite:
             VX0: 'climatological_x_velocity',
             VY0: 'climatological_y_velocity',
             V0: 'climatological_velocity',
+            COUNT0: 'count0',
             VX0_ERROR: 'vx0_velocity_error',
             VY0_ERROR: 'vy0_velocity_error',
             V0_ERROR: 'v0_velocity_error',
@@ -1307,9 +1312,10 @@ class ITSLiveComposite:
             VX0:          'climatological mean annual velocity vx',
             VY0:          'climatological mean annual velocity vy',
             V0:           'climatological mean annual velocity v',
-            VX0_ERROR:    'standard error for vx0',
-            VY0_ERROR:    'standard error for vy0',
-            V0_ERROR:     'standard error for v0',
+            COUNT0:       'number of image pairs used for climatological means',
+            VX0_ERROR:    'error for vx0',
+            VY0_ERROR:    'error for vy0',
+            V0_ERROR:     'error for v0',
             SLOPE_VX:     'climatological trend in vx',
             SLOPE_VY:     'climatological trend in vy',
             SLOPE_V:      'climatological trend in v'
@@ -1427,7 +1433,6 @@ class ITSLiveComposite:
 
         self.mean.transpose()
         self.error.transpose()
-        self.sigma.transpose()
         self.count.transpose()
 
         ds[DataVars.V] = xr.DataArray(
@@ -1530,8 +1535,8 @@ class ITSLiveComposite:
 
         ds[V_AMP_ERROR] = xr.DataArray(
             data=self.sigma.v,
-            coords=var_coords,
-            dims=var_dims,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
             attrs={
                 DataVars.STD_NAME: STD_NAME[V_AMP_ERROR],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_AMP_ERROR],
@@ -1572,8 +1577,8 @@ class ITSLiveComposite:
 
         ds[VX_AMP_ERROR] = xr.DataArray(
             data=self.sigma.vx,
-            coords=var_coords,
-            dims=var_dims,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
             attrs={
                 DataVars.STD_NAME: STD_NAME[VX_AMP_ERROR],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_AMP_ERROR],
@@ -1614,8 +1619,8 @@ class ITSLiveComposite:
 
         ds[VY_AMP_ERROR] = xr.DataArray(
             data=self.sigma.vy,
-            coords=var_coords,
-            dims=var_dims,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
             attrs={
                 DataVars.STD_NAME: STD_NAME[VY_AMP_ERROR],
                 DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_AMP_ERROR],
@@ -1639,6 +1644,8 @@ class ITSLiveComposite:
         )
         self.phase.vy = None
         gc.collect()
+
+        count0 = self.count.v.sum(axis=0)
 
         ds[COUNT] = xr.DataArray(
             data=self.count.v,
@@ -1816,6 +1823,20 @@ class ITSLiveComposite:
         self.slope.vy = None
         gc.collect()
 
+        ds[COUNT0] = xr.DataArray(
+            data=count0,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: STD_NAME[COUNT0],
+                DataVars.DESCRIPTION_ATTR: DESCRIPTION[COUNT0],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.COUNT_UNITS
+            }
+        )
+        count0 = None
+        gc.collect()
+
         # ATTN: Set attributes for the Dataset coordinates as the very last step:
         # when adding data variables that don't have the same attributes for the
         # coordinates, originally set Dataset coordinates will be wiped out
@@ -1981,6 +2002,7 @@ class ITSLiveComposite:
                 global_j = j + ITSLiveComposite.Chunk.start_y
 
                 amplitude[global_j, global_i], \
+                sigma[global_j, global_i], \
                 phase[global_j, global_i], \
                 offset[global_j, global_i], \
                 slope[global_j, global_i], \
@@ -1998,7 +2020,6 @@ class ITSLiveComposite:
                     ITSLiveComposite.YEARS,
                     ITSLiveComposite.M,
                     ITSLiveComposite.MAD_STD_RATIO,
-                    sigma[global_j, global_i, :],
                     mean[global_j, global_i, :],
                     error[global_j, global_i, :],
                     count[global_j, global_i, :]
