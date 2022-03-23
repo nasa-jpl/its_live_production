@@ -574,7 +574,7 @@ def annual_magnitude(
 
     return v_fit, v_fit_err, v_fit_count, v_fit_outlier_frac
 
-# @nb.jit(nopython=True)
+@nb.jit(nopython=True)
 def climatology_magnitude(
     vx0,
     vy0,
