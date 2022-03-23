@@ -531,9 +531,9 @@ def annual_magnitude(
     vy_fit_count,
     vx_fit_outlier_frac,
     vy_fit_outlier_frac,
-    v_fit, # outputs
-    v_fit_err,
-    v_fit_count
+    # v_fit, # outputs
+    # v_fit_err,
+    # v_fit_count
 ):
     """
     Computes and returns the annual mean, error, count, and outlier fraction
@@ -572,9 +572,9 @@ def annual_magnitude(
     v_fit_count = np.ceil((vx_fit_count + vy_fit_count) / 2)
     v_fit_outlier_frac = (vx_fit_outlier_frac + vy_fit_outlier_frac) / 2
 
-    return v_fit_outlier_frac
+    return v_fit, v_fit_err, v_fit_count, v_fit_outlier_frac
 
-@nb.jit(nopython=True)
+# @nb.jit(nopython=True)
 def climatology_magnitude(
     vx0,
     vy0,
@@ -586,11 +586,8 @@ def climatology_magnitude(
     vy_amp_err,
     vx_phase,
     vy_phase,
-    v,
-    dv_dt,
-    v_amp,
-    v_amp_error,
-    v_phase
+    vx_se,
+    vy_se
 ):
     """
     Computes and populates the mean, trend, seasonal amplitude, error in seasonal amplitude,
@@ -614,7 +611,7 @@ def climatology_magnitude(
     v
     dv_dt
     v_amp
-    v_amp_error
+    v_amp_err
     v_phase
     """
     _two_pi = np.pi * 2
@@ -648,6 +645,13 @@ def climatology_magnitude(
     # Step through all spacial points
     y_len, x_len = vx_amp.shape
 
+    v_se = np.full_like(vx_se, np.nan)
+    v_se = vx_se * np.abs(uv_x)
+    v_se += vy_se * np.abs(uv_y)
+
+    v_amp = np.full_like(vx_amp, np.nan)
+    v_phase = np.full_like(vx_phase, np.nan)
+
     for j in range(0, y_len):
         for i in range(0, x_len):
             # Skip [y, x] point if unit vector value is nan
@@ -667,70 +671,7 @@ def climatology_magnitude(
             phase_rad = np.arctan2(a1, a2) # phase in radians
             v_phase[j, i] = 365.25*((0.25 - phase_rad/_two_pi) % 1) # phase converted such that it reflects the day when value is maximized
 
-@nb.jit(nopython=True)
-def prepare_v_components(vxm, vym, x_len, y_len, date_len, vx_error, vy_error, vx_in, vy_in):
-    """
-    Prepare v and v_error components for the LSQ fit to compute mean.v
-    """
-    # Does not work with numba
-    # # Need to project velocity onto a unit flow vector to avoid biased (Change from Rician to Normal distribution)
-    # vxm = np.nanmedian(mean_vx, axis=0)
-    # # logging.info(f'Computed vxm (took {timeit.default_timer() - start_time} seconds)')
-    #
-    # vym = np.nanmedian(mean_vy, axis=0)
-    # logging.info(f'Computed vym (took {timeit.default_timer() - start_time} seconds)')
-
-    theta = np.arctan2(vxm, vym)
-    # logging.info(f'theta.shape: {theta.shape}, vxm.shape: {vxm.shape} vym.shape: {vym.shape}')
-    # logging.info(f'Computed theta (took {timeit.default_timer() - start_time} seconds)')
-
-    # Explicitly expand the value: expand in (t, y, x) first, then transpose to (y,x,t).
-    # Can't broadcast right away as getting
-    # ValueError: operands could not be broadcast together with remapped shapes [original->remapped]: (100,100)  and requested shape (100,100,41740)
-    expand_dims = (date_len, y_len, x_len)
-    dims = (1, 2, 0)
-    stheta = np.broadcast_to(np.sin(theta), expand_dims)
-    # logging.info(f"stheta.shape: {stheta.shape}, transpose to {dims}")
-    stheta = stheta.transpose(dims)
-    # logging.info(f'Computed stheta (took {timeit.default_timer() - start_time} seconds)')
-
-    ctheta = np.broadcast_to(np.cos(theta), expand_dims)
-    ctheta = ctheta.transpose(dims)
-    # logging.info(f'Computed ctheta (took {timeit.default_timer() - start_time} seconds)')
-
-    # logging.info(f"vx_in.shape: {vx_in.shape} stheta.shape: {stheta.shape} vy_in.shape: {vy_in.shape} ctheta.shape: {ctheta.shape}")
-    vx = vx_in*stheta + vy_in*ctheta
-
-    # logging.info(f'Computed vx (took {timeit.default_timer() - start_time} seconds)')
-
-    # Now only np.abs(vxm) and np.abs(vym) are used, reset the variables
-    vxm = np.fabs(vxm)
-    vym = np.fabs(vym)
-    # logging.info(f'Computed fabs (took {timeit.default_timer() - start_time} seconds)')
-
-    # logging.info(f'Tile vy for annual means v using LSQ fit... ')
-    # Expand dimensions of vectors
-    vy = vx_error.reshape((len(vx_error), 1, 1))
-    vy_expand = vy_error.reshape((len(vy_error), 1, 1))
-
-    vy = np.broadcast_to(vy, expand_dims)
-    vy = vy.transpose(dims)
-
-    vy_expand = np.broadcast_to(vy_expand, expand_dims)
-    vy_expand = vy_expand.transpose(dims)
-
-    # logging.info(f'Reshaped vy and vy_expand (took {timeit.default_timer() - start_time} seconds)')
-    # vy.shape: (100, 100, 11036) vxm.shape: (100, 100) vym.shape: (100, 100)
-    # logging.info(f"vy.shape: {vy.shape} vxm.shape: {vxm.shape} vym.shape: {vym.shape}")
-    # OR vy = vxm[..., np.newaxis]*vy + vym[..., np.newaxis]*vy_expand
-    _trans_dims = (2,0,1)
-    vy = vy.transpose(_trans_dims)*vxm + vy_expand.transpose(_trans_dims)*vym
-
-    # vy = np.broadcast_to(vy, dims)*vxm + np.broadcast_to(vy_expand, dims)*vym
-    vy /= np.sqrt(np.power(vxm, 2) + np.power(vym, 2))
-
-    # Transpose back to [y,x,t] dimensions
-    return (vx, vy.transpose(dims))
+    return v, dv_dt, v_amp, v_amp_err, v_phase, v_se
 
 def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2017, 7, 2)):
     """
@@ -1222,6 +1163,9 @@ class ITSLiveComposite:
         logging.info(f'Find annual magnitude... ')
         start_time = timeit.default_timer()
 
+        self.mean.v[start_y:stop_y, start_x:stop_x, :], \
+        self.error.v[start_y:stop_y, start_x:stop_x, :], \
+        self.count.v[start_y:stop_y, start_x:stop_x, :], \
         voutlier = \
         annual_magnitude(
             self.offset.vx[start_y:stop_y, start_x:stop_x],
@@ -1234,15 +1178,18 @@ class ITSLiveComposite:
             self.count.vy[start_y:stop_y, start_x:stop_x, :],
             vx_outlier,
             vy_outlier,
-            self.mean.v[start_y:stop_y, start_x:stop_x, :],
-            self.error.v[start_y:stop_y, start_x:stop_x, :],
-            self.count.v[start_y:stop_y, start_x:stop_x, :],
         )
         logging.info(f'Finished annual magnitude (took {timeit.default_timer() - start_time} seconds)')
 
         logging.info(f'Find climatology magnitude...')
         start_time = timeit.default_timer()
 
+        self.offset.v[start_y:stop_y, start_x:stop_x], \
+        self.slope.v[start_y:stop_y, start_x:stop_x], \
+        self.amplitude.v[start_y:stop_y, start_x:stop_x], \
+        self.sigma.v[start_y:stop_y, start_x:stop_x], \
+        self.phase.v[start_y:stop_y, start_x:stop_x], \
+        self.trend.v[start_y:stop_y, start_x:stop_x] = \
         climatology_magnitude(
             self.offset.vx[start_y:stop_y, start_x:stop_x],
             self.offset.vy[start_y:stop_y, start_x:stop_x],
@@ -1254,21 +1201,18 @@ class ITSLiveComposite:
             self.sigma.vy[start_y:stop_y, start_x:stop_x],
             self.phase.vx[start_y:stop_y, start_x:stop_x],
             self.phase.vy[start_y:stop_y, start_x:stop_x],
-            self.offset.v[start_y:stop_y, start_x:stop_x], # outputs
-            self.slope.v[start_y:stop_y, start_x:stop_x],
-            self.amplitude.v[start_y:stop_y, start_x:stop_x],
-            self.sigma.v[start_y:stop_y, start_x:stop_x],
-            self.phase.v[start_y:stop_y, start_x:stop_x]
+            self.trend.vx[start_y:stop_y, start_x:stop_x],
+            self.trend.vy[start_y:stop_y, start_x:stop_x]
         )
         logging.info(f'Finished climatology magnitude (took {timeit.default_timer() - start_time} seconds)')
 
         # Nan out invalid values
         # WAS: invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT) | (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
-        invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT)
-        self.mean.v[invalid_mask] = np.nan
-
-        invalid_mask = (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
-        self.amplitude.v[invalid_mask] = np.nan
+        # invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT)
+        # self.mean.v[invalid_mask] = np.nan
+        #
+        # invalid_mask = (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
+        # self.amplitude.v[invalid_mask] = np.nan
 
         # outlier = invalid + voutlier*(1-invalid)
         self.outlier_fraction[start_y:stop_y, start_x:stop_x] = invalid + voutlier*(1-invalid)
@@ -1485,8 +1429,6 @@ class ITSLiveComposite:
         self.error.transpose()
         self.sigma.transpose()
         self.count.transpose()
-
-        logging.info(f"self.mean.v.shape: {self.mean.v.shape}")
 
         ds[DataVars.V] = xr.DataArray(
             data=self.mean.v,
@@ -1709,7 +1651,7 @@ class ITSLiveComposite:
                 DataVars.UNITS: DataVars.COUNT_UNITS
             }
         )
-        self.count = None
+        self.count.v = None
         gc.collect()
 
         # Add max_dt (per sensor)
@@ -1748,9 +1690,6 @@ class ITSLiveComposite:
         self.outlier_fraction = None
         gc.collect()
 
-        v0 = np.sqrt(self.offset.vx**2 + self.offset.vy**2)
-        v0_error = ((self.trend.vx * self.offset.vx) + (self.trend.vy * self.offset.vy)) / v0
-
         ds[VX0] = xr.DataArray(
             data=self.offset.vx,
             coords=twodim_var_coords,
@@ -1780,7 +1719,7 @@ class ITSLiveComposite:
         gc.collect()
 
         ds[V0] = xr.DataArray(
-            data=v0,
+            data=self.offset.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
@@ -1790,7 +1729,7 @@ class ITSLiveComposite:
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
-        v0 = None
+        self.offset.v = None
         gc.collect()
 
         ds[VX0_ERROR] = xr.DataArray(
@@ -1822,7 +1761,7 @@ class ITSLiveComposite:
         gc.collect()
 
         ds[V0_ERROR] = xr.DataArray(
-            data=v0_error,
+            data=self.trend.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
@@ -1832,12 +1771,11 @@ class ITSLiveComposite:
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
-        v0_error = None
+        self.trend.v = None
         gc.collect()
 
-        dv_dt = np.sqrt(self.slope.vx**2 + self.slope.vy**2)
         ds[SLOPE_V] = xr.DataArray(
-            data=dv_dt,
+            data=self.slope.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
@@ -1847,7 +1785,7 @@ class ITSLiveComposite:
                 DataVars.UNITS: DataVars.M_Y2_UNITS
             }
         )
-        dv_dt = None
+        self.slope.v = None
         gc.collect()
 
         ds[SLOPE_VX] = xr.DataArray(
