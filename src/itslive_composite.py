@@ -1211,11 +1211,11 @@ class ITSLiveComposite:
 
         # Nan out invalid values
         # WAS: invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT) | (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
-        # invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT)
-        # self.mean.v[invalid_mask] = np.nan
-        #
-        # invalid_mask = (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
-        # self.amplitude.v[invalid_mask] = np.nan
+        invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT)
+        self.mean.v[invalid_mask] = np.nan
+
+        invalid_mask = (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
+        self.amplitude.v[invalid_mask] = np.nan
 
         # outlier = invalid + voutlier*(1-invalid)
         self.outlier_fraction[start_y:stop_y, start_x:stop_x] = invalid + voutlier*(1-invalid)
