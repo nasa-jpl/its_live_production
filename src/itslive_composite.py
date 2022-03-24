@@ -59,7 +59,7 @@ def medianMadFunction(x):
     return [xmed, xmad]
 
 @nb.jit(nopython=True)
-def cube_filter_iteration(x0_in, dt, mad_std_ratio):
+def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     """
     Filter one spacial point by dt (date separation) between the images.
     """
@@ -77,14 +77,23 @@ def cube_filter_iteration(x0_in, dt, mad_std_ratio):
     # Make numba happy - use np.bool_ type
     invalid = np.zeros_like(dt, dtype=np.bool_)
 
-    x0_is_null = np.isnan(x0_in)
+    x0_is_null = np.isnan(x_in)
     if np.all(x0_is_null):
         # No data to process
         return (maxdt, invalid)
 
+    # project vx and vy onto the median flow vector for dt <= 16
+    ind = (dt <= 16) & (~x0_is_null)
+    vx0 = np.median(x_in[ind])
+    vy0 = np.median(y_in[ind])
+    v0 = np.sqrt(vx0**2 + vy0**2)
+    uv_x = vx0/v0 # unit flow vector
+    uv_y = vy0/v0
+    x0_in = x_in*uv_x + y_in*uv_y # projected flow vectors
+
     # Filter NAN values out
     # logging.info(f'Before mask filter: type(x0)={type(x0_in)}')
-    mask = ~x0_is_null
+    mask = ~np.isnan(x0_in)
     x0 = x0_in[mask]
     x0_dt = dt[mask]
 
@@ -124,15 +133,15 @@ def cube_filter_iteration(x0_in, dt, mad_std_ratio):
     return (maxdt, invalid)
 
 @nb.jit(nopython=True, parallel=True)
-def cube_filter(data, dt, mad_std_ratio):
+def cube_filter(data_x, data_y, dt, mad_std_ratio):
     """
     Filter data cube by dt (date separation) between the images.
     """
     # Initialize output
     # Make numba happy - use np.bool_ type
-    invalid = np.zeros_like(data, dtype=np.bool_)
+    invalid = np.zeros_like(data_x, dtype=np.bool_)
 
-    y_len, x_len, _ = data.shape
+    y_len, x_len, _ = data_x.shape
     dims = (y_len, x_len)
     maxdt = np.full(dims, np.nan)
 
@@ -142,7 +151,12 @@ def cube_filter(data, dt, mad_std_ratio):
         for i_index in nb.prange(x_len):
     # for j_index in range(0, y_len):
     #     for i_index in range(0, x_len):
-            maxdt[j_index, i_index], invalid[j_index, i_index, :] = cube_filter_iteration(data[j_index, i_index, :], dt, mad_std_ratio)
+            maxdt[j_index, i_index], invalid[j_index, i_index, :] = cube_filter_iteration(
+                data_x[j_index, i_index, :],
+                data_y[j_index, i_index, :],
+                dt,
+                mad_std_ratio
+            )
 
     return invalid, maxdt
 
@@ -1052,14 +1066,10 @@ class ITSLiveComposite:
 
         # Initialize variables
         dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, ITSLiveComposite.MID_DATE_LEN)
-        vx_invalid = np.full(dims, False)
-        vy_invalid = np.full(dims, False)
+        v_invalid = np.full(dims, False)
 
         # Loop for each unique sensor (those groupings image pairs that can be
         # expected to have different temporal decorelation)
-        dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, len(self.sensors_groups))
-        vx_maxdt = np.full(dims, np.nan)
-        vy_maxdt = np.full(dims, np.nan)
 
         # ATTN: don't use native xarray functionality is much slower,
         # convert data to numpy types and use numpy only
@@ -1093,31 +1103,18 @@ class ITSLiveComposite:
             #       for cubes with multiple sensors
             dt_masked = ITSLiveComposite.DATE_DT.values[mask]
 
-            logging.info(f'Filtering vx...')
+            logging.info(f'Filtering projected v onto median flow vector...')
             start_time = timeit.default_timer()
-            vx_invalid[:, :, mask], vx_maxdt[:, :, i] = cube_filter(vx[..., mask], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
-            logging.info(f'Filtered vx (took {timeit.default_timer() - start_time} seconds)')
-
-            logging.info(f'Filtering vy...')
-            start_time = timeit.default_timer()
-            vy_invalid[:, :, mask], vy_maxdt[:, :, i] = cube_filter(vy[..., mask], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
-            logging.info(f'Filtered vy (took {timeit.default_timer() - start_time} seconds)')
-
-            # Get maximum value along sensor dimension: concatenate maxdt
-            # for vx and vy in new dimension
-            self.max_dt[start_y:stop_y, start_x:stop_x, i] = np.nanmax(np.stack((vx_maxdt[:, :, i], vy_maxdt[:, :, i]), axis=2), axis=2)
+            v_invalid[:, :, mask], self.max_dt[start_y:stop_y, start_x:stop_x, i] = cube_filter(vx[..., mask], vy[..., mask], dt_masked, ITSLiveComposite.MAD_STD_RATIO)
+            logging.info(f'Filtered projected v (took {timeit.default_timer() - start_time} seconds)')
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
         logging.info(f'Compute invalid mask...')
 
-        # Break into a number of |= statements to avoid new array creation
-        invalid = vx_invalid | vy_invalid | (np.hypot(vx, vy) > ITSLiveComposite.V_LIMIT)
+        invalid = v_invalid | (np.hypot(vx, vy) > ITSLiveComposite.V_LIMIT)
 
         # Mask data
-        logging.info(f'Mask invalid entries for vx...')
         vx[invalid] = np.nan
-
-        logging.info(f'Mask invalid entries for vy...')
         vy[invalid] = np.nan
 
         invalid = np.nansum(invalid, axis=2)
@@ -1296,9 +1293,9 @@ class ITSLiveComposite:
             VX_ERROR:     'error weighted error for vx',
             VY_ERROR:     'error weighted error for vy',
             V_ERROR:      'error weighted error for v',
-            VX_AMP_ERROR: 'error weighted standard error for vx_amp',
-            VY_AMP_ERROR: 'error weighted standard error for vy_amp',
-            V_AMP_ERROR:  'error weighted standard error for v_amp',
+            VX_AMP_ERROR: 'error for vx_amp',
+            VY_AMP_ERROR: 'error for vy_amp',
+            V_AMP_ERROR:  'error for v_amp',
             VX_AMP:       'climatological mean seasonal amplitude of sinusoidal fit to vx',
             VY_AMP:       'climatological mean seasonal amplitude in sinusoidal fit in vy',
             V_AMP:        'climatological mean seasonal amplitude of sinusoidal fit to v',
@@ -1309,16 +1306,16 @@ class ITSLiveComposite:
             MAX_DT:       'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
             OUTLIER_FRAC: 'fraction of data identified as outliers and excluded from error weighted least squares fit',
             SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering',
-            VX0:          'climatological mean annual velocity vx',
-            VY0:          'climatological mean annual velocity vy',
-            V0:           'climatological mean annual velocity v',
+            VX0:          'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
+            VY0:          'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
+            V0:           'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
             COUNT0:       'number of image pairs used for climatological means',
             VX0_ERROR:    'error for vx0',
             VY0_ERROR:    'error for vy0',
             V0_ERROR:     'error for v0',
-            SLOPE_VX:     'climatological trend in vx',
-            SLOPE_VY:     'climatological trend in vy',
-            SLOPE_V:      'climatological trend in v'
+            SLOPE_VX:     'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
+            SLOPE_VY:     'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
+            SLOPE_V:      'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
         }
 
         TIME_ATTRS = {
