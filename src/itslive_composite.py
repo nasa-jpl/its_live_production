@@ -103,7 +103,12 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
 
     # Filter NAN values out
     # logging.info(f'Before mask filter: type(x0)={type(x0_in)}')
-    mask = ~np.isnan(x0_in)
+    x0_is_null = np.isnan(x0_in)
+    if np.all(x0_is_null):
+        # No data to process
+        return (maxdt, invalid)
+
+    mask = ~x0_is_null
     x0 = x0_in[mask]
     x0_dt = dt[mask]
 
@@ -118,6 +123,7 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
 
     # Collect indices for bins that represent current x0_dt
     dt_bin_indices = []
+
     for bin_i in range(0, _num_bins):
         # if bin_index[bin_i] and bin_index[bin_i+1] are the same, there are no values for the bin, skip it
         if bin_index[bin_i] != bin_index[bin_i+1]:
@@ -156,7 +162,6 @@ def cube_filter(data_x, data_y, dt, mad_std_ratio):
     maxdt = np.full(dims, np.nan)
 
     # Loop through all spacial points
-    # for j in tqdm(range(0, 1), ascii=True, desc='cube_filter (debug_len=1): y'):
     for j_index in nb.prange(y_len):
         for i_index in nb.prange(x_len):
     # for j_index in range(0, y_len):
@@ -678,11 +683,10 @@ def climatology_magnitude(
     v_amp = np.full_like(vx_amp, np.nan)
     v_phase = np.full_like(vx_phase, np.nan)
 
+    # for j in range(0, y_len):
+    #   for i in range(0, x_len):
     for j in nb.prange(y_len):
         for i in nb.prange(x_len):
-    #
-    # for j in range(0, y_len):
-    #     for i in range(0, x_len):
             # Skip [y, x] point if unit vector value is nan
             if np.isnan(uv_x[j, i]) or np.isnan(uv_y[j, i]):
                 continue
