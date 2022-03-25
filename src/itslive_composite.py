@@ -65,7 +65,7 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     """
     # Filter parameters for dt bins (default: 2 - TODO: ask Alex):
     # used to determine if dt means are significantly different
-    _dtbin_mad_thresh = 1
+    _dtbin_mad_thresh = 0.5
 
     _dtbin_ratio = _dtbin_mad_thresh * mad_std_ratio
 
@@ -87,6 +87,16 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     vx0 = np.median(x_in[ind])
     vy0 = np.median(y_in[ind])
     v0 = np.sqrt(vx0**2 + vy0**2)
+
+    # Take care of v0 == 0:
+    # Per Alex: this can easily happen because we are calculating the median of
+    # integer values. In such a case both vx0 and vy0 must also equal zero.
+    # So we have no direction so the scatter should be uniform about zero and
+    # projecting into any direction should work just fine... so in cases where
+    # vx0 = 0 and vy0 = 0 simply set v0 = 1
+    if vx0 == 0 and vy0 == 0:
+        v0 = 1
+
     uv_x = vx0/v0 # unit flow vector
     uv_y = vy0/v0
     x0_in = x_in*uv_x + y_in*uv_y # projected flow vectors
