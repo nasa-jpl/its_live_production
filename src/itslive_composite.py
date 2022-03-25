@@ -72,6 +72,8 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     _dt_edge = np.array([0, 32, 64, 128, 256, np.inf])
     _num_bins = len(_dt_edge)-1
 
+    _dt_median_flow = np.array([16, 32, 64, 128, 256])
+
     # Output data variables
     maxdt = np.nan
     # Make numba happy - use np.bool_ type
@@ -82,8 +84,22 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
         # No data to process
         return (maxdt, invalid)
 
-    # project vx and vy onto the median flow vector for dt <= 16
-    ind = (dt <= 16) & (~x0_is_null)
+    # Project vx and vy onto the median flow vector for dt <= 16.
+    # If there is no data, then for dt <= 32
+    ind = None
+    valid = ~x0_is_null # Number of valid points
+    num_valid = valid.sum()
+
+    for each_dt in _dt_median_flow:
+        ind = (dt <= each_dt) & valid
+
+        dt_fraction = ind.sum()/num_valid
+        if dt_fraction >= 0.2:
+            break
+
+    # Make numba happy
+    ind = ind.astype(np.bool_)
+
     vx0 = np.median(x_in[ind])
     vy0 = np.median(y_in[ind])
     v0 = np.sqrt(vx0**2 + vy0**2)
@@ -1034,6 +1050,7 @@ class ITSLiveComposite:
             # For debugging only
             # y_num_to_process = 100
             y_start = 0
+            # y_start = 200
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
