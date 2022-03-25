@@ -802,24 +802,27 @@ class MissionSensor:
     # filter
     MSTuple = collections.namedtuple("MissionSensorTuple", ['mission', 'sensors', 'sensors_label'])
 
-    LANDSAT = MSTuple('L', ['8.', '9.'], 'L8_L9')
+    LANDSAT1 = MSTuple('L', ['8.', '9.'], 'L8_L9')
     # If datacube contains only numeric sensor values (Landsat8 or Landsat9),
     # sensor values are of type float, otherwise sensor values are of string type
     # ---> support both
-    LANDSAT_NUM = MSTuple('L', [8.0, 9.0], 'L8_L9')
+    LANDSAT2 = MSTuple('L', [8.0, 9.0], 'L8_L9')
+    LANDSAT3 = MSTuple('L', ['8.0', '9.0'], 'L8_L9')
     SENTINEL1 = MSTuple('S', ['1A', '1B'], 'S1A_S1B')
     SENTINEL2 = MSTuple('S', ['2A', '2B'], 'S2A_S2B')
 
     # TODO: update with granules information as new missions granules are added
     GROUPS = {
-        '8.': LANDSAT,
-        '9.': LANDSAT,
-        8.0: LANDSAT_NUM,
-        9.0: LANDSAT_NUM,
-        '1A': SENTINEL1,
-        '1B': SENTINEL1,
-        '2A': SENTINEL2,
-        '2B': SENTINEL2
+        '8.':  LANDSAT1,
+        '9.':  LANDSAT1,
+        8.0:   LANDSAT2,
+        9.0:   LANDSAT2,
+        '8.0': LANDSAT3,
+        '9.0': LANDSAT3,
+        '1A':  SENTINEL1,
+        '1B':  SENTINEL1,
+        '2A':  SENTINEL2,
+        '2B':  SENTINEL2
     }
 
 class ITSLiveComposite:
