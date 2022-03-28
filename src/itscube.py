@@ -149,11 +149,28 @@ class ITSCube:
         self.autoRIFTParamFile = None
 
         # Set min/max x/y values to filter region by
-        self.x = Bounds([each[0] for each in polygon])
-        self.y = Bounds([each[1] for each in polygon])
+        x = Bounds([each[0] for each in polygon])
+        y = Bounds([each[1] for each in polygon])
 
         # Grid for the datacube based on its bounding polygon
-        self.grid_x, self.grid_y = Grid.create(self.x, self.y, ITSCube.CELL_SIZE)
+        self.grid_x, self.grid_y = Grid.create(x, y, ITSCube.CELL_SIZE)
+
+        self.x_cell = self.grid_x[1] - self.grid_x[0]
+        self.y_cell = self.grid_y[1] - self.grid_y[0]
+
+        # Grid cell half size
+        self.half_x_cell = self.x_cell/2.0
+        self.half_y_cell = self.y_cell/2.0
+
+        abs_x_size = np.abs(self.half_x_cell)
+        abs_y_size = np.abs(self.half_y_cell)
+
+        # Define range for x and y based on grid edges
+        self.grid_x_min = self.grid_x.min() - abs_x_size
+        self.grid_x_max = self.grid_x.max() + abs_x_size
+
+        self.grid_y_min = self.grid_y.min() - abs_y_size
+        self.grid_y_max = self.grid_y.max() + abs_y_size
 
         # Ensure lonlat output order
         to_lon_lat_transformer = pyproj.Transformer.from_crs(
@@ -1164,8 +1181,8 @@ class ITSCube:
             mid_date += timedelta(microseconds=int(f'{lat:02d}{lon:03d}'))
 
             # Define which points are within target polygon.
-            mask_lon = (ds.x >= self.x.min) & (ds.x <= self.x.max)
-            mask_lat = (ds.y >= self.y.min) & (ds.y <= self.y.max)
+            mask_lon = (ds.x >= self.grid_x_min) & (ds.x <= self.grid_x_max)
+            mask_lat = (ds.y >= self.grid_y_min) & (ds.y <= self.grid_y_max)
             mask = (mask_lon & mask_lat)
             if mask.values.sum() == 0:
                 # One or both masks resulted in no coverage
@@ -1178,7 +1195,8 @@ class ITSCube:
 
                 # Another way to filter (have to put min/max values in the order
                 # corresponding to the grid)
-                # cube_v = ds.v.sel(x=slice(self.x.min, self.x.max),y=slice(self.y.max, self.y.min)).copy()
+                # cube_v = ds.v.sel(x=slice(self.grid_x.min(), self.grid_x.max()),
+                #                   y=slice(self.grid_y.max, self.grid_y.min)).copy()
 
                 # If it's a valid velocity layer, add it to the cube.
                 if np.any(mask_data.v.notnull()):
@@ -1511,15 +1529,9 @@ class ITSCube:
                 dims=[]
             )
 
-            # Set GeoTransform to correspond to the datacube's tile
-            x_size = self.grid_x[1] - self.grid_x[0]
-            y_size = self.grid_y[1] - self.grid_y[0]
-
-            half_x_cell = x_size/2.0
-            half_y_cell = y_size/2.0
-
-            # Format cube's GeoTransform
-            new_geo_transform_str = f"{self.grid_x[0] - half_x_cell} {x_size} 0 {self.grid_y[0] - half_y_cell} 0 {y_size}"
+            # Set GeoTransform to correspond to the datacube's tile:
+            # format cube's GeoTransform
+            new_geo_transform_str = f"{self.grid_x[0] - self.half_x_cell} {self.x_cell} 0 {self.grid_y[0] - self.half_y_cell} 0 {self.y_cell}"
             self.layers[DataVars.MAPPING].attrs['GeoTransform'] = new_geo_transform_str
 
         # ATTN: Assign one data variable at a time to avoid running out of memory.
