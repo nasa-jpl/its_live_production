@@ -36,13 +36,7 @@ def remove_s3_datacube(cube_s3_path: str, is_dryrun: bool):
     """
     Remove Zarr store and corresponding json file (with records of skipped
     granules for the cube) in S3 if they exists - this is done to replace existing
-    cube with newly generated one:
-        * at the beginning of the processing if --removeExistingCube command-line
-          option is provided
-        * at the end of the processing if destination location of created
-          cube is in S3 bucket. This is done to avoid lingering Zarr objects
-          generated with other settings which will result in different
-          "directory" structure of the Zarr store.
+    cube with newly generated one.
     """
     # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
     # resulting in as many error messages as there are files in Zarr store
@@ -83,8 +77,8 @@ def remove_s3_datacube(cube_s3_path: str, is_dryrun: bool):
             )
             if command_return.returncode != 0:
                 raise RuntimeError(f"Failed to remove original {json_s3_path}: {command_return.stdout}")
-    else:
 
+    else:
         logging.info(f"Cube does not exist: {cube_s3_path}")
 
 if __name__ == '__main__':
