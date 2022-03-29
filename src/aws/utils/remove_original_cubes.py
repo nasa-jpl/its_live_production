@@ -114,3 +114,5 @@ if __name__ == '__main__':
 
         for each in output_dirs:
             remove_s3_datacube(each, args.dryrun)
+
+    logging.info("Done.")
