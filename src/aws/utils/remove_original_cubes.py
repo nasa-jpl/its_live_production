@@ -44,7 +44,7 @@ def remove_s3_datacube(cube_s3_path: str, is_dryrun: bool):
     env_copy = os.environ.copy()
     if exists(cube_s3_path):
         command_line = [
-            "awsv2", "s3", "rm", "--recursive",
+            "awsv2", "s3", "rm", "--recursive", "--quiet",
             cube_s3_path
         ]
         logging.info(f'Removing existing cube {cube_s3_path}: {" ".join(command_line)}')
@@ -63,7 +63,7 @@ def remove_s3_datacube(cube_s3_path: str, is_dryrun: bool):
             json_s3_path = cube_s3_path.replace('.zarr', '.json')
 
             command_line = [
-                "awsv2", "s3", "rm",
+                "awsv2", "s3", "rm", "--quiet",
                 json_s3_path
             ]
             logging.info(f'Removing existing skipped granules json {json_s3_path}: {" ".join(command_line)}')
