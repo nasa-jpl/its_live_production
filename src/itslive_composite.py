@@ -58,14 +58,14 @@ def medianMadFunction(x):
 
     return [xmed, xmad]
 
-@nb.jit(nopython=True)
+# @nb.jit(nopython=True)
 def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     """
     Filter one spacial point by dt (date separation) between the images.
     """
     # Filter parameters for dt bins (default: 2 - TODO: ask Alex):
     # used to determine if dt means are significantly different
-    _dtbin_mad_thresh = 0.5
+    _dtbin_mad_thresh = 0.67
 
     _dtbin_ratio = _dtbin_mad_thresh * mad_std_ratio
 
@@ -73,6 +73,9 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     _num_bins = len(_dt_edge)-1
 
     _dt_median_flow = np.array([16, 32, 64, 128, 256])
+
+    # Skip dt filter for slow moving areas
+    _min_v0_threshold = 5
 
     # Output data variables
     maxdt = np.nan
@@ -104,14 +107,9 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     vy0 = np.median(y_in[ind])
     v0 = np.sqrt(vx0**2 + vy0**2)
 
-    # Take care of v0 == 0:
-    # Per Alex: this can easily happen because we are calculating the median of
-    # integer values. In such a case both vx0 and vy0 must also equal zero.
-    # So we have no direction so the scatter should be uniform about zero and
-    # projecting into any direction should work just fine... so in cases where
-    # vx0 = 0 and vy0 = 0 simply set v0 = 1
-    if vx0 == 0 and vy0 == 0:
-        v0 = 1
+    if v0 <= _min_v0_threshold:
+        maxdt = np.inf
+        return (maxdt, invalid)
 
     uv_x = vx0/v0 # unit flow vector
     uv_y = vy0/v0
@@ -164,7 +162,7 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
 
     return (maxdt, invalid)
 
-@nb.jit(nopython=True, parallel=True)
+# @nb.jit(nopython=True, parallel=True)
 def cube_filter(data_x, data_y, dt, mad_std_ratio):
     """
     Filter data cube by dt (date separation) between the images.
@@ -178,10 +176,10 @@ def cube_filter(data_x, data_y, dt, mad_std_ratio):
     maxdt = np.full(dims, np.nan)
 
     # Loop through all spacial points
-    for j_index in nb.prange(y_len):
-        for i_index in nb.prange(x_len):
-    # for j_index in range(0, y_len):
-    #     for i_index in range(0, x_len):
+    # for j_index in nb.prange(y_len):
+    #     for i_index in nb.prange(x_len):
+    for j_index in range(0, y_len):
+        for i_index in range(0, x_len):
             maxdt[j_index, i_index], invalid[j_index, i_index, :] = cube_filter_iteration(
                 data_x[j_index, i_index, :],
                 data_y[j_index, i_index, :],
@@ -955,7 +953,6 @@ class ITSLiveComposite:
         ITSLiveComposite.YEARS_LEN = ITSLiveComposite.YEARS.size
         logging.info(f'Years for composite: {ITSLiveComposite.YEARS.tolist()}')
 
-
         # Create M matrix for the cube:
         start_time = timeit.default_timer()
         ITSLiveComposite.M = create_M(
@@ -1042,18 +1039,23 @@ class ITSLiveComposite:
         # Loop through cube in chunks to minimize memory footprint
         x_start = 0
         x_num_to_process = self.cube_sizes[Coords.X]
+
         # For debugging only
+        # x_start = 200
+        # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
             x_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if x_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else x_num_to_process
 
-            y_num_to_process = self.cube_sizes[Coords.Y]
-            # For debugging only
-            # y_num_to_process = 100
             y_start = 0
-            # y_start = 200
+            y_num_to_process = self.cube_sizes[Coords.Y]
+
+            # For debugging only
+            # y_start = 300
+            # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
+            # y_num_to_process = 100
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -1062,7 +1064,6 @@ class ITSLiveComposite:
 
                 y_num_to_process -= y_num_tasks
                 y_start += y_num_tasks
-
 
             x_num_to_process -= x_num_tasks
             x_start += x_num_tasks
