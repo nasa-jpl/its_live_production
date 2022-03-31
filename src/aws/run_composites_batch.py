@@ -3,6 +3,7 @@ Script to drive Batch processing for datacube's annual composites generation at 
 
 It accepts shape file with region definition and generates annual composites for
 the datacubes which centers fall within the region.
+
 If no shape file is provided, then it generates annual composites for all
 existing datacubes as found in the source S3 bucket.
 """
@@ -161,7 +162,8 @@ class DataCubeCompositeBatch:
                         mid_x, mid_y
                     )
 
-                    if not DataCubeBatch.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1])):
+                    if DataCubeBatch.POLYGON_SHAPE and \
+                       (not DataCubeBatch.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1]))):
                         logging.info(f"Skipping non-polygon point: {mid_lon_lat}")
                         # Provided polygon does not contain cube's center point
                         continue
@@ -177,7 +179,7 @@ class DataCubeCompositeBatch:
 
                     # Process specific datacubes only
                     if len(DataCubeBatch.CUBES_TO_GENERATE) and cube_filename not in DataCubeBatch.CUBES_TO_GENERATE:
-                        logging.info(f"Skipping as not provided in DataCubeBatch.CUBES_TO_GENERATE")
+                        logging.info(f"Skipping {cube_filename} as not provided in DataCubeBatch.CUBES_TO_GENERATE")
                         continue
 
                     # Check if datacube exists in S3 bucket as not all cubes
@@ -197,10 +199,10 @@ class DataCubeCompositeBatch:
 
                     cube_params = {
                         'inputCube': cube_filename,
-                        'inputCubeBucket': os.path.join(s3_bucket, bucket_dir),
+                        'inputBucket': os.path.join(s3_bucket, bucket_dir),
                         'outputStore': composite_filename,
-                        'outputStoreBucket': os.path.join(s3_bucket, composite_dir),
-                        'chunks': str(DataCubeCompositeBatch.X_Y_CHUNK)
+                        'targetBucket': os.path.join(s3_bucket, composite_dir),
+                        'chunkSize': str(DataCubeCompositeBatch.X_Y_CHUNK)
                     }
                     logging.info(f'Cube params: {cube_params}')
 
@@ -244,7 +246,8 @@ class DataCubeCompositeBatch:
                         'aws': {'queue': self.batch_queue,
                                 'job_definition': self.batch_job,
                                 'response': response
-                                }
+                                },
+                        'job_params': cube_params
                     })
 
             logging.info(f"Number of batch jobs submitted: {num_jobs}")
