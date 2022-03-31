@@ -28,6 +28,105 @@ import zarr
 from itscube import ITSCube
 from itscube_types import Coords, DataVars
 
+class CompDataVars:
+    """
+    Data variables and their descriptions to write to Zarr or NetCDF output store.
+    """
+    TIME = 'time'
+    SENSORS = 'sensor'
+
+    VX_ERROR = 'vx_error'
+    VY_ERROR = 'vy_error'
+    V_ERROR = 'v_error'
+    VX_AMP_ERROR = 'vx_amp_error'
+    VY_AMP_ERROR = 'vy_amp_error'
+    V_AMP_ERROR = 'v_amp_error'
+    VX_AMP = 'vx_amp'
+    VY_AMP = 'vy_amp'
+    V_AMP = 'v_amp'
+    VX_PHASE = 'vx_phase'
+    VY_PHASE = 'vy_phase'
+    V_PHASE = 'v_phase'
+    COUNT = 'count'
+    MAX_DT = 'dt_max'
+    OUTLIER_FRAC = 'outlier_frac'
+    VX0 = 'vx0'
+    VY0 = 'vy0'
+    V0  = 'v0'
+    COUNT0 = 'count0'
+    VX0_ERROR = 'vx0_error'
+    VY0_ERROR = 'vy0_error'
+    V0_ERROR  = 'v0_error'
+    SLOPE_VX  = 'dvx_dt'
+    SLOPE_VY  = 'dvy_dt'
+    SLOPE_V   = 'dv_dt'
+
+    STD_NAME = {
+        DataVars.VX: 'x_velocity',
+        DataVars.VY: 'y_velocity',
+        DataVars.V:  'velocity',
+        VX_ERROR: 'x_velocity_error',
+        VY_ERROR: 'y_velocity_error',
+        V_ERROR:  'velocity_error',
+        VX_AMP_ERROR: 'vx_amplitude_error',
+        VY_AMP_ERROR: 'vy_amplitude_error',
+        V_AMP_ERROR:  'v_amplitude_error',
+        VX_AMP: 'vx_amplitude',
+        VY_AMP: 'vy_amplitude',
+        V_AMP:  'v_amplitude',
+        VX_PHASE: 'vx_phase',
+        VY_PHASE: 'vy_phase',
+        V_PHASE:  'v_phase',
+        SENSORS: 'sensors',
+        TIME: 'time',
+        COUNT: 'count',
+        MAX_DT: 'dt_maximum',
+        OUTLIER_FRAC: 'outlier_fraction',
+        VX0: 'climatological_x_velocity',
+        VY0: 'climatological_y_velocity',
+        V0: 'climatological_velocity',
+        COUNT0: 'count0',
+        VX0_ERROR: 'vx0_velocity_error',
+        VY0_ERROR: 'vy0_velocity_error',
+        V0_ERROR: 'v0_velocity_error',
+        SLOPE_VX: 'dvx_dt',
+        SLOPE_VY: 'dvy_dt',
+        SLOPE_V:  'dv_dt'
+    }
+
+    DESCRIPTION = {
+        DataVars.VX:  'mean annual velocity of sinusoidal fit to vx',
+        DataVars.VY:  'mean annual velocity of sinusoidal fit to vy',
+        DataVars.V:   'mean annual velocity of sinusoidal fit to v',
+        TIME:         'time',
+        VX_ERROR:     'error weighted error for vx',
+        VY_ERROR:     'error weighted error for vy',
+        V_ERROR:      'error weighted error for v',
+        VX_AMP_ERROR: 'error for vx_amp',
+        VY_AMP_ERROR: 'error for vy_amp',
+        V_AMP_ERROR:  'error for v_amp',
+        VX_AMP:       'climatological mean seasonal amplitude of sinusoidal fit to vx',
+        VY_AMP:       'climatological mean seasonal amplitude in sinusoidal fit in vy',
+        V_AMP:        'climatological mean seasonal amplitude of sinusoidal fit to v',
+        VX_PHASE:     'day of maximum velocity of sinusoidal fit to vx',
+        VY_PHASE:     'day of maximum velocity of sinusoidal fit to vy',
+        V_PHASE:      'day of maximum velocity of sinusoidal fit to v',
+        COUNT:        'number of image pairs used in error weighted least squares fit',
+        MAX_DT:       'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
+        OUTLIER_FRAC: 'fraction of data identified as outliers and excluded from error weighted least squares fit',
+        SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering',
+        VX0:          'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
+        VY0:          'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
+        V0:           'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
+        COUNT0:       'number of image pairs used for climatological means',
+        VX0_ERROR:    'error for vx0',
+        VY0_ERROR:    'error for vy0',
+        V0_ERROR:     'error for v0',
+        SLOPE_VX:     'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
+        SLOPE_VY:     'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
+        SLOPE_V:      'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
+    }
+
 # Set up logging
 logging.basicConfig(
     level = logging.INFO,
@@ -1071,8 +1170,6 @@ class ITSLiveComposite:
         # Save data to Zarr store
         self.to_zarr(output_store, s3_bucket)
 
-        logging.info(f"Done.")
-
     def cube_time_mean(self, start_x, num_x, start_y, num_y):
         """
         Compute time average for the datacube [:, :, start_x:stop_index] coordinates.
@@ -1145,6 +1242,7 @@ class ITSLiveComposite:
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
         logging.info(f'Compute invalid mask...')
+        start_time = timeit.default_timer()
 
         invalid = v_invalid | (np.hypot(vx, vy) > ITSLiveComposite.V_LIMIT)
 
@@ -1155,7 +1253,7 @@ class ITSLiveComposite:
         invalid = np.nansum(invalid, axis=2)
         invalid = np.divide(invalid, np.sum(np.isnan(vx), 2) + invalid)
 
-        logging.info(f'Finished filtering ({timeit.default_timer() - start_time} seconds)')
+        logging.info(f'Finished filtering with invalid mask ({timeit.default_timer() - start_time} seconds)')
 
         # %% Least-squares fits to detemine amplitude, phase and annual means
         logging.info(f'Find vx annual means using LSQ fit... ')
@@ -1258,108 +1356,13 @@ class ITSLiveComposite:
         """
         logging.info(f'Writing composites to {output_store}')
 
-        # Variables information to store in Zarr.
-        TIME = 'time'
-        SENSORS = 'sensor'
-        VX_ERROR = 'vx_error'
-        VY_ERROR = 'vy_error'
-        V_ERROR = 'v_error'
-        VX_AMP_ERROR = 'vx_amp_error'
-        VY_AMP_ERROR = 'vy_amp_error'
-        V_AMP_ERROR = 'v_amp_error'
-        VX_AMP = 'vx_amp'
-        VY_AMP = 'vy_amp'
-        V_AMP = 'v_amp'
-        VX_PHASE = 'vx_phase'
-        VY_PHASE = 'vy_phase'
-        V_PHASE = 'v_phase'
-        COUNT = 'count'
-        MAX_DT = 'dt_max'
-        OUTLIER_FRAC = 'outlier_frac'
-        VX0 = 'vx0'
-        VY0 = 'vy0'
-        V0  = 'v0'
-        COUNT0 = 'count0'
-        VX0_ERROR = 'vx0_error'
-        VY0_ERROR = 'vy0_error'
-        V0_ERROR  = 'v0_error'
-        SLOPE_VX  = 'dvx_dt'
-        SLOPE_VY  = 'dvy_dt'
-        SLOPE_V   = 'dv_dt'
-
-        STD_NAME = {
-            DataVars.VX: 'x_velocity',
-            DataVars.VY: 'y_velocity',
-            DataVars.V:  'velocity',
-            VX_ERROR: 'x_velocity_error',
-            VY_ERROR: 'y_velocity_error',
-            V_ERROR:  'velocity_error',
-            VX_AMP_ERROR: 'vx_amplitude_error',
-            VY_AMP_ERROR: 'vy_amplitude_error',
-            V_AMP_ERROR:  'v_amplitude_error',
-            VX_AMP: 'vx_amplitude',
-            VY_AMP: 'vy_amplitude',
-            V_AMP:  'v_amplitude',
-            VX_PHASE: 'vx_phase',
-            VY_PHASE: 'vy_phase',
-            V_PHASE:  'v_phase',
-            SENSORS: 'sensors',
-            TIME: 'time',
-            COUNT: 'count',
-            MAX_DT: 'dt_maximum',
-            OUTLIER_FRAC: 'outlier_fraction',
-            VX0: 'climatological_x_velocity',
-            VY0: 'climatological_y_velocity',
-            V0: 'climatological_velocity',
-            COUNT0: 'count0',
-            VX0_ERROR: 'vx0_velocity_error',
-            VY0_ERROR: 'vy0_velocity_error',
-            V0_ERROR: 'v0_velocity_error',
-            SLOPE_VX: 'dvx_dt',
-            SLOPE_VY: 'dvy_dt',
-            SLOPE_V:  'dv_dt'
-        }
-
-        DESCRIPTION = {
-            DataVars.VX:  'mean annual velocity of sinusoidal fit to vx',
-            DataVars.VY:  'mean annual velocity of sinusoidal fit to vy',
-            DataVars.V:   'mean annual velocity of sinusoidal fit to v',
-            TIME:         'time',
-            VX_ERROR:     'error weighted error for vx',
-            VY_ERROR:     'error weighted error for vy',
-            V_ERROR:      'error weighted error for v',
-            VX_AMP_ERROR: 'error for vx_amp',
-            VY_AMP_ERROR: 'error for vy_amp',
-            V_AMP_ERROR:  'error for v_amp',
-            VX_AMP:       'climatological mean seasonal amplitude of sinusoidal fit to vx',
-            VY_AMP:       'climatological mean seasonal amplitude in sinusoidal fit in vy',
-            V_AMP:        'climatological mean seasonal amplitude of sinusoidal fit to v',
-            VX_PHASE:     'day of maximum velocity of sinusoidal fit to vx',
-            VY_PHASE:     'day of maximum velocity of sinusoidal fit to vy',
-            V_PHASE:      'day of maximum velocity of sinusoidal fit to v',
-            COUNT:        'number of image pairs used in error weighted least squares fit',
-            MAX_DT:       'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
-            OUTLIER_FRAC: 'fraction of data identified as outliers and excluded from error weighted least squares fit',
-            SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering',
-            VX0:          'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
-            VY0:          'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
-            V0:           'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
-            COUNT0:       'number of image pairs used for climatological means',
-            VX0_ERROR:    'error for vx0',
-            VY0_ERROR:    'error for vy0',
-            V0_ERROR:     'error for v0',
-            SLOPE_VX:     'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
-            SLOPE_VY:     'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
-            SLOPE_V:      'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
-        }
-
         TIME_ATTRS = {
-            DataVars.STD_NAME: STD_NAME[TIME],
-            DataVars.DESCRIPTION_ATTR: DESCRIPTION[TIME]
+            DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.TIME],
+            DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.TIME]
         }
         SENSORS_ATTRS = {
-            DataVars.STD_NAME: STD_NAME[SENSORS],
-            DataVars.DESCRIPTION_ATTR: DESCRIPTION[SENSORS]
+            DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSORS],
+            DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
         }
         X_ATTRS = {
             DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
@@ -1398,20 +1401,20 @@ class ITSLiveComposite:
                         DataVars.UNITS: DataVars.M_UNITS
                     }
                 ),
-                TIME: (
-                    TIME,
+                CompDataVars.TIME: (
+                    CompDataVars.TIME,
                     ITSLiveComposite.YEARS,
                     {
-                        DataVars.STD_NAME: STD_NAME[TIME],
-                        DataVars.DESCRIPTION_ATTR: DESCRIPTION[TIME]
+                        DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.TIME],
+                        DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.TIME]
                     }
                 ),
-                SENSORS: (
-                    SENSORS,
+                CompDataVars.SENSORS: (
+                    CompDataVars.SENSORS,
                     sensors_labels,
                     {
-                        DataVars.STD_NAME: STD_NAME[SENSORS],
-                        DataVars.DESCRIPTION_ATTR: DESCRIPTION[SENSORS]
+                        DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSORS],
+                        DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
                     }
                 )
             },
@@ -1456,9 +1459,9 @@ class ITSLiveComposite:
         # Add data as variables
         ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
 
-        years_coord = pd.Index(ITSLiveComposite.YEARS, name=TIME)
+        years_coord = pd.Index(ITSLiveComposite.YEARS, name=CompDataVars.TIME)
         var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [TIME, Coords.Y, Coords.X]
+        var_dims = [CompDataVars.TIME, Coords.Y, Coords.X]
 
         twodim_var_coords = [self.cube_ds.y.values, self.cube_ds.x.values]
         twodim_var_dims = [Coords.Y, Coords.X]
@@ -1472,8 +1475,8 @@ class ITSLiveComposite:
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[DataVars.V],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[DataVars.V],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[DataVars.V],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[DataVars.V],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1481,13 +1484,13 @@ class ITSLiveComposite:
         self.mean.v = None
         gc.collect()
 
-        ds[V_ERROR] = xr.DataArray(
+        ds[CompDataVars.V_ERROR] = xr.DataArray(
             data=self.error.v,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[V_ERROR],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_ERROR],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_ERROR],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1500,8 +1503,8 @@ class ITSLiveComposite:
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[DataVars.VX],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[DataVars.VX],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[DataVars.VX],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[DataVars.VX],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1509,13 +1512,13 @@ class ITSLiveComposite:
         self.mean.vx = None
         gc.collect()
 
-        ds[VX_ERROR] = xr.DataArray(
+        ds[CompDataVars.VX_ERROR] = xr.DataArray(
             data=self.error.vx,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VX_ERROR],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_ERROR],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX_ERROR],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1528,8 +1531,8 @@ class ITSLiveComposite:
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[DataVars.VY],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[DataVars.VY],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[DataVars.VY],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[DataVars.VY],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1537,13 +1540,13 @@ class ITSLiveComposite:
         self.mean.vy = None
         gc.collect()
 
-        ds[VY_ERROR] = xr.DataArray(
+        ds[CompDataVars.VY_ERROR] = xr.DataArray(
             data=self.error.vy,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VY_ERROR],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_ERROR],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY_ERROR],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1551,13 +1554,13 @@ class ITSLiveComposite:
         self.error.vy = None
         gc.collect()
 
-        ds[V_AMP] = xr.DataArray(
+        ds[CompDataVars.V_AMP] = xr.DataArray(
             data=self.amplitude.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[V_AMP],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_AMP],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_AMP],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_AMP],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1565,13 +1568,13 @@ class ITSLiveComposite:
         self.amplitude.v = None
         gc.collect()
 
-        ds[V_AMP_ERROR] = xr.DataArray(
+        ds[CompDataVars.V_AMP_ERROR] = xr.DataArray(
             data=self.sigma.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[V_AMP_ERROR],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_AMP_ERROR],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_AMP_ERROR],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_AMP_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1579,13 +1582,13 @@ class ITSLiveComposite:
         self.sigma.v = None
         gc.collect()
 
-        ds[V_PHASE] = xr.DataArray(
+        ds[CompDataVars.V_PHASE] = xr.DataArray(
             data=self.phase.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[V_PHASE],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V_PHASE],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_PHASE],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_PHASE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.DAY_OF_YEAR_UNITS
             }
@@ -1593,13 +1596,13 @@ class ITSLiveComposite:
         self.phase.v = None
         gc.collect()
 
-        ds[VX_AMP] = xr.DataArray(
+        ds[CompDataVars.VX_AMP] = xr.DataArray(
             data=self.amplitude.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VX_AMP],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_AMP],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX_AMP],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_AMP],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1607,13 +1610,13 @@ class ITSLiveComposite:
         self.amplitude.vx = None
         gc.collect()
 
-        ds[VX_AMP_ERROR] = xr.DataArray(
+        ds[CompDataVars.VX_AMP_ERROR] = xr.DataArray(
             data=self.sigma.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VX_AMP_ERROR],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_AMP_ERROR],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX_AMP_ERROR],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_AMP_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1621,13 +1624,13 @@ class ITSLiveComposite:
         self.sigma.vx = None
         gc.collect()
 
-        ds[VX_PHASE] = xr.DataArray(
+        ds[CompDataVars.VX_PHASE] = xr.DataArray(
             data=self.phase.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VX_PHASE],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX_PHASE],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX_PHASE],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_PHASE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.DAY_OF_YEAR_UNITS
             }
@@ -1635,13 +1638,13 @@ class ITSLiveComposite:
         self.phase.vx = None
         gc.collect()
 
-        ds[VY_AMP] = xr.DataArray(
+        ds[CompDataVars.VY_AMP] = xr.DataArray(
             data=self.amplitude.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VY_AMP],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_AMP],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY_AMP],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_AMP],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1649,13 +1652,13 @@ class ITSLiveComposite:
         self.amplitude.vy = None
         gc.collect()
 
-        ds[VY_AMP_ERROR] = xr.DataArray(
+        ds[CompDataVars.VY_AMP_ERROR] = xr.DataArray(
             data=self.sigma.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VY_AMP_ERROR],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_AMP_ERROR],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY_AMP_ERROR],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_AMP_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1663,13 +1666,13 @@ class ITSLiveComposite:
         self.sigma.vy = None
         gc.collect()
 
-        ds[VY_PHASE] = xr.DataArray(
+        ds[CompDataVars.VY_PHASE] = xr.DataArray(
             data=self.phase.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VY_PHASE],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY_PHASE],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY_PHASE],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_PHASE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.DAY_OF_YEAR_UNITS
             }
@@ -1679,13 +1682,13 @@ class ITSLiveComposite:
 
         count0 = self.count.v.sum(axis=0)
 
-        ds[COUNT] = xr.DataArray(
+        ds[CompDataVars.COUNT] = xr.DataArray(
             data=self.count.v,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[COUNT],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[COUNT],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.COUNT],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.COUNT],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.COUNT_UNITS
             }
@@ -1695,19 +1698,19 @@ class ITSLiveComposite:
 
         # Add max_dt (per sensor)
         # Use "group" label for each of the sensors used to filter data
-        sensor_coord = pd.Index(sensors_labels, name=SENSORS)
+        sensor_coord = pd.Index(sensors_labels, name=CompDataVars.SENSORS)
         var_coords = [sensor_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [SENSORS, Coords.Y, Coords.X]
+        var_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
 
         self.max_dt = self.max_dt.transpose(CompositeVariable.CONT_IN_X)
 
-        ds[MAX_DT] = xr.DataArray(
+        ds[CompDataVars.MAX_DT] = xr.DataArray(
             data=self.max_dt,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[MAX_DT],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[MAX_DT],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.MAX_DT],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.MAX_DT],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.ImgPairInfo.UNITS[DataVars.ImgPairInfo.DATE_DT]
             }
@@ -1715,13 +1718,13 @@ class ITSLiveComposite:
         self.max_dt = None
         gc.collect()
 
-        ds[OUTLIER_FRAC] = xr.DataArray(
+        ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
             data=self.outlier_fraction,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[OUTLIER_FRAC],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[OUTLIER_FRAC],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.OUTLIER_FRAC],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.OUTLIER_FRAC],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.FRACTION_UNITS
             }
@@ -1729,13 +1732,13 @@ class ITSLiveComposite:
         self.outlier_fraction = None
         gc.collect()
 
-        ds[VX0] = xr.DataArray(
+        ds[CompDataVars.VX0] = xr.DataArray(
             data=self.offset.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VX0],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX0],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX0],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX0],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1743,13 +1746,13 @@ class ITSLiveComposite:
         self.offset.vx = None
         gc.collect()
 
-        ds[VY0] = xr.DataArray(
+        ds[CompDataVars.VY0] = xr.DataArray(
             data=self.offset.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VY0],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY0],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY0],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY0],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1757,13 +1760,13 @@ class ITSLiveComposite:
         self.offset.vy = None
         gc.collect()
 
-        ds[V0] = xr.DataArray(
+        ds[CompDataVars.V0] = xr.DataArray(
             data=self.offset.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[V0],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V0],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V0],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V0],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1771,13 +1774,13 @@ class ITSLiveComposite:
         self.offset.v = None
         gc.collect()
 
-        ds[VX0_ERROR] = xr.DataArray(
+        ds[CompDataVars.VX0_ERROR] = xr.DataArray(
             data=self.trend.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VX0_ERROR],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VX0_ERROR],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX0_ERROR],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX0_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1785,13 +1788,13 @@ class ITSLiveComposite:
         self.trend.vx = None
         gc.collect()
 
-        ds[VY0_ERROR] = xr.DataArray(
+        ds[CompDataVars.VY0_ERROR] = xr.DataArray(
             data=self.trend.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[VY0_ERROR],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[VY0_ERROR],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY0_ERROR],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY0_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1799,13 +1802,13 @@ class ITSLiveComposite:
         self.trend.vy = None
         gc.collect()
 
-        ds[V0_ERROR] = xr.DataArray(
+        ds[CompDataVars.V0_ERROR] = xr.DataArray(
             data=self.trend.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[V0_ERROR],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[V0_ERROR],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V0_ERROR],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V0_ERROR],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
@@ -1813,13 +1816,13 @@ class ITSLiveComposite:
         self.trend.v = None
         gc.collect()
 
-        ds[SLOPE_V] = xr.DataArray(
+        ds[CompDataVars.SLOPE_V] = xr.DataArray(
             data=self.slope.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[SLOPE_V],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[SLOPE_V],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SLOPE_V],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SLOPE_V],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y2_UNITS
             }
@@ -1827,13 +1830,13 @@ class ITSLiveComposite:
         self.slope.v = None
         gc.collect()
 
-        ds[SLOPE_VX] = xr.DataArray(
+        ds[CompDataVars.SLOPE_VX] = xr.DataArray(
             data=self.slope.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[SLOPE_VX],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[SLOPE_VX],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SLOPE_VX],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SLOPE_VX],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y2_UNITS
             }
@@ -1841,13 +1844,13 @@ class ITSLiveComposite:
         self.slope.vx = None
         gc.collect()
 
-        ds[SLOPE_VY] = xr.DataArray(
+        ds[CompDataVars.SLOPE_VY] = xr.DataArray(
             data=self.slope.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[SLOPE_VY],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[SLOPE_VY],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SLOPE_VY],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SLOPE_VY],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y2_UNITS
             }
@@ -1855,13 +1858,13 @@ class ITSLiveComposite:
         self.slope.vy = None
         gc.collect()
 
-        ds[COUNT0] = xr.DataArray(
+        ds[CompDataVars.COUNT0] = xr.DataArray(
             data=count0,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: STD_NAME[COUNT0],
-                DataVars.DESCRIPTION_ATTR: DESCRIPTION[COUNT0],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.COUNT0],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.COUNT0],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.COUNT_UNITS
             }
@@ -1875,17 +1878,17 @@ class ITSLiveComposite:
         # (xarray bug?)
         ds[Coords.X].attrs = X_ATTRS
         ds[Coords.Y].attrs = Y_ATTRS
-        ds[TIME].attrs = TIME_ATTRS
-        ds[SENSORS].attrs = SENSORS_ATTRS
+        ds[CompDataVars.TIME].attrs = TIME_ATTRS
+        ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
 
         # Set encoding
         encoding_settings = {}
-        encoding_settings.setdefault(TIME, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
+        encoding_settings.setdefault(CompDataVars.TIME, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
-        for each in [TIME, SENSORS, Coords.X, Coords.Y]:
+        for each in [CompDataVars.TIME, CompDataVars.SENSORS, Coords.X, Coords.Y]:
             encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
 
-        encoding_settings.setdefault(SENSORS, {}).update({'dtype': 'str'})
+        encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'str'})
 
         # Compression for the data
         compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
@@ -1895,28 +1898,28 @@ class ITSLiveComposite:
             DataVars.VX,
             DataVars.VY,
             DataVars.V,
-            VX_ERROR,
-            VY_ERROR,
-            V_ERROR,
-            VX_AMP_ERROR,
-            VY_AMP_ERROR,
-            V_AMP_ERROR,
-            VX_AMP,
-            VY_AMP,
-            V_AMP,
-            VX_PHASE,
-            VY_PHASE,
-            V_PHASE,
-            OUTLIER_FRAC,
-            VX0,
-            VY0,
-            V0,
-            VX0_ERROR,
-            VY0_ERROR,
-            V0_ERROR,
-            SLOPE_VX,
-            SLOPE_VY,
-            SLOPE_V
+            CompDataVars.VX_ERROR,
+            CompDataVars.VY_ERROR,
+            CompDataVars.V_ERROR,
+            CompDataVars.VX_AMP_ERROR,
+            CompDataVars.VY_AMP_ERROR,
+            CompDataVars.V_AMP_ERROR,
+            CompDataVars.VX_AMP,
+            CompDataVars.VY_AMP,
+            CompDataVars.V_AMP,
+            CompDataVars.VX_PHASE,
+            CompDataVars.VY_PHASE,
+            CompDataVars.V_PHASE,
+            CompDataVars.OUTLIER_FRAC,
+            CompDataVars.VX0,
+            CompDataVars.VY0,
+            CompDataVars.V0,
+            CompDataVars.VX0_ERROR,
+            CompDataVars.VY0_ERROR,
+            CompDataVars.V0_ERROR,
+            CompDataVars.SLOPE_VX,
+            CompDataVars.SLOPE_VY,
+            CompDataVars.SLOPE_V
             ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
@@ -1926,7 +1929,7 @@ class ITSLiveComposite:
             })
 
         # Settings for "short" datatypes
-        for each in [COUNT, MAX_DT]:
+        for each in [CompDataVars.COUNT, CompDataVars.MAX_DT]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
                 'dtype': 'short'
@@ -1939,12 +1942,12 @@ class ITSLiveComposite:
             DataVars.VX,
             DataVars.VY,
             DataVars.V,
-            VX_ERROR,
-            VY_ERROR,
-            V_ERROR,
-            VX_AMP_ERROR,
-            VY_AMP_ERROR,
-            V_AMP_ERROR
+            CompDataVars.VX_ERROR,
+            CompDataVars.VY_ERROR,
+            CompDataVars.V_ERROR,
+            CompDataVars.VX_AMP_ERROR,
+            CompDataVars.VY_AMP_ERROR,
+            CompDataVars.V_AMP_ERROR
         ]:
             encoding_settings[each].update({
                 'chunks': chunks_settings
@@ -1954,22 +1957,22 @@ class ITSLiveComposite:
         chunks_settings = (self.cube_sizes[Coords.Y], self.cube_sizes[Coords.X])
 
         for each in [
-            VX_AMP,
-            VY_AMP,
-            V_AMP,
-            VX_PHASE,
-            VY_PHASE,
-            V_PHASE,
-            OUTLIER_FRAC,
-            VX0,
-            VY0,
-            V0,
-            VX0_ERROR,
-            VY0_ERROR,
-            V0_ERROR,
-            SLOPE_VX,
-            SLOPE_VY,
-            SLOPE_V
+            CompDataVars.VX_AMP,
+            CompDataVars.VY_AMP,
+            CompDataVars.V_AMP,
+            CompDataVars.VX_PHASE,
+            CompDataVars.VY_PHASE,
+            CompDataVars.V_PHASE,
+            CompDataVars.OUTLIER_FRAC,
+            CompDataVars.VX0,
+            CompDataVars.VY0,
+            CompDataVars.V0,
+            CompDataVars.VX0_ERROR,
+            CompDataVars.VY0_ERROR,
+            CompDataVars.V0_ERROR,
+            CompDataVars.SLOPE_VX,
+            CompDataVars.SLOPE_VY,
+            CompDataVars.SLOPE_V
             ]:
             encoding_settings[each].update({
                 'chunks': chunks_settings
@@ -2190,3 +2193,5 @@ if __name__ == '__main__':
             if os.path.exists(args.outputStore):
                 logging.info(f"Removing local copy of {args.outputStore}")
                 shutil.rmtree(args.outputStore)
+
+    logging.info("Done.")
