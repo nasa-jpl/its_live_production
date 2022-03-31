@@ -77,7 +77,7 @@ class DataVars:
     STD_NAME          = 'standard_name'
     UNITS             = 'units'
     M_Y_UNITS         = 'm/y'
-    M_Y2_UNITS         = 'm/y^2'
+    M_Y2_UNITS        = 'm/y^2'
     M_UNITS           = 'm'
     COUNT_UNITS       = 'count'
     BINARY_UNITS      = 'binary'
