@@ -127,6 +127,24 @@ class CompDataVars:
         SLOPE_V:      'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
     }
 
+class CompOutputFormat:
+    """
+    Class to represent attrubutes for the output format of the data.
+    """
+    GDAL_AREA_OR_POINT = 'GDAL_AREA_OR_POINT'
+    COMPOSITES_SOFTWARE_VERSION = 'composites_software_version'
+    DATACUBE_AUTORIFT_PARAMETER_FILE = 'datacube_autoRIFT_parameter_file'
+    DATACUBE_SOFTWARE_VERSION = 'datacube_software_version'
+    DATE_CREATED = 'date_created'
+    DATE_UPDATED = 'date_updated'
+    DATECUBE_CREATED = 'datecube_created'
+    DATECUBE_S3 = 'datecube_s3'
+    DATECUBE_UPDATED = 'datecube_updated'
+    DATECUBE_URL = 'datecube_url'
+    PROJECTION = 'projection'
+    SENSORS_LABELS = 'sensors_labels'
+
+
 # Set up logging
 logging.basicConfig(
     level = logging.INFO,
@@ -2126,7 +2144,7 @@ if __name__ == '__main__':
         logging.info(f'Composite S3: {ITSLiveComposite.S3}')
 
         # URL is valid only if output S3 bucket is provided
-        ITSLiveComposite.URL = ITSCube.S3.replace(ITSCube.S3_PREFIX, ITSCube.HTTP_PREFIX)
+        ITSLiveComposite.URL = ITSLiveComposite.S3.replace(ITSCube.S3_PREFIX, ITSCube.HTTP_PREFIX)
         url_tokens = urlparse(ITSLiveComposite.URL)
         ITSLiveComposite.URL = url_tokens._replace(netloc=url_tokens.netloc+ITSCube.PATH_URL).geturl()
         logging.info(f'Composite URL: {ITSLiveComposite.URL}')
