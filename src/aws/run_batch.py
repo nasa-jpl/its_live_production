@@ -173,7 +173,7 @@ class DataCubeBatch:
                         mid_x, mid_y
                     )
 
-                    if not DataCubeBatch.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1])):
+                    if DataCubeBatch.POLYGON_SHAPE and (not DataCubeBatch.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1]))):
                         logging.info(f"Skipping non-polygon point: {mid_lon_lat}")
                         # Provided polygon does not contain cube's center point
                         continue
