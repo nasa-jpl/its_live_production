@@ -1,7 +1,7 @@
 """
-Classes that define data variables and attributes for the ITS_LIVE datacube.
+Classes that define data variables and attributes for the ITS_LIVE data sets:
+datacubes, composites, and mosaics.
 """
-
 class Output:
     """
     Attributes specific to the output store format (Zarr or NetCDF)
@@ -288,3 +288,61 @@ class DataVars:
             # ACQUISITION_DATE_IMG2: DATE_UNITS,
             # DATE_CENTER: DATE_UNITS
         }
+
+class BatchVars:
+    """
+    Variables that are common to all AWS Batch processing for the ITS_LIVE project.
+    """
+    # List of EPSG codes to generate data products for. If this list is empty,
+    # then generate all data products.
+    EPSG_TO_GENERATE = []
+
+    # List of EPSG codes to exclude from data product generation.
+    # If this list is empty, then generate don't apply EPSG exclusion filter.
+    EPSG_TO_EXCLUDE = []
+
+    # List of datacubes filenames to generate/consider if only specific
+    # datacubes should be generated/considered.
+    # If an empty list then generate/consider all qualifying datacubes.
+    CUBES_TO_GENERATE = []
+
+    # Generate data products which centers fall within provided polygon
+    POLYGON_SHAPE = None
+
+    # A way to pick specific 10x10 grid cell for the datacube
+    PATH_TOKEN = None
+
+    # String representation of longitude/latitude projection
+    LON_LAT_PROJECTION = '4326'
+
+    MID_POINT_RESOLUTION = 50.0
+
+    # Default AWS S3 bucket for the data
+    AWS_PREFIX = 's3://its-live-data'
+
+    # HTTP URL for the datacube/composite/mosaics full path in S3 bucket
+    HTTP_PREFIX = 'http://its-live-data.s3.amazonaws.com'
+
+
+class CubeJson:
+    """
+    Variables names within GeoJson cube definition file.
+    """
+    FEATURES = 'features'
+    PROPERTIES = 'properties'
+    DATA_EPSG = 'data_epsg'
+    GEOMETRY_EPSG = 'geometry_epsg'
+    COORDINATES = 'coordinates'
+    ROI_PERCENT_COVERAGE = 'roi_percent_coverage'
+    EPSG_SEPARATOR = ':'
+    EPSG_PREFIX = 'EPSG'
+    URL = 'zarr_url'
+    EXIST_FLAG = 'datacube_exist'
+
+class FilenamePrefix:
+    """
+    Filename prefixes used by ITS_LIVE data products.
+    """
+    Datacube   = 'ITS_LIVE_vel'
+    Composites = 'ITS_LIVE_vel_annual'
+    Mosaics    = 'ITS_LIVE_vel_annual_mosaics'
