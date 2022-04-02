@@ -129,21 +129,26 @@ class CompDataVars:
 
 class CompOutputFormat:
     """
-    Class to represent attrubutes for the output format of the data.
+    Class to represent attributes for the output format of the data.
     """
     GDAL_AREA_OR_POINT = 'GDAL_AREA_OR_POINT'
     COMPOSITES_SOFTWARE_VERSION = 'composites_software_version'
     DATACUBE_AUTORIFT_PARAMETER_FILE = 'datacube_autoRIFT_parameter_file'
     DATACUBE_SOFTWARE_VERSION = 'datacube_software_version'
-    DATE_CREATED = 'date_created'
-    DATE_UPDATED = 'date_updated'
     DATECUBE_CREATED = 'datecube_created'
     DATECUBE_S3 = 'datecube_s3'
     DATECUBE_UPDATED = 'datecube_updated'
     DATECUBE_URL = 'datecube_url'
     PROJECTION = 'projection'
+    PROJ_POLYGON = 'proj_polygon'
+    GEO_POLYGON = 'geo_polygon'
     SENSORS_LABELS = 'sensors_labels'
 
+    # Composites specific attributes
+    DATE_CREATED = 'date_created'
+    DATE_UPDATED = 'date_updated'
+    S3 = 's3'
+    URL = 'url'
 
 # Set up logging
 logging.basicConfig(
