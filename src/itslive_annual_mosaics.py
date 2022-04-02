@@ -403,16 +403,6 @@ class ITSLiveAnnualMosaics:
                     Coords.Y,
                     self.y_coords,
                     first_ds.y.attrs
-                ),
-                CompDataVars.TIME: (
-                    CompDataVars.TIME,
-                    self.time_coords,
-                    first_ds.time.attrs
-                ),
-                CompDataVars.SENSORS: (
-                    CompDataVars.SENSORS,
-                    self.sensor_coords,
-                    first_ds.sensor.attrs
                 )
             },
             attrs = {
