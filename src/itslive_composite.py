@@ -767,8 +767,8 @@ def climatology_magnitude(
     self.sigma.vy[start_y:stop_y, start_x:stop_x],
     self.phase.vx[start_y:stop_y, start_x:stop_x],
     self.phase.vy[start_y:stop_y, start_x:stop_x],
-    self.trend.vx[start_y:stop_y, start_x:stop_x],
-    self.trend.vy[start_y:stop_y, start_x:stop_x]
+    self.std_error.vx[start_y:stop_y, start_x:stop_x],
+    self.std_error.vy[start_y:stop_y, start_x:stop_x]
 
     Output:
     =======
@@ -786,7 +786,7 @@ def climatology_magnitude(
     self.amplitude.v[start_y:stop_y, start_x:stop_x]
     self.sigma.v[start_y:stop_y, start_x:stop_x]
     self.phase.v[start_y:stop_y, start_x:stop_x]
-    self.trend.v[start_y:stop_y, start_x:stop_x]
+    self.std_error.v[start_y:stop_y, start_x:stop_x]
     """
     _two_pi = np.pi * 2
 
@@ -1114,7 +1114,7 @@ class ITSLiveComposite:
         self.phase = CompositeVariable(dims, 'phase')
         self.offset = CompositeVariable(dims, 'offset')
         self.slope = CompositeVariable(dims, 'slope')
-        self.trend = CompositeVariable(dims, 'trend')
+        self.std_error = CompositeVariable(dims, 'std_error')
 
         # Sensor data for the cube's layers
         self.sensors = cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
@@ -1294,7 +1294,7 @@ class ITSLiveComposite:
             self.count.vx,
             self.offset.vx,
             self.slope.vx,
-            self.trend.vx
+            self.std_error.vx
         )
         logging.info(f'Finished vx LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
@@ -1312,7 +1312,7 @@ class ITSLiveComposite:
             self.count.vy,
             self.offset.vy,
             self.slope.vy,
-            self.trend.vy
+            self.std_error.vy
         )
         logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
@@ -1345,7 +1345,7 @@ class ITSLiveComposite:
         self.amplitude.v[start_y:stop_y, start_x:stop_x], \
         self.sigma.v[start_y:stop_y, start_x:stop_x], \
         self.phase.v[start_y:stop_y, start_x:stop_x], \
-        self.trend.v[start_y:stop_y, start_x:stop_x] = \
+        self.std_error.v[start_y:stop_y, start_x:stop_x] = \
         climatology_magnitude(
             self.offset.vx[start_y:stop_y, start_x:stop_x],
             self.offset.vy[start_y:stop_y, start_x:stop_x],
@@ -1357,8 +1357,8 @@ class ITSLiveComposite:
             self.sigma.vy[start_y:stop_y, start_x:stop_x],
             self.phase.vx[start_y:stop_y, start_x:stop_x],
             self.phase.vy[start_y:stop_y, start_x:stop_x],
-            self.trend.vx[start_y:stop_y, start_x:stop_x],
-            self.trend.vy[start_y:stop_y, start_x:stop_x]
+            self.std_error.vx[start_y:stop_y, start_x:stop_x],
+            self.std_error.vy[start_y:stop_y, start_x:stop_x]
         )
         logging.info(f'Finished climatology magnitude (took {timeit.default_timer() - start_time} seconds)')
 
@@ -1798,7 +1798,7 @@ class ITSLiveComposite:
         gc.collect()
 
         ds[CompDataVars.VX0_ERROR] = xr.DataArray(
-            data=self.trend.vx,
+            data=self.std_error.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
@@ -1808,11 +1808,11 @@ class ITSLiveComposite:
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
-        self.trend.vx = None
+        self.std_error.vx = None
         gc.collect()
 
         ds[CompDataVars.VY0_ERROR] = xr.DataArray(
-            data=self.trend.vy,
+            data=self.std_error.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
@@ -1822,11 +1822,11 @@ class ITSLiveComposite:
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
-        self.trend.vy = None
+        self.std_error.vy = None
         gc.collect()
 
         ds[CompDataVars.V0_ERROR] = xr.DataArray(
-            data=self.trend.v,
+            data=self.std_error.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
@@ -1836,7 +1836,7 @@ class ITSLiveComposite:
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
         )
-        self.trend.v = None
+        self.std_error.v = None
         gc.collect()
 
         ds[CompDataVars.SLOPE_V] = xr.DataArray(
