@@ -36,6 +36,13 @@ class Bounds:
             max_value = math.ceil(self.max/resolution)*resolution
         )
 
+    def middle_point(self):
+        """
+        Return middle point coordinate for the bounds.
+        """
+        return (self.min + self.max)/2
+
+
 
 class Grid:
     """
