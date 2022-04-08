@@ -752,8 +752,8 @@ def climatology_magnitude(
     vy_amp_err: error in seasonal amplitude in y direction
     vx_phase: seasonal phase in x direction [day of maximum flow]
     vy_phase: seasonal phase in y direction [day of maximum flow]
-    vx_trend:
-    vy_trend:
+    vx_se:
+    vy_se:
 
     Correlation to actual inputs:
     =============================
@@ -777,7 +777,7 @@ def climatology_magnitude(
     v_amp
     v_amp_err
     v_phase
-    v_trend
+    v_se
 
     Correlation to actual outputs:
     =============================
@@ -790,7 +790,7 @@ def climatology_magnitude(
     """
     _two_pi = np.pi * 2
 
-    # solve for velcity magnitude and acceleration
+    # solve for velocity magnitude and acceleration
     # [do this using vx and vy as to not bias the result due to the Rician distribution of v]
     v = np.sqrt(vx0**2 + vy0**2) # velocity magnitude
     uv_x = vx0/v # unit flow vector in x direction
@@ -846,7 +846,7 @@ def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2017, 7, 2)):
     """
     Returns the offset, slope, and error for a weighted linear fit to v with an intercept of datetime0.
 
-   - t: date of input estimates
+   - t: date (year) of input estimates
    - v: estimates
    - v_err: estimate errors
    - datetime0: model intercept
@@ -855,16 +855,50 @@ def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2017, 7, 2)):
     yr0 = decimal_year(datetime0)
     yr = yr - yr0
 
+    # Per Chad:
+    # In the data testing Matlab script I posted, you may notice I added a step
+    # because in a few grid cells we were getting crazy velocities where, say,
+    # there were only v measurements in 2013 and 2014, and that meant we were
+    # extrapolating to get to 2017.5.
+    # To minimize the influence of such cases, we should
+    # * Only calculate the slope in grid cells that contain at least one valid
+    #   measurement before 2017 and at least one valid measurement after 2017.
+    #   That will constrain the values of v0 by ensuring we’re interpolating
+    #   between good measurements.
+    # * Wherever Condition 1 is not met, fill v0 with the weighted mean velocity
+    #   of whatever measurements are available.
+    # * Wherever Condition 1 is not met, fill dv_dt with NaN.
+    # If there is no data before or after datetime0.year, then return NaN's
+    valid = (~np.isnan(v)) & (~np.isnan(v_err))
+
     # weights for velocities:
     w_v = 1 / (v_err**2)
+    w_v = w_v[valid]
+
+    before_datetime0 = (yr < 0)
+    after_datetime0 = (yr >= 0)
+
+    # Is there data on both sides of datatime0:
+    interpolate_data = np.any(valid & before_datetime0) and np.any(valid & after_datetime0)
+    if not interpolate_data:
+        # There is no valid data on both ends of the datetime0, populate:
+        # v0 (offset):   with weighted mean of whatever values are available
+        # dv_dt (slope): with NaN
+        offset = np.average(v[valid], weights=w_v)
+        slope = np.nan
+        error = np.sqrt((v_err[valid]**2).sum())/(valid.sum()-1)
+
+        return offset, slope, error
+
+    # Normalize the weights per Chad's suggestion before LSQ fit:
+    w_v = np.sqrt(w_v/np.mean(w_v))
 
     # create design matrix
     D = np.ones((len(yr), 2))
     D[:, 1] = yr
 
     # Solve for coefficients of each column in the Vandermonde:
-    valid = ~np.isnan(v)
-    w_v = w_v[valid]
+    # w_v = w_v[valid]
     D = D[valid, :]
 
     # Julia: offset, slope = (w_v[valid].*D[valid,:]) \ (w_v[valid].*v[valid]);
@@ -1165,7 +1199,7 @@ class ITSLiveComposite:
         # For debugging only
         # x_start = 200
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
-        # x_num_to_process = 100
+        # x_num_to_process = 200
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -1177,7 +1211,7 @@ class ITSLiveComposite:
             # For debugging only
             # y_start = 300
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-            # y_num_to_process = 100
+            # y_num_to_process = 200
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -1952,7 +1986,12 @@ class ITSLiveComposite:
             })
 
         # Settings for "short" datatypes
-        for each in [CompDataVars.COUNT, CompDataVars.MAX_DT]:
+        for each in [
+            CompDataVars.COUNT,
+            CompDataVars.COUNT0,
+            CompDataVars.MAX_DT,
+            CompDataVars.OUTLIER_FRAC
+        ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
                 'dtype': 'short'
@@ -1968,9 +2007,7 @@ class ITSLiveComposite:
             CompDataVars.VX_ERROR,
             CompDataVars.VY_ERROR,
             CompDataVars.V_ERROR,
-            CompDataVars.VX_AMP_ERROR,
-            CompDataVars.VY_AMP_ERROR,
-            CompDataVars.V_AMP_ERROR
+            CompDataVars.MAX_DT
         ]:
             encoding_settings[each].update({
                 'chunks': chunks_settings
@@ -1986,6 +2023,9 @@ class ITSLiveComposite:
             CompDataVars.VX_PHASE,
             CompDataVars.VY_PHASE,
             CompDataVars.V_PHASE,
+            CompDataVars.VX_AMP_ERROR,
+            CompDataVars.VY_AMP_ERROR,
+            CompDataVars.V_AMP_ERROR,
             CompDataVars.OUTLIER_FRAC,
             CompDataVars.VX0,
             CompDataVars.VY0,
