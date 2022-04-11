@@ -1,3 +1,15 @@
+#
+# Configuration file to create conda environment to run ITS_LIVE granule transfer
+# from hyp3_sdk to ITS_LIVE S3 bucket.
+#
+# To create conda environment, run command:
+#
+# $ conda env create -f transfer_env.yml
+#
+# Followed by the following command to activate the environment:
+#
+# $ conda activate transfer
+#
 name: transfer
 channels:
   - conda-forge
@@ -8,7 +20,7 @@ dependencies:
   - dask
   - python=3.8
   - pip
-  - xarray
+  - xarray=0.19.0
   - fsspec
   - aiohttp
   - h5netcdf
