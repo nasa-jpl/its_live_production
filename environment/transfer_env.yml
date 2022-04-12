@@ -15,13 +15,13 @@ channels:
   - conda-forge
   - nodefaults
 dependencies:
-  - boto3
-  - botocore
+  - boto3=1.19.1
+  - botocore=1.22.1
   - dask
   - python=3.8
   - pip
   - xarray=0.19.0
-  - fsspec
-  - aiohttp
-  - h5netcdf
+  - fsspec=2021.08.1
+  - aiohttp=3.7.4.post0
+  - h5netcdf=0.11.0
   - hyp3_sdk>=1.1
