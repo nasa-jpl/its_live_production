@@ -1741,7 +1741,7 @@ class ITSLiveComposite:
         self.phase.vy = None
         gc.collect()
 
-        count0 = self.count.v.sum(axis=0)
+        count0 = np.nansum(self.count.v, axis=0)
 
         ds[CompDataVars.COUNT] = xr.DataArray(
             data=self.count.v,
