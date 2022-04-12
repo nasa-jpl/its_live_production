@@ -871,6 +871,10 @@ def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2017, 7, 2)):
     # If there is no data before or after datetime0.year, then return NaN's
     valid = (~np.isnan(v)) & (~np.isnan(v_err))
 
+    if valid.sum() == 0:
+        # There are no valid entries
+        return np.nan, np.nan, np.nan
+
     # weights for velocities:
     w_v = 1 / (v_err**2)
     w_v = w_v[valid]
@@ -1199,7 +1203,7 @@ class ITSLiveComposite:
         # For debugging only
         # x_start = 200
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
-        # x_num_to_process = 200
+        # x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -1209,9 +1213,9 @@ class ITSLiveComposite:
             y_num_to_process = self.cube_sizes[Coords.Y]
 
             # For debugging only
-            # y_start = 300
+            # y_start = 400
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-            # y_num_to_process = 200
+            # y_num_to_process = 100
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
