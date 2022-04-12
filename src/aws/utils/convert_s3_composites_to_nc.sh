@@ -24,13 +24,13 @@ while read -r line; do
     original=${dir_name}/${base_filename}.nc
 
     new_filename=${dir_name}/${base_filename}_original.nc
-    echo "--->Moving original $original to $new_filename"
-    aws s3 mv $original $new_filename
+    # echo "--->Moving original $original to $new_filename"
+    # aws s3 mv $original $new_filename
 
     new_filename=${dir_name}/${base_filename}.nc
     local_filename=${base_filename}.nc
     echo "--->Converting $name to nc format: $local_filename"
-    python ./utils/composites_to_netcdf.py -i $name -o $local_filename
+    python ../../utils/composites_to_netcdf.py -i $name -o $local_filename
 
     echo "--->Copying $local_filename to $new_filename"
     aws s3 cp $local_filename $newfilename
