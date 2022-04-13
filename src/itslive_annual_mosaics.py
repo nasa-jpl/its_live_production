@@ -23,6 +23,7 @@ import pandas as pd
 import s3fs
 from shapely import geometry
 from shapely.ops import unary_union
+import subprocess
 import timeit
 from tqdm import tqdm
 import xarray as xr
@@ -556,12 +557,12 @@ class ITSLiveAnnualMosaics:
         ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
 
         # Write mosaic to NetCDF format file
-        ITSLiveAnnualMosaics.annual_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename)
+        ITSLiveAnnualMosaics.annual_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename, self.is_dry_run)
 
         return mosaics_filename
 
     @staticmethod
-    def annual_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str):
+    def annual_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str, dry_run: bool):
         """
         Store datacube annual mosaics to NetCDF store.
         """
@@ -602,6 +603,9 @@ class ITSLiveAnnualMosaics:
 
         # Write locally
         ds.to_netcdf(f'{filename}', engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
+
+        if not dry_run:
+            ITSLiveAnnualMosaics.copy_to_s3_bucket(filename, target_file)
 
     def create_summary_mosaics(self, first_ds, s3_bucket, mosaics_dir):
         """
@@ -753,12 +757,12 @@ class ITSLiveAnnualMosaics:
         ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
 
         # Write mosaic to NetCDF format file
-        ITSLiveAnnualMosaics.summary_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename)
+        ITSLiveAnnualMosaics.summary_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename, self.is_dry_run)
 
         return mosaics_filename
 
     @staticmethod
-    def summary_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str):
+    def summary_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str, dry_run: bool):
         """
         Store datacube summary mosaics to NetCDF store.
         """
@@ -817,6 +821,52 @@ class ITSLiveAnnualMosaics:
 
         # Write locally
         ds.to_netcdf(f'{filename}', engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
+
+        if not dry_run:
+            ITSLiveAnnualMosaics.copy_to_s3_bucket(filename, target_file)
+
+    def copy_to_s3_bucket(local_filename, target_s3_filename):
+        """
+        Copy local NetCDF file to S3 bucket.
+        """
+        if os.path.exists(local_filename):
+            try:
+                # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
+                # resulting in as many error messages as there are files in Zarr store
+                # to copy
+                command_line = [
+                    "awsv2", "s3", "cp",
+                    local_filename,
+                    target_s3_filename,
+                    "--acl", "bucket-owner-full-control"
+                ]
+
+                logging.info(' '.join(command_line))
+
+                command_return = None
+                env_copy = os.environ.copy()
+
+                logging.info(f"Copy {local_filename} to {target_s3_filename}")
+
+                command_return = subprocess.run(
+                    command_line,
+                    env=env_copy,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT
+                )
+
+                if command_return.returncode != 0:
+                    # Report the whole stdout stream as one logging message
+                    raise RuntimeError(f"Failed to copy {local_filename} to {target_s3_filename} with returncode={command_return.returncode}: {command_return.stdout}")
+
+            finally:
+                # Remove locally written file
+                # This is to eliminate out of disk space failures when the same EC2 instance is
+                # being re-used by muliple Batch jobs.
+                if os.path.exists(local_filename):
+                    logging.info(f"Removing local {local_filename}")
+                    os.unlink(local_filename)
 
 def parse_args():
     """
@@ -1019,64 +1069,3 @@ if __name__ == '__main__':
 
     # TODO: write to S3 bucket
     logging.info(f"Done.")
-
-
-    # # Copy generated composites to the S3 bucket if provided
-    # if os.path.exists(args.outputStore) and len(args.targetBucket):
-    #     try:
-    #         # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
-    #         # resulting in as many error messages as there are files in Zarr store
-    #         # to copy
-    #         command_line = [
-    #             "awsv2", "s3", "cp", "--recursive",
-    #             args.outputStore,
-    #             os.path.join(args.targetBucket, os.path.basename(args.outputStore)),
-    #             "--acl", "bucket-owner-full-control"
-    #         ]
-    #
-    #         logging.info(' '.join(command_line))
-    #
-    #         file_is_copied = False
-    #         num_retries = 0
-    #         command_return = None
-    #         env_copy = os.environ.copy()
-    #
-    #         while not file_is_copied and num_retries < ITSCube.NUM_AWS_COPY_RETRIES:
-    #             logging.info(f"Attempt #{num_retries+1} to copy {args.outputStore} to {args.targetBucket}")
-    #
-    #             command_return = subprocess.run(
-    #                 command_line,
-    #                 env=env_copy,
-    #                 check=False,
-    #                 stdout=subprocess.PIPE,
-    #                 stderr=subprocess.STDOUT
-    #             )
-    #
-    #             if command_return.returncode != 0:
-    #                 # Report the whole stdout stream as one logging message
-    #                 logging.warning(f"Failed to copy {args.outputStore} to {args.targetBucket} with returncode={command_return.returncode}: {command_return.stdout}")
-    #
-    #                 num_retries += 1
-    #                 # If failed due to AWS SlowDown error, retry
-    #                 if num_retries != ITSCube.NUM_AWS_COPY_RETRIES and \
-    #                    ITSCube.AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
-    #                     # Sleep if it's not a last attempt to copy
-    #                     time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
-    #
-    #                 else:
-    #                     # Don't retry otherwise
-    #                     num_retries = ITSCube.NUM_AWS_COPY_RETRIES
-    #
-    #             else:
-    #                 file_is_copied = True
-    #
-    #         if not file_is_copied:
-    #             raise RuntimeError(f"Failed to copy {args.outputStore} to {args.targetBucket} with command.returncode={command_return.returncode}")
-    #
-    #     finally:
-    #         # Remove locally written Zarr store.
-    #         # This is to eliminate out of disk space failures when the same EC2 instance is
-    #         # being re-used by muliple Batch jobs.
-    #         if os.path.exists(args.outputStore):
-    #             logging.info(f"Removing local copy of {args.outputStore}")
-    #             shutil.rmtree(args.outputStore)
