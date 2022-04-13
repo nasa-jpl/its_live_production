@@ -30,7 +30,6 @@ import xarray as xr
 # Local imports
 from grid import Bounds
 import itslive_utils
-# from itscube import ITSCube
 from itscube_types import Coords, DataVars, BatchVars, CubeJson, FilenamePrefix
 from itslive_composite import CompDataVars, CompOutputFormat
 
@@ -62,9 +61,11 @@ class MosaicsOutputFormat:
 
 class ITSLiveAnnualMosaics:
     """
-    CLass to build annual mosaics based on composites for ITS_LIVE datacubes.
+    Class to build annual mosaics based on composites for ITS_LIVE datacubes.
     """
     VERSION = '1.0'
+
+    FILE_VERSION = 'v02'
 
     # "structure" to hold composites information for a single cube
     Composite = collections.namedtuple("Composite", ['s3', 'x', 'y', 'time', 'sensor'])
@@ -144,7 +145,7 @@ class ITSLiveAnnualMosaics:
                     mosaics.
         """
         self.epsg = epsg
-        self.grid_size_str = f'{grid_size:04d}'
+        self.grid_size_str = f'{grid_size:03d}'
         self.is_dry_run = is_dry_run
 
         # Read datacube composites from S3 bucket
@@ -305,7 +306,6 @@ class ITSLiveAnnualMosaics:
 
                     bucket_dir = itslive_utils.point_to_prefix(mid_lon_lat[1], mid_lon_lat[0], cube_dir)
 
-                    # cube_filename = f"{BatchVars.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
                     cube_filename = os.path.basename(properties[CubeJson.URL])
                     logging.info(f'Cube name: {cube_filename}')
 
@@ -388,7 +388,7 @@ class ITSLiveAnnualMosaics:
                         ds_from_zarr.x.values,
                         ds_from_zarr.y.values,
                         [each_t.year for each_t in ds_time],
-                        ds_from_zarr.sensor.values
+                        ds_from_zarr.sensor.values.tolist()
                     )
 
                     # Collect coordinates
@@ -436,8 +436,8 @@ class ITSLiveAnnualMosaics:
         output_files = []
         # Create annual mosaics
         logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION}')
-        # for each_year in self.time_coords:
-        #     output_files.append(self.create_annual_mosaics(first_ds, each_year, s3_bucket, mosaics_dir))
+        for each_year in self.time_coords:
+            output_files.append(self.create_annual_mosaics(first_ds, each_year, s3_bucket, mosaics_dir))
 
         # Create summary mosaic (to store all 2d data variables from all composites)
         output_files.append(self.create_summary_mosaics(first_ds, s3_bucket, mosaics_dir))
@@ -456,7 +456,7 @@ class ITSLiveAnnualMosaics:
         s3_bucket: AWS S3 bucket to place result mosaics file in.
         mosaics_dir: AWS S3 directory to place mosaics in.
         """
-        logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION} for {year_date.year}')
+        logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION} region for {year_date.year} year')
         # Dataset to represent annual mosaic
         ds = xr.Dataset(
             coords = {
@@ -501,8 +501,6 @@ class ITSLiveAnnualMosaics:
                 for each_var in ITSLiveAnnualMosaics.ANNUAL_VARS:
                     if each_var not in ds:
                         ds[each_var] = each_ds.s3.ds[each_var][year_index].load()
-                        # Each data variable in original composites has mapping attribute set
-                        # already, so it will inherit attributes from original dataset
                         ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
 
                     else:
@@ -514,10 +512,6 @@ class ITSLiveAnnualMosaics:
 
             else:
                 logging.warning(f'{each_file} does not have data for {year_date.year} year, skipping.')
-
-        # Set "mapping" attribute
-        # for each_var in ITSLiveAnnualMosaics.ANNUAL_VARS:
-        #     ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
 
         # Collect coordinates of polygons union
         geo_polygon = None
@@ -556,7 +550,7 @@ class ITSLiveAnnualMosaics:
         ds.attrs['longitude'] = f"{lon.middle_point():.2f}"
 
         # Format filename for the mosaics
-        mosaics_filename = f'{FilenamePrefix.Mosaics}_EPSG{self.epsg}_G{self.grid_size_str}_{ITSLiveAnnualMosaics.REGION}_{year_date.year}.nc'
+        mosaics_filename = f'{FilenamePrefix.Mosaics}_{self.grid_size_str}m_{ITSLiveAnnualMosaics.REGION}_{year_date.year}_{ITSLiveAnnualMosaics.FILE_VERSION}.nc'
 
         ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
         ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
@@ -620,7 +614,9 @@ class ITSLiveAnnualMosaics:
         s3_bucket: AWS S3 bucket to place result mosaics file in.
         mosaics_dir: AWS S3 directory to place mosaics in.
         """
-        # Dataset to represent annual mosaic
+        logging.info(f'Creating summary mosaics for {ITSLiveAnnualMosaics.REGION} region')
+
+        # Dataset to represent summary mosaic
         ds = xr.Dataset(
             coords = {
                 Coords.X: (
@@ -633,14 +629,14 @@ class ITSLiveAnnualMosaics:
                     self.y_coords,
                     first_ds.y.attrs
                 ),
-                # CompDataVars.SENSORS: (
-                #     CompDataVars.SENSORS,
-                #     self.sensor_coords,
-                #     {
-                #         DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSORS],
-                #         DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
-                #     }
-                # )
+                CompDataVars.SENSORS: (
+                    CompDataVars.SENSORS,
+                    self.sensor_coords,
+                    {
+                        DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSORS],
+                        DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
+                    }
+                )
             },
             attrs = {
                 'author': 'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)',
@@ -663,52 +659,56 @@ class ITSLiveAnnualMosaics:
 
         # Add dt_max data array to Dataset which is based on union of sensor groups
         # of all composites (in case some of them differ in sensor groups)
-        # sensor_coord = pd.Index(self.sensor_coords, name=CompDataVars.SENSORS)
-        # var_coords = [sensor_coord, self.y_coords, self.x_coords]
-        # var_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
-        #
-        # ds[CompDataVars.MAX_DT] = xr.DataArray(
-        #     coords=var_coords,
-        #     dims=var_dims,
-        #     attrs={
-        #         DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.MAX_DT],
-        #         DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.MAX_DT],
-        #         DataVars.GRID_MAPPING: DataVars.MAPPING,
-        #         DataVars.UNITS: DataVars.ImgPairInfo.UNITS[DataVars.ImgPairInfo.DATE_DT]
-        #     }
-        # )
+        var_coords = [self.sensor_coords, self.y_coords, self.x_coords]
+        var_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
+        sensor_dims = (len(self.sensor_coords), len(self.y_coords), len(self.x_coords))
+
+        ds[CompDataVars.MAX_DT] = xr.DataArray(
+            data=np.full(sensor_dims, np.nan),
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.MAX_DT],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.MAX_DT],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.ImgPairInfo.UNITS[DataVars.ImgPairInfo.DATE_DT]
+            }
+        )
 
         # Create lists of attributes that correspond to multiple composites that
         # contribute to each of the annual mosaic
         all_attributes = {key: [] for key in ITSLiveAnnualMosaics.ALL_ATTR}
 
-        # Concatenate data for each data variable that has time (year value) dimension
+        # Concatenate data for each data variable
+        # index = 0
         for each_file, each_ds in self.composites_ds.items():
+            logging.info(f'Collecting summary data from {each_file}')
             for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
                 if each_var not in ds:
                     ds[each_var] = each_ds.s3.ds[each_var].load()
-                    # Each data variable in original composites has mapping attribute set
-                    # already, so it will inherit attributes from original dataset
+                    # Set mapping attribute
                     ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
 
                 else:
                     ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var].load()
 
+            # index += 1
+
             # Collect dt_max per each sensor group: self.sensor_coords
-            # each_var = CompDataVars.MAX_DT
-            # for each_group in self.sensor_coords:
-            #     if each_group in each_ds.sensor:
-            #         sensor_index = each_ds.sensor.index(each_group)
-            #         logging.info(f'Update dt_max for {each_group} by {each_file}')
-            #         ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y, sensor=each_group)] = each_ds.s3.ds[each_var][sensor_index].load()
+            each_var = CompDataVars.MAX_DT
+            for each_group in self.sensor_coords:
+                if each_group in each_ds.sensor:
+                    sensor_index = each_ds.sensor.index(each_group)
+                    # logging.info(f'Update dt_max for {each_group} by {each_file}')
+                    ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y, sensor=each_group)] = each_ds.s3.ds[each_var][sensor_index].load()
 
             # Update attributes
             for each_attr in all_attributes.keys():
                 all_attributes[each_attr].append(each_ds.s3.ds.attrs[each_attr])
 
-        # Set "mapping" attribute
-        # for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
-        #     ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
+            # For debugging only to speed up the runtime
+            # if index == 1:
+            #     break
 
         # Collect coordinates of polygons union
         geo_polygon = None
@@ -747,7 +747,7 @@ class ITSLiveAnnualMosaics:
         ds.attrs['longitude'] = f"{lon.middle_point():.2f}"
 
         # Format filename for the mosaics
-        mosaics_filename = f'{FilenamePrefix.Mosaics}_EPSG{self.epsg}_G{self.grid_size_str}_{ITSLiveAnnualMosaics.REGION}_summary.nc'
+        mosaics_filename = f'{FilenamePrefix.Mosaics}_{self.grid_size_str}m_{ITSLiveAnnualMosaics.REGION}_0000_{ITSLiveAnnualMosaics.FILE_VERSION}.nc'
 
         ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
         ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
@@ -767,14 +767,12 @@ class ITSLiveAnnualMosaics:
 
         # Set encoding
         encoding_settings = {}
-        # for each in [Coords.X, Coords.Y, CompDataVars.SENSORS]:
-        #     encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
-        for each in [Coords.X, Coords.Y]:
+        for each in [Coords.X, Coords.Y, CompDataVars.SENSORS]:
             encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
 
         # Set dtype for "sensor" dimension to S1 so QGIS can at least see the dimension indices.
         # QGIS does not display even indices if dtype==str.
-        # encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'S1'})
+        encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'S1'})
 
         # Settings for "float" data types
         for each in [
@@ -805,7 +803,8 @@ class ITSLiveAnnualMosaics:
 
         for each in [
             CompDataVars.COUNT0,
-            CompDataVars.OUTLIER_FRAC
+            CompDataVars.OUTLIER_FRAC,
+            CompDataVars.MAX_DT
         ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
