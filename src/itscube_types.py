@@ -345,4 +345,4 @@ class FilenamePrefix:
     """
     Datacube   = 'ITS_LIVE_vel'
     Composites = 'ITS_LIVE_vel_annual'
-    Mosaics    = 'ITS_LIVE_vel_annual_mosaics'
+    Mosaics    = 'ITS_LIVE_velocity'
