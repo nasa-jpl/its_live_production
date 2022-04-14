@@ -1213,9 +1213,9 @@ class ITSLiveComposite:
             y_num_to_process = self.cube_sizes[Coords.Y]
 
             # For debugging only
-            # y_start = 400
+            # y_start = 500
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-            # y_num_to_process = 100
+            # y_num_to_process = 300
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -1980,12 +1980,13 @@ class ITSLiveComposite:
             CompDataVars.V0_ERROR,
             CompDataVars.SLOPE_VX,
             CompDataVars.SLOPE_VY,
-            CompDataVars.SLOPE_V
+            CompDataVars.SLOPE_V,
+            CompDataVars.OUTLIER_FRAC
             ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
                 # 'dtype': 'float',
-                'dtype': np.float,
+                'dtype': np.float32,
                 'compressor': compressor
             })
 
@@ -1993,8 +1994,7 @@ class ITSLiveComposite:
         for each in [
             CompDataVars.COUNT,
             CompDataVars.COUNT0,
-            CompDataVars.MAX_DT,
-            CompDataVars.OUTLIER_FRAC
+            CompDataVars.MAX_DT
         ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
