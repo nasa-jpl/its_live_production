@@ -407,6 +407,9 @@ class ITSLiveAnnualMosaics:
         self.sensor_coords = sorted(list(set(np.concatenate(self.sensor_coords))))
         logging.info(f'Got unique sensor groups: {self.sensor_coords}')
 
+        for each_file, each_ds in self.composites_ds.items():
+            logging.info(f'{each_file}: x={json.dumps([np.min(each_ds.x), np.max(each_ds.x)])} y={json.dumps([np.max(each_ds.y), np.min(each_ds.y)])}')
+
         composites_urls = sorted(list(self.composites_ds.keys()))
         # Use first composite to "collect" global attributes
         first_ds = self.composites_ds[composites_urls[0]].s3.ds
@@ -435,13 +438,15 @@ class ITSLiveAnnualMosaics:
         self.mapping.attrs['GeoTransform'] = new_geo_transform_str
 
         output_files = []
-        # Create annual mosaics
-        logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION}')
-        for each_year in self.time_coords:
-            output_files.append(self.create_annual_mosaics(first_ds, each_year, s3_bucket, mosaics_dir))
 
-        # Create summary mosaic (to store all 2d data variables from all composites)
-        output_files.append(self.create_summary_mosaics(first_ds, s3_bucket, mosaics_dir))
+        if not self.is_dry_run:
+            # Create annual mosaics
+            logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION}')
+            for each_year in self.time_coords:
+                output_files.append(self.create_annual_mosaics(first_ds, each_year, s3_bucket, mosaics_dir))
+
+            # Create summary mosaic (to store all 2d data variables from all composites)
+            output_files.append(self.create_summary_mosaics(first_ds, s3_bucket, mosaics_dir))
 
         return output_files
 
