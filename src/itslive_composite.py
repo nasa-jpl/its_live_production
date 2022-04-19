@@ -3,7 +3,7 @@ ITSLiveComposite class creates yearly composites of ITS_LIVE datacubes with data
 within the same target projection, bounding polygon and datetime period as
 specified at the time the datacube was constructed/updated.
 
-Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Green (JPL)
+Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Green (JPL), Mark Fahnestock (UAF)
 
 Jet Propulsion Laboratory, California Institute of Technology, Pasadena, California
 March 21, 2022
@@ -12,6 +12,7 @@ import collections
 import copy
 import datetime
 import gc
+import json
 import logging
 import numba as nb
 import numpy  as np
@@ -992,7 +993,7 @@ class MissionSensor:
     }
 
     # Mapping of sensor to the group
-    _GROUPS = {}
+    GROUPS = {}
 
     @staticmethod
     def groups():
@@ -1023,13 +1024,17 @@ class MissionSensor:
                 '2B':  SENTINEL2
             }
         """
-        if len(MissionSensor._GROUPS) == 0:
-            # Populate MissionSensor._GROUPS
-            for each_group in MissionSensor.ALL_GROUPS.values():
-                for each_sensor in each_group.sensors:
-                    MissionSensor._GROUPS[each_sensor] = each_group
+        all_sensors = {}
 
-        return MissionSensor._GROUPS
+        # Populate MissionSensor._GROUPS
+        for each_group in MissionSensor.ALL_GROUPS.values():
+            for each_sensor in each_group.sensors:
+                all_sensors[each_sensor] = each_group
+
+        return all_sensors
+
+# Initialize GROUPS
+MissionSensor.GROUPS = MissionSensor.groups()
 
 class SensorExcludeFilter:
     """
@@ -1070,10 +1075,6 @@ class SensorExcludeFilter:
         self.binedges = None
         self.groups = sensors_groups
 
-        # test below is against timedelta64 values of date_dt
-        self.max_dt_td64 = np.timedelta64(SensorExcludeFilter.MAX_DT, "[D]")
-        logging.info(f'self.max_dt_td64 for {SensorExcludeFilter.MAX_DT}: {self.max_dt_td64}')
-
         # Identify if reference sensor group is present in timeseries
         if SensorExcludeFilter.REF_SENSOR in sensors_groups:
             logging.info(f'Reference sensor {SensorExcludeFilter.REF_SENSOR.mission} is present')
@@ -1089,7 +1090,7 @@ class SensorExcludeFilter:
             start_date = np.array(acquisition_start_time)[mask]
             stop_date = np.array(acquisition_stop_time)[mask]
 
-            logging.info(f'Identified reference sensor group: start_date={start_date.min().date()} end_date={stop_date.max().date()}')
+            logging.info(f'Identified reference "{SensorExcludeFilter.REF_SENSOR.mission}" sensor group: start_date={start_date.min().date()} end_date={stop_date.max().date()}')
             self.binedges = np.arange(
                 start_date.min().date(),
                 stop_date.max().date(),
@@ -1122,7 +1123,7 @@ class SensorExcludeFilter:
 
         return exclude_sensors
 
-    def iteration(self, ds_date_dt, ds_sensors, ds_vx, ds_vy, ds_mid_date):
+    def iteration(self, ds_date_dt, ds_sensors, ds_vx, ds_vy, ds_mid_date, plot=False):
         """
         Returns list of sensor groups to exclude based on the timeseries for
         the spacial point.
@@ -1142,7 +1143,15 @@ class SensorExcludeFilter:
         #     valid = .~ismissing.(vx)
         #     ind = dtind .& valid
         #
+        sensors_to_exclude = []
+
+        # logging.info(f'Num valid points: {np.sum((~np.isnan(ds_vx)))}')
         trimmed_index = ((ds_date_dt <= SensorExcludeFilter.MAX_DT) & (~np.isnan(ds_vx)))
+        # logging.info(f'Num valid points after max_dt: {np.sum(trimmed_index)}')
+
+        # If no data left, exit the filter
+        if np.sum(trimmed_index) == 0:
+            return sensors_to_exclude
 
         vx = ds_vx[trimmed_index]
         vy = ds_vy[trimmed_index]
@@ -1158,11 +1167,14 @@ class SensorExcludeFilter:
 
         # sensor needs to be a numpy array to vectorize comparisons below
         # sensor = np.array([sengrp_from_satellite_dict[x] for x in satellite.values])
-        logging.info(f'Existing groups: {MissionSensor.groups()}')
-        sensor = np.array([MissionSensor.groups()[x].mission for x in satellite])
+        # logging.info(f'Existing groups: {MissionSensor.GROUPS}')
+        sensor = np.array([MissionSensor.GROUPS[x].mission for x in satellite])
 
         # get unique sensorgroup names
         sensorgroups = set(sensor)
+
+        if SensorExcludeFilter.REF_SENSOR.mission not in sensorgroups:
+            return sensors_to_exclude
 
         #
         #     # convert date to decimal year
@@ -1212,8 +1224,26 @@ class SensorExcludeFilter:
                     bindicts[sen]['vbin'][bin_num] = np.mean(vp[bin_ind])
                     bindicts[sen]['vstdbin'][bin_num] = np.std(vp[bin_ind])
 
-        # bin centers as datetime64's
-        bincenters = self.binedges[:-1] + ((self.binedges[1:] - self.binedges[:-1]) / 2.0)
+        # Check if reference filter made it into the bindicts:
+        refsensor = SensorExcludeFilter.REF_SENSOR.mission
+        if refsensor not in bindicts:
+            return sensors_to_exclude
+
+        if plot:
+            # Not the best practice, but done for debugging only, so it's OK
+            from matplotlib import pyplot as plt
+
+            # Plotting is for debugging purposes only
+            # bin centers as datetime64's
+            bincenters = self.binedges[:-1] + ((self.binedges[1:] - self.binedges[:-1]) / 2.0)
+
+            bin_colors = {'S1': 'r', 'S2': 'b', 'L89': 'g'}
+            plt.figure(figsize=(7, 7))
+            for sen in bindicts.keys():
+                plt.plot(bincenters, bindicts[sen]['vbin'], f'o{bin_colors[sen]}-', label=sen)
+            plt.legend()
+            plt.ion()
+            plt.show()
 
         #
         #     # check if Setinel-2 mean is different from Landsat-8
@@ -1233,9 +1263,7 @@ class SensorExcludeFilter:
         #     # if < zero then id_refsensor has a sginificanlty faster mean
         #     disagree = (m .+ (s.*sescale)) .< 0
 
-        sensors_to_exclude = []
         stats = {sen: {} for sen in sensorgroups}
-        refsensor = SensorExcludeFilter.REF_SENSOR.mission
 
         for sen in sensorgroups:
             covalid = (~np.isnan(bindicts[refsensor]['vbin'])) & (~np.isnan(bindicts[sen]['vbin']))
@@ -1436,9 +1464,9 @@ class ITSLiveComposite:
 
         # Make sure each identified sensor is listed in the MissionSensor.GROUPS
         for each in unique_sensors:
-            if each not in MissionSensor.groups():
+            if each not in MissionSensor.GROUPS:
                 raise RuntimeError(f'Unknown sensor {each} is detected. " \
-                    f"Sensor value must be listed in MissionSensor.groups() ({MissionSensor.groups()}) " \
+                    f"Sensor value must be listed in MissionSensor.GROUPS ({MissionSensor.GROUPS}) " \
                     f"to identify the group it belongs to for "date_dt" filtering.')
 
         # Identify unique sensor groups
@@ -1447,7 +1475,7 @@ class ITSLiveComposite:
         # Step through each unique sensor and collect sensor group it belongs to
         for each in unique_sensors:
             if each not in collected_sensors:
-                self.sensors_groups.append(MissionSensor.groups()[each])
+                self.sensors_groups.append(MissionSensor.GROUPS[each])
                 collected_sensors.extend(self.sensors_groups[-1].sensors)
 
         dims = (y_len, x_len, len(self.sensors_groups))
@@ -1489,7 +1517,7 @@ class ITSLiveComposite:
             y_num_to_process = self.cube_sizes[Coords.Y]
 
             # For debugging only
-            # y_start = 500
+            # y_start = 200
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # y_num_to_process = 100
 
