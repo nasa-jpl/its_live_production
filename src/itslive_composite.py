@@ -181,46 +181,47 @@ def medianMadFunction(x):
 
     return [xmed, xmad]
 
-# @nb.jit(nopython=True)
-def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
+@nb.jit(nopython=True)
+def create_projected_velocity(x_in, y_in, dt):
     """
-    Filter one spacial point by dt (date separation) between the images.
+    Project vx and vy onto the median flow vector for the given spacial point.
+
+    Inputs:
+    =======
+    x_in: x component of the velocity vector.
+    y_in: y component of the velocity vector.
+    dt:   Day separation vector.
+
+    Return:
+    =======
+    Projected velocity onto median flow vector.
     """
-    # Filter parameters for dt bins (default: 2 - TODO: ask Alex):
-    # used to determine if dt means are significantly different
-    _dtbin_mad_thresh = 0.67
-
-    _dtbin_ratio = _dtbin_mad_thresh * mad_std_ratio
-
-    _dt_edge = np.array([0, 32, 64, 128, 256, np.inf])
-    _num_bins = len(_dt_edge)-1
-
+    # Bin edges to use for the median flow vector
     _dt_median_flow = np.array([16, 32, 64, 128, 256])
 
-    # Skip dt filter for slow moving areas
-    _min_v0_threshold = 5
+    # Minimum number of points for dt_median_flow bin
+    _min_ref_unit_count = 50
 
-    # Output data variables
-    maxdt = np.nan
-    # Make numba happy - use np.bool_ type
-    invalid = np.zeros_like(dt, dtype=np.bool_)
+    # Skip dt filter for slow moving areas
+    _min_v0_threshold = 50
+
+    x0_in = np.full_like(x_in, np.nan)
 
     x0_is_null = np.isnan(x_in)
     if np.all(x0_is_null):
         # No data to process
-        return (maxdt, invalid)
+        return x0_in
 
-    # Project vx and vy onto the median flow vector for dt <= 16.
-    # If there is no data, then for dt <= 32
+    # Project vx and vy onto the median flow vector for dt <= 16;
+    # if there is no data, then for dt <= 32, etc.
     ind = None
     valid = ~x0_is_null # Number of valid points
-    num_valid = valid.sum()
 
     for each_dt in _dt_median_flow:
         ind = (dt <= each_dt) & valid
 
-        dt_fraction = ind.sum()/num_valid
-        if dt_fraction >= 0.2:
+        # Are there enough points?
+        if ind.sum() >= _min_ref_unit_count:
             break
 
     # Make numba happy
@@ -231,32 +232,74 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     v0 = np.sqrt(vx0**2 + vy0**2)
 
     if v0 <= _min_v0_threshold:
-        maxdt = np.inf
-        return (maxdt, invalid)
+        # TODO: maxdt should be set to np.inf
+        x0_in = np.full_like(x_in, np.inf)
+        return x0_in
 
     uv_x = vx0/v0 # unit flow vector
     uv_y = vy0/v0
     x0_in = x_in*uv_x + y_in*uv_y # projected flow vectors
 
-    # Filter NAN values out
-    # logging.info(f'Before mask filter: type(x0)={type(x0_in)}')
-    x0_is_null = np.isnan(x0_in)
+    return x0_in
+
+# @nb.jit(nopython=True)
+def cube_filter_iteration(vp, dt, mad_std_ratio):
+    """
+    Filter one spacial point by dt (date separation) between the images.
+
+    Inputs:
+    =======
+    vp_in: Projected velocity to median flow unit vector.
+    dt_in: Day separation vector.
+
+    Return: a tuple of
+    maxdt:   Maximum dt as determined by the filter.
+    invalid: Mask for invalid values of the input vector based on maxdt.
+    """
+    # Filter parameters for dt bins (default: 2 - TODO: ask Alex):
+    # used to determine if dt means are significantly different
+    _dtbin_mad_thresh = 0.67
+
+    _dtbin_ratio = _dtbin_mad_thresh * mad_std_ratio
+
+    _dt_edge = np.array([0, 16, 32, 64, 128, 256, np.inf])
+    _num_bins = len(_dt_edge)-1
+
+    # Minumum number of points for the reference bin
+    _min_ref_bin_count = 50
+
+    # Output data variables
+    maxdt = np.nan
+
+    # Make numba happy - use np.bool_ type
+    invalid = np.zeros_like(dt, dtype=np.bool_)
+
+    # There is no valid projected velocity vector
+    if np.all(np.isnan(vp)):
+        return (np.nan, invalid)
+
+    if np.any(np.isinf(vp)):
+        return (np.inf, invalid)
+
+    x0_is_null = np.isnan(vp)
     if np.all(x0_is_null):
         # No data to process
         return (maxdt, invalid)
 
     mask = ~x0_is_null
-    x0 = x0_in[mask]
+    x0 = vp[mask]
     x0_dt = dt[mask]
 
     # Group data values by identified bins "manually":
     # since data is sorted by date_dt, we can identify index boundaries
     # for each bin within the "date_dt" vector
-    # logging.info(f'Before searchsorted')
     bin_index = np.searchsorted(x0_dt, _dt_edge)
 
+    # Don't know ahead of time how many valid (start != end) bins will be collected,
+    # so don't pre-allocate lists
     xmed = []
     xmad = []
+    count = []
 
     # Collect indices for bins that represent current x0_dt
     dt_bin_indices = []
@@ -265,6 +308,7 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
         # if bin_index[bin_i] and bin_index[bin_i+1] are the same, there are no values for the bin, skip it
         if bin_index[bin_i] != bin_index[bin_i+1]:
             bin_xmed, bin_xmad = medianMadFunction(x0[bin_index[bin_i]:bin_index[bin_i+1]])
+            count.append(bin_index[bin_i+1] - bin_index[bin_i] + 1)
             xmed.append(bin_xmed)
             xmad.append(bin_xmad)
             dt_bin_indices.append(bin_i)
@@ -273,10 +317,20 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     # logging.info(f'Before min/max bound')
     std_dev = np.array(xmad) * _dtbin_ratio
     xmed = np.array(xmed)
+
     minBound = xmed - std_dev
     maxBound = xmed + std_dev
 
-    exclude = (minBound > maxBound[0]) | (maxBound < minBound[0])
+    # Find first valid bin with minimum acceptable number of points
+    ref_index, = np.where(np.array(count) >= _min_ref_bin_count)
+
+    # If no such valid bin exists, just consider first bin where maxBound != 0
+    if ref_index.size == 0:
+        ref_index, = np.where(maxBound != 0)
+
+    ref_index = ref_index[0]
+
+    exclude = (minBound > maxBound[ref_index]) | (maxBound < minBound[ref_index])
 
     if np.any(exclude):
         dt_bin_indices = np.array(dt_bin_indices)[exclude]
@@ -286,21 +340,21 @@ def cube_filter_iteration(x_in, y_in, dt, mad_std_ratio):
     return (maxdt, invalid)
 
 # @nb.jit(nopython=True, parallel=True)
-def cube_filter(data_x, data_y, dt, mad_std_ratio, current_sensor_group, exclude_sensor_groups):
+def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_groups):
     """
     Filter data cube by dt (date separation) between the images.
 
-    data_x: vx timeseries
-    data_y: vy timeseries
-    dt:     day separation timeseries
+    vp:          Velocity projected to median flow unit vector.
+    dt:          Day separation vector.
+    mad_std_ratio: Scalar relation between MAD and STD
     """
     # Initialize output
-    # Make numba happy - use np.bool_ type
-    invalid = np.zeros_like(data_x, dtype=np.bool_)
-
-    y_len, x_len, _ = data_x.shape
+    y_len, x_len, t_len = vp.shape
     dims = (y_len, x_len)
     maxdt = np.full(dims, np.nan)
+
+    # dims = (y_len, x_len, np.sum(sensor_mask))
+    invalid = np.zeros_like(vp, dtype=np.bool_)
 
     # Loop through all spacial points
     # for j_index in nb.prange(y_len):
@@ -315,11 +369,11 @@ def cube_filter(data_x, data_y, dt, mad_std_ratio, current_sensor_group, exclude
                 continue
 
             maxdt[j_index, i_index], invalid[j_index, i_index, :] = cube_filter_iteration(
-                data_x[j_index, i_index, :],
-                data_y[j_index, i_index, :],
+                vp[j_index, i_index],
                 dt,
                 mad_std_ratio
             )
+            # logging.info(f'DEBUG: j={j_index} i={i_index} after cube_filter: maxdt={maxdt[j_index, i_index]}')
 
     return invalid, maxdt
 
@@ -995,8 +1049,11 @@ class MissionSensor:
     # Mapping of sensor to the group
     GROUPS = {}
 
+    # Mapping of sensor to the group label
+    GROUPS_MISSIONS = {}
+
     @staticmethod
-    def groups():
+    def _groups():
         """
         Return mapping of sensor to its corresponding sensor group.
 
@@ -1026,15 +1083,52 @@ class MissionSensor:
         """
         all_sensors = {}
 
-        # Populate MissionSensor._GROUPS
         for each_group in MissionSensor.ALL_GROUPS.values():
             for each_sensor in each_group.sensors:
                 all_sensors[each_sensor] = each_group
 
         return all_sensors
 
-# Initialize GROUPS
-MissionSensor.GROUPS = MissionSensor.groups()
+    @staticmethod
+    def _groups_missions():
+        """
+        Return mapping of sensor to its corresponding sensor group name.
+
+        This method builds mapping of the individual sensor to the group
+        it belongs to:
+            {
+                '4.':  'L45',
+                '5.':  'L45',
+                4.0:   'L45',
+                5.0:   'L45',
+                '4.0': 'L45',
+                '4.0': 'L45',
+                '7.':  'L7',
+                '7.0': 'L7',
+                7.0:   'L7',
+                '8.':  'L89',
+                '9.':  'L89',
+                8.0:   'L89',
+                9.0:   'L89',
+                '8.0': 'L89',
+                '9.0': 'L89',
+                '1A':  'S1',
+                '1B':  'S1',
+                '2A':  'S2',
+                '2B':  'S2'
+            }
+        """
+        all_sensors = {}
+        for each_group in MissionSensor.ALL_GROUPS.values():
+            for each_sensor in each_group.sensors:
+                # Use homogeneous type as keys (numba allows for key values of the same type only)
+                all_sensors[str(each_sensor)] = each_group.mission
+
+        return all_sensors
+
+# Initialize static data of the class
+MissionSensor.GROUPS = MissionSensor._groups()
+MissionSensor.GROUPS_MISSIONS = MissionSensor._groups_missions()
 
 class SensorExcludeFilter:
     """
@@ -1045,13 +1139,13 @@ class SensorExcludeFilter:
     MIN_COUNT=3
 
     # Longest dt to use for all sensor groups
-    MAX_DT = 24
+    MAX_DT = 64
 
     # Sensor group to compare others to
     REF_SENSOR = MissionSensor.SENTINEL2
 
     # Multiplier of standard error to use in comparison
-    SESCALE = 1
+    SESCALE = 3
 
     def __init__(
         self,
@@ -1075,17 +1169,22 @@ class SensorExcludeFilter:
         self.binedges = None
         self.groups = sensors_groups
 
+        # Map each sensor to its mission group
+        # Use homogeneous type as keys (numba allows for key values of the same type only)
+        self.sensors_str = np.array([MissionSensor.GROUPS_MISSIONS[str(x)] for x in sensors])
+
         # Identify if reference sensor group is present in timeseries
         if SensorExcludeFilter.REF_SENSOR in sensors_groups:
             logging.info(f'Reference sensor {SensorExcludeFilter.REF_SENSOR.mission} is present')
             self.apply = True
 
-            mask = np.zeros((len(sensors)), dtype=np.bool_)
+            # mask = np.zeros((len(sensors)), dtype=np.bool_)
 
             # Extract start and end dates that correspond to the sensor group
-            for each in SensorExcludeFilter.REF_SENSOR.sensors:
-                # logging.info(f'Update mask with {each} as part of the sensor group')
-                mask |= (sensors == each)
+            mask = (self.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
+            # for each in SensorExcludeFilter.REF_SENSOR.sensors:
+            #     # logging.info(f'Update mask with {each} as part of the sensor group')
+            #     mask |= (sensors == each)
 
             start_date = np.array(acquisition_start_time)[mask]
             stop_date = np.array(acquisition_stop_time)[mask]
@@ -1102,7 +1201,7 @@ class SensorExcludeFilter:
         else:
             logging.info(f'Reference sensor {SensorExcludeFilter.REF_SENSOR.mission} is missing, disable SensorExclude filter.')
 
-    def __call__(self, ds_date_dt, ds_sensors, ds_vx, ds_vy, ds_mid_date):
+    def __call__(self, ds_date_dt, ds_vx, ds_vy, ds_mid_date):
         """
         Invoke filter for the block of spacial points.
         """
@@ -1115,7 +1214,6 @@ class SensorExcludeFilter:
                 for i_index in range(0, x_len):
                     exclude_sensors[j_index, i_index] = self.iteration(
                         ds_date_dt,
-                        ds_sensors,
                         ds_vx[j_index, i_index, :],
                         ds_vy[j_index, i_index, :],
                         ds_mid_date
@@ -1123,7 +1221,7 @@ class SensorExcludeFilter:
 
         return exclude_sensors
 
-    def iteration(self, ds_date_dt, ds_sensors, ds_vx, ds_vy, ds_mid_date, plot=False):
+    def iteration(self, ds_date_dt, ds_vx, ds_vy, ds_mid_date, plot=False):
         """
         Returns list of sensor groups to exclude based on the timeseries for
         the spacial point.
@@ -1155,7 +1253,7 @@ class SensorExcludeFilter:
 
         vx = ds_vx[trimmed_index]
         vy = ds_vy[trimmed_index]
-        satellite = ds_sensors[trimmed_index]
+        sensor = self.sensors_str[trimmed_index]
         dt = ds_date_dt[trimmed_index]
         mid_dates = ds_mid_date[trimmed_index]
 
@@ -1168,7 +1266,7 @@ class SensorExcludeFilter:
         # sensor needs to be a numpy array to vectorize comparisons below
         # sensor = np.array([sengrp_from_satellite_dict[x] for x in satellite.values])
         # logging.info(f'Existing groups: {MissionSensor.GROUPS}')
-        sensor = np.array([MissionSensor.GROUPS[x].mission for x in satellite])
+        # sensor = np.array([MissionSensor.GROUPS[x].mission for x in satellite])
 
         # get unique sensorgroup names
         sensorgroups = set(sensor)
@@ -1505,7 +1603,7 @@ class ITSLiveComposite:
         x_num_to_process = self.cube_sizes[Coords.X]
 
         # For debugging only
-        # x_start = 200
+        # x_start = 120
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # x_num_to_process = 100
 
@@ -1517,7 +1615,7 @@ class ITSLiveComposite:
             y_num_to_process = self.cube_sizes[Coords.Y]
 
             # For debugging only
-            # y_start = 200
+            # y_start = 115
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # y_num_to_process = 100
 
@@ -1535,6 +1633,50 @@ class ITSLiveComposite:
         # Save data to Zarr store
         self.to_zarr(output_store, s3_bucket)
 
+    @staticmethod
+    # @nb.jit(nopython=True, parallel=True)
+    def project_v_to_median_flow(ds_vx, ds_vy, ds_date_dt, ds_sensors_str, exclude_sensors):
+        """
+        Project valid velocity values to median flow unit vector.
+
+        Inputs:
+        =======
+        ds_vx: 3d block of vx values.
+        ds_vy: 3d block of vy values.
+        ds_date_dt: day separation for velocity image pairs.
+        ds_sensors: Current sensors for the datacube.
+        exclude_sensors: 2d "map" of sensors to exclude from calculations (one list per each [y, x] point).
+        """
+        dims = ds_vx.shape
+        y_len = dims[0]
+        x_len = dims[1]
+        vp = np.full(dims, np.nan)
+
+        # for j_index in nb.prange(y_len):
+        #     for i_index in nb.prange(x_len):
+        for j_index in range(0, y_len):
+            for i_index in range(0, x_len):
+                # Exclude all identified invalid sensor groups per [y, x] point
+                exclude_mask = np.zeros((len(ds_sensors_str)), dtype=np.bool_)
+
+                for each in exclude_sensors[j_index, i_index]:
+                    # logging.info(f'DEBUG: j={j_index} i={i_index}: exclude {each} as part of {exclude_sensors[j_index, i_index]}')
+                    exclude_mask |= (ds_sensors_str == each)
+                    # logging.info(f'exclude_mask.sum={exclude_mask.sum()}')
+
+                # invalid[j_index, i_index, exclude_mask] = True
+
+                include_mask = ~exclude_mask
+                x_in = ds_vx[j_index, i_index, include_mask]
+                y_in = ds_vy[j_index, i_index, include_mask]
+                dt = ds_date_dt[include_mask]
+
+                # logging.info(f'DEBUG: Sensors for projected velocity: {ds_sensors_str[include_mask]}')
+                # logging.info(f'DEBUG: projected_v j={j_index} i={i_index} include_mask={include_mask.sum()}')
+                vp[j_index, i_index, include_mask] = create_projected_velocity(x_in, y_in, dt)
+
+        return vp
+
     def cube_time_mean(self, start_x, num_x, start_y, num_y):
         """
         Compute time average for the datacube [:, :, start_x:stop_index] coordinates.
@@ -1544,14 +1686,6 @@ class ITSLiveComposite:
         stop_y = start_y + num_y
         stop_x = start_x + num_x
         ITSLiveComposite.Chunk = Chunk(start_x, stop_x, num_x, start_y, stop_y, num_y)
-
-        # % convert to singles (Float32) to reduce memory footprint
-        # for k = 1:length(vars)
-        #     if any(strcmp({'vx','vy','vx_error','vy_error'}, vars{k}))
-        #         data.(vars{k}) = single(data.(vars{k}));
-        #     end
-        # end
-        # fprintf('finished [%.1fmin]\n', (now-t0)*24*60)
 
         # Start timer
         start_time = timeit.default_timer()
@@ -1563,7 +1697,6 @@ class ITSLiveComposite:
 
         # Initialize variables
         dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, ITSLiveComposite.MID_DATE_LEN)
-        v_invalid = np.full(dims, False)
 
         # Loop for each unique sensor (those groupings image pairs that can be
         # expected to have different temporal decorelation)
@@ -1586,38 +1719,44 @@ class ITSLiveComposite:
         # Call filter to exclude sensors if any
         logging.info(f'Sensor exclude filter...')
         start_time = timeit.default_timer()
-        exclude_sensors = self.sensor_filter(ITSLiveComposite.DATE_DT.values, self.sensors, vx, vy, self.mid_date)
+        exclude_sensors = self.sensor_filter(ITSLiveComposite.DATE_DT.values, vx, vy, self.mid_date)
         logging.info(f'Finished sensor exclude filter ({timeit.default_timer() - start_time} seconds)')
 
+        # Project valid (excluding sensors) v onto median flow vector:
+        # take into account exclude_sensors for each spacial point
+        v_invalid = np.full(dims, False)
+
+        start_time = timeit.default_timer()
+        logging.info(f'Project velocity to median flow unit vector...')
+        # Project velocity to median flow unit vector using only valid sensors
+        vp = ITSLiveComposite.project_v_to_median_flow(
+            vx,
+            vy,
+            ITSLiveComposite.DATE_DT.values,
+            self.sensor_filter.sensors_str,
+            exclude_sensors
+        )
+        logging.info(f'Done with velocity projection to median flow unit vector (took {timeit.default_timer() - start_time} seconds)')
+
+        # Apply dt filter: step through all sensors groups
         for i, sensor_group in enumerate(self.sensors_groups):
-            # sensor_group = self.sensors_groups[i]
-            logging.info(f'Filtering dt for sensors "{sensor_group.sensors}" ({i+1} out ' \
+            logging.info(f'Filtering dt for sensors of "{sensor_group.mission}" ({i+1} out ' \
                 f'of {len(self.sensors_groups)} sensor groups)')
 
-            # Find which layers correspond to each sensor group
-            mask = np.zeros((ITSLiveComposite.MID_DATE_LEN), dtype=np.bool_)
-
-            # TODO: just use sensor group mapping as created by SensorExcludeFilter
-            for each in sensor_group.sensors:
-                # logging.info(f'Update mask with {each} as part of the sensor group')
-                mask |= (self.sensors == each)
+            # Find which layers correspond to the sensor group
+            mask = (self.sensor_filter.sensors_str == sensor_group.mission)
 
             # Filter current block's variables
-            # TODO: Don't drop variables when masking - won't work on return assignment
-            #       for cubes with multiple sensors
-            dt_masked = ITSLiveComposite.DATE_DT.values[mask]
-
-            logging.info(f'Filtering projected v onto median flow vector...')
+            logging.info(f'Start dt filter for projected v using {sensor_group.mission} sensors...')
             start_time = timeit.default_timer()
             v_invalid[:, :, mask], self.max_dt[start_y:stop_y, start_x:stop_x, i] = cube_filter(
-                vx[..., mask],
-                vy[..., mask],
-                dt_masked,
+                vp[..., mask],
+                ITSLiveComposite.DATE_DT.values[mask],
                 ITSLiveComposite.MAD_STD_RATIO,
                 sensor_group.mission,
                 exclude_sensors
             )
-            logging.info(f'Filtered projected v (took {timeit.default_timer() - start_time} seconds)')
+            logging.info(f'Done with dt filter for projected v (took {timeit.default_timer() - start_time} seconds)')
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
         logging.info(f'Compute invalid mask...')
@@ -1628,6 +1767,21 @@ class ITSLiveComposite:
         # Mask data
         vx[invalid] = np.nan
         vy[invalid] = np.nan
+
+        plot = True
+        if plot:
+            # Not the best practice, but done for debugging only, so leave it
+            from matplotlib import pyplot as plt
+
+            vp[invalid] = np.nan
+
+            # Plotting is for debugging purposes only
+            plt.figure(figsize=(7, 7))
+            plt.plot(self.mid_date, np.hypot(vx[0, 0, :], vy[0, 0, :]), 'xg', label='hypot(vx, vy)')
+            plt.plot(self.mid_date, vp[0, 0, :], 'xr', label='vp')
+            plt.legend()
+            plt.ion()
+            plt.show()
 
         invalid = np.nansum(invalid, axis=2)
         invalid = np.divide(invalid, np.sum(np.isnan(vx), 2) + invalid)
