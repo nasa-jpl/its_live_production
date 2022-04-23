@@ -1768,7 +1768,7 @@ class ITSLiveComposite:
         vx[invalid] = np.nan
         vy[invalid] = np.nan
 
-        plot = True
+        # plot = True
         if plot:
             # Not the best practice, but done for debugging only, so leave it
             from matplotlib import pyplot as plt
