@@ -116,9 +116,9 @@ class CompDataVars:
         MAX_DT:       'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
         OUTLIER_FRAC: 'fraction of data identified as outliers and excluded from error weighted least squares fit',
         SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering',
-        VX0:          'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
-        VY0:          'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
-        V0:           'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2017.',
+        VX0:          'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        VY0:          'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        V0:           'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
         COUNT0:       'number of image pairs used for climatological means',
         VX0_ERROR:    'error for vx0',
         VY0_ERROR:    'error for vy0',
@@ -600,8 +600,7 @@ def itslive_lsqfit_annual(
     init_runtime3 = timeit.default_timer() - init_runtime
 
     # Filter sum of each column
-    # WAS: hasdata = M.sum(axis=0) > 0
-    hasdata = M.sum(axis=0) >= 1.0
+    hasdata = M.sum(axis=0) > 0
     y1 = y1[hasdata]
     M = M[:, hasdata]
 
@@ -908,7 +907,7 @@ def climatology_magnitude(
 
     return v, dv_dt, v_amp, v_amp_err, v_phase, v_se
 
-def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2017, 7, 2)):
+def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2019, 7, 2)):
     """
     Returns the offset, slope, and error for a weighted linear fit to v with an intercept of datetime0.
 
@@ -925,10 +924,10 @@ def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2017, 7, 2)):
     # In the data testing Matlab script I posted, you may notice I added a step
     # because in a few grid cells we were getting crazy velocities where, say,
     # there were only v measurements in 2013 and 2014, and that meant we were
-    # extrapolating to get to 2017.5.
+    # extrapolating to get to 2019.5.
     # To minimize the influence of such cases, we should
     # * Only calculate the slope in grid cells that contain at least one valid
-    #   measurement before 2017 and at least one valid measurement after 2017.
+    #   measurement before 2019 and at least one valid measurement after 2019.
     #   That will constrain the values of v0 by ensuring we’re interpolating
     #   between good measurements.
     # * Wherever Condition 1 is not met, fill v0 with the weighted mean velocity
@@ -1327,21 +1326,21 @@ class SensorExcludeFilter:
         if refsensor not in bindicts:
             return sensors_to_exclude
 
-        if plot:
-            # Not the best practice, but done for debugging only, so it's OK
-            from matplotlib import pyplot as plt
-
-            # Plotting is for debugging purposes only
-            # bin centers as datetime64's
-            bincenters = self.binedges[:-1] + ((self.binedges[1:] - self.binedges[:-1]) / 2.0)
-
-            bin_colors = {'S1': 'r', 'S2': 'b', 'L89': 'g'}
-            plt.figure(figsize=(7, 7))
-            for sen in bindicts.keys():
-                plt.plot(bincenters, bindicts[sen]['vbin'], f'o{bin_colors[sen]}-', label=sen)
-            plt.legend()
-            plt.ion()
-            plt.show()
+        # if plot:
+        #     # Not the best practice, but done for debugging only, so it's OK
+        #     from matplotlib import pyplot as plt
+        #
+        #     # Plotting is for debugging purposes only
+        #     # bin centers as datetime64's
+        #     bincenters = self.binedges[:-1] + ((self.binedges[1:] - self.binedges[:-1]) / 2.0)
+        #
+        #     bin_colors = {'S1': 'r', 'S2': 'b', 'L89': 'g'}
+        #     plt.figure(figsize=(7, 7))
+        #     for sen in bindicts.keys():
+        #         plt.plot(bincenters, bindicts[sen]['vbin'], f'o{bin_colors[sen]}-', label=sen)
+        #     plt.legend()
+        #     plt.ion()
+        #     plt.show()
 
         #
         #     # check if Setinel-2 mean is different from Landsat-8
@@ -1605,7 +1604,7 @@ class ITSLiveComposite:
         # For debugging only
         # x_start = 120
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
-        # x_num_to_process = 100
+        # x_num_to_process = 2
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -1617,7 +1616,7 @@ class ITSLiveComposite:
             # For debugging only
             # y_start = 115
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-            # y_num_to_process = 100
+            # y_num_to_process = 2
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -1769,19 +1768,19 @@ class ITSLiveComposite:
         vy[invalid] = np.nan
 
         # plot = True
-        if plot:
-            # Not the best practice, but done for debugging only, so leave it
-            from matplotlib import pyplot as plt
-
-            vp[invalid] = np.nan
-
-            # Plotting is for debugging purposes only
-            plt.figure(figsize=(7, 7))
-            plt.plot(self.mid_date, np.hypot(vx[0, 0, :], vy[0, 0, :]), 'xg', label='hypot(vx, vy)')
-            plt.plot(self.mid_date, vp[0, 0, :], 'xr', label='vp')
-            plt.legend()
-            plt.ion()
-            plt.show()
+        # if plot:
+        #     # Not the best practice, but done for debugging only, so leave it
+        #     from matplotlib import pyplot as plt
+        #
+        #     vp[invalid] = np.nan
+        #
+        #     # Plotting is for debugging purposes only
+        #     plt.figure(figsize=(7, 7))
+        #     plt.plot(self.mid_date, np.hypot(vx[0, 0, :], vy[0, 0, :]), 'xg', label='hypot(vx, vy)')
+        #     plt.plot(self.mid_date, vp[0, 0, :], 'xr', label='vp')
+        #     plt.legend()
+        #     plt.ion()
+        #     plt.show()
 
         invalid = np.nansum(invalid, axis=2)
         invalid = np.divide(invalid, np.sum(np.isnan(vx), 2) + invalid)
@@ -2470,6 +2469,12 @@ class ITSLiveComposite:
         ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+                'dtype': 'short'
+            })
+
+        # Settings for "short" datatypes
+        encoding_settings.setdefault(CompDataVars.MAX_DT, {}).update({
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
                 'dtype': 'short'
             })
 
