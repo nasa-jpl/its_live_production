@@ -51,6 +51,7 @@ class CompDataVars:
     COUNT = 'count'
     MAX_DT = 'dt_max'
     OUTLIER_FRAC = 'outlier_frac'
+    SENSOR_INCLUDE = 'sensor_flag'
     VX0 = 'vx0'
     VY0 = 'vy0'
     V0  = 'v0'
@@ -82,6 +83,7 @@ class CompDataVars:
         TIME: 'time',
         COUNT: 'count',
         MAX_DT: 'dt_maximum',
+        SENSOR_INCLUDE: 'sensor_flag',
         OUTLIER_FRAC: 'outlier_fraction',
         VX0: 'climatological_x_velocity',
         VY0: 'climatological_y_velocity',
@@ -96,36 +98,37 @@ class CompDataVars:
     }
 
     DESCRIPTION = {
-        DataVars.VX:  'mean annual velocity of sinusoidal fit to vx',
-        DataVars.VY:  'mean annual velocity of sinusoidal fit to vy',
-        DataVars.V:   'mean annual velocity of sinusoidal fit to v',
-        TIME:         'time',
-        VX_ERROR:     'error weighted error for vx',
-        VY_ERROR:     'error weighted error for vy',
-        V_ERROR:      'error weighted error for v',
-        VX_AMP_ERROR: 'error for vx_amp',
-        VY_AMP_ERROR: 'error for vy_amp',
-        V_AMP_ERROR:  'error for v_amp',
-        VX_AMP:       'climatological mean seasonal amplitude of sinusoidal fit to vx',
-        VY_AMP:       'climatological mean seasonal amplitude in sinusoidal fit in vy',
-        V_AMP:        'climatological mean seasonal amplitude of sinusoidal fit to v',
-        VX_PHASE:     'day of maximum velocity of sinusoidal fit to vx',
-        VY_PHASE:     'day of maximum velocity of sinusoidal fit to vy',
-        V_PHASE:      'day of maximum velocity of sinusoidal fit to v',
-        COUNT:        'number of image pairs used in error weighted least squares fit',
-        MAX_DT:       'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
-        OUTLIER_FRAC: 'fraction of data identified as outliers and excluded from error weighted least squares fit',
-        SENSORS:      'combinations of unique sensors and missions that are grouped together for date_dt filtering',
-        VX0:          'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        VY0:          'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        V0:           'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        COUNT0:       'number of image pairs used for climatological means',
-        VX0_ERROR:    'error for vx0',
-        VY0_ERROR:    'error for vy0',
-        V0_ERROR:     'error for v0',
-        SLOPE_VX:     'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
-        SLOPE_VY:     'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
-        SLOPE_V:      'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
+        DataVars.VX:    'mean annual velocity of sinusoidal fit to vx',
+        DataVars.VY:    'mean annual velocity of sinusoidal fit to vy',
+        DataVars.V:     'mean annual velocity of sinusoidal fit to v',
+        TIME:           'time',
+        VX_ERROR:       'error weighted error for vx',
+        VY_ERROR:       'error weighted error for vy',
+        V_ERROR:        'error weighted error for v',
+        VX_AMP_ERROR:   'error for vx_amp',
+        VY_AMP_ERROR:   'error for vy_amp',
+        V_AMP_ERROR:    'error for v_amp',
+        VX_AMP:         'climatological mean seasonal amplitude of sinusoidal fit to vx',
+        VY_AMP:         'climatological mean seasonal amplitude in sinusoidal fit in vy',
+        V_AMP:          'climatological mean seasonal amplitude of sinusoidal fit to v',
+        VX_PHASE:       'day of maximum velocity of sinusoidal fit to vx',
+        VY_PHASE:       'day of maximum velocity of sinusoidal fit to vy',
+        V_PHASE:        'day of maximum velocity of sinusoidal fit to v',
+        COUNT:          'number of image pairs used in error weighted least squares fit',
+        MAX_DT:         'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
+        SENSOR_INCLUDE: 'flag = 1 if sensor group (see sensor variable) is included, flag = 0 if sensor group is excluded',
+        OUTLIER_FRAC:   'fraction of data identified as outliers and excluded from error weighted least squares fit',
+        SENSORS:        'combinations of unique sensors and missions that are grouped together for date_dt filtering',
+        VX0:            'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        VY0:            'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        V0:             'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        COUNT0:         'number of image pairs used for climatological means',
+        VX0_ERROR:      'error for vx0',
+        VY0_ERROR:      'error for vy0',
+        V0_ERROR:       'error for v0',
+        SLOPE_VX:       'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
+        SLOPE_VY:       'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
+        SLOPE_V:        'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
     }
 
 class CompOutputFormat:
@@ -344,14 +347,23 @@ def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_grou
     """
     Filter data cube by dt (date separation) between the images.
 
+    Input:
+    ======
     vp:          Velocity projected to median flow unit vector.
     dt:          Day separation vector.
     mad_std_ratio: Scalar relation between MAD and STD
+
+    Return:
+    =======
+    invalid: Mask for invalid values.
+    maxdt:   Maximum date separation.
+    sensor_include: Mask for included sensors.
     """
     # Initialize output
     y_len, x_len, t_len = vp.shape
     dims = (y_len, x_len)
     maxdt = np.full(dims, np.nan)
+    sensor_include = np.ones(dims)
 
     # dims = (y_len, x_len, np.sum(sensor_mask))
     invalid = np.zeros_like(vp, dtype=np.bool_)
@@ -366,6 +378,7 @@ def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_grou
                current_sensor_group in exclude_sensor_groups[j_index, i_index]:
                 # logging.info(f'j={j_index} i={i_index}: skipping {current_sensor_group} due to exclude_groups={exclude_sensor_groups[j_index, i_index]}')
                 invalid[j_index, i_index, :] = True
+                sensor_include[j_index, i_index] = 0
                 continue
 
             maxdt[j_index, i_index], invalid[j_index, i_index, :] = cube_filter_iteration(
@@ -375,7 +388,7 @@ def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_grou
             )
             # logging.info(f'DEBUG: j={j_index} i={i_index} after cube_filter: maxdt={maxdt[j_index, i_index]}')
 
-    return invalid, maxdt
+    return invalid, maxdt, sensor_include
 
 @nb.jit(nopython=True)
 def weighted_std(values, weights):
@@ -665,9 +678,6 @@ def itslive_lsqfit_annual(
 
     # logging.info(f'Size of p:{p.shape}')
 
-    # ATTN: Matlab had it probably wrong, but confirm on output: outlier_frac = length(yr)./totalnum;
-    outlier_frac = (totalnum - len(start_year))/totalnum
-
     # Convert coefficients to amplitude and phase of a single sinusoid:
     Nyrs = len(y1)
 
@@ -723,7 +733,7 @@ def itslive_lsqfit_annual(
 
     offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
 
-    return A, amp_error, ph, offset, slope, se, outlier_frac, init_runtime1, init_runtime2, init_runtime3, iter_runtime
+    return A, amp_error, ph, offset, slope, se, init_runtime1, init_runtime2, init_runtime3, iter_runtime
 
 # @nb.jit(nopython=True)
 def annual_magnitude(
@@ -1577,6 +1587,8 @@ class ITSLiveComposite:
 
         dims = (y_len, x_len, len(self.sensors_groups))
         self.max_dt = np.full(dims, np.nan)
+        # np.bool_ - to make numba happy
+        self.sensor_include = np.ones(dims)
 
         # Date when composites were created
         self.date_created = datetime.datetime.now().strftime('%d-%b-%Y %H:%M:%S')
@@ -1725,6 +1737,13 @@ class ITSLiveComposite:
         # take into account exclude_sensors for each spacial point
         v_invalid = np.full(dims, False)
 
+        # Count all valid points before any filters are applied
+        count_mask = ~np.isnan(vx)
+        count0_vx = count_mask.sum(axis=2)
+
+        count_mask = ~np.isnan(vy)
+        count0_vy = count_mask.sum(axis=2)
+
         start_time = timeit.default_timer()
         logging.info(f'Project velocity to median flow unit vector...')
         # Project velocity to median flow unit vector using only valid sensors
@@ -1748,7 +1767,10 @@ class ITSLiveComposite:
             # Filter current block's variables
             logging.info(f'Start dt filter for projected v using {sensor_group.mission} sensors...')
             start_time = timeit.default_timer()
-            v_invalid[:, :, mask], self.max_dt[start_y:stop_y, start_x:stop_x, i] = cube_filter(
+
+            v_invalid[:, :, mask], \
+            self.max_dt[start_y:stop_y, start_x:stop_x, i], \
+            self.sensor_include[start_y:stop_y, start_x:stop_x, i] = cube_filter(
                 vp[..., mask],
                 ITSLiveComposite.DATE_DT.values[mask],
                 ITSLiveComposite.MAD_STD_RATIO,
@@ -1792,7 +1814,8 @@ class ITSLiveComposite:
         start_time = timeit.default_timer()
 
         # Transform vx data to make time series continuous in memory: [y, x, t]
-        vx_outlier = ITSLiveComposite.cubelsqfit2(
+        # TODO: get rid of vx_outlier
+        ITSLiveComposite.cubelsqfit2(
             vx,
             self.vx_error,
             self.amplitude.vx,
@@ -1807,10 +1830,11 @@ class ITSLiveComposite:
         )
         logging.info(f'Finished vx LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
+        vx_outlier = 1 - np.nansum(self.count.vx[start_y:stop_y, start_x:stop_x, :], axis=2) / count0_vx
         logging.info(f'Find vy annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
-        vy_outlier = ITSLiveComposite.cubelsqfit2(
+        ITSLiveComposite.cubelsqfit2(
             vy,
             self.vy_error,
             self.amplitude.vy,
@@ -1824,6 +1848,8 @@ class ITSLiveComposite:
             self.std_error.vy
         )
         logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
+
+        vy_outlier = 1 - np.nansum(self.count.vy[start_y:stop_y, start_x:stop_x, :], axis=2) / count0_vy
 
         logging.info(f'Find annual magnitude... ')
         start_time = timeit.default_timer()
@@ -2250,6 +2276,23 @@ class ITSLiveComposite:
         self.max_dt = None
         gc.collect()
 
+        self.sensor_include = self.sensor_include.transpose(CompositeVariable.CONT_IN_X)
+        logging.info(f'sensor_include: {self.sensor_include[:, 115, 120]}')
+
+        ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
+            data=self.sensor_include,
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSOR_INCLUDE],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.BINARY_UNITS
+            }
+        )
+        self.sensor_include = None
+        gc.collect()
+
         ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
             data=self.outlier_fraction,
             coords=twodim_var_coords,
@@ -2451,12 +2494,10 @@ class ITSLiveComposite:
             CompDataVars.V0_ERROR,
             CompDataVars.SLOPE_VX,
             CompDataVars.SLOPE_VY,
-            CompDataVars.SLOPE_V,
-            CompDataVars.OUTLIER_FRAC
+            CompDataVars.SLOPE_V
             ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                # 'dtype': 'float',
                 'dtype': np.float32,
                 'compressor': compressor
             })
@@ -2464,18 +2505,22 @@ class ITSLiveComposite:
         # Settings for "short" datatypes
         for each in [
             CompDataVars.COUNT,
-            CompDataVars.COUNT0,
-            CompDataVars.MAX_DT
+            CompDataVars.COUNT0
         ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-                'dtype': 'short'
+                'dtype': np.short
             })
 
-        # Settings for "short" datatypes
+        # Settings for "max_dt" datatypes
         encoding_settings.setdefault(CompDataVars.MAX_DT, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
-                'dtype': 'short'
+                'dtype': np.short
+            })
+
+        # Settings for "sensor_include" datatypes
+        encoding_settings.setdefault(CompDataVars.SENSOR_INCLUDE, {}).update({
+                'dtype': np.short
             })
 
         # Chunking to apply when writing datacube to the Zarr store
@@ -2508,6 +2553,7 @@ class ITSLiveComposite:
             CompDataVars.VY_AMP_ERROR,
             CompDataVars.V_AMP_ERROR,
             CompDataVars.OUTLIER_FRAC,
+            CompDataVars.SENSOR_INCLUDE,
             CompDataVars.VX0,
             CompDataVars.VY0,
             CompDataVars.V0,
@@ -2551,8 +2597,8 @@ class ITSLiveComposite:
 
         # Initialize output
         start_time = timeit.default_timer()
-        dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
-        outlier_frac = np.full(dims, np.nan)
+        # dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
+        # outlier_frac = np.full(dims, np.nan)
 
         # This is only done for generic parfor "slicing" may not be needed when
         # recoded
@@ -2586,7 +2632,6 @@ class ITSLiveComposite:
                 offset[global_j, global_i], \
                 slope[global_j, global_i], \
                 se[global_j, global_i], \
-                outlier_frac[j, i], \
                 init_runtime1, \
                 init_runtime2, \
                 init_runtime3, \
@@ -2609,7 +2654,7 @@ class ITSLiveComposite:
                 lsq_time += lsq_runtime
 
         logging.info(f'Init_time1: {init_time1} sec, Init_time2: {init_time2} sec, Init_time3: {init_time3} sec, lsq_time: {lsq_time} seconds')
-        return outlier_frac
+        return
 
 
 if __name__ == '__main__':
