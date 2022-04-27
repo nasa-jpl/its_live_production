@@ -235,7 +235,7 @@ def create_projected_velocity(x_in, y_in, dt):
     v0 = np.sqrt(vx0**2 + vy0**2)
 
     if v0 <= _min_v0_threshold:
-        # TODO: maxdt should be set to np.inf
+        # maxdt should be set to np.inf
         x0_in = np.full_like(x_in, np.inf)
         return x0_in
 
@@ -259,7 +259,7 @@ def cube_filter_iteration(vp, dt, mad_std_ratio):
     maxdt:   Maximum dt as determined by the filter.
     invalid: Mask for invalid values of the input vector based on maxdt.
     """
-    # Filter parameters for dt bins (default: 2 - TODO: ask Alex):
+    # Filter parameters for dt bins:
     # used to determine if dt means are significantly different
     _dtbin_mad_thresh = 0.67
 
@@ -1814,7 +1814,6 @@ class ITSLiveComposite:
         start_time = timeit.default_timer()
 
         # Transform vx data to make time series continuous in memory: [y, x, t]
-        # TODO: get rid of vx_outlier
         ITSLiveComposite.cubelsqfit2(
             vx,
             self.vx_error,
