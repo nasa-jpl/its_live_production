@@ -47,8 +47,10 @@ ENCODING = {
     'dvx_dt':                    {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
     'dvy_dt':                    {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
     'dv_dt':                     {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
-    'count':                     {'_FillValue': 0, 'dtype': 'short'},
-    'dt_max':                    {'_FillValue': 0, 'dtype': 'short'},
+    'count':                     {'_FillValue': 0, 'dtype': np.short},
+    'count0':                    {'_FillValue': 0, 'dtype': np.short},
+    'sensor_flag':               {'dtype': np.short},
+    'dt_max':                    {'_FillValue': 0, 'dtype': np.short},
     'time':                      {'_FillValue': None, 'units': 'days since 1970-01-01'},
     'sensor':                    {'_FillValue': None, 'dtype': 'S1'},
     'x':                         {'_FillValue': None},
@@ -57,7 +59,6 @@ ENCODING = {
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                     datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
-
 
 def convert(ds_zarr: xr.Dataset, output_file: str, nc_engine: str):
     """
