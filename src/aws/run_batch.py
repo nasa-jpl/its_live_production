@@ -16,51 +16,14 @@ from shapely import geometry
 
 from grid import Bounds
 import itslive_utils
-
-
-class CubeJson:
-    """
-    Variables names within GeoJson cube definition file.
-    """
-    FEATURES = 'features'
-    PROPERTIES = 'properties'
-    DATA_EPSG = 'data_epsg'
-    GEOMETRY_EPSG = 'geometry_epsg'
-    COORDINATES = 'coordinates'
-    ROI_PERCENT_COVERAGE = 'roi_percent_coverage'
-    EPSG_SEPARATOR = ':'
-    EPSG_PREFIX = 'EPSG'
+from itscube_types import BatchVars, CubeJson, FilenamePrefix
 
 
 class DataCubeBatch:
     """
-    Class to manage one Batch job submission at AWS.
+    Class to manage Batch job submission at AWS.
     """
     CLIENT = boto3.client('batch', region_name='us-west-2')
-
-    # HTTP URL for the datacube full path
-    HTTP_PREFIX = ''
-
-    FILENAME_PREFIX = 'ITS_LIVE_vel'
-    MID_POINT_RESOLUTION = 50.0
-
-    # String representation of longitude/latitude projection
-    LON_LAT_PROJECTION = '4326'
-
-    # List of EPSG codes to generate datacubes for. If this list is empty,
-    # then generate all ROI!=0 datacubes.
-    EPSG_TO_GENERATE = []
-
-    # List of EPSG codes to exclude from datacubes generation. If this list is empty,
-    # then generate all ROI!=0 datacubes.
-    EPSG_TO_EXCLUDE = []
-
-    # List of datacube filenames to generate if only specific datacubes should be generated.
-    # If an empty list then generate all qualifying datacubes.
-    CUBES_TO_GENERATE = []
-
-    # Generate datacubes which centers fall within provided polygon
-    POLYGON_SHAPE = None
 
     # Number of granules to process in parallel at a time (to avoid out of memory
     # failures)
@@ -82,6 +45,9 @@ class DataCubeBatch:
         """
         # List of submitted datacube Batch jobs and AWS response
         jobs = []
+
+        # List of submitted datacubes for processing
+        jobs_files = []
 
         with open(cube_file, 'r') as fhandle:
             cubes = json.load(fhandle)
@@ -143,13 +109,13 @@ class DataCubeBatch:
                     epsg_code = epsg.replace(CubeJson.EPSG_PREFIX, '')
 
                     # Include only specific EPSG code(s) if specified
-                    if len(DataCubeBatch.EPSG_TO_GENERATE) and \
-                       epsg_code not in DataCubeBatch.EPSG_TO_GENERATE:
+                    if len(BatchVars.EPSG_TO_GENERATE) and \
+                       epsg_code not in BatchVars.EPSG_TO_GENERATE:
                         continue
 
                     # Exclude specific EPSG code(s) if specified
-                    if len(DataCubeBatch.EPSG_TO_EXCLUDE) and \
-                       epsg_code in DataCubeBatch.EPSG_TO_EXCLUDE:
+                    if len(BatchVars.EPSG_TO_EXCLUDE) and \
+                       epsg_code in BatchVars.EPSG_TO_EXCLUDE:
                         continue
 
                     coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
@@ -161,36 +127,40 @@ class DataCubeBatch:
 
                     # Get mid point to the nearest 50
                     logging.info(f"Mid point: x={mid_x} y={mid_y}")
-                    mid_x = int(math.floor(mid_x/DataCubeBatch.MID_POINT_RESOLUTION)*DataCubeBatch.MID_POINT_RESOLUTION)
-                    mid_y = int(math.floor(mid_y/DataCubeBatch.MID_POINT_RESOLUTION)*DataCubeBatch.MID_POINT_RESOLUTION)
-                    logging.info(f"Mid point at {DataCubeBatch.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
+                    mid_x = int(math.floor(mid_x/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
+                    mid_y = int(math.floor(mid_y/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
+                    logging.info(f"Mid point at {BatchVars.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
 
                     # Convert to lon/lat coordinates to format s3 bucket path
                     # for the datacube
                     mid_lon_lat = itslive_utils.transform_coord(
                         epsg_code,
-                        DataCubeBatch.LON_LAT_PROJECTION,
+                        BatchVars.LON_LAT_PROJECTION,
                         mid_x, mid_y
                     )
 
-                    if DataCubeBatch.POLYGON_SHAPE and (not DataCubeBatch.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1]))):
+                    if BatchVars.POLYGON_SHAPE and (not BatchVars.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1]))):
                         logging.info(f"Skipping non-polygon point: {mid_lon_lat}")
                         # Provided polygon does not contain cube's center point
                         continue
 
                     bucket_dir = itslive_utils.point_to_prefix(mid_lon_lat[1], mid_lon_lat[0], bucket_dir_path)
-                    if len(DataCubeBatch.PATH_TOKEN) and DataCubeBatch.PATH_TOKEN not in bucket_dir:
+                    if len(BatchVars.PATH_TOKEN) and BatchVars.PATH_TOKEN not in bucket_dir:
                         # A way to pick specific 10x10 grid cell for the datacube
-                        logging.info(f"Skipping non-{DataCubeBatch.PATH_TOKEN}")
+                        logging.info(f"Skipping non-{BatchVars.PATH_TOKEN}")
                         continue
 
-                    cube_filename = f"{DataCubeBatch.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
+                    cube_filename = f"{FilenamePrefix.Datacube}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
                     logging.info(f'Cube name: {cube_filename}')
 
                     # Hack to run specific jobs
                     # to test s3fs problem: 'ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr'
-                    if len(DataCubeBatch.CUBES_TO_GENERATE) and cube_filename not in DataCubeBatch.CUBES_TO_GENERATE:
-                        logging.info(f"Skipping as not provided in DataCubeBatch.CUBES_TO_GENERATE")
+                    if len(BatchVars.CUBES_TO_GENERATE) and cube_filename not in BatchVars.CUBES_TO_GENERATE:
+                        logging.info(f"Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
+                        continue
+
+                    if len(BatchVars.CUBES_TO_EXCLUDE) and cube_filename in BatchVars.CUBES_TO_EXCLUDE:
+                        logging.info(f"Skipping as provided in BatchVars.CUBES_TO_EXCLUDE")
                         continue
 
                     cube_params = {
@@ -236,7 +206,7 @@ class DataCubeBatch:
 
                     num_jobs += 1
                     jobs.append({
-                        'filename': os.path.join(DataCubeBatch.HTTP_PREFIX, bucket_dir, cube_filename),
+                        'filename': os.path.join(BatchVars.HTTP_PREFIX, bucket_dir, cube_filename),
                         's3_filename': os.path.join(s3_bucket, bucket_dir, cube_filename),
                         'roi_percent': roi,
                         'aws_params': cube_params,
@@ -246,12 +216,20 @@ class DataCubeBatch:
                                 }
                     })
 
+                    jobs_files.append(os.path.join(s3_bucket, bucket_dir, cube_filename))
+
             logging.info(f"Number of batch jobs submitted: {num_jobs}")
 
             # Write job info to the json file
             logging.info(f"Writing AWS job info to the {job_file}...")
             with open(job_file, 'w') as output_fhandle:
                 json.dump(jobs, output_fhandle, indent=4)
+
+            # Write job files to the json file
+            job_files_file = f'filenames_{job_file}'
+            logging.info(f"Writing jobs output files to the {job_files_file}...")
+            with open(job_files_file, 'w') as output_fhandle:
+                json.dump(jobs_files, output_fhandle, indent=4)
 
             return
 
@@ -331,8 +309,8 @@ def parse_args():
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:1',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-from-scratch-64Gb:1',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-from-scratch-64Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
@@ -388,6 +366,12 @@ def parse_args():
         help="GeoJSON file that stores polygon the cubes centers should belong to [%(default)s]."
     )
     parser.add_argument(
+        '--excludeCubesFile',
+        type=Path,
+        default=None,
+        help="Json file that stores a list of datacubes to exclude from processing [%(default)s]."
+    )
+    parser.add_argument(
         '--excludeEPSG',
         type=str,
         action='store',
@@ -412,40 +396,39 @@ def parse_args():
         help="File that contains JSON list of filenames for datacube to generate [%(default)s]."
     )
 
-
     args = parser.parse_args()
     logging.info(f"Command-line arguments: {sys.argv}")
 
     DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
-    DataCubeBatch.HTTP_PREFIX       = args.urlPath
-    DataCubeBatch.PATH_TOKEN        = args.pathToken
+    BatchVars.HTTP_PREFIX           = args.urlPath
+    BatchVars.PATH_TOKEN            = args.pathToken
 
     epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
         logging.info(f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes")
-        DataCubeBatch.EPSG_TO_GENERATE = epsg_codes
+        BatchVars.EPSG_TO_GENERATE = epsg_codes
 
     epsg_codes = list(map(str, json.loads(args.excludeEPSG))) if args.excludeEPSG is not None else None
     if epsg_codes and len(epsg_codes):
         logging.info(f"Got EPSG codes to exclude: {epsg_codes}")
-        DataCubeBatch.EPSG_TO_EXCLUDE = epsg_codes
+        BatchVars.EPSG_TO_EXCLUDE = epsg_codes
 
     # Make sure there is no overlap in EPSG_TO_GENERATE and EPSG_TO_EXCLUDE
-    diff = set(DataCubeBatch.EPSG_TO_GENERATE).intersection(DataCubeBatch.EPSG_TO_EXCLUDE)
+    diff = set(BatchVars.EPSG_TO_GENERATE).intersection(BatchVars.EPSG_TO_EXCLUDE)
     if len(diff):
-        raise RuntimeError(f"The same code is specified for DataCubeBatch.EPSG_TO_EXCLUDE={DataCubeBatch.EPSG_TO_EXCLUDE} and DataCubeBatch.EPSG_TO_GENERATE={DataCubeBatch.EPSG_TO_GENERATE}")
+        raise RuntimeError(f"The same code is specified for BatchVars.EPSG_TO_EXCLUDE={BatchVars.EPSG_TO_EXCLUDE} and BatchVars.EPSG_TO_GENERATE={BatchVars.EPSG_TO_GENERATE}")
 
     if args.processCubesFile:
         # Check for this option first as another mutually exclusive option has a default value
-        DataCubeBatch.CUBES_TO_GENERATE = json.loads(args.processCubesFile.read_text())
+        BatchVars.CUBES_TO_GENERATE = json.loads(args.processCubesFile.read_text())
         # Replace each path by the datacube basename
-        DataCubeBatch.CUBES_TO_GENERATE = [os.path.basename(each) for each in DataCubeBatch.CUBES_TO_GENERATE if len(each)]
-        logging.info(f"Found {len(DataCubeBatch.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubesFile}: {DataCubeBatch.CUBES_TO_GENERATE}")
+        BatchVars.CUBES_TO_GENERATE = [os.path.basename(each) for each in BatchVars.CUBES_TO_GENERATE if len(each)]
+        logging.info(f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubesFile}: {BatchVars.CUBES_TO_GENERATE}")
 
     elif args.processCubes:
-        DataCubeBatch.CUBES_TO_GENERATE = json.loads(args.processCubes)
-        if len(DataCubeBatch.CUBES_TO_GENERATE):
-            logging.info(f"Found {len(DataCubeBatch.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubes}: {DataCubeBatch.CUBES_TO_GENERATE}")
+        BatchVars.CUBES_TO_GENERATE = json.loads(args.processCubes)
+        if len(BatchVars.CUBES_TO_GENERATE):
+            logging.info(f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubes}: {BatchVars.CUBES_TO_GENERATE}")
 
     if args.processCubesWithinPolygon:
         with open(args.processCubesWithinPolygon, 'r') as fhandle:
@@ -455,7 +438,14 @@ def parse_args():
             shapefile_coords = shape_file[CubeJson.FEATURES][0]['geometry']['coordinates']
             logging.info(f'Got polygon coordinates: {shapefile_coords}')
             line = geometry.LineString(shapefile_coords[0][0])
-            DataCubeBatch.POLYGON_SHAPE = geometry.Polygon(line)
+            BatchVars.POLYGON_SHAPE = geometry.Polygon(line)
+
+    if args.excludeCubesFile:
+        BatchVars.CUBES_TO_EXCLUDE = json.loads(args.excludeCubesFile.read_text())
+
+        # Replace each path by the datacube basename
+        BatchVars.CUBES_TO_EXCLUDE = [os.path.basename(each) for each in BatchVars.CUBES_TO_EXCLUDE if len(each)]
+        logging.info(f"Found {len(BatchVars.CUBES_TO_EXCLUDE)} of datacubes to exclude per {args.excludeCubesFile}: {BatchVars.CUBES_TO_EXCLUDE}")
 
     return args
 

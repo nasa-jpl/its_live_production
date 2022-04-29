@@ -307,6 +307,10 @@ class BatchVars:
     # If an empty list then generate/consider all qualifying datacubes.
     CUBES_TO_GENERATE = []
 
+    # List of datacube filenames to exclude from processing. This is handy
+    # when some of the cubes were already processed.
+    CUBES_TO_EXCLUDE = []
+
     # Generate data products which centers fall within provided polygon
     POLYGON_SHAPE = None
 
