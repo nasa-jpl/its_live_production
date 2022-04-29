@@ -1,5 +1,5 @@
 """
-Helper script to remove original datacubes from S3 bucket. S3 paths are provided
+Helper script to remove original Zarr stores from S3 bucket. S3 paths are provided
 through input Json file.
 """
 
@@ -19,8 +19,7 @@ logging.basicConfig(
 
 def exists(cube_path: str):
     """
-    Check if datacube exists. The datacube can be on a local file system or
-    in AWS S3 bucket.
+    Check if datacube exists in AWS S3 bucket.
     """
     cube_exists = False
 
@@ -41,13 +40,15 @@ def remove_s3_datacube(cube_s3_path: str, is_dryrun: bool):
     # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
     # resulting in as many error messages as there are files in Zarr store
     # to copy
+    is_dryrun_str = 'DRYRUN: ' if is_dryrun else ''
+
     env_copy = os.environ.copy()
     if exists(cube_s3_path):
         command_line = [
             "awsv2", "s3", "rm", "--recursive", "--quiet",
             cube_s3_path
         ]
-        logging.info(f'Removing existing cube {cube_s3_path}: {" ".join(command_line)}')
+        logging.info(f'{is_dryrun_str}Removing existing Zarr store {cube_s3_path}: {" ".join(command_line)}')
 
         if not is_dryrun:
             command_return = subprocess.run(
@@ -96,6 +97,12 @@ if __name__ == '__main__':
         help="Input Json file that stores a list of datacubes to remove [%(default)s]."
     )
     parser.add_argument(
+        '-x', '--excludeCubesFile',
+        type=str,
+        default=None,
+        help="Json file that stores a list of datacubes to exclude from processing [%(default)s]."
+    )
+    parser.add_argument(
         '--dryrun',
         action='store_true',
         default=False,
@@ -103,10 +110,20 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
 
+    exclude_list = []
+    if args.excludeCubesFile:
+        # Initialize a list of datacubes to exclude (that were already processed)
+        with open(args.excludeCubesFile) as fh:
+            exclude_list = json.load(fh)
+
     with open(args.cubesFile) as fh:
         output_dirs = json.load(fh)
 
         for each in output_dirs:
+            if each in exclude_list:
+                logging.info(f'Skipping excluded file: {each}')
+                continue
+
             remove_s3_datacube(each, args.dryrun)
 
     logging.info("Done.")
