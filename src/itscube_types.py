@@ -83,6 +83,7 @@ class DataVars:
     BINARY_UNITS      = 'binary'
     FRACTION_UNITS    = 'fraction'
     DAY_OF_YEAR_UNITS = 'day of year'
+    NOTE              = 'note'
 
     # Original data variables and their attributes per ITS_LIVE granules.
     V       = 'v'
@@ -120,7 +121,7 @@ class DataVars:
     UTM_PROJECTION = 'UTM_Projection'
     MAPPING = 'mapping' # New format
 
-    # Missing values for data variables
+    # Missing (FillValue) values for data variables
     MISSING_BYTE      = 0.0
     MISSING_UBYTE     = 0.0
     MISSING_VALUE     = -32767.0
