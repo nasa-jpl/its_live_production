@@ -475,7 +475,7 @@ def init_lsq_fit1(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, a
     Initialize variables for LSQ fit.
     """
     # start_time = timeit.default_timer()
-    # logging.info(f"Start init of itslive_lsqfit_annual")
+    # logging.info(f"Start init of itslive_lsqfit_annual: M_input.shape={M_input.shape}")
 
     # Ensure we're starting with finite data
     isf_mask   = np.isfinite(v_input) & np.isfinite(v_err_input)
@@ -565,8 +565,9 @@ def itslive_lsqfit_annual(
     mad_std_ratio,
     mean,  # outputs to populate
     error,
-    count):
-    # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,outlier_frac] data
+    count
+):
+    # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,count_image_pairs] data
     # variables.
     # Computes the amplitude and phase of seasonal velocity
     # variability, and also gives interannual variability.
@@ -711,6 +712,9 @@ def itslive_lsqfit_annual(
     # Number of equivalent image pairs per year: (1 image pair equivalent means a full year of data. It takes about 23 16-day image pairs to make 1 year equivalent image pair.)
     N_int = (M>0).sum(axis=0)
 
+    # Number of image pairs used
+    count_image_pairs = M.shape[0]
+
     # Reshape array to have the same number of dimensions as M for multiplication
     w_v = w_v.reshape((1, w_v.shape[0]))
 
@@ -723,7 +727,7 @@ def itslive_lsqfit_annual(
     # logging.info(f'Finished post-process ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
 
-    # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1, outlier_fraction
+    # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1
     # amplitude[ind] = A
     # phase[ind] = ph
     # sigma[ind] = A_err
@@ -733,7 +737,7 @@ def itslive_lsqfit_annual(
 
     offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
 
-    return A, amp_error, ph, offset, slope, se, init_runtime1, init_runtime2, init_runtime3, iter_runtime
+    return A, amp_error, ph, offset, slope, se, count_image_pairs, init_runtime1, init_runtime2, init_runtime3, iter_runtime
 
 # @nb.jit(nopython=True)
 def annual_magnitude(
@@ -745,8 +749,6 @@ def annual_magnitude(
     vy_fit_err,
     vx_fit_count,
     vy_fit_count,
-    vx_fit_outlier_frac,
-    vy_fit_outlier_frac,
     # v_fit, # outputs
     # v_fit_err,
     # v_fit_count
@@ -764,16 +766,11 @@ def annual_magnitude(
         vy_fit_err: error in annual mean flow in y direction
         vx_fit_count: number of values used to determine annual mean flow in x direction
         vy_fit_count: number of values used to determine annual mean flow in y direction
-        vx_fit_outlier_frac: fraction of data identified as outliers and removed
-            when calculating annual mean flow in x direction
-        vy_fit_outlier_frac: fraction of data identified as outliers and removed
-            when calculating annual mean flow in y direction
 
     Outputs:
         self.mean.v[start_y:stop_y, start_x:stop_x, :]
         self.error.v[start_y:stop_y, start_x:stop_x, :]
         self.count.v[start_y:stop_y, start_x:stop_x, :]
-        voutlier
     """
     # solve for velocity magnitude
     v_fit = np.sqrt(vx_fit**2 + vy_fit**2) # velocity magnitude
@@ -792,9 +789,8 @@ def annual_magnitude(
     v_fit_err += np.abs(vy_fit_err) * np.abs(uv_y)
 
     v_fit_count = np.ceil((vx_fit_count + vy_fit_count) / 2)
-    v_fit_outlier_frac = (vx_fit_outlier_frac + vy_fit_outlier_frac) / 2
 
-    return v_fit, v_fit_err, v_fit_count, v_fit_outlier_frac
+    return v_fit, v_fit_err, v_fit_count
 
 @nb.jit(nopython=True, parallel=True)
 def climatology_magnitude(
@@ -1549,6 +1545,7 @@ class ITSLiveComposite:
 
         dims = (y_len, x_len)
         self.outlier_fraction = np.full(dims, np.nan)
+        self.count_image_pairs = CompositeVariable(dims, 'count_image_pairs')
         self.amplitude = CompositeVariable(dims, 'amplitude')
         self.sigma = CompositeVariable(dims, 'sigma')
         self.phase = CompositeVariable(dims, 'phase')
@@ -1658,10 +1655,11 @@ class ITSLiveComposite:
         ds_sensors: Current sensors for the datacube.
         exclude_sensors: 2d "map" of sensors to exclude from calculations (one list per each [y, x] point).
         """
+        vp = np.full_like(ds_vx, np.nan)
+
         dims = ds_vx.shape
         y_len = dims[0]
         x_len = dims[1]
-        vp = np.full(dims, np.nan)
 
         # for j_index in nb.prange(y_len):
         #     for i_index in nb.prange(x_len):
@@ -1675,15 +1673,10 @@ class ITSLiveComposite:
                     exclude_mask |= (ds_sensors_str == each)
                     # logging.info(f'exclude_mask.sum={exclude_mask.sum()}')
 
-                # invalid[j_index, i_index, exclude_mask] = True
-
                 include_mask = ~exclude_mask
                 x_in = ds_vx[j_index, i_index, include_mask]
                 y_in = ds_vy[j_index, i_index, include_mask]
                 dt = ds_date_dt[include_mask]
-
-                # logging.info(f'DEBUG: Sensors for projected velocity: {ds_sensors_str[include_mask]}')
-                # logging.info(f'DEBUG: projected_v j={j_index} i={i_index} include_mask={include_mask.sum()}')
                 vp[j_index, i_index, include_mask] = create_projected_velocity(x_in, y_in, dt)
 
         return vp
@@ -1740,9 +1733,6 @@ class ITSLiveComposite:
         # Count all valid points before any filters are applied
         count_mask = ~np.isnan(vx)
         count0_vx = count_mask.sum(axis=2)
-
-        count_mask = ~np.isnan(vy)
-        count0_vy = count_mask.sum(axis=2)
 
         start_time = timeit.default_timer()
         logging.info(f'Project velocity to median flow unit vector...')
@@ -1823,13 +1813,16 @@ class ITSLiveComposite:
             self.error.vx,
             self.sigma.vx,
             self.count.vx,
+            self.count_image_pairs.vx,
             self.offset.vx,
             self.slope.vx,
             self.std_error.vx
         )
         logging.info(f'Finished vx LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
-        vx_outlier = 1 - np.nansum(self.count.vx[start_y:stop_y, start_x:stop_x, :], axis=2) / count0_vx
+        # Outlier fraction is based on vx data (count for vx and v are identical to vx's count)
+        self.outlier_fraction[start_y:stop_y, start_x:stop_x] = 1 - (self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x] / count0_vx)
+
         logging.info(f'Find vy annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
@@ -1842,13 +1835,12 @@ class ITSLiveComposite:
             self.error.vy,
             self.sigma.vy,
             self.count.vy,
+            self.count_image_pairs.vy,
             self.offset.vy,
             self.slope.vy,
             self.std_error.vy
         )
         logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
-
-        vy_outlier = 1 - np.nansum(self.count.vy[start_y:stop_y, start_x:stop_x, :], axis=2) / count0_vy
 
         logging.info(f'Find annual magnitude... ')
         start_time = timeit.default_timer()
@@ -1856,7 +1848,6 @@ class ITSLiveComposite:
         self.mean.v[start_y:stop_y, start_x:stop_x, :], \
         self.error.v[start_y:stop_y, start_x:stop_x, :], \
         self.count.v[start_y:stop_y, start_x:stop_x, :], \
-        voutlier = \
         annual_magnitude(
             self.offset.vx[start_y:stop_y, start_x:stop_x],
             self.offset.vy[start_y:stop_y, start_x:stop_x],
@@ -1866,8 +1857,6 @@ class ITSLiveComposite:
             self.error.vy[start_y:stop_y, start_x:stop_x, :],
             self.count.vx[start_y:stop_y, start_x:stop_x, :],
             self.count.vy[start_y:stop_y, start_x:stop_x, :],
-            vx_outlier,
-            vy_outlier,
         )
         logging.info(f'Finished annual magnitude (took {timeit.default_timer() - start_time} seconds)')
 
@@ -1904,9 +1893,6 @@ class ITSLiveComposite:
         invalid_mask = (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
         self.amplitude.v[invalid_mask] = np.nan
 
-        # outlier = invalid + voutlier*(1-invalid)
-        self.outlier_fraction[start_y:stop_y, start_x:stop_x] = invalid + voutlier*(1-invalid)
-
     def to_zarr(self, output_store: str, s3_bucket: str):
         """
         Store datacube annual composite to the Zarr store.
@@ -1938,6 +1924,10 @@ class ITSLiveComposite:
 
         # Create list of sensors groups labels
         sensors_labels = [each.sensors_label for each in self.sensors_groups]
+
+        sensors_labels_attr = [f'layer {index+1}: {sensors_labels[index]}' for index in range(len(sensors_labels))]
+        sensors_labels_attr = f'{", ".join(sensors_labels_attr)}'
+
         ds = xr.Dataset(
             coords = {
                 Coords.X: (
@@ -2237,8 +2227,6 @@ class ITSLiveComposite:
         self.phase.vy = None
         gc.collect()
 
-        count0 = np.nansum(self.count.v, axis=0)
-
         ds[CompDataVars.COUNT] = xr.DataArray(
             data=self.count.v,
             coords=var_coords,
@@ -2269,6 +2257,7 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.MAX_DT],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.MAX_DT],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
+                CompOutputFormat.SENSORS_LABELS: sensors_labels_attr,
                 DataVars.UNITS: DataVars.ImgPairInfo.UNITS[DataVars.ImgPairInfo.DATE_DT]
             }
         )
@@ -2276,7 +2265,6 @@ class ITSLiveComposite:
         gc.collect()
 
         self.sensor_include = self.sensor_include.transpose(CompositeVariable.CONT_IN_X)
-        logging.info(f'sensor_include: {self.sensor_include[:, 115, 120]}')
 
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
             data=self.sensor_include,
@@ -2286,6 +2274,7 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSOR_INCLUDE],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
+                CompOutputFormat.SENSORS_LABELS: sensors_labels_attr,
                 DataVars.UNITS: DataVars.BINARY_UNITS
             }
         )
@@ -2433,17 +2422,18 @@ class ITSLiveComposite:
         gc.collect()
 
         ds[CompDataVars.COUNT0] = xr.DataArray(
-            data=count0,
+            data=self.count_image_pairs.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.COUNT0],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.COUNT0],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.NOTE: f'{CompDataVars.COUNT0} !== sum({CompDataVars.COUNT}) as a single image pair can contribute to the least squares fit for multiple years',
                 DataVars.UNITS: DataVars.COUNT_UNITS
             }
         )
-        count0 = None
+        self.count_image_pairs = None
         gc.collect()
 
         # ATTN: Set attributes for the Dataset coordinates as the very last step:
@@ -2580,6 +2570,7 @@ class ITSLiveComposite:
         error,
         sigma,
         count,
+        count_image_pairs,
         offset,
         slope,
         se
@@ -2631,6 +2622,7 @@ class ITSLiveComposite:
                 offset[global_j, global_i], \
                 slope[global_j, global_i], \
                 se[global_j, global_i], \
+                count_image_pairs[global_j, global_i], \
                 init_runtime1, \
                 init_runtime2, \
                 init_runtime3, \
