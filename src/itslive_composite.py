@@ -1613,7 +1613,7 @@ class ITSLiveComposite:
         # For debugging only
         # x_start = 120
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
-        # x_num_to_process = 2
+        # x_num_to_process = 50
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -1625,7 +1625,7 @@ class ITSLiveComposite:
             # For debugging only
             # y_start = 115
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-            # y_num_to_process = 2
+            # y_num_to_process = 50
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -1847,8 +1847,7 @@ class ITSLiveComposite:
 
         self.mean.v[start_y:stop_y, start_x:stop_x, :], \
         self.error.v[start_y:stop_y, start_x:stop_x, :], \
-        self.count.v[start_y:stop_y, start_x:stop_x, :], \
-        annual_magnitude(
+        self.count.v[start_y:stop_y, start_x:stop_x, :] = annual_magnitude(
             self.offset.vx[start_y:stop_y, start_x:stop_x],
             self.offset.vy[start_y:stop_y, start_x:stop_x],
             self.mean.vx[start_y:stop_y, start_x:stop_x, :],
@@ -2429,7 +2428,7 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.COUNT0],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.COUNT0],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.NOTE: f'{CompDataVars.COUNT0} !== sum({CompDataVars.COUNT}) as a single image pair can contribute to the least squares fit for multiple years',
+                DataVars.NOTE: f'{CompDataVars.COUNT0} often does not equal the sum of annual counts ({CompDataVars.COUNT}) as a single image pair can contribute to the least squares fit for multiple years',
                 DataVars.UNITS: DataVars.COUNT_UNITS
             }
         )
