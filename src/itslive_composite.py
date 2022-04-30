@@ -1212,7 +1212,7 @@ class SensorExcludeFilter:
         """
         y_len, x_len, _ = ds_vx.shape
         dims = (y_len, x_len)
-        exclude_sensors = np.full(dims, None, dtype=object)
+        exclude_sensors = np.frompyfunc(list, 0, 1)(np.empty(dims, dtype=object))
 
         if self.apply:
             for j_index in range(0, y_len):
