@@ -6,6 +6,10 @@ the datacubes which centers fall within the region.
 
 If no shape file is provided, then it generates annual composites for all
 existing datacubes as found in the source S3 bucket.
+
+python ./run_composites_batch.py -c ../tools/dataJson/datacubes_v9.json
+        --epsgCode '[3413]' -f rerun_final_composite.json
+        --processCubes '["ITS_LIVE_vel_EPSG3413_G0120_X-3250000_Y250000.zarr"]'
 """
 import argparse
 import boto3
@@ -57,6 +61,9 @@ class DataCubeCompositeBatch:
         """
         # List of submitted datacube composite Batch jobs and AWS response
         jobs = []
+
+        # List of submitted datacubes for processing
+        jobs_files = []
 
         with open(cube_file, 'r') as fhandle:
             cubes = json.load(fhandle)
@@ -236,12 +243,20 @@ class DataCubeCompositeBatch:
                         'job_params': cube_params
                     })
 
+                    jobs_files.append(os.path.join(s3_bucket, bucket_dir, cube_filename))
+
             logging.info(f"Number of batch jobs submitted: {num_jobs}")
 
             # Write job info to the json file
             logging.info(f"Writing AWS job info to the {job_file}...")
             with open(job_file, 'w') as output_fhandle:
                 json.dump(jobs, output_fhandle, indent=4)
+
+            # Write job files to the json file
+            job_files_file = f'filenames_{job_file}'
+            logging.info(f"Writing jobs output files to the {job_files_file}...")
+            with open(job_files_file, 'w') as output_fhandle:
+                json.dump(jobs_files, output_fhandle, indent=4)
 
             return
 
