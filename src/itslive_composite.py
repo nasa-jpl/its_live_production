@@ -200,7 +200,7 @@ def create_projected_velocity(x_in, y_in, dt):
     Projected velocity onto median flow vector.
     """
     # Bin edges to use for the median flow vector
-    _dt_median_flow = np.array([16, 32, 64, 128, 256])
+    _dt_median_flow = np.array([16, 32, 64, 128, 256, np.inf])
 
     # Minimum number of points for dt_median_flow bin
     _min_ref_unit_count = 50
@@ -226,6 +226,10 @@ def create_projected_velocity(x_in, y_in, dt):
         # Are there enough points?
         if ind.sum() >= _min_ref_unit_count:
             break
+
+    if ind.sum() == 0:
+        # No data to process
+        return x0_in
 
     # Make numba happy
     ind = ind.astype(np.bool_)
@@ -330,6 +334,10 @@ def cube_filter_iteration(vp, dt, mad_std_ratio):
     # If no such valid bin exists, just consider first bin where maxBound != 0
     if ref_index.size == 0:
         ref_index, = np.where(maxBound != 0)
+
+    # Not enough data to proceed
+    if ref_index.size == 0:
+        return (maxdt, invalid)
 
     ref_index = ref_index[0]
 
@@ -1613,7 +1621,7 @@ class ITSLiveComposite:
         # For debugging only
         # x_start = 120
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
-        # x_num_to_process = 50
+        # x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -1623,9 +1631,9 @@ class ITSLiveComposite:
             y_num_to_process = self.cube_sizes[Coords.Y]
 
             # For debugging only
-            # y_start = 115
+            # y_start = 400
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-            # y_num_to_process = 50
+            # y_num_to_process = 100
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
