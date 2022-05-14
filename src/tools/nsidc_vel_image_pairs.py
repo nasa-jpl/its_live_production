@@ -200,7 +200,7 @@ class NSIDCMeta:
         return meta_filename
 
     @staticmethod
-    def create_spacial_file(infile: str):
+    def create_spacial_file(infile: str, epsgcode: int):
         """
         Create spatial file that corresponds to the input image pair velocity granule.
 
@@ -223,8 +223,6 @@ class NSIDCMeta:
             projection_cf_maxx = xvals[-1] + pix_size_x/2.0
             projection_cf_miny = yvals[-1] + pix_size_y/2.0 # pix_size_y is negative!
             projection_cf_maxy = yvals[0] - pix_size_y/2.0  # pix_size_y is negative!
-
-            epsgcode = int(ds['mapping'].attrs['spatial_epsg'][0])
 
             transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True) # ensure lonlat output order
 
@@ -536,7 +534,7 @@ class NSIDCFormat:
         meta_file = NSIDCMeta.create_premet_file(new_filename, url_tokens_1, url_tokens_2)
         msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
-        meta_file = NSIDCMeta.create_spacial_file(new_filename)
+        meta_file = NSIDCMeta.create_spacial_file(new_filename, epsg_code)
         msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
         msgs.append(f"Removing local {new_filename}")
