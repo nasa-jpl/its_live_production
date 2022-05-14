@@ -40,23 +40,21 @@ import collections
 import dask
 from dask.diagnostics import ProgressBar
 from datetime import datetime
-import fsspec
 import json
 import h5py
 import logging
+import numpy as np
 import os
-import psutil
 import pyproj
+import re
 import s3fs
 import sys
-import time
+import subprocess
 from tqdm import tqdm
 import xarray as xr
 
 # Local imports
 from itscube_types import DataVars
-from mission_info import Encoding
-
 
 # Date format as it appears in granules filenames of optical format:
 # LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc
@@ -98,12 +96,31 @@ def get_tokens_from_filename(filename):
     # first_date_1, second_date_1, key_1, first_date_2, second_date_2, key_2
     return (url_tokens_1, url_tokens_2)
 
+class Encoding:
+    """
+    Encoding settings for writing ITS_LIVE granule to the file
+    """
+    IMG_PAIR = {
+        'interp_mask':      {'_FillValue': 0.0, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
+        'chip_size_height': {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
+        'chip_size_width':  {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
+        'v':                {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+        'vx':               {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+        'vy':               {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+        'img_pair_info':    {'_FillValue': None, 'dtype': np.float32},
+        'mapping':          {'_FillValue': None, 'dtype': np.float32},
+        'x':                {'_FillValue': None},
+        'y':                {'_FillValue': None}
+    }
+
 PS = collections.namedtuple("PM", ['platform', 'sensor'])
 
-class NSIDCPremetFile:
+class NSIDCMeta:
     """
-    Class to create premet files for each of the granules in the following format:
+    Class to create premet and spacial files for each of the granules.
 
+    Example of premet file:
+    =======================
     FileName=LC08_L1GT_001111_20140217_20170425_01_T2_X_LC08_L1GT_001111_20131113_20170428_01_T2_G0240V01_P006.nc
     VersionID_local=001
     Begin_date=2013-11-13
@@ -118,6 +135,13 @@ class NSIDCPremetFile:
     AssociatedPlatformShortName=LANDSAT-8
     AssociatedInstrumentShortName=TIRS
     AssociatedSensorShortName=TIRS
+
+    Example of spacial file:
+    ========================
+    -94.32	71.86
+    -99.41	71.67
+    -94.69	73.3
+    -100.22	73.09
     """
 
     # Dictionary of metadata values based on the mission+sensor token
@@ -132,6 +156,91 @@ class NSIDCPremetFile:
         L5: PS('LANDSAT-5', 'TM'),
         L4: PS('LANDSAT-4', 'TM')
     }
+
+    @staticmethod
+    def create_premet_file(infile: str, url_tokens_1, url_tokens_2):
+        """
+        Create premet file that corresponds to the input image pair velocity granule.
+
+        Inputs
+        ======
+        infile: Filename of the input ITS_LIVE granule
+        url_tokens_1: Parsed out filename tokens that correspond to the first image of the pair
+        url_tokens_2: Parsed out filename tokens that correspond to the second image of the pair
+        """
+        # Get acquisition dates for both images
+        begin_date = datetime.strptime(url_tokens_1[3], DATE_FORMAT)
+        end_date = datetime.strptime(url_tokens_2[3], DATE_FORMAT)
+
+        sensor1 = url_tokens_1[0]
+        if sensor1 not in NSIDCMeta.ShortName:
+            raise RuntimeError(f'create_premet_file(): got unexpected mission+sensor {sensor1} for image#1 of {infile}: one of {list(NSIDCMeta.ShortName.keys())} is supported.')
+
+        sensor2 = url_tokens_2[0]
+        if sensor2 not in NSIDCMeta.ShortName:
+            raise RuntimeError(f'create_premet_file() got unexpected mission+sensor {sensor2} for image#2 of {infile}: one of {list(NSIDCMeta.ShortName.keys())} is supported.')
+
+        meta_filename = f'{infile}.premet'
+        with open(meta_filename, 'w') as fh:
+            fh.write(f'FileName={infile}\n')
+            fh.write(f'VersionID_local=001\n')
+            fh.write(f'Begin_date={begin_date.strftime("%Y-%m-%d")}\n')
+            fh.write(f'End_date={end_date.strftime("%Y-%m-%d")}\n')
+            # Hard-code the values as we don't have timestamps captured within img_pair_info
+            fh.write("Begin_time=00:00:01.000\n")
+            fh.write("End_time=23:59:59.000\n")
+
+            # Append premet with sensor info
+            for each_sensor in [sensor1, sensor2]:
+                fh.write(f"Container=AssociatedPlatformInstrumentSensor\n")
+                fh.write(f"AssociatedPlatformShortName={NSIDCMeta.ShortName[each_sensor].platform}\n")
+                fh.write(f"AssociatedInstrumentShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
+                fh.write(f"AssociatedSensorShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
+
+        return meta_filename
+
+    @staticmethod
+    def create_spacial_file(infile: str):
+        """
+        Create spatial file that corresponds to the input image pair velocity granule.
+
+        Inputs
+        ======
+        infile: Filename of the input ITS_LIVE granule
+        """
+        meta_filename = f'{infile}.spatial'
+
+        with xr.open_dataset(infile, engine='h5netcdf') as ds:
+            xvals = ds.x.values
+            yvals = ds.y.values
+            pix_size_x = xvals[1] - xvals[0]
+            pix_size_y = yvals[1] - yvals[0]
+
+            # minval_x, pix_size_x, _, maxval_y, _, pix_size_y = [float(x) for x in ds['mapping'].attrs['GeoTransform'].split()]
+
+            # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
+            projection_cf_minx = xvals[0] - pix_size_x/2.0
+            projection_cf_maxx = xvals[-1] + pix_size_x/2.0
+            projection_cf_miny = yvals[-1] + pix_size_y/2.0 # pix_size_y is negative!
+            projection_cf_maxy = yvals[0] - pix_size_y/2.0  # pix_size_y is negative!
+
+            epsgcode = int(ds['mapping'].attrs['spatial_epsg'][0])
+
+            transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True) # ensure lonlat output order
+
+            # Convert coordinates to long/lat
+            ll_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_miny),decimals = 2).tolist()
+            lr_lonlat = np.round(transformer.transform(projection_cf_maxx,projection_cf_miny),decimals = 2).tolist()
+            ur_lonlat = np.round(transformer.transform(projection_cf_maxx,projection_cf_maxy),decimals = 2).tolist()
+            ul_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_maxy),decimals = 2).tolist()
+
+
+        # Write to spatial file
+        with open(meta_filename, 'w') as fh:
+            for long, lat in [ul_lonlat, ll_lonlat, ur_lonlat, lr_lonlat]:
+                fh.write(f"{long}\t{lat}\n")
+
+        return meta_filename
 
 class NSIDCFormat:
     """
@@ -164,7 +273,7 @@ class NSIDCFormat:
             self.infiles = json.load(ins3file)
             logging.info(f"Loaded {len(self.infiles)} granules from '{NSIDCFormat.GRANULES_FILE}'")
 
-        if start_index != 0:
+        if start_index != 0 or stop_index != -1:
             # Start index is provided for the granule to begin with
             if stop_index != -1:
                 self.infiles = self.infiles[start_index:stop_index]
@@ -186,6 +295,35 @@ class NSIDCFormat:
             return False
 
         return True
+
+    def no__call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
+        """
+        ATTN: This method implements sequetial processing for debugging purposes only.
+
+        Fix ITS_LIVE granules and create corresponding NSIDC meta files (spatial
+        and premet).
+        """
+        total_num_files = len(self.infiles)
+        init_total_files = total_num_files
+
+        if total_num_files <= 0:
+            logging.info(f"Nothing to catalog, exiting.")
+            return
+
+        # Current start index into list of granules to process
+        start = 0
+
+        file_list = []
+        while total_num_files > 0:
+            num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
+
+            logging.info(f"Starting granules {start}:{start+num_tasks} out of {init_total_files} total granules")
+            for each in self.infiles[start:start+num_tasks]:
+                results = NSIDCFormat.fix_granule(target_bucket, target_dir, each, self.s3)
+                logging.info("-->".join(results))
+
+            total_num_files -= num_tasks
+            start += num_tasks
 
     def __call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
         """
@@ -217,11 +355,33 @@ class NSIDCFormat:
                                        num_workers=num_dask_workers)
 
             for each_result in results[0]:
-                logging.info("-->".join(each_result))
+                logging.info("\n-->".join(each_result))
 
             total_num_files -= num_tasks
             start += num_tasks
 
+    @staticmethod
+    def upload_to_s3(filename: str, target_dir: str, target_bucket: str, s3_client, remove_original_file: bool=True):
+        """
+        Upload file to the AWS S3 bucket.
+        """
+        msgs = []
+        target_filename = os.path.join(target_dir, filename)
+
+        try:
+            msgs.append(f"Uploading {filename} to {target_bucket}/{target_filename}")
+
+            if not NSIDCFormat.DRY_RUN:
+                s3_client.upload_file(filename, target_bucket, target_filename)
+
+                if remove_original_file:
+                    msgs.append(f"Removing local {filename}")
+                    os.unlink(filename)
+
+        except ClientError as exc:
+            msgs.append(f"ERROR: {exc}")
+
+        return msgs
 
     @staticmethod
     def fix_granule(target_bucket: str, target_dir: str, infilewithpath: str, s3):
@@ -234,13 +394,14 @@ class NSIDCFormat:
         5. Change standard_name for vx, vy, and v to:
           “land_ice_surface_x_velocity”, “land_ice_surface_y_velocity” and “land_ice_surface_velocity”
         6. For UTM_Projection: set grid_mapping_name=transverse_mercator
-        7. Add standard_name = 'image_pair_information' to img_pair_info
+        7. Replace 'binary' units
+        8. Add standard_name = 'image_pair_information' to img_pair_info
         """
         _missing_value = 'missing_value'
         _meter_year_units = 'meter/year'
 
         _conventions = 'Conventions'
-        _cf_value = 'CF-1.9'
+        _cf_value = 'CF-1.8'
 
         _transverse_mercator = 'transverse_mercator'
 
@@ -251,7 +412,7 @@ class NSIDCFormat:
         _ice = 'ice'
         _rock = 'rock'
 
-        binary_flags = '0UB, 1UB'
+        binary_flags = np.array([0, 1], dtype=np.uint8)
 
         _std_name = {
             DataVars.V: 'land_ice_surface_velocity',
@@ -260,10 +421,10 @@ class NSIDCFormat:
         }
 
         _binary_meanings = {
-            DataVars.INTERP_MASK: 'measured, interpolated',
-            _ocean: 'non-ocean, ocean',
-            _ice: 'non-ice, ice',
-            _rock: 'non-rock, rock',
+            DataVars.INTERP_MASK: 'measured interpolated',
+            _ocean: 'non-ocean ocean',
+            _ice: 'non-ice ice',
+            _rock: 'non-rock rock',
         }
 
         _image_pair_info = 'image_pair_information'
@@ -285,11 +446,15 @@ class NSIDCFormat:
         # LXSSLLLLPPPRRRYYYYMMDDCCTXX_LXSSLLLLPPPRRRYYYYMMDDCCTX_EEEEE_G0240V01_XYZ.nc
         new_filename = ''.join(url_tokens_1[:4]) + url_tokens_1[5] + url_tokens_1[6] + '_'
         new_filename += ''.join(url_tokens_2[:4]) + url_tokens_2[5] + url_tokens_2[6]
-        new_filename += f'{epsg_code:05d}'
+        new_filename += f'_{epsg_code:05d}_'
         new_filename += url_tokens_2[7]
+        new_filename += '_'
         new_filename += url_tokens_2[8]
 
-        msgs = [f'Processing {infilewithpath}: {new_filename}']
+        logging.info(f'filename: {infilewithpath}')
+        logging.info(f'new_filename: {new_filename}')
+
+        msgs = [f'Processing {infilewithpath} into new {new_filename}']
 
         bucket = boto3.resource('s3').Bucket(target_bucket)
         bucket_granule = os.path.join(target_dir, new_filename)
@@ -299,20 +464,22 @@ class NSIDCFormat:
             msgs.append(f'WARNING: {bucket.name}/{bucket_granule} already exists, skipping granule')
             return msgs
 
-        with fsspec.open(infilewithpath) as fh:
-            with xr.open_dataset(fh) as ds:
+        s3_client = boto3.client('s3')
 
+        with s3.open(infilewithpath) as fh:
+            with xr.open_dataset(fh) as ds:
                 ds.attrs[_conventions] = _cf_value
 
                 # Convert keys to list since we will remove some of the variables
                 # during iteration
                 for each_var in list(ds.keys()):
+                    msgs.append(f'Processing {each_var}')
                     if _missing_value in ds[each_var].attrs:
                         # 3. Remove 'missing_value' attribute
                         del ds[each_var].attrs[_missing_value]
 
                     if DataVars.UNITS in ds[each_var].attrs and \
-                        ds[each_var].attrs[DataVars.UNITS].value == DataVars.M_Y_UNITS:
+                        ds[each_var].attrs[DataVars.UNITS] == DataVars.M_Y_UNITS:
                         # 4. Replace units = "m/y" to units='meter/year'
                         ds[each_var].attrs[DataVars.UNITS] = _meter_year_units
 
@@ -330,7 +497,14 @@ class NSIDCFormat:
                     if each_var == DataVars.ImgPairInfo.NAME:
                         ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.STD_NAME] = _image_pair_info
 
-                    if DataVars.GRID_MAPPING in each_var.attrs:
+                        # Reset to data of int type to get rid of dimensionality
+                        ds[DataVars.ImgPairInfo.NAME] = xr.DataArray(
+                            attrs=ds[each_var].attrs,
+                            coords={},
+                            dims=[]
+                        )
+
+                    if DataVars.GRID_MAPPING in ds[each_var].attrs:
                         # 2. Replace projection attribute to "mapping"
                         ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
 
@@ -340,19 +514,33 @@ class NSIDCFormat:
                             ds[each_var].attrs[DataVars.GRID_MAPPING_NAME] = 'transverse_mercator'
 
                         # 1. Rename projection variable to 'mapping'
-                        ds[DataVars.MAPPING] = ds[each_var].rename(DataVars.MAPPING)
+                        # Can't copy the whole data variable, as it introduces obscure coordinates.
+                        # Just copy all attributes for the scalar type of the xr.DataArray.
+                        ds[DataVars.MAPPING] = xr.DataArray(
+                            attrs=ds[each_var].attrs,
+                            coords={},
+                            dims=[]
+                        )
 
                         # Delete old projection variable
+                        msgs.append(f'Deleting {each_var}')
                         del ds[each_var]
 
                 # Write fixed granule to local file
-                ds.to_netcdf(new_filename, engine='h5netcdf', encoding = Encoding.LANDSAT_SENTINEL2)
+                ds.to_netcdf(new_filename, engine='h5netcdf', encoding = Encoding.IMG_PAIR)
 
-                # TODO: Copy new granule to S3 bucket
+                # Copy new granule to S3 bucket
+                msgs.extend(NSIDCFormat.upload_to_s3(new_filename, target_dir, target_bucket, s3_client, remove_original_file=False))
 
-                # TODO: Create spacial and premet metadata files
+        # Create spacial and premet metadata files, and copy them to S3 bucket
+        meta_file = NSIDCMeta.create_premet_file(new_filename, url_tokens_1, url_tokens_2)
+        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
-                # TODO: Copy spacial and premet metadata files to S3 bucket
+        meta_file = NSIDCMeta.create_spacial_file(new_filename)
+        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
+
+        msgs.append(f"Removing local {new_filename}")
+        os.unlink(new_filename)
 
         return msgs
 
@@ -364,11 +552,13 @@ if __name__ == '__main__':
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    parser.add_argument('-catalog_dir',
-                        action='store',
-                        type=str,
-                        default='catalog_geojson/landsat/v01',
-                        help='Output path for feature collections [%(default)s]')
+    parser.add_argument(
+        '-catalog_dir',
+        action='store',
+        type=str,
+        default='catalog_geojson/landsat/v01',
+        help='Output path for feature collections [%(default)s]'
+    )
 
     parser.add_argument(
         '-bucket',
@@ -381,43 +571,55 @@ if __name__ == '__main__':
         '-target_dir',
         type=str,
         default='NSIDC/v01/velocity_image_pair/',
-        help='AWS S3 directory that stores processed granules'
+        help='AWS S3 directory that stores processed granules [%(default)s]'
     )
 
-    parser.add_argument('-chunk_by',
-                        action='store',
-                        type=int,
-                        default=8,
-                        help='Number of granules to process in parallel [%(default)d]')
+    parser.add_argument(
+        '-chunk_by',
+        action='store',
+        type=int,
+        default=8,
+        help='Number of granules to process in parallel [%(default)d]'
+    )
 
-    parser.add_argument('-granules_file',
-                        action='store',
-                        type=str,
-                        default='used_granules_landsat.json',
-                        help='Filename with JSON list of granules [%(default)s], file is stored in  "-catalog_dir"')
+    parser.add_argument(
+        '-granules_file',
+        action='store',
+        type=str,
+        default='used_granules_landsat.json',
+        help='Filename with JSON list of granules [%(default)s], file is stored in  "-catalog_dir"'
+    )
 
-    parser.add_argument('-start_index',
-                        action='store',
-                        type=int,
-                        default=0,
-                        help="Start index for the granule to fix [%(default)d]. " \
-                             "Useful if need to continue previously interrupted process to fix the granules.")
+    parser.add_argument(
+        '-start_index',
+        action='store',
+        type=int,
+        default=0,
+        help="Start index for the granule to fix [%(default)d]. " \
+             "Useful if need to continue previously interrupted process to fix the granules."
+    )
 
-    parser.add_argument('-stop_index',
-                        action='store',
-                        type=int,
-                        default=-1,
-                        help="Stop index for the granules to fix [%(default)d]. " \
-                             "Usefull if need to split the job between multiple processes.")
+    parser.add_argument(
+        '-stop_index',
+        action='store',
+        type=int,
+        default=-1,
+        help="Stop index for the granules to fix [%(default)d]. " \
+             "Usefull if need to split the job between multiple processes."
+    )
 
-    parser.add_argument('-w', '--dask_workers',
-                        type=int,
-                        default=4,
-                        help='Number of Dask parallel workers for processing [%(default)d]')
+    parser.add_argument(
+        '-w', '--dask_workers',
+        type=int,
+        default=4,
+        help='Number of Dask parallel workers for processing [%(default)d]'
+    )
 
-    parser.add_argument('--dryrun',
-                        action='store_true',
-                        help='Dry run, do not actually process any granules')
+    parser.add_argument(
+        '--dryrun',
+        action='store_true',
+        help='Dry run, do not actually process any granules'
+    )
 
     args = parser.parse_args()
 
