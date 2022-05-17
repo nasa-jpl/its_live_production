@@ -64,7 +64,7 @@ def get_year_from_filename(filename):
 
     # Get tokens for the first image name
     tokens = filename.split('_')
-    year_str = tokenst[-1].replace('.nc', '')
+    year_str = tokens[-1].replace('.nc', '')
 
     return int(year_str)
 
@@ -246,7 +246,7 @@ class NSIDCMosaicFormat:
     # Pattern to collect input files in AWS S3 bucket
     GLOB_PATTERN = '*.nc'
 
-    def __init__(self, s3_dir: str):
+    def __init__(self, s3_bucket: str, s3_dir: str):
         """
         Initialize the object.
 
@@ -259,11 +259,11 @@ class NSIDCMosaicFormat:
         self.s3 = s3fs.S3FileSystem(anon=True)
 
         # Granule files as read from the S3 granule summary file
-        glob_pattern = os.path.join(s3_dir, NSIDCFormat.GLOB_PATTERN)
+        glob_pattern = os.path.join(s3_bucket, s3_dir, NSIDCMosaicFormat.GLOB_PATTERN)
         logging.info(f"Glob mosaics: {glob_pattern}")
 
         # ATTN: for debugging only process first 2 files
-        self.infiles = s3_out.glob(f'{glob_pattern}')[:2]
+        self.infiles = self.s3.glob(f'{glob_pattern}')[:2]
 
         logging.info(f"Got {len(self.infiles)} files")
 
@@ -349,11 +349,11 @@ class NSIDCMosaicFormat:
         msgs = [f'Processing {infilewithpath} into new format']
 
         bucket = boto3.resource('s3').Bucket(target_bucket)
-        bucket_granule = os.path.join(target_dir, new_filename)
+        bucket_file = os.path.join(target_dir, filename)
 
         # Store granules under 'landsat8' sub-directory in new S3 bucket
-        if NSIDCFormat.object_exists(bucket, bucket_granule):
-            msgs.append(f'WARNING: {bucket.name}/{bucket_granule} already exists, skipping file')
+        if NSIDCFormat.object_exists(bucket, bucket_file):
+            msgs.append(f'WARNING: {bucket.name}/{bucket_file} already exists, skipping file')
             return msgs
 
         s3_client = boto3.client('s3')
@@ -363,6 +363,7 @@ class NSIDCMosaicFormat:
                 target_bucket,
                 target_dir,
                 infilewithpath,
+                self.s3,
                 s3_client,
                 filename,
                 Encoding.MOSAICS
@@ -439,7 +440,7 @@ if __name__ == '__main__':
 
     logging.info(f'Command-line args: {args}')
 
-    nsidc_format = NSIDCMosaicFormat()
+    nsidc_format = NSIDCMosaicFormat(args.bucket, args.source_dir)
 
     nsidc_format(
         args.bucket,

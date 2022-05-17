@@ -428,6 +428,7 @@ class NSIDCFormat:
                 target_bucket,
                 target_dir,
                 infilewithpath,
+                s3,
                 s3_client,
                 new_filename,
                 Encoding.IMG_PAIR
@@ -451,6 +452,7 @@ class NSIDCFormat:
         target_bucket: str,
         target_dir: str,
         infilewithpath: str,
+        s3,
         s3_client,
         newfilename: str,
         encoding_params
