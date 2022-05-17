@@ -454,7 +454,7 @@ class NSIDCFormat:
         infilewithpath: str,
         s3,
         s3_client,
-        newfilename: str,
+        new_filename: str,
         encoding_params
     ):
         """
