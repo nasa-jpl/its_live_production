@@ -363,7 +363,7 @@ class NSIDCMosaicFormat:
                 target_bucket,
                 target_dir,
                 infilewithpath,
-                self.s3,
+                s3,
                 s3_client,
                 filename,
                 Encoding.MOSAICS
