@@ -7,8 +7,8 @@ Script to prepare V1 ITS_LIVE granules to be ingested by NSIDC:
 
 * dt: change 'long_name' to 'error weighted average time separation between image-pairs'
 
-* Add: Conventions = "CF-1.9" to PAT_G0120_0000.nc like data products
-* Change: Conventions = "CF-1.9" to velocity image pair products
+* Add: Conventions = "CF-1.8" to PAT_G0120_0000.nc like data products
+* Change: Conventions = "CF-1.8" to velocity image pair products
 
 * Fix "m/y" units to "meter/year" for all variables that the unit is applicable for
 * Replace 'binary' units for 'interp_mask' by:
@@ -41,16 +41,12 @@ import dask
 from dask.diagnostics import ProgressBar
 from datetime import datetime
 import json
-import h5py
 import logging
 import numpy as np
 import os
 import pyproj
-import re
 import s3fs
 import sys
-import subprocess
-from tqdm import tqdm
 import xarray as xr
 
 # Local imports
@@ -423,16 +419,20 @@ class NSIDCFormat:
 
         s3_client = boto3.client('s3')
 
+        # Read granule from S3
+        with s3.open(infilewithpath) as fh:
+            with xr.open_dataset(fh) as ds:
+                msgs.extend(
+                    NSIDCFormat.process_nc_file(
+                        ds,
+                        new_filename,
+                        Encoding.IMG_PAIR
+                    )
+                )
+
+        # Copy new granule to S3 bucket
         msgs.extend(
-            NSIDCFormat.process_nc_file(
-                target_bucket,
-                target_dir,
-                infilewithpath,
-                s3,
-                s3_client,
-                new_filename,
-                Encoding.IMG_PAIR
-            )
+            NSIDCFormat.upload_to_s3(new_filename, target_dir, target_bucket, s3_client, remove_original_file=False)
         )
 
         # Create spacial and premet metadata files, and copy them to S3 bucket
@@ -449,13 +449,10 @@ class NSIDCFormat:
 
     @staticmethod
     def process_nc_file(
-        target_bucket: str,
-        target_dir: str,
-        infilewithpath: str,
-        s3,
-        s3_client,
+        ds,
         new_filename: str,
-        encoding_params
+        encoding_params,
+        chunk_size: int=0
     ):
         """
         Fix granule format:
@@ -510,81 +507,78 @@ class NSIDCFormat:
 
         msgs = []
 
-        with s3.open(infilewithpath) as fh:
-            with xr.open_dataset(fh) as ds:
-                ds.attrs[_conventions] = _cf_value
+        ds.attrs[_conventions] = _cf_value
 
-                # Convert keys to list since we will remove some of the variables
-                # during iteration
-                for each_var in list(ds.keys()):
-                    msgs.append(f'Processing {each_var}')
-                    if _missing_value in ds[each_var].attrs:
-                        # 3. Remove 'missing_value' attribute
-                        del ds[each_var].attrs[_missing_value]
+        # Convert keys to list since we will remove some of the variables
+        # during iteration
+        for each_var in list(ds.keys()):
+            msgs.append(f'Processing {each_var}')
+            if _missing_value in ds[each_var].attrs:
+                # 3. Remove 'missing_value' attribute
+                del ds[each_var].attrs[_missing_value]
 
-                    if DataVars.UNITS in ds[each_var].attrs and \
-                        ds[each_var].attrs[DataVars.UNITS] == DataVars.M_Y_UNITS:
-                        # 4. Replace units = "m/y" to units='meter/year'
-                        ds[each_var].attrs[DataVars.UNITS] = _meter_year_units
+            if DataVars.UNITS in ds[each_var].attrs and \
+                ds[each_var].attrs[DataVars.UNITS] == DataVars.M_Y_UNITS:
+                # 4. Replace units = "m/y" to units='meter/year'
+                ds[each_var].attrs[DataVars.UNITS] = _meter_year_units
 
-                    # 5. Change standard_name for vx, vy, and v
-                    if each_var in _std_name:
-                        ds[each_var].attrs[DataVars.STD_NAME] = _std_name[each_var]
+            # 5. Change standard_name for vx, vy, and v
+            if each_var in _std_name:
+                ds[each_var].attrs[DataVars.STD_NAME] = _std_name[each_var]
 
-                    # 7. Replace 'binary' units
-                    if each_var in [DataVars.INTERP_MASK, _ocean, _ice, _rock] and DataVars.UNITS in ds[each_var].attrs:
-                        del ds[each_var].attrs[DataVars.UNITS]
-                        ds[each_var].attrs[flag_values] = binary_flags
-                        ds[each_var].attrs[flag_meanings] = _binary_meanings[each_var]
+            # 7. Replace 'binary' units
+            if each_var in [DataVars.INTERP_MASK, _ocean, _ice, _rock] and DataVars.UNITS in ds[each_var].attrs:
+                del ds[each_var].attrs[DataVars.UNITS]
+                ds[each_var].attrs[flag_values] = binary_flags
+                ds[each_var].attrs[flag_meanings] = _binary_meanings[each_var]
 
-                    # 8. Add standard_name = 'image_pair_information' to img_pair_info
-                    if each_var == DataVars.ImgPairInfo.NAME:
-                        ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.STD_NAME] = _image_pair_info
+            # 8. Add standard_name = 'image_pair_information' to img_pair_info
+            if each_var == DataVars.ImgPairInfo.NAME:
+                ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.STD_NAME] = _image_pair_info
 
-                        # Reset to data of int type to get rid of dimensionality
-                        ds[DataVars.ImgPairInfo.NAME] = xr.DataArray(
-                            attrs=ds[each_var].attrs,
-                            coords={},
-                            dims=[]
-                        )
-
-                    # 9. Fix long_name for dt
-                    if each_var == _dt:
-                        ds[each_var].attrs['long_name'] = _dt_info
-
-                    # 10. Fix count's units='_count'
-                    if each_var == _count and DataVars.UNITS in ds[each_var].attrs:
-                        ds[each_var].attrs[DataVars.UNITS] = _count
-
-                    if DataVars.GRID_MAPPING in ds[each_var].attrs:
-                        # 2. Replace projection attribute to "mapping"
-                        ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
-
-                    elif each_var in [DataVars.UTM_PROJECTION, DataVars.POLAR_STEREOGRAPHIC]:
-                        # 6. For UTM_Projection: set grid_mapping_name=transverse_mercator
-                        if each_var == DataVars.UTM_PROJECTION:
-                            ds[each_var].attrs[DataVars.GRID_MAPPING_NAME] = 'transverse_mercator'
-
-                        # 1. Rename projection variable to 'mapping'
-                        # Can't copy the whole data variable, as it introduces obscure coordinates.
-                        # Just copy all attributes for the scalar type of the xr.DataArray.
-                        ds[DataVars.MAPPING] = xr.DataArray(
-                            attrs=ds[each_var].attrs,
-                            coords={},
-                            dims=[]
-                        )
-
-                        # Delete old projection variable
-                        msgs.append(f'Deleting {each_var}')
-                        del ds[each_var]
-
-                # Write fixed granule to local file
-                ds.to_netcdf(new_filename, engine='h5netcdf', encoding = encoding_params)
-
-                # Copy new granule to S3 bucket
-                msgs.extend(
-                    NSIDCFormat.upload_to_s3(new_filename, target_dir, target_bucket, s3_client, remove_original_file=False)
+                # Reset to data of int type to get rid of dimensionality
+                ds[DataVars.ImgPairInfo.NAME] = xr.DataArray(
+                    attrs=ds[each_var].attrs,
+                    coords={},
+                    dims=[]
                 )
+
+            # 9. Fix long_name for dt
+            if each_var == _dt:
+                ds[each_var].attrs['long_name'] = _dt_info
+
+            # 10. Fix count's units='_count'
+            if each_var == _count and DataVars.UNITS in ds[each_var].attrs:
+                ds[each_var].attrs[DataVars.UNITS] = _count
+
+            if DataVars.GRID_MAPPING in ds[each_var].attrs:
+                # 2. Replace projection attribute to "mapping"
+                ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
+
+            elif each_var in [DataVars.UTM_PROJECTION, DataVars.POLAR_STEREOGRAPHIC]:
+                # 6. For UTM_Projection: set grid_mapping_name=transverse_mercator
+                if each_var == DataVars.UTM_PROJECTION:
+                    ds[each_var].attrs[DataVars.GRID_MAPPING_NAME] = 'transverse_mercator'
+
+                # 1. Rename projection variable to 'mapping'
+                # Can't copy the whole data variable, as it introduces obscure coordinates.
+                # Just copy all attributes for the scalar type of the xr.DataArray.
+                ds[DataVars.MAPPING] = xr.DataArray(
+                    attrs=ds[each_var].attrs,
+                    coords={},
+                    dims=[]
+                )
+
+                if chunk_size:
+                    # Convert dataset to Dask dataset not to run out of memory while writing to the file
+                    ds = ds.chunk(chunks={'x': chunk_size, 'y': chunk_size})
+
+                # Delete old projection variable
+                msgs.append(f'Deleting {each_var}')
+                del ds[each_var]
+
+        # Write fixed granule to local file
+        ds.to_netcdf(new_filename, engine='h5netcdf', encoding = encoding_params)
 
         return msgs
 

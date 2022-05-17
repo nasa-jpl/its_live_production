@@ -1,72 +1,27 @@
 """
-Script to prepare V1 ITS_LIVE mosaics to be ingested by NSIDC:
-
-* count: fix units to ‘count’
-
-* fix count's units='count'
-
-The same fixes as applied to image pair velocity granules:
-* vx_err and vy_err: remove 'missing_value' attribute from any data variable that has it
-
-* dt: change 'long_name' to 'error weighted average time separation between image-pairs'
-
-* Add: Conventions = "CF-1.9" to PAT_G0120_0000.nc like data products
-* Change: Conventions = "CF-1.9" to velocity image pair products
-
-* Fix "m/y" units to "meter/year" for all variables that the unit is applicable for
-* Replace 'binary' units for 'interp_mask' by:
-    flag_values = 0UB, 1UB; // ubyte
-    flag_meanings = 'measured, interpolated'
-
-* UTM_Projection, Polar_Stereographic: replace by 'mapping' variable
-* UTM_Projection: change grid_mapping_name: "universal_transverse_mercator" to
-  "transverse_mercator"
-
-* Changing standard_name for vx, vy, and v to:
-  “land_ice_surface_x_velocity”, “land_ice_surface_y_velocity” and “land_ice_surface_velocity”
-
-* Add standard_name = 'image_pair_information' to img_pair_info
+Script to prepare V1 ITS_LIVE mosaics to be ingested by NSIDC: see nsidc_vel_image_pairs.py
+for the details.
 
 Authors: Masha Liukis (JPL), Alex Gardner (JPL), Mark Fahnestock (UFA)
 """
 
 import argparse
 import boto3
-from botocore.exceptions import ClientError
-import collections
 import dask
 from dask.diagnostics import ProgressBar
 from datetime import datetime
 import json
-import h5py
 import logging
 import numpy as np
 import os
 import pyproj
-import re
 import s3fs
 import sys
-import subprocess
-from tqdm import tqdm
 import xarray as xr
 
 # Local imports
 from itscube_types import DataVars
 from nsidc_vel_image_pairs import NSIDCMeta, NSIDCFormat
-
-def get_year_from_filename(filename):
-    """
-    Extract year from the filename of annula mosaics.
-    """
-    # ATTN: Optical format granules have different file naming convention than radar
-    # format granules
-    # SRA_G0240_2018.nc
-
-    # Get tokens for the first image name
-    tokens = filename.split('_')
-    year_str = tokens[-1].replace('.nc', '')
-
-    return int(year_str)
 
 class Encoding:
     """
@@ -101,7 +56,7 @@ class NSIDCMosaicsMeta:
     VersionID_local=001
     Begin_date=2019-01-01
     End_date=2019-12-31
-    Begin_time=00:00:00.000
+    Begin_time=00:00:01.000
     End_time=23:59:59.000
     Container=AssociatedPlatformInstrumentSensor
     AssociatedPlatformShortName=LANDSAT-8
@@ -140,7 +95,7 @@ class NSIDCMosaicsMeta:
         url_tokens_2: Parsed out filename tokens that correspond to the second image of the pair
         """
         # Hard-code values for static mosaics
-        start_year = 1984
+        start_year = 1985
         stop_year = 2018
         if year != 0:
             start_year = year
@@ -246,6 +201,9 @@ class NSIDCMosaicFormat:
     # Pattern to collect input files in AWS S3 bucket
     GLOB_PATTERN = '*.nc'
 
+    # Re-chunk input mosaic to speed up read of the data
+    CHUNK_SIZE = 1000
+
     def __init__(self, s3_bucket: str, s3_dir: str):
         """
         Initialize the object.
@@ -262,12 +220,11 @@ class NSIDCMosaicFormat:
         glob_pattern = os.path.join(s3_bucket, s3_dir, NSIDCMosaicFormat.GLOB_PATTERN)
         logging.info(f"Glob mosaics: {glob_pattern}")
 
-        # ATTN: for debugging only process first 2 files
-        self.infiles = self.s3.glob(f'{glob_pattern}')[:2]
+        self.infiles = self.s3.glob(f'{glob_pattern}')
 
         logging.info(f"Got {len(self.infiles)} files")
 
-    def __call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
+    def no__call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
         """
         ATTN: This method implements sequential processing for debugging purposes only.
 
@@ -291,12 +248,12 @@ class NSIDCMosaicFormat:
             logging.info(f"Starting mosaics {start}:{start+num_tasks} out of {init_total_files} total files")
             for each in self.infiles[start:start+num_tasks]:
                 results = NSIDCMosaicFormat.fix_file(target_bucket, target_dir, each, self.s3)
-                logging.info("-->".join(results))
+                logging.info("\n-->".join(results))
 
             total_num_files -= num_tasks
             start += num_tasks
 
-    def no__call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
+    def __call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
         """
         Fix ITS_LIVE granules and create corresponding NSIDC meta files (spacial
         and premet).
@@ -336,45 +293,60 @@ class NSIDCMosaicFormat:
         """
         Fix granule format and create corresponding metadata files as required by NSIDC.
         """
-        filename_tokens = infilewithpath.split('/')
-        directory = '/'.join(filename_tokens[1:-1])
+        filename_tokens = infilewithpath.split(os.path.sep)
+        directory = os.path.sep.join(filename_tokens[1:-1])
 
         filename = filename_tokens[-1]
 
         # Extract tokens from the filename
-        year = get_year_from_filename(filename)
+        # Get tokens for the first image name
+        tokens = filename.split('_')
+        year_str = tokens[-1].replace('.nc', '')
+        year = int(year_str)
 
-        logging.info(f'filename: {infilewithpath}')
-
+        logging.info(f'Filename: {infilewithpath}')
         msgs = [f'Processing {infilewithpath} into new format']
 
         bucket = boto3.resource('s3').Bucket(target_bucket)
         bucket_file = os.path.join(target_dir, filename)
 
-        # Store granules under 'landsat8' sub-directory in new S3 bucket
         if NSIDCFormat.object_exists(bucket, bucket_file):
             msgs.append(f'WARNING: {bucket.name}/{bucket_file} already exists, skipping file')
             return msgs
 
         s3_client = boto3.client('s3')
 
-        msgs.extend(
-            NSIDCFormat.process_nc_file(
-                target_bucket,
-                target_dir,
-                infilewithpath,
-                s3,
-                s3_client,
-                filename,
-                Encoding.MOSAICS
+        file_path = os.path.sep.join(filename_tokens[1:])
+        local_file = filename + '.local'
+
+        # Download file locally - takes too long to read the whole mosaic file
+        # from S3 in order for it to write fixed dataset locally
+        s3_client.download_file(target_bucket, file_path, local_file)
+
+        with xr.open_dataset(local_file, engine='h5netcdf') as ds:
+            msgs.extend(
+                NSIDCFormat.process_nc_file(
+                    ds,
+                    filename,
+                    Encoding.MOSAICS,
+                    NSIDCMosaicFormat.CHUNK_SIZE
+                )
             )
+
+        # Remove local copy of the file
+        msgs.append(f"Removing local {local_file}")
+        os.unlink(local_file)
+
+        # Copy new granule to S3 bucket
+        msgs.extend(
+            NSIDCFormat.upload_to_s3(filename, target_dir, target_bucket, s3_client, remove_original_file=False)
         )
 
         # Create spacial and premet metadata files, and copy them to S3 bucket
         meta_file = NSIDCMosaicsMeta.create_premet_file(filename, year)
         msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
-        meta_file = NSIDCMosaicsMeta.create_spacial_file(filename)
+        meta_file = NSIDCMosaicsMeta.create_spatial_file(filename)
         msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
         msgs.append(f"Removing local {filename}")
@@ -414,7 +386,7 @@ if __name__ == '__main__':
         '-chunk_by',
         action='store',
         type=int,
-        default=8,
+        default=4,
         help='Number of granules to process in parallel [%(default)d]'
     )
 
