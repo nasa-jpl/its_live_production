@@ -136,7 +136,7 @@ class NSIDCMeta:
     AssociatedInstrumentShortName=TIRS
     AssociatedSensorShortName=TIRS
 
-    Example of spacial file:
+    Example of spatial file:
     ========================
     -94.32	71.86
     -99.41	71.67
@@ -200,7 +200,7 @@ class NSIDCMeta:
         return meta_filename
 
     @staticmethod
-    def create_spacial_file(infile: str, epsgcode: int):
+    def create_spatial_file(infile: str, epsgcode: int):
         """
         Create spatial file that corresponds to the input image pair velocity granule.
 
@@ -243,7 +243,7 @@ class NSIDCMeta:
 class NSIDCFormat:
     """
     Class to prepare V1 ITS_LIVE data for ingest by NSIDC:
-    1. Make V1 ITS_LIVE data CF-1.9 convention compliant.
+    1. Make V1 ITS_LIVE data CF-1.8 convention compliant.
     2. Generate metadata files required by NSIDC ingest (premet and spacial metadata files
        which are generated per each data product being ingested).
     """
@@ -384,49 +384,8 @@ class NSIDCFormat:
     @staticmethod
     def fix_granule(target_bucket: str, target_dir: str, infilewithpath: str, s3):
         """
-        Fix granule format:
-        1. Rename projection variable to be 'mapping'
-        2. Replace all projection attributes to new value of 'mapping'
-        3. Remove 'missing_value' attribute
-        4. Replace units = "m/y" to units='meter/year'
-        5. Change standard_name for vx, vy, and v to:
-          “land_ice_surface_x_velocity”, “land_ice_surface_y_velocity” and “land_ice_surface_velocity”
-        6. For UTM_Projection: set grid_mapping_name=transverse_mercator
-        7. Replace 'binary' units
-        8. Add standard_name = 'image_pair_information' to img_pair_info
+        Fix granule format and create corresponding metadata files as required by NSIDC.
         """
-        _missing_value = 'missing_value'
-        _meter_year_units = 'meter/year'
-
-        _conventions = 'Conventions'
-        _cf_value = 'CF-1.8'
-
-        _transverse_mercator = 'transverse_mercator'
-
-        flag_values = 'flag_values'
-        flag_meanings = 'flag_meanings'
-
-        _ocean = 'ocean'
-        _ice = 'ice'
-        _rock = 'rock'
-
-        binary_flags = np.array([0, 1], dtype=np.uint8)
-
-        _std_name = {
-            DataVars.V: 'land_ice_surface_velocity',
-            DataVars.VX: 'land_ice_surface_x_velocity',
-            DataVars.VY: 'land_ice_surface_y_velocity'
-        }
-
-        _binary_meanings = {
-            DataVars.INTERP_MASK: 'measured interpolated',
-            _ocean: 'non-ocean ocean',
-            _ice: 'non-ice ice',
-            _rock: 'non-rock rock',
-        }
-
-        _image_pair_info = 'image_pair_information'
-
         filename_tokens = infilewithpath.split('/')
         directory = '/'.join(filename_tokens[1:-1])
         filename = filename_tokens[-1]
@@ -463,6 +422,91 @@ class NSIDCFormat:
             return msgs
 
         s3_client = boto3.client('s3')
+
+        msgs.extend(
+            NSIDCFormat.process_nc_file(
+                target_bucket,
+                target_dir,
+                infilewithpath,
+                s3_client,
+                new_filename,
+                Encoding.IMG_PAIR
+            )
+        )
+
+        # Create spacial and premet metadata files, and copy them to S3 bucket
+        meta_file = NSIDCMeta.create_premet_file(new_filename, url_tokens_1, url_tokens_2)
+        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
+
+        meta_file = NSIDCMeta.create_spatial_file(new_filename, epsg_code)
+        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
+
+        msgs.append(f"Removing local {new_filename}")
+        os.unlink(new_filename)
+
+        return msgs
+
+    @staticmethod
+    def process_nc_file(
+        target_bucket: str,
+        target_dir: str,
+        infilewithpath: str,
+        s3_client,
+        newfilename: str,
+        encoding_params
+    ):
+        """
+        Fix granule format:
+        1. Rename projection variable to be 'mapping'
+        2. Replace all projection attributes to new value of 'mapping'
+        3. Remove 'missing_value' attribute
+        4. Replace units = "m/y" to units='meter/year'
+        5. Change standard_name for vx, vy, and v to:
+          “land_ice_surface_x_velocity”, “land_ice_surface_y_velocity” and “land_ice_surface_velocity”
+        6. For UTM_Projection: set grid_mapping_name=transverse_mercator
+        7. Replace 'binary' units
+        8. Add standard_name = 'image_pair_information' to img_pair_info
+        9. Mosaics only: update long_name = 'error weighted average time separation between image-pairs' for dt
+        10. Mosaics only: fix count's units='count'
+        """
+        _missing_value = 'missing_value'
+        _meter_year_units = 'meter/year'
+
+        _conventions = 'Conventions'
+        _cf_value = 'CF-1.8'
+
+        _transverse_mercator = 'transverse_mercator'
+
+        flag_values = 'flag_values'
+        flag_meanings = 'flag_meanings'
+
+        _ocean = 'ocean'
+        _ice = 'ice'
+        _rock = 'rock'
+
+        _dt = 'dt'
+        _dt_info = 'error weighted average time separation between image-pairs'
+
+        _count = 'count'
+
+        binary_flags = np.array([0, 1], dtype=np.uint8)
+
+        _std_name = {
+            DataVars.V: 'land_ice_surface_velocity',
+            DataVars.VX: 'land_ice_surface_x_velocity',
+            DataVars.VY: 'land_ice_surface_y_velocity'
+        }
+
+        _binary_meanings = {
+            DataVars.INTERP_MASK: 'measured interpolated',
+            _ocean: 'non-ocean ocean',
+            _ice: 'non-ice ice',
+            _rock: 'non-rock rock',
+        }
+
+        _image_pair_info = 'image_pair_information'
+
+        msgs = []
 
         with s3.open(infilewithpath) as fh:
             with xr.open_dataset(fh) as ds:
@@ -502,6 +546,14 @@ class NSIDCFormat:
                             dims=[]
                         )
 
+                    # 9. Fix long_name for dt
+                    if each_var == _dt:
+                        ds[each_var].attrs['long_name'] = _dt_info
+
+                    # 10. Fix count's units='_count'
+                    if each_var == _count and DataVars.UNITS in ds[each_var].attrs:
+                        ds[each_var].attrs[DataVars.UNITS] = _count
+
                     if DataVars.GRID_MAPPING in ds[each_var].attrs:
                         # 2. Replace projection attribute to "mapping"
                         ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
@@ -525,20 +577,12 @@ class NSIDCFormat:
                         del ds[each_var]
 
                 # Write fixed granule to local file
-                ds.to_netcdf(new_filename, engine='h5netcdf', encoding = Encoding.IMG_PAIR)
+                ds.to_netcdf(new_filename, engine='h5netcdf', encoding = encoding_params)
 
                 # Copy new granule to S3 bucket
-                msgs.extend(NSIDCFormat.upload_to_s3(new_filename, target_dir, target_bucket, s3_client, remove_original_file=False))
-
-        # Create spacial and premet metadata files, and copy them to S3 bucket
-        meta_file = NSIDCMeta.create_premet_file(new_filename, url_tokens_1, url_tokens_2)
-        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
-
-        meta_file = NSIDCMeta.create_spacial_file(new_filename, epsg_code)
-        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
-
-        msgs.append(f"Removing local {new_filename}")
-        os.unlink(new_filename)
+                msgs.extend(
+                    NSIDCFormat.upload_to_s3(new_filename, target_dir, target_bucket, s3_client, remove_original_file=False)
+                )
 
         return msgs
 
