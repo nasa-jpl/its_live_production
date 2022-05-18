@@ -175,8 +175,12 @@ class NSIDCMosaicsMeta:
             projection_cf_maxy = yvals[0] - pix_size_y/2.0  # pix_size_y is negative!
 
             epsgcode = int(NSIDCMosaicsMeta.get_attr_value(ds['mapping'].attrs['spatial_epsg']))
+            epsgcode_str = f'EPSG:{epsgcode}'
 
-            transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True) # ensure lonlat output order
+            if epsgcode == 102027:
+                epsgcode_str = f'ESRI:{epsgcode}'
+
+            transformer = pyproj.Transformer.from_crs(epsgcode_str, "EPSG:4326", always_xy=True) # ensure lonlat output order
 
             # Convert coordinates to long/lat
             ll_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_miny),decimals = 2).tolist()
