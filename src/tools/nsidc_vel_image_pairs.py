@@ -92,6 +92,25 @@ def get_tokens_from_filename(filename):
     # first_date_1, second_date_1, key_1, first_date_2, second_date_2, key_2
     return (url_tokens_1, url_tokens_2)
 
+def get_attr_value(h5_attr: str):
+    """
+    Extract value of the hd5 data variable attribute.
+    """
+    value = None
+    if isinstance(h5_attr, str):
+        value = h5_attr
+
+    elif isinstance(h5_attr, bytes):
+        value = h5_attr.decode('utf-8')  # h5py returns byte values, turn into byte characters
+
+    elif h5_attr.shape == ():
+        value = h5_attr
+
+    else:
+        value = h5_attr[0] # h5py returns lists of numbers - all 1 element lists here, so dereference to number
+
+    return value
+
 class Encoding:
     """
     Encoding settings for writing ITS_LIVE granule to the file
@@ -247,6 +266,9 @@ class NSIDCFormat:
 
     # Flag to enable dry run: don't process any granules, just report what would be processed
     DRY_RUN = False
+
+    # ESRI code that requires extra fixes to the mapping data variable
+    ESRI_CODE = 102027
 
     def __init__(
         self,
@@ -426,7 +448,8 @@ class NSIDCFormat:
                     NSIDCFormat.process_nc_file(
                         ds,
                         new_filename,
-                        Encoding.IMG_PAIR
+                        Encoding.IMG_PAIR,
+                        epsg_code
                     )
                 )
 
@@ -451,7 +474,8 @@ class NSIDCFormat:
     def process_nc_file(
         ds,
         new_filename: str,
-        encoding_params,
+        encoding_params: dict,
+        epsg_code: int,
         chunk_size: int=0
     ):
         """
@@ -487,6 +511,9 @@ class NSIDCFormat:
         _dt_info = 'error weighted average time separation between image-pairs'
 
         _count = 'count'
+
+        _utm_zone_number = 'utm_zone_number'
+        _lambert_conformal_conic = 'lambert_conformal_conic'
 
         binary_flags = np.array([0, 1], dtype=np.uint8)
 
@@ -568,6 +595,11 @@ class NSIDCFormat:
                     coords={},
                     dims=[]
                 )
+
+                if epsg_code == NSIDCFormat.ESRI_CODE:
+                    # Extra fixes are required to the mapping data variable
+                    del ds[DataVars.MAPPING].attrs[_utm_zone_number]
+                    ds[DataVars.MAPPING].attrs[DataVars.GRID_MAPPING_NAME] = _lambert_conformal_conic
 
                 if chunk_size:
                     # Convert dataset to Dask dataset not to run out of memory while writing to the file
