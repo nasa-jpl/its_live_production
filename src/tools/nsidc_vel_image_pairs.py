@@ -231,7 +231,7 @@ class NSIDCMeta:
 
         # Write to spatial file
         with open(meta_filename, 'w') as fh:
-            for long, lat in [ul_lonlat, ll_lonlat, ur_lonlat, lr_lonlat]:
+            for long, lat in [ul_lonlat, ur_lonlat, lr_lonlat, ll_lonlat]:
                 fh.write(f"{long}\t{lat}\n")
 
         return meta_filename
