@@ -188,7 +188,7 @@ if __name__ == '__main__':
 
     logging.info(f'Command-line args: {args}')
 
-    nsidc_format = FixESRIMosaics(args.bucket, args.source_dir)
+    nsidc_format = FixESRIMosaics(args.bucket, args.target_dir)
 
     nsidc_format(args.bucket, args.target_dir)
 
