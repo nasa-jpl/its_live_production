@@ -41,7 +41,7 @@ class FixESRIMosaics:
         glob_pattern = os.path.join(s3_bucket, s3_dir, FixESRIMosaics.GLOB_PATTERN)
         logging.info(f"Glob mosaics: {glob_pattern}")
 
-        self.infiles = self.s3.glob(f'{glob_pattern}')[:2]
+        self.infiles = self.s3.glob(f'{glob_pattern}')
 
         logging.info(f"Got {len(self.infiles)} files")
 
