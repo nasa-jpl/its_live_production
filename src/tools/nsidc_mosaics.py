@@ -21,7 +21,7 @@ import xarray as xr
 
 # Local imports
 from itscube_types import DataVars
-from nsidc_vel_image_pairs import NSIDCMeta, NSIDCFormat
+from nsidc_vel_image_pairs import NSIDCMeta, NSIDCFormat, get_attr_value
 
 class Encoding:
     """
@@ -130,26 +130,6 @@ class NSIDCMosaicsMeta:
         return meta_filename
 
     @staticmethod
-    def get_attr_value(h5_attr: str):
-        """
-        Extract value of the hd5 data variable attribute.
-        """
-        value = None
-        if isinstance(h5_attr, str):
-            value = h5_attr
-
-        elif isinstance(h5_attr, bytes):
-            value = h5_attr.decode('utf-8')  # h5py returns byte values, turn into byte characters
-
-        elif h5_attr.shape == ():
-            value = h5_attr
-
-        else:
-            value = h5_attr[0] # h5py returns lists of numbers - all 1 element lists here, so dereference to number
-
-        return value
-
-    @staticmethod
     def create_spatial_file(infile: str):
         """
         Create spatial file that corresponds to the input image pair velocity granule.
@@ -174,10 +154,10 @@ class NSIDCMosaicsMeta:
             projection_cf_miny = yvals[-1] + pix_size_y/2.0 # pix_size_y is negative!
             projection_cf_maxy = yvals[0] - pix_size_y/2.0  # pix_size_y is negative!
 
-            epsgcode = int(NSIDCMosaicsMeta.get_attr_value(ds['mapping'].attrs['spatial_epsg']))
+            epsgcode = int(get_attr_value(ds['mapping'].attrs['spatial_epsg']))
             epsgcode_str = f'EPSG:{epsgcode}'
 
-            if epsgcode == 102027:
+            if epsgcode == NSIDCFormat.ESRI_CODE:
                 epsgcode_str = f'ESRI:{epsgcode}'
 
             transformer = pyproj.Transformer.from_crs(epsgcode_str, "EPSG:4326", always_xy=True) # ensure lonlat output order
@@ -328,11 +308,26 @@ class NSIDCMosaicFormat:
         s3_client.download_file(target_bucket, file_path, local_file)
 
         with xr.open_dataset(local_file, engine='h5netcdf') as ds:
+            mapping = None
+            # This handles already fixed files (with 'mapping' data variable) and
+            # original projection data variables
+            if DataVars.MAPPING in ds:
+                mapping = ds[DataVars.MAPPING]
+
+            elif DataVars.UTM_PROJECTION in ds:
+                mapping = ds[DataVars.UTM_PROJECTION]
+
+            elif DataVars.POLAR_STEREOGRAPHIC in ds:
+                mapping = ds[DataVars.POLAR_STEREOGRAPHIC]
+
+            epsgcode = int(get_attr_value(mapping.attrs['spatial_epsg']))
+
             msgs.extend(
                 NSIDCFormat.process_nc_file(
                     ds,
                     filename,
                     Encoding.MOSAICS,
+                    epsgcode,
                     NSIDCMosaicFormat.CHUNK_SIZE
                 )
             )
