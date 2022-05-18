@@ -23,6 +23,8 @@ import logging
 import os
 import s3fs
 
+from nsidc_vel_image_pairs import NSIDCFormat
+
 
 class FixSpatialFiles:
     """
@@ -46,6 +48,11 @@ class FixSpatialFiles:
 
     GLOB = '*.spatial'
 
+    # This file should be created by running AWS CLI command and filter for
+    # the filename by awk:
+    # aws s3 ls s3://its-live-data/NSIDC/v01/velocity_image_pair/ --recursive | grep nc.spatial | awk -v OFS='\t' '{print $4}' >& spacial_files.txt
+    SPATIAL_LIST_FILE = 'spatial_files.txt'
+
     def __init__(self,
         bucket: str,
         bucket_dir: str
@@ -55,16 +62,21 @@ class FixSpatialFiles:
         """
         self.s3 = s3fs.S3FileSystem()
 
-        # use a glob to list directory
-        logging.info(f"Reading {bucket_dir}")
-        self.all_files = self.s3.glob(f'{os.path.join(bucket, bucket_dir)}/{FixSpatialFiles.GLOB}')
+        # Don't use glob to list directory: process runs out of memory on EC2 with 32Gb of RAM
+        # logging.info(f"Reading {bucket_dir}")
+        # self.all_files = self.s3.glob(f'{os.path.join(bucket, bucket_dir)}/{FixSpatialFiles.GLOB}')
+        with open(FixSpatialFiles.SPATIAL_LIST_FILE, 'r') as fh:
+            self.all_files = fh.readlines()
+            self.all_files = [each.rstrip() for each in self.all_files]
 
+        #
         # To guarantee the same order of files if need to pick up the processing
         # in a middle
-        self.all_files = sorted(self.all_files)[:2]
+        self.all_files = sorted(self.all_files)
         logging.info(f"Number of files: {len(self.all_files)}")
 
         self.bucket = bucket
+        self.bucket_dir = bucket_dir
 
     def __call__(self, start_index: int):
         """
@@ -83,7 +95,7 @@ class FixSpatialFiles:
             num_tasks = FixSpatialFiles.CHUNK_SIZE if num_to_fix > FixSpatialFiles.CHUNK_SIZE else num_to_fix
 
             logging.info(f"Starting tasks {start}:{start+num_tasks}")
-            tasks = [dask.delayed(FixSpatialFiles.fix)(self.bucket, each, self.s3) for each in self.all_files[start:start+num_tasks]]
+            tasks = [dask.delayed(FixSpatialFiles.fix)(self.bucket, self.bucket_dir, each, self.s3) for each in self.all_files[start:start+num_tasks]]
             results = None
 
             with ProgressBar():
@@ -100,7 +112,32 @@ class FixSpatialFiles:
             num_to_fix -= num_tasks
             start += num_tasks
 
-    def fix(bucket: str, filename: str, s3):
+    def no__call__(self, start_index: int):
+        """
+        Fix order of listed coordinates.
+        This is sequential processing used for debugging only.
+        """
+        num_to_fix = len(self.all_files) - start_index
+
+        start = start_index
+        logging.info(f"{num_to_fix} files to fix...")
+
+        if num_to_fix <= 0:
+            logging.info(f"Nothing to fix, exiting.")
+            return
+
+        while num_to_fix > 0:
+            num_tasks = FixSpatialFiles.CHUNK_SIZE if num_to_fix > FixSpatialFiles.CHUNK_SIZE else num_to_fix
+
+            for each in self.all_files[start:start+num_tasks]:
+                logging.info(f"Starting {each}")
+                msgs = FixSpatialFiles.fix(self.bucket, each, self.s3)
+                logging.info("\n-->".join(msgs))
+
+            num_to_fix -= num_tasks
+            start += num_tasks
+
+    def fix(target_bucket: str, target_dir: str, filename: str, s3):
         """
         Fix order of the coordinates.
         """
@@ -108,24 +145,26 @@ class FixSpatialFiles:
         s3_client = boto3.client('s3')
 
         filename_tokens = filename.split(os.path.sep)
-        file_path = os.path.sep.join(filename_tokens[1:])
 
-        data = s3_client.get_object(Bucket=bucket, Key=file_path)
+        data = s3_client.get_object(Bucket=target_bucket, Key=filename)
         for line in data['Body'].iter_lines():
             all_lines.append(line)
 
         msgs = [f'Processing {filename} from:']
-        msgs.append(json.dumps(all_lines, indent=4))
+        msgs.append(f'{all_lines}')
 
         meta_filename = filename_tokens[-1]
 
         # Write to local spatial file
         with open(meta_filename, 'w') as fh:
-            fh.write(all_lines[0])
-            fh.write(all_lines[2])
-            fh.write(all_lines[3])
-            fh.write(all_lines[1])
+            fh.write(all_lines[0].decode('utf-8')+'\n')
+            fh.write(all_lines[2].decode('utf-8')+'\n')
+            fh.write(all_lines[3].decode('utf-8')+'\n')
+            fh.write(all_lines[1].decode('utf-8')+'\n')
 
+        msgs.extend(NSIDCFormat.upload_to_s3(meta_filename, target_dir, target_bucket, s3_client))
+
+        # Copy file back to the S3 bucket
         return msgs
 
 def main():
@@ -159,7 +198,7 @@ def main():
     logging.info(f"Args: {args}")
 
     fix_files = FixSpatialFiles(args.bucket, args.bucket_dir)
-    fix_files(args.start_granule)
+    fix_files(args.start_index)
 
 if __name__ == '__main__':
     main()
