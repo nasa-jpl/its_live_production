@@ -208,7 +208,7 @@ class NSIDCMosaicFormat:
 
         logging.info(f"Got {len(self.infiles)} files")
 
-    def no__call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
+    def __call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
         """
         ATTN: This method implements sequential processing for debugging purposes only.
 
@@ -222,22 +222,19 @@ class NSIDCMosaicFormat:
             logging.info(f"Nothing to process, exiting.")
             return
 
-        # Current start index into list of granules to process
+        # Current start index into list of files to process
         start = 0
 
         file_list = []
         while total_num_files > 0:
-            num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
+            logging.info(f"Starting {self.infiles[start]} {start} out of {init_total_files} total files")
+            results = NSIDCMosaicFormat.fix_file(target_bucket, target_dir, self.infiles[start], self.s3)
+            logging.info("\n-->".join(results))
 
-            logging.info(f"Starting mosaics {start}:{start+num_tasks} out of {init_total_files} total files")
-            for each in self.infiles[start:start+num_tasks]:
-                results = NSIDCMosaicFormat.fix_file(target_bucket, target_dir, each, self.s3)
-                logging.info("\n-->".join(results))
+            total_num_files -= 1
+            start += 1
 
-            total_num_files -= num_tasks
-            start += num_tasks
-
-    def __call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
+    def no__call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
         """
         Fix ITS_LIVE granules and create corresponding NSIDC meta files (spacial
         and premet).
@@ -309,12 +306,8 @@ class NSIDCMosaicFormat:
 
         with xr.open_dataset(local_file, engine='h5netcdf') as ds:
             mapping = None
-            # This handles already fixed files (with 'mapping' data variable) and
-            # original projection data variables
-            if DataVars.MAPPING in ds:
-                mapping = ds[DataVars.MAPPING]
 
-            elif DataVars.UTM_PROJECTION in ds:
+            if DataVars.UTM_PROJECTION in ds:
                 mapping = ds[DataVars.UTM_PROJECTION]
 
             elif DataVars.POLAR_STEREOGRAPHIC in ds:
