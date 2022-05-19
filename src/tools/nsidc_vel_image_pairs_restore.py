@@ -85,7 +85,7 @@ class FindGranulesToProcess:
             total_num_files -= num_tasks
             start += num_tasks
 
-    def __call__(self, target_bucket, target_dir, chunk_size=100, num_dask_workers=4):
+    def __call__(self, target_bucket, target_dir, chunk_size=200, num_dask_workers=8):
         """
         Collect ITS_LIVE granules that need to be reprocessed.
         """
@@ -100,6 +100,10 @@ class FindGranulesToProcess:
         start = 0
 
         file_list = []
+        prev_size = 0
+
+        json_file = 'nsidc_granules_to_fix.json'
+
         while total_num_files > 0:
             num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
 
@@ -118,14 +122,18 @@ class FindGranulesToProcess:
                 if each_file:
                     file_list.append(each_file)
 
+            # Store to file if found new granules to process
+            if len(file_list) > prev_size:
+                with open(json_file, 'w') as fh:
+                    json.dump(file_list, fh, indent=3)
+
+            prev_size = len(file_list)
             total_num_files -= num_tasks
             start += num_tasks
 
         logging.info(f'Found {len(file_list)} granules to reprocess')
 
-        json_file = 'nsidc_granules_to_fix.json'
-        with open(json_file, 'w') as fh:
-            json.dump(file_list, fh, indent=3)
+
 
         logging.info(f'Wrote files to fix to {json_file}')
 
