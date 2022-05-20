@@ -273,7 +273,8 @@ class NSIDCFormat:
     def __init__(
         self,
         start_index: int=0,
-        stop_index: int=-1
+        stop_index: int=-1,
+        use_local_file = None
     ):
         """
         Initialize the object.
@@ -281,23 +282,32 @@ class NSIDCFormat:
         # S3FS to access files stored in S3 bucket
         self.s3 = s3fs.S3FileSystem(anon=True)
 
-        # Granule files as read from the S3 granule summary file
-        self.infiles = None
-        logging.info(f"Opening granules file: {NSIDCFormat.GRANULES_FILE}")
+        self.local_file = use_local_file
 
-        with self.s3.open(NSIDCFormat.GRANULES_FILE, 'r') as ins3file:
-            self.infiles = json.load(ins3file)
-            logging.info(f"Loaded {len(self.infiles)} granules from '{NSIDCFormat.GRANULES_FILE}'")
+        # If file with granules to process is provided, just use it
+        if self.local_file:
+            with open(self.local_file, 'r') as fh:
+                self.infiles = json.load(fh)
+                logging.info(f"Loaded {len(self.infiles)} granules from '{self.local_file}'")
 
-        if start_index != 0 or stop_index != -1:
-            # Start index is provided for the granule to begin with
-            if stop_index != -1:
-                self.infiles = self.infiles[start_index:stop_index]
+        else:
+            # Granule files as read from the S3 granule summary file
+            self.infiles = None
+            logging.info(f"Opening granules file: {NSIDCFormat.GRANULES_FILE}")
 
-            else:
-                self.infiles = self.infiles[start_index:]
+            with self.s3.open(NSIDCFormat.GRANULES_FILE, 'r') as ins3file:
+                self.infiles = json.load(ins3file)
+                logging.info(f"Loaded {len(self.infiles)} granules from '{NSIDCFormat.GRANULES_FILE}'")
 
-            logging.info(f"Starting with granule #{start_index} (stop={stop_index}), remains {len(self.infiles)} granules to fix")
+            if start_index != 0 or stop_index != -1:
+                # Start index is provided for the granule to begin with
+                if stop_index != -1:
+                    self.infiles = self.infiles[start_index:stop_index]
+
+                else:
+                    self.infiles = self.infiles[start_index:]
+
+                logging.info(f"Starting with granule #{start_index} (stop={stop_index}), remains {len(self.infiles)} granules to fix")
 
     @staticmethod
     def object_exists(bucket, key: str) -> bool:
@@ -361,7 +371,7 @@ class NSIDCFormat:
             num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
 
             logging.info(f"Starting granules {start}:{start+num_tasks} out of {init_total_files} total granules")
-            tasks = [dask.delayed(NSIDCFormat.fix_granule)(target_bucket, target_dir, each, self.s3) for each in self.infiles[start:start+num_tasks]]
+            tasks = [dask.delayed(NSIDCFormat.fix_granule)(target_bucket, target_dir, each, self.s3, self.local_file) for each in self.infiles[start:start+num_tasks]]
             results = None
 
             with ProgressBar():
@@ -400,7 +410,7 @@ class NSIDCFormat:
         return msgs
 
     @staticmethod
-    def fix_granule(target_bucket: str, target_dir: str, infilewithpath: str, s3):
+    def fix_granule(target_bucket: str, target_dir: str, infilewithpath: str, s3, use_local_file):
         """
         Fix granule format and create corresponding metadata files as required by NSIDC.
         """
@@ -434,8 +444,10 @@ class NSIDCFormat:
         bucket = boto3.resource('s3').Bucket(target_bucket)
         bucket_granule = os.path.join(target_dir, new_filename)
 
-        # Store granules under 'landsat8' sub-directory in new S3 bucket
-        if NSIDCFormat.object_exists(bucket, bucket_granule):
+        # Check if fixed granules already exists - ignore the check if granule
+        # is provided from local file. Granules are provided from local file only
+        # if these granules need to be re-generated.
+        if use_local_file is None and NSIDCFormat.object_exists(bucket, bucket_granule):
             msgs.append(f'WARNING: {bucket.name}/{bucket_granule} already exists, skipping granule')
             return msgs
 
@@ -691,6 +703,14 @@ if __name__ == '__main__':
         help='Dry run, do not actually process any granules'
     )
 
+    parser.add_argument(
+        '--use_granule_file',
+        action='store',
+        type=str,
+        default=None,
+        help='Use provided file with granules to process [%(default)s]'
+    )
+
     args = parser.parse_args()
 
     NSIDCFormat.GRANULES_FILE = os.path.join(args.bucket, args.catalog_dir, args.granules_file)
@@ -703,7 +723,8 @@ if __name__ == '__main__':
 
     nsidc_format = NSIDCFormat(
         args.start_index,
-        args.stop_index
+        args.stop_index,
+        args.use_granule_file
     )
     nsidc_format(
         args.bucket,
