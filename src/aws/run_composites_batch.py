@@ -183,12 +183,19 @@ class DataCubeCompositeBatch:
                         continue
 
                     # Format cube composites filename:
-                    # s3://its-live-data/composites/annual/v02/N60W130/ITS_LIVE_vel_annual_EPSG3413_G0120_X-3250000_Y250000.zarr
-                    composite_filename = cube_filename.replace(FilenamePrefix.Datacube, FilenamePrefix.Composites)
+                    # s3://its-live-data/composites/annual/v02/N60W130/ITS_LIVE_velocity_120m_X-3250000_Y250000.zarr
+                    composite_filename =f"{FilenamePrefix.Composites}_{int(self.grid_size_str):03d}m_X{mid_x}_Y{mid_y}.zarr"
                     logging.info(f'Cube composite name: {composite_filename}')
 
                     composite_dir = bucket_dir.replace(bucket_dir_path, output_bucket_dir)
                     logging.info(f'Cube composite S3 directory: {composite_dir}')
+
+                    # Work around to process only failed composites from prevoius run
+                    # TODO: make a command-line option
+                    composite_exists = self.s3.ls(os.path.join(s3_bucket, composite_dir, composite_filename))
+                    if len(composite_exists) != 0:
+                        logging.info(f"Composite {os.path.join(composite_dir, composite_filename)} exists, skipping composite generation.")
+                        continue
 
                     cube_params = {
                         'inputCube': cube_filename,
