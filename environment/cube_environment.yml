@@ -23,7 +23,8 @@ dependencies:
   - dask==2.30.0
   - pandas
   - defaults::numpy
-  - numba==0.55.0
+  - numpy
+  - numba==0.55.1
   - h5py
   - h5netcdf
   - requests
