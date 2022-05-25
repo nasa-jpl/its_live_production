@@ -349,5 +349,5 @@ class FilenamePrefix:
     Filename prefixes used by ITS_LIVE data products.
     """
     Datacube   = 'ITS_LIVE_vel'
-    Composites = 'ITS_LIVE_vel_annual'
+    Composites = 'ITS_LIVE_velocity'
     Mosaics    = 'ITS_LIVE_velocity'
