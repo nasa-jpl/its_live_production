@@ -440,7 +440,7 @@ def create_M(y1, start_year, stop_year, dyr):
 
     return M
 
-@nb.jit(nopython=True)
+# @nb.jit(nopython=True)
 def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs):
     _two_pi = np.pi * 2
 
@@ -460,7 +460,7 @@ def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs):
     # w_d.reshape((len(w_d), 1))
 
     # Solve for coefficients of each column in the Vandermonde:
-    p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs)[0]
+    p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
 
     # Goodness of fit:
     d_model = (D * p).sum(axis=1)  # modeled displacements (m)
@@ -1615,11 +1615,13 @@ class ITSLiveComposite:
         Create datacube composite: cube time mean values.
         """
         # Loop through cube in chunks to minimize memory footprint
+        # x_index: 331
+        # y_index: 796
         x_start = 0
         x_num_to_process = self.cube_sizes[Coords.X]
 
         # For debugging only
-        # x_start = 120
+        # x_start = 300
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # x_num_to_process = 100
 
@@ -1631,7 +1633,7 @@ class ITSLiveComposite:
             y_num_to_process = self.cube_sizes[Coords.Y]
 
             # For debugging only
-            # y_start = 400
+            # y_start = 700
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # y_num_to_process = 100
 
@@ -2646,6 +2648,7 @@ class ITSLiveComposite:
                     error[global_j, global_i, :],
                     count[global_j, global_i, :]
                 )
+
                 init_time1 += init_runtime1
                 init_time2 += init_runtime2
                 init_time3 += init_runtime3
