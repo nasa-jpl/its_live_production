@@ -104,7 +104,7 @@ class ASFTransfer:
             logging.info(f"Starting tasks {start}:{start+num_tasks} out of {total_num_to_copy} total")
             for id in job_ids[start:start+num_tasks]:
                 logging.info(f'Processing id: {id}')
-                logging.info(f'--->HYP3.get_job_by_id: {ASFTransfer.HYP3.get_job_by_id(job_id)}')
+                logging.info(f'--->HYP3.get_job_by_id: {ASFTransfer.HYP3.get_job_by_id(id)}')
                 each_result, _ = ASFTransfer.copy_granule(id)
                 logging.info("-->".join(each_result))
                 ASFTransfer.PROCESSED_JOB_IDS.append(id)
