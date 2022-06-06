@@ -447,7 +447,11 @@ class ITSCube:
         self.logger.info(f"Removed known empty data granules ({len(self.skipped_granules[DataVars.SKIP_EMPTY_DATA])}): {len(granules)} granules remain")
 
         # Remove known wrong projection granules (per projection) from found_urls
-        self.skipped_granules[DataVars.SKIP_PROJECTION] = skipped_granules[DataVars.SKIP_PROJECTION]
+        # ATTN: int values get written as strings to json files, so make sure read back in values
+        #       for the keys are of int type
+        for each_key, each_value in skipped_granules[DataVars.SKIP_PROJECTION].items():
+            self.skipped_granules[DataVars.SKIP_PROJECTION][int(each_key)] = each_value
+
         known_granules = []
         for each in self.skipped_granules[DataVars.SKIP_PROJECTION].values():
             known_granules.extend(each)
