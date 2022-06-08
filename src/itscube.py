@@ -300,6 +300,10 @@ class ITSCube:
             found_urls = found_urls[:num_granules]
             self.logger.info(f"Examining only first {len(found_urls)} out of {total_num} found granules")
 
+        # Number of found URL's should report number of granules as returned by
+        # searchAPI to provide correct % value for skipped granules if updating the cube
+        self.num_urls_from_api = len(found_urls)
+
         urls, self.skipped_granules[DataVars.SKIP_DUPLICATE]  = self.skip_duplicate_l8_granules(found_urls)
 
         return urls
@@ -309,8 +313,6 @@ class ITSCube:
         Skip duplicate granules (the ones that have earlier processing date(s))
         for the same path row granule for Landsat8 data only.
         """
-        self.num_urls_from_api = len(found_urls)
-
         # Need to remove duplicate granules for the middle date: some granules
         # have newer processing date, keep those.
         keep_urls = {}
@@ -1202,8 +1204,10 @@ class ITSCube:
                 # cube_v = ds.v.sel(x=slice(self.grid_x.min(), self.grid_x.max()),
                 #                   y=slice(self.grid_y.max, self.grid_y.min)).copy()
 
-                # If it's a valid velocity layer, add it to the cube.
-                if np.any(mask_data.v.notnull()):
+                # If it's a valid velocity layer, add it to the cube,
+                # and skip granules that have only one cell in cube's polygon
+                if np.any(mask_data.v.notnull()) and \
+                   len(mask_data.x.values) > 1 and len(mask_data.y.values > 1):
                     mask_data = mask_data.load()
 
                     # Verify that granule is defined on the same grid cell size as
