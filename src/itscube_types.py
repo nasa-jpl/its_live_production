@@ -343,6 +343,7 @@ class CubeJson:
     EPSG_PREFIX = 'EPSG'
     URL = 'zarr_url'
     EXIST_FLAG = 'datacube_exist'
+    REGION = 'region'
 
 class FilenamePrefix:
     """
@@ -351,3 +352,31 @@ class FilenamePrefix:
     Datacube   = 'ITS_LIVE_vel'
     Composites = 'ITS_LIVE_velocity'
     Mosaics    = 'ITS_LIVE_velocity'
+
+def datacube_filename_zarr(epsg_format: str, grid_size: int, mid_x: int, mid_y: int):
+    """
+    Format filename for the datacube:
+    ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr
+    """
+    return f"{FilenamePrefix.Datacube}_{epsg_format}_G{grid_size:04d}_X{mid_x}_Y{mid_y}.zarr"
+
+def composite_filename_zarr(grid_size: str, mid_x: int, mid_y: int):
+    """
+    Format filename for the datacube's composite:
+    ITS_LIVE_velocity_120m_X-3250000_Y250000.zarr
+    """
+    return f"{FilenamePrefix.Composites}_{int(grid_size):03d}m_X{mid_x}_Y{mid_y}.zarr"
+
+def annual_mosaics_filename_nc(grid_size: str, region: str, year_date, version: str):
+    """
+    Format filename for the annual mosaics of the region:
+    ITS_LIVE_velocity_120m_ALA_2013_v02.nc
+    """
+    return f"{FilenamePrefix.Mosaics}_{grid_size}m_{region}_{year_date.year}_{version}.nc"
+
+def summary_mosaics_filename_nc(grid_size: str, region: str, version: str):
+    """
+    Format filename for the summary mosaics of the region:
+    ITS_LIVE_velocity_120m_ALA_2013_v02.nc
+    """
+    return f"{FilenamePrefix.Mosaics}_{grid_size}m_{region}_0000_{version}.nc"
