@@ -61,7 +61,7 @@ def main(input_file: str, output_file: str):
         for each in ['dh', 'rmse', 'quality_flag']:
             encoding_settings[each]['chunks'] = chunks
 
-        chunks = (1000, 1000)
+        chunks = (10, 10)
         for each in ['h', 'basin']:
             encoding_settings[each]['chunks'] = chunks
 
