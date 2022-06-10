@@ -1,10 +1,30 @@
 """
 ITSLiveMosaics class creates yearly mosaics of ITS_LIVE datacubes for the region.
 
-Command example:
+Command examples
+================
+* Generate mosaics for ALA region:
+ ** use cube definitions from tools/catalog_datacubes_v02.json
+ ** use only cubes which center point falls within region polygon as defined by
+   aws/regions/Alaska.geojson
+ ** create mosaics in 3413 EPSG projection code
+
 python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
     --processCubesWithinPolygon aws/regions/Alaska.geojson -e '[3413]'
     --mosaicsEpsgCode 3413 -r Alaska
+
+python ./itslive_annual_mosaics.py -c ~/itslive_data/catalog_v2_Alaska.json
+    --processCubesWithinPolygon aws/regions/Alaska.geojson -r ALA
+    -e '[3413]' --mosaicsEpsgCode 3413
+
+* Generate mosaics for HMA region:
+ ** use cube definitions from tools/catalog_datacubes_v02.json
+ ** use only cubes as listed in HMA_datacubes.json (see extract_region_cubes.py
+   helper script to extract cubes for the region)
+ ** create mosaics in 102027 ESRI projection code
+python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
+    --processCubesFile HMA_datacubes.json -r HMA
+    --mosaicsEpsgCode 'ESRI:102027'
 
 Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Green (JPL), Mark Fahnestock (UAF)
 """
@@ -31,7 +51,15 @@ import xarray as xr
 # Local imports
 from grid import Bounds
 import itslive_utils
-from itscube_types import Coords, DataVars, BatchVars, CubeJson, FilenamePrefix
+from itscube_types import \
+    Coords, \
+    DataVars, \
+    BatchVars, \
+    CubeJson, \
+    FilenamePrefix, \
+    annual_mosaics_filename_nc, \
+    composite_filename_zarr, \
+    summary_mosaics_filename_nc
 from itslive_composite import CompDataVars, CompOutputFormat
 
 # Set up logging
@@ -60,6 +88,17 @@ class MosaicsOutputFormat:
         CompOutputFormat.URL:          COMPOSITES_URL
     }
 
+    AUTHOR = 'author'
+    INSTITUTION = 'institution'
+    REGION = 'region'
+    YEAR = 'year'
+
+    ATTR_VALUES = {
+        AUTHOR:      'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)',
+        INSTITUTION: 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
+    }
+
+
 class ITSLiveAnnualMosaics:
     """
     Class to build annual mosaics based on composites for ITS_LIVE datacubes.
@@ -82,6 +121,10 @@ class ITSLiveAnnualMosaics:
     URL = ''
 
     CELL_SIZE = 120
+
+    # Chunk size to use for writing to NetCDF file
+    # (otherwise running out of memory if attempting to write the whole dataset to the file)
+    CHUNK_SIZE = 5000
 
     REGION = None
 
@@ -136,7 +179,7 @@ class ITSLiveAnnualMosaics:
         CompOutputFormat.URL
     ]
 
-    def __init__(self, epsg: int, grid_size: int, is_dry_run: bool):
+    def __init__(self, epsg: int, is_dry_run: bool):
         """
         Initialize object.
 
@@ -146,7 +189,7 @@ class ITSLiveAnnualMosaics:
                     mosaics.
         """
         self.epsg = epsg
-        self.grid_size_str = f'{grid_size:03d}'
+        self.grid_size_str = f'{ITSLiveAnnualMosaics.CELL_SIZE:03d}'
         self.is_dry_run = is_dry_run
 
         # Read datacube composites from S3 bucket
@@ -156,7 +199,7 @@ class ITSLiveAnnualMosaics:
         # EPSG: {Y: {X: composite_file}}
         self.composites = {}
 
-        # Opened composites xr.Dataset objects
+        # Opened composites xr.Dataset objects for the currently processed EPSG code
         self.composites_ds = {}
 
         # Mapping xr.DataArray
@@ -167,6 +210,9 @@ class ITSLiveAnnualMosaics:
         self.x_coords = []
         self.y_coords = []
         self.sensor_coords = []
+
+        # Common attributes for all mosaics
+        self.attrs = {}
 
         # Date when mosaics were created/updated
         self.date_created = datetime.datetime.now().strftime('%d-%b-%Y %H:%M:%S')
@@ -191,8 +237,32 @@ class ITSLiveAnnualMosaics:
         """
         self.collect_composites(cubes_file, s3_bucket, cube_dir, composite_dir)
 
-        result_files = self.make_mosaics(s3_bucket, mosaics_dir)
+        # If it's multi-EPSG region, create mosaics per each EPSG code first, then
+        # combine them into target EPSG
+        check_for_epsg = (len(self.composites) == 1)
 
+        # Disable write to the S3 bucket if it's multi-EPSG mosaics:
+        # create mosaics per each of EPSG, re-project them into target EPSG,
+        # then combine them into one mosaic and copy to the target S3 bucket
+        # OR
+        # if it's a dry run - don't actually push results to the S3 bucket
+        copy_to_s3 = check_for_epsg or self.is_dry_run
+
+        result_files = []
+        for each_epsg in self.composites.keys():
+            logging.info(f'Opening annual composites for EPSG={each_epsg}')
+            epsg = self.composites[each_epsg]
+            epsg_result_files = self.make_mosaics(epsg, s3_bucket, mosaics_dir, check_for_epsg, copy_to_s3)
+
+            logging.info(f'Created mosaics files: {epsg_result_files}')
+            result_files.extend(epsg_result_files)
+
+        # TODO:
+        # if len(self.composites) > 1:
+        #     # Re-project data to the same target EPSG code
+        #     result_files = self.merge_epsg_mosaics(s3_bucket, mosaics_dir)
+
+        # Otherwise it's only one projection mosaics and we are done
         return result_files
 
     def collect_composites(
@@ -213,6 +283,7 @@ class ITSLiveAnnualMosaics:
         cube_dir:  Directory path within S3 bucket that stores datacubes.
         composite_dir: Directory path within S3 bucket that stores datacubes' composites.
         """
+        logging.info(f'BatchVars.POLYGON_SHAPE: {BatchVars.POLYGON_SHAPE}')
         with open(cubes_file, 'r') as fhandle:
             cubes = json.load(fhandle)
 
@@ -270,7 +341,7 @@ class ITSLiveAnnualMosaics:
                     # Include only specific EPSG code(s) if specified
                     if len(BatchVars.EPSG_TO_GENERATE) and \
                        epsg_code not in BatchVars.EPSG_TO_GENERATE:
-                       logging.info(f'Skipping {epsg_code} which is not in {BatchVars.EPSG_TO_GENERATE}')
+                       # logging.info(f'Skipping {epsg_code} which is not in {BatchVars.EPSG_TO_GENERATE}')
                        continue
 
                     # Exclude specific EPSG code(s) if specified
@@ -286,10 +357,10 @@ class ITSLiveAnnualMosaics:
                     mid_y = int(y_bounds.middle_point())
 
                     # Get mid point to the nearest 50
-                    logging.info(f"Mid point: x={mid_x} y={mid_y}")
+                    # logging.info(f"Mid point: x={mid_x} y={mid_y}")
                     mid_x = int(math.floor(mid_x/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
                     mid_y = int(math.floor(mid_y/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
-                    logging.info(f"Mid point at {BatchVars.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
+                    # logging.info(f"Mid point at {BatchVars.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
 
                     # Convert to lon/lat coordinates to format s3 bucket path
                     # for the datacube
@@ -301,18 +372,15 @@ class ITSLiveAnnualMosaics:
 
                     if BatchVars.POLYGON_SHAPE and \
                        (not BatchVars.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1]))):
-                        logging.info(f"Skipping non-polygon point: {mid_lon_lat}")
+                        # logging.info(f"Skipping non-polygon point: {mid_lon_lat}")
                         # Provided polygon does not contain cube's center point
                         continue
 
-                    bucket_dir = itslive_utils.point_to_prefix(mid_lon_lat[1], mid_lon_lat[0], cube_dir)
-
                     cube_filename = os.path.basename(properties[CubeJson.URL])
-                    logging.info(f'Cube name: {cube_filename}')
 
                     # Process specific datacubes only
                     if len(BatchVars.CUBES_TO_GENERATE) and cube_filename not in BatchVars.CUBES_TO_GENERATE:
-                        logging.info(f"Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
+                        # logging.info(f"Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
                         continue
 
                     # Format filename for the cube's composites
@@ -327,9 +395,8 @@ class ITSLiveAnnualMosaics:
                         logging.info(f"Datacube {cube_s3} does not exist, skipping.")
                         continue
 
-                    composite_s3 = cube_s3.replace(cube_dir, composite_dir)
-
-                    composite_s3 = composite_s3.replace(FilenamePrefix.Datacube, FilenamePrefix.Composites)
+                    s3_composite_dir = itslive_utils.point_to_prefix(mid_lon_lat[1], mid_lon_lat[0], composite_dir)
+                    composite_s3 = os.path.join(s3_bucket, s3_composite_dir, composite_filename_zarr(ITSLiveAnnualMosaics.CELL_SIZE, mid_x, mid_y))
                     logging.info(f'Composite file: {composite_s3}')
 
                     # Check if composite exists in S3 bucket (should exist, just to be sure)
@@ -337,6 +404,8 @@ class ITSLiveAnnualMosaics:
                     if len(composite_exists) == 0:
                         logging.info(f"Datacube composite {composite_s3} does not exist, skipping.")
                         continue
+
+                    logging.info(f'Cube name: {cube_filename}')
 
                     # Update EPSG: Y: X: composite_s3_path nested dictionary
                     epsg_dict = self.composites.setdefault(epsg_code, {})
@@ -347,63 +416,91 @@ class ITSLiveAnnualMosaics:
                     # s3://its-live-data/composites/annual/v02/N60W130/ITS_LIVE_vel_annual_EPSG3413_G0120_X-3250000_Y250000.zarr
                     logging.info(f'Cube composite name: {composite_s3}')
 
-                    # if self.is_dry_run is False:
                     num_processed += 1
 
             logging.info(f"Number of collected composites: {num_processed}")
             logging.info(f'Collected composites: {json.dumps(self.composites, indent=4)}')
 
-    def make_mosaics(self, s3_bucket: str, mosaics_dir: str):
+    def make_mosaics(self, epsg: dict, s3_bucket: str, mosaics_dir: str, check_for_epsg: bool, copy_to_s3: bool):
         """
-        Build annual mosaics from collected datacube composites.
+        Build annual mosaics from collected datacube composites per each EPSG code.
 
+        epsg: Dictionary of center_x->center_y->s3_path_to_composite format to
+            provide composites that should contribute to mosaics.
+        s3_bucket: S3 bucket that stores all data (assumes that all datacubes,
+            composites, and mosaics are stored in the same bucket).
         mosaics_dir: Directory path within S3 bucket that stores datacubes' mosaics.
+        check_for_epsg: Boolean flag to indicate if source data should be of the same EPSG code as
+            requested target EPSG for mosaics.
+        copy_to_s3: Boolean flag to indicate if generated mosaics files should be copied
+            to the target S3 bucket.
         """
         # xarray.Dataset's objects for opened Zarr composites
         self.composites_ds = {}
 
-        for each_epsg in self.composites.keys():
-            logging.info(f'Opening annual composites for EPSG={each_epsg}')
-            epsg = self.composites[each_epsg]
+        # "united" coordinates for mosaics
+        self.time_coords = []
+        self.x_coords = []
+        self.y_coords = []
+        self.sensor_coords = []
 
-            # For each y from sorted list of composites center's y's:
-            for each_mid_y in sorted(epsg.keys()):
-                all_y = epsg[each_mid_y]
-                # For each x from sorted list of composites center's x:
-                for each_mid_x in sorted(all_y.keys()):
-                    composite_s3_path = all_y[each_mid_x]
+        # Common attributes for all mosaics of currently processed EPSG code
+        self.attrs = {}
 
-                    # TODO: Should preserve s3_store or just reopen the composite when needed?
-                    s3_store = s3fs.S3Map(root=composite_s3_path, s3=self.s3, check=False)
-                    ds_from_zarr = xr.open_dataset(s3_store, decode_timedelta=False, engine='zarr', consolidated=True)
-                    ds_projection = int(ds_from_zarr.attrs['projection'])
+        gc.collect()
 
-                    # Make sure all composites are of the target projection
-                    if ds_projection != self.epsg:
-                        raise RuntimeError(f'Expected composites in {self.epsg} projection, got {ds_projection} for {composite_s3_path}.')
+        # Current projection for the mosaics
+        ds_projection = None
 
-                    ds_time = [t.astype('M8[ms]').astype('O') for t in ds_from_zarr.time.values]
-                    # Store open cube's composites and corresponding metadata
-                    self.composites_ds[composite_s3_path] = ITSLiveAnnualMosaics.Composite(
-                        ITSLiveAnnualMosaics.CompositeS3(ds_from_zarr, s3_store),
-                        ds_from_zarr.x.values,
-                        ds_from_zarr.y.values,
-                        [each_t.year for each_t in ds_time],
-                        ds_from_zarr.sensor.values.tolist()
-                    )
+        # For each y from sorted list of composites center's y's:
+        for each_mid_y in sorted(epsg.keys()):
+            all_y = epsg[each_mid_y]
+            # For each x from sorted list of composites center's x:
+            for each_mid_x in sorted(all_y.keys()):
+                composite_s3_path = all_y[each_mid_x]
 
-                    # Collect coordinates
-                    self.x_coords.append(ds_from_zarr.x.values)
-                    self.y_coords.append(ds_from_zarr.y.values)
-                    self.time_coords.append(ds_time)
-                    self.sensor_coords.append(ds_from_zarr.sensor.values)
+                # TODO: Should preserve s3_store or just reopen the composite when needed?
+                s3_store = s3fs.S3Map(root=composite_s3_path, s3=self.s3, check=False)
+                ds_from_zarr = xr.open_dataset(s3_store, decode_timedelta=False, engine='zarr', consolidated=True)
+                ds_projection = int(ds_from_zarr.attrs['projection'])
+
+                # # Make sure all composites are of the target projection
+                if check_for_epsg and (ds_projection != self.epsg):
+                    raise RuntimeError(f'Expected composites in {self.epsg} projection, got {ds_projection} for {composite_s3_path}.')
+
+                ds_time = [t.astype('M8[ms]').astype('O') for t in ds_from_zarr.time.values]
+                # Store open cube's composites and corresponding metadata
+                self.composites_ds[composite_s3_path] = ITSLiveAnnualMosaics.Composite(
+                    ITSLiveAnnualMosaics.CompositeS3(ds_from_zarr, s3_store),
+                    ds_from_zarr.x.values,
+                    ds_from_zarr.y.values,
+                    [each_t.year for each_t in ds_time],
+                    ds_from_zarr.sensor.values.tolist()
+                )
+
+                # Collect coordinates
+                self.x_coords.append(ds_from_zarr.x.values)
+                self.y_coords.append(ds_from_zarr.y.values)
+                self.time_coords.append(ds_time)
+                self.sensor_coords.append(ds_from_zarr.sensor.values)
 
         # Create one large dataset per each year
         self.time_coords = sorted(list(set(np.concatenate(self.time_coords))))
+
         self.x_coords = sorted(list(set(np.concatenate(self.x_coords))))
         self.y_coords = sorted(list(set(np.concatenate(self.y_coords))))
+
+        # Compute cell size in x and y dimension
+        x_cell = self.x_coords[1] - self.x_coords[0]
+        y_cell = self.y_coords[1] - self.y_coords[0]
+
+        self.x_coords = np.arange(self.x_coords[0], self.x_coords[-1]+1, x_cell)
+        self.y_coords = np.arange(self.y_coords[0], self.y_coords[-1]+1, y_cell)
+
         # y coordinate in EPSG is always in ascending order
         self.y_coords = np.flip(self.y_coords)
+        y_cell = self.y_coords[1] - self.y_coords[0]
+
         self.sensor_coords = sorted(list(set(np.concatenate(self.sensor_coords))))
         logging.info(f'Got unique sensor groups: {self.sensor_coords}')
 
@@ -424,9 +521,6 @@ class ITSLiveAnnualMosaics:
 
         # Set GeoTransform to correspond to the mosaic's tile:
         # format GeoTransform
-        x_cell = self.x_coords[1] - self.x_coords[0]
-        y_cell = self.y_coords[1] - self.y_coords[0]
-
         # Sanity check: check cell size for all mosaics against target cell size
         if ITSLiveAnnualMosaics.CELL_SIZE != x_cell and \
            ITSLiveAnnualMosaics.CELL_SIZE != np.abs(y_cell):
@@ -439,28 +533,40 @@ class ITSLiveAnnualMosaics:
 
         output_files = []
 
-        if not self.is_dry_run:
-            # Create annual mosaics
-            logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION}')
-            for each_year in self.time_coords:
-                output_files.append(self.create_annual_mosaics(first_ds, each_year, s3_bucket, mosaics_dir))
+        # Create summary mosaic (to store all 2d data variables from all composites)
+        output_files.append(self.create_summary_mosaics(ds_projection, first_ds, s3_bucket, mosaics_dir, copy_to_s3))
 
-            # Create summary mosaic (to store all 2d data variables from all composites)
-            output_files.append(self.create_summary_mosaics(first_ds, s3_bucket, mosaics_dir))
+        # Create annual mosaics
+        logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION}')
+        for each_year in self.time_coords:
+            output_files.append(self.create_annual_mosaics(ds_projection, first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3))
 
         return output_files
 
-    def create_annual_mosaics(self, first_ds, year_date, s3_bucket, mosaics_dir):
+    def merge_epsg_mosaics(self, s3_bucket: str, mosaics_dir: str):
+        """
+        Build annual mosaics from collected datacube composites.
+
+        s3_bucket: S3 bucket that stores all data (assumes that all datacubes,
+                   composites, and mosaics are stored in the same bucket).
+        mosaics_dir: Directory path within S3 bucket that stores datacubes' mosaics.
+        """
+        # TODO: merge all EPSG mosaics and re-project data to the target EPSG code
+
+    def create_annual_mosaics(self, ds_projection, first_ds, year_date, s3_bucket, mosaics_dir, copy_to_s3):
         """
         Create mosaics for a specific year and store it to NetCDF format file in
         S3 bucket if provided.
 
+        ds_projection: EPSG projection for the current mosaics.
         first_ds: xarray.Dataset object that represents any (first) composite dataset.
                   It's used to collect global attributes that are applicable to the
                   mosaics.
         year_date: Datetime object for the mosaic to create.
         s3_bucket: AWS S3 bucket to place result mosaics file in.
         mosaics_dir: AWS S3 directory to place mosaics in.
+        copy_to_s3: Boolean flag to indicate if generated mosaics files should be copied
+            to the target S3 bucket.
         """
         logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION} region for {year_date.year} year')
         # Dataset to represent annual mosaic
@@ -478,17 +584,17 @@ class ITSLiveAnnualMosaics:
                 )
             },
             attrs = {
-                'author': 'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)',
+                MosaicsOutputFormat.AUTHOR: MosaicsOutputFormat.ATTR_VALUES[MosaicsOutputFormat.AUTHOR],
                 CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE],
-                'institution': 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology',
-                'region': ITSLiveAnnualMosaics.REGION,
-                'year': year_date.strftime('%d-%b-%Y')
+                MosaicsOutputFormat.INSTITUTION: MosaicsOutputFormat.ATTR_VALUES[MosaicsOutputFormat.INSTITUTION],
+                MosaicsOutputFormat.REGION: ITSLiveAnnualMosaics.REGION,
+                MosaicsOutputFormat.YEAR: year_date.strftime('%d-%b-%Y')
             }
         )
 
         ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT] = "Area"
         ds.attrs['mosaics_software_version'] = ITSLiveAnnualMosaics.VERSION
-        ds.attrs['projection'] = str(self.epsg)
+        ds.attrs['projection'] = str(ds_projection)
         ds.attrs['title'] = 'ITS_LIVE annual mosaics of image_pair velocities'
         ds.attrs['date_created'] = self.date_created
 
@@ -519,60 +625,62 @@ class ITSLiveAnnualMosaics:
             else:
                 logging.warning(f'{each_file} does not have data for {year_date.year} year, skipping.')
 
-        # Collect coordinates of polygons union
-        geo_polygon = None
         # Set cumulative attributes for the mosaic
         for each_key, each_value in all_attributes.items():
             key = each_key
+            value = None
 
             if each_key in MosaicsOutputFormat.ATTR_MAP:
                 # Get key name for the mosaic's attribute
                 key = MosaicsOutputFormat.ATTR_MAP[each_key]
 
-            value = json.dumps(each_value)
+            if each_key in self.attrs:
+                # If attribute value was already generated
+                value = self.attrs[each_key]
 
-            if each_key in [CompOutputFormat.GEO_POLYGON, CompOutputFormat.PROJ_POLYGON]:
-                # Join polygons
-                polygons = [geometry.Polygon(json.loads(each_polygon)) for each_polygon in each_value]
-
-                # Unite polygons
-                united_polygon = unary_union(polygons)
-                # By default coordinates are returned as tuple, convert to "list"
-                # datatype to be consistent with other data products
-                value = json.dumps([list(each) for each in united_polygon.exterior.coords])
-
-                if each_key == CompOutputFormat.GEO_POLYGON:
-                    geo_polygon = list(united_polygon.exterior.coords)
+            else:
+                value = json.dumps(each_value)
 
             ds.attrs[key] = value
 
-        # Set center point's longitude and latitude for the mosaic: each mosaic
-        # might have a different coverage due to different coverage for different
-        # years, so compute it per mosaic
-        lon = Bounds([each[0] for each in geo_polygon])
-        lat = Bounds([each[1] for each in geo_polygon])
-
-        ds.attrs['latitude']  = f"{lat.middle_point():.2f}"
-        ds.attrs['longitude'] = f"{lon.middle_point():.2f}"
+        # Set center point's longitude and latitude for the mosaic
+        for each_attr in ['latitude', 'longitude']:
+            ds.attrs[each_attr] = self.attrs[each_attr]
 
         # Format filename for the mosaics
-        mosaics_filename = f'{FilenamePrefix.Mosaics}_{self.grid_size_str}m_{ITSLiveAnnualMosaics.REGION}_{year_date.year}_{ITSLiveAnnualMosaics.FILE_VERSION}.nc'
+        # mosaics_filename = f'{FilenamePrefix.Mosaics}_{self.grid_size_str}m_{ITSLiveAnnualMosaics.REGION}_{year_date.year}_{ITSLiveAnnualMosaics.FILE_VERSION}.nc'
+        mosaics_filename = annual_mosaics_filename_nc(self.grid_size_str, ITSLiveAnnualMosaics.REGION, year_date, ITSLiveAnnualMosaics.FILE_VERSION)
 
-        ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
-        ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
+        if copy_to_s3:
+            ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
+            ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
+
+        else:
+            # Create sub-directory to store EPSG mosaics to
+            local_dir = str(ds_projection)
+            if not os.path.exists(local_dir):
+                logging.info(f'Creating EPSG specific directory to write mosaics to: {local_dir}')
+                os.mkdir(local_dir)
+
+            # Append local path to the filename to store mosaics to
+            mosaics_filename = os.path.join(local_dir, mosaics_filename)
 
         # Write mosaic to NetCDF format file
-        ITSLiveAnnualMosaics.annual_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename, self.is_dry_run)
+        ITSLiveAnnualMosaics.annual_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename, copy_to_s3)
 
         return mosaics_filename
 
     @staticmethod
-    def annual_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str, dry_run: bool):
+    def annual_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str, copy_to_s3: bool):
         """
         Store datacube annual mosaics to NetCDF store.
         """
-        target_file = os.path.join(s3_bucket, bucket_dir, filename)
-        logging.info(f'Writing annual mosaics to {target_file}')
+        target_file = filename
+
+        if copy_to_s3:
+            target_file = os.path.join(s3_bucket, bucket_dir, filename)
+
+        logging.info(f'Writing summary mosaics to {target_file}')
 
         if CompDataVars.TIME in ds:
             # "time" coordinate can propagate into dataset when assigning
@@ -595,33 +703,36 @@ class ITSLiveAnnualMosaics:
             ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                'dtype': np.float,
+                'dtype': np.float32,
                 "zlib": True, "complevel": 2, "shuffle": True
             })
 
         for each in [CompDataVars.COUNT]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-                'dtype': 'short',
+                'dtype': np.short,
                 "zlib": True, "complevel": 2, "shuffle": True
             })
 
         # Write locally
         ds.to_netcdf(f'{filename}', engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
 
-        if not dry_run:
+        if copy_to_s3:
             ITSLiveAnnualMosaics.copy_to_s3_bucket(filename, target_file)
 
-    def create_summary_mosaics(self, first_ds, s3_bucket, mosaics_dir):
+    def create_summary_mosaics(self, ds_projection, first_ds, s3_bucket, mosaics_dir, copy_to_s3):
         """
         Create summary mosaics and store it to NetCDF format file in
         S3 bucket if provided.
 
+        ds_projection: EPSG projection for the current mosaics.
         first_ds: xarray.Dataset object that represents any (first) composite dataset.
                   It's used to collect global attributes that are applicable to the
                   mosaics.
         s3_bucket: AWS S3 bucket to place result mosaics file in.
         mosaics_dir: AWS S3 directory to place mosaics in.
+        copy_to_s3: Boolean flag to indicate if generated mosaics files should be copied
+            to the target S3 bucket.
         """
         logging.info(f'Creating summary mosaics for {ITSLiveAnnualMosaics.REGION} region')
 
@@ -648,16 +759,16 @@ class ITSLiveAnnualMosaics:
                 )
             },
             attrs = {
-                'author': 'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)',
+                MosaicsOutputFormat.AUTHOR: MosaicsOutputFormat.ATTR_VALUES[MosaicsOutputFormat.AUTHOR],
                 CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE],
-                'institution': 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology',
-                'region': ITSLiveAnnualMosaics.REGION
+                MosaicsOutputFormat.INSTITUTION: MosaicsOutputFormat.ATTR_VALUES[MosaicsOutputFormat.INSTITUTION],
+                MosaicsOutputFormat.REGION: ITSLiveAnnualMosaics.REGION
             }
         )
 
         ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT] = "Area"
         ds.attrs['mosaics_software_version'] = ITSLiveAnnualMosaics.VERSION
-        ds.attrs['projection'] = self.epsg
+        ds.attrs['projection'] = ds_projection
         ds.attrs['title'] = 'ITS_LIVE summary mosaics of image_pair velocities'
         ds.attrs['date_created'] = self.date_created
         # Create sensors_labels = "Band 1: S1A_S1B; Band 2: S2A_S2B; Band 3: L8_L9";
@@ -720,7 +831,7 @@ class ITSLiveAnnualMosaics:
             #     break
 
         # Collect coordinates of polygons union
-        geo_polygon = None
+        geo_polygon = []
         # Set cumulative attributes for the mosaic
         for each_key, each_value in all_attributes.items():
             key = each_key
@@ -729,49 +840,92 @@ class ITSLiveAnnualMosaics:
                 # Get key name for the mosaic's attribute
                 key = MosaicsOutputFormat.ATTR_MAP[each_key]
 
-            value = json.dumps(each_value)
+            value = each_value
 
             if each_key in [CompOutputFormat.GEO_POLYGON, CompOutputFormat.PROJ_POLYGON]:
+                # ds[each_key] = self.attrs[each_key]
+
                 # Join polygons
                 polygons = [geometry.Polygon(json.loads(each_polygon)) for each_polygon in each_value]
 
                 # Unite polygons
                 united_polygon = unary_union(polygons)
-                # By default coordinates are returned as tuple, convert to "list"
-                # datatype to be consistent with other data products
-                value = json.dumps([list(each) for each in united_polygon.exterior.coords])
 
-                if each_key == CompOutputFormat.GEO_POLYGON:
-                    geo_polygon = list(united_polygon.exterior.coords)
+                if isinstance(united_polygon, geometry.MultiPolygon):
+                    # Collect geometry per polygon
+                    value = []
+                    for each_obj in united_polygon.geoms:
+                        # By default coordinates are returned as tuple, convert to "list"
+                        # datatype to be consistent with other data products
+                        value.append([list(each) for each in each_obj.exterior.coords])
 
-            ds.attrs[key] = value
+                        if each_key == CompOutputFormat.GEO_POLYGON:
+                            # Collect numeric coordinates to calculate center lon/lat for each polygon
+                            geo_polygon.append(list(each_obj.exterior.coords))
 
-        # Set center point's longitude and latitude for the mosaic: each mosaic
-        # might have a different coverage due to different coverage for different
-        # years, so compute it per mosaic
-        lon = Bounds([each[0] for each in geo_polygon])
-        lat = Bounds([each[1] for each in geo_polygon])
+                # This is just a single polygon
+                else:
+                    # By default coordinates are returned as tuple, convert to "list"
+                    # datatype to be consistent with other data products
+                    value.append([list(each) for each in united_polygon.exterior.coords])
 
-        ds.attrs['latitude']  = f"{lat.middle_point():.2f}"
-        ds.attrs['longitude'] = f"{lon.middle_point():.2f}"
+                    if each_key == CompOutputFormat.GEO_POLYGON:
+                        geo_polygon.append(list(united_polygon.exterior.coords))
+
+                # Save to be used by annual mosaics
+                self.attrs[each_key] = json.dumps(value)
+
+            ds.attrs[key] = json.dumps(value)
+
+        # Set center point's longitude and latitude for each polygon (if more than one) of the mosaic
+        lon = []
+        lat = []
+        for each_polygon in geo_polygon:
+            lon.append(Bounds([each[0] for each in each_polygon]).middle_point())
+            lat.append(Bounds([each[1] for each in each_polygon]).middle_point())
+
+        ds.attrs['latitude']  = json.dumps([f"{each_lat:.2f}" for each_lat in lat])
+        ds.attrs['longitude'] = json.dumps([f"{each_lon:.2f}" for each_lon in lon])
+
+        # Save attributes for the use by annual mosaics
+        for each_attr in ['latitude', 'longitude']:
+            self.attrs[each_attr] = ds.attrs[each_attr]
 
         # Format filename for the mosaics
-        mosaics_filename = f'{FilenamePrefix.Mosaics}_{self.grid_size_str}m_{ITSLiveAnnualMosaics.REGION}_0000_{ITSLiveAnnualMosaics.FILE_VERSION}.nc'
+        mosaics_filename = summary_mosaics_filename_nc(self.grid_size_str, ITSLiveAnnualMosaics.REGION, ITSLiveAnnualMosaics.FILE_VERSION)
 
-        ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
-        ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
+        if copy_to_s3:
+            ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
+            ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
+
+        else:
+            # Create sub-directory to store EPSG mosaics to
+            local_dir = str(ds_projection)
+            if not os.path.exists(local_dir):
+                logging.info(f'Creating EPSG specific directory to write mosaics to: {local_dir}')
+                os.mkdir(local_dir)
+
+            # Append local path to the filename to store mosaics to
+            mosaics_filename = os.path.join(local_dir, mosaics_filename)
+
+        # Convert dataset to Dask dataset not to run out of memory while writing to the file
+        ds = ds.chunk(chunks={'x': ITSLiveAnnualMosaics.CHUNK_SIZE, 'y': ITSLiveAnnualMosaics.CHUNK_SIZE})
 
         # Write mosaic to NetCDF format file
-        ITSLiveAnnualMosaics.summary_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename, self.is_dry_run)
+        ITSLiveAnnualMosaics.summary_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename, copy_to_s3)
 
         return mosaics_filename
 
     @staticmethod
-    def summary_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str, dry_run: bool):
+    def summary_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str, copy_to_s3: bool):
         """
         Store datacube summary mosaics to NetCDF store.
         """
-        target_file = os.path.join(s3_bucket, bucket_dir, filename)
+        target_file = filename
+
+        if copy_to_s3:
+            target_file = os.path.join(s3_bucket, bucket_dir, filename)
+
         logging.info(f'Writing summary mosaics to {target_file}')
 
         # Set encoding
@@ -781,6 +935,7 @@ class ITSLiveAnnualMosaics:
 
         # Set dtype for "sensor" dimension to S1 so QGIS can at least see the dimension indices.
         # QGIS does not display even indices if dtype==str.
+        # encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'S1', "zlib": True, "complevel": 2, "shuffle": True})
         encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'S1'})
 
         # Settings for "float" data types
@@ -806,20 +961,32 @@ class ITSLiveAnnualMosaics:
         ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                'dtype': np.float,
+                'dtype': np.float32,
+                "zlib": True, "complevel": 2, "shuffle": True
+            })
+
+        for each in [Coords.X, Coords.Y]:
+            encoding_settings.setdefault(each, {}).update({
+                'dtype': np.float32,
                 "zlib": True, "complevel": 2, "shuffle": True
             })
 
         for each in [
             CompDataVars.COUNT0,
-            CompDataVars.OUTLIER_FRAC,
             CompDataVars.MAX_DT
         ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-                'dtype': 'short',
+                'dtype': np.short,
                 "zlib": True, "complevel": 2, "shuffle": True
             })
+
+        # Set encoding for CompDataVars.OUTLIER_FRAC
+        encoding_settings.setdefault(CompDataVars.OUTLIER_FRAC, {}).update({
+            DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+            'dtype': np.float32,
+            "zlib": True, "complevel": 2, "shuffle": True
+        })
 
         logging.info(f'DS: {ds}')
         logging.info(f'DS encoding: {encoding_settings}')
@@ -827,7 +994,7 @@ class ITSLiveAnnualMosaics:
         # Write locally
         ds.to_netcdf(f'{filename}', engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
 
-        if not dry_run:
+        if copy_to_s3:
             ITSLiveAnnualMosaics.copy_to_s3_bucket(filename, target_file)
 
     def copy_to_s3_bucket(local_filename, target_s3_filename):
@@ -972,28 +1139,29 @@ def parse_args():
         help='Dry run, do not actually submit any AWS Batch jobs'
     )
 
-    # One of --processCubes or --processCubesFile options is allowed for the datacube names
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        '--processCubes',
-        type=str,
-        action='store',
-        default='[]',
-        help="JSON list of datacubes filenames to process [%(default)s]."
-    )
-    group.add_argument(
-        '--processCubesFile',
-        type=Path,
-        action='store',
-        default=None,
-        help="File that contains JSON list of filenames for datacubes to process [%(default)s]."
-    )
     parser.add_argument(
         '-n', '--engine',
         type=str,
         required=False,
         default='h5netcdf',
         help="NetCDF engine to use to store NetCDF data to the file [%(default)s]."
+    )
+
+    # One of --processCubes or --processCubesFile options is allowed for the datacube names
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        '--processCubes',
+        type=str,
+        action='store',
+        default=None,
+        help="JSON list of datacubes filenames to process [%(default)s]."
+    )
+    group.add_argument(
+        '--processCubesFile',
+        type=str,
+        action='store',
+        default=None,
+        help="JSON file that contains a list of filenames for datacubes to process [%(default)s]."
     )
 
     args = parser.parse_args()
@@ -1022,7 +1190,9 @@ def parse_args():
 
     if args.processCubesFile:
         # Check for this option first as another mutually exclusive option has a default value
-        BatchVars.CUBES_TO_GENERATE = json.loads(args.processCubesFile.read_text())
+        with open(args.processCubesFile, 'r') as fhandle:
+            BatchVars.CUBES_TO_GENERATE = json.load(fhandle)
+
         # Replace each path by the datacube basename
         BatchVars.CUBES_TO_GENERATE = [os.path.basename(each) for each in BatchVars.CUBES_TO_GENERATE if len(each)]
         logging.info(f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubesFile}: {BatchVars.CUBES_TO_GENERATE}")
@@ -1063,7 +1233,7 @@ if __name__ == '__main__':
     logging.info(f"Command arguments: {args}")
 
     # Set static data for computation
-    mosaics = ITSLiveAnnualMosaics(args.mosaicsEpsgCode, args.gridCellSize, args.dryrun)
+    mosaics = ITSLiveAnnualMosaics(args.mosaicsEpsgCode, args.dryrun)
     result_files = mosaics.create(
         args.cubeDefinitionFile,
         args.bucket,
@@ -1071,6 +1241,8 @@ if __name__ == '__main__':
         args.compositesDir,
         args.mosaicsDir
     )
+
+    logging.info(f'Created mosaics files: {json.dumps(result_files, indent=3)}')
 
     # TODO: write to S3 bucket
     logging.info(f"Done.")
