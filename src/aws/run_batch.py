@@ -11,8 +11,10 @@ import logging
 import math
 import os
 from pathlib import Path
+import s3fs
 import sys
 from shapely import geometry
+import time
 
 from grid import Bounds
 import itslive_utils
@@ -29,6 +31,9 @@ class DataCubeBatch:
     # failures)
     PARALLEL_GRANULES = 700
 
+    # Number of Dask threads to generate datacube
+    NUM_DASK_THREADS = 8
+
     def __init__(self, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
         Initialize object.
@@ -38,6 +43,8 @@ class DataCubeBatch:
         self.batch_job = batch_job
         self.batch_queue = batch_queue
         self.is_dry_run = is_dry_run
+
+        self.s3 = s3fs.S3FileSystem(anon=True)
 
     def __call__(self, cube_file: str, s3_bucket: str, bucket_dir_path: str, job_file: str, num_cubes: int):
         """
@@ -163,13 +170,22 @@ class DataCubeBatch:
                         logging.info(f"Skipping as provided in BatchVars.CUBES_TO_EXCLUDE")
                         continue
 
+                    # Work around to make sure there are no partially copies cubes from previously
+                    # failed runs
+                    # TODO: make a command-line option?
+                    # store_exists = self.s3.ls(os.path.join(s3_bucket, bucket_dir, cube_filename))
+                    # if len(store_exists) != 0:
+                    #     logging.info(f"Datacube {os.path.join(s3_bucket, bucket_dir, cube_filename)} exists, skipping datacube generation.")
+                    #     continue
+
                     cube_params = {
                         'outputStore': cube_filename,
                         'outputBucket': os.path.join(s3_bucket, bucket_dir),
                         'targetProjection': epsg_code,
                         'polygon': json.dumps(coords),
                         'gridCellSize': str(self.grid_size),
-                        'chunks': str(DataCubeBatch.PARALLEL_GRANULES)
+                        'chunks': str(DataCubeBatch.PARALLEL_GRANULES),
+                        'numThreads': str(DataCubeBatch.NUM_DASK_THREADS)
                     }
                     logging.info(f'Cube params: {cube_params}')
 
@@ -195,14 +211,22 @@ class DataCubeBatch:
                             #     ]
                             # },
                             retryStrategy={
-                                'attempts': 1
+                                'attempts': 2
                             },
                             timeout={
-                                'attemptDurationSeconds': 86400
+                                # 'attemptDurationSeconds': 86400
+                                # Change to 48 hours
+                                'attemptDurationSeconds': 172800
                             }
                         )
 
                         logging.info(f"Response: {response}")
+
+                        # Does not really work - AWS piles up the jobs in the queue,
+                        # then starts a whole bunch at once anyway
+                        # # Sleep for 30 seconds to make sure that all AWS Batch jobs
+                        # # are not started at the same time
+                        time.sleep(60)
 
                     num_jobs += 1
                     jobs.append({
@@ -306,18 +330,28 @@ def parse_args():
         help="Grid size for the data cube [%(default)d]"
     )
     parser.add_argument(
+        '--numThreads',
+        type=int,
+        action='store',
+        default=8,
+        help="Number of threads to use for the datacube generation [%(default)d]"
+    )
+    parser.add_argument(
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-from-scratch-64Gb:1',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-128Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-convert-8vCPU-64GB',
+        # default='datacube-convert-8vCPU-64GB',
+        # default='datacube-convert-16vCPU-128GB',
+        default='datacube-convert-ondemand-16vCPU-128GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
@@ -400,6 +434,8 @@ def parse_args():
     logging.info(f"Command-line arguments: {sys.argv}")
 
     DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
+    DataCubeBatch.NUM_DASK_THREADS = args.numThreads
+
     BatchVars.HTTP_PREFIX           = args.urlPath
     BatchVars.PATH_TOKEN            = args.pathToken
 
