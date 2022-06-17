@@ -1,7 +1,7 @@
+import json
 import requests
 import pyproj
 import numpy as np
-import os
 
 from grid import Bounds
 
@@ -15,9 +15,10 @@ def transform_coord(proj1, proj2, lon, lat):
     return pyproj.transform(proj1, proj2, lon, lat)
 
 def get_granule_urls(params):
-    # base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
-    base_url = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
-    resp = requests.get(base_url, params=params, verify=False)
+    base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+    # base_url = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
+    # Allow for longer query time from searchAPI: 5 minutes
+    resp = requests.get(base_url, params=params, verify=False, timeout=300)
     return resp.json()
 
 #
