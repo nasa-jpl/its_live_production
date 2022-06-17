@@ -2,6 +2,7 @@ import json
 import requests
 import pyproj
 import numpy as np
+import os
 
 from grid import Bounds
 
