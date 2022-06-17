@@ -17,8 +17,8 @@ def transform_coord(proj1, proj2, lon, lat):
 def get_granule_urls(params):
     base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
     # base_url = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
-    # Allow for longer query time from searchAPI: 5 minutes
-    resp = requests.get(base_url, params=params, verify=False, timeout=300)
+    # Allow for longer query time from searchAPI: 10 minutes
+    resp = requests.get(base_url, params=params, verify=False, timeout=500)
     return resp.json()
 
 #
