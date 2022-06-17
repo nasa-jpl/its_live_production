@@ -3,6 +3,7 @@ import requests
 import pyproj
 import numpy as np
 import os
+import logging
 
 from grid import Bounds
 
@@ -21,6 +22,54 @@ def get_granule_urls(params):
     # Allow for longer query time from searchAPI: 10 minutes
     resp = requests.get(base_url, params=params, verify=False, timeout=500)
     return resp.json()
+
+def get_granule_urls_streamed(params):
+    """
+    Use streamed retrieval of the response from URL request.
+    """
+    token = ']['
+    base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+
+    # Format request URL:
+    url = f'{base_url}?'
+    for each_key, each_value in params.items():
+        url += f'{each_key}={each_value}&'
+
+    # Add requested granules version (TODO: should be configurable on startup?)
+    url += 'version=2'
+
+    # Get rid of all single quotes if any in URL
+    url = url.replace("'", "")
+    logging.info(f'Submitting searchAPI request with url={url}')
+    resp = requests.get(url, stream=True, timeout=300)
+
+    # Save response to local file:
+    local_path = 'searchAPI_urls.json'
+
+    logging.info(f'Saving searchAPI response to {local_path}')
+    with open(local_path, 'a') as fh:
+        for chunk in resp.iter_content(10240, decode_unicode=True):
+            _ = fh.write(chunk)
+
+    # Read data from local file
+    data = ''
+    with open(local_path) as fh:
+        data = fh.readline()
+
+    # if multiple json strings are returned,  then possible to see '][' within
+    # the string, replace it by ','
+    if token in data:
+        logging.info('Got multiple json variables within the same string (len(data)={len(data)})')
+        data = data.replace(token, ',')
+
+        logging.info('Merged multiple json variables into one list (len(data)={len(data)})')
+
+    data = json.loads(data)
+
+    # Remove local file
+    os.unlink(local_path)
+
+    return data
 
 #
 # Author: Mark Fahnestock

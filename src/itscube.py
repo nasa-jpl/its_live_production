@@ -276,7 +276,7 @@ class ITSCube:
 
         self.logger.info(f"ITS_LIVE search API params: {params}")
         start_time = timeit.default_timer()
-        found_urls = [each['url'] for each in itslive_utils.get_granule_urls(params)]
+        found_urls = [each['url'] for each in itslive_utils.get_granule_urls_streamed(params)]
 
         # Beware that entries in 'found_urls' list are not always returned in
         # the same order as in previous query. This might result in excluding only
