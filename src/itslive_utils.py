@@ -4,6 +4,8 @@ import pyproj
 import numpy as np
 import os
 import logging
+import time
+import sys
 
 from grid import Bounds
 
@@ -17,18 +19,20 @@ def transform_coord(proj1, proj2, lon, lat):
     return pyproj.transform(proj1, proj2, lon, lat)
 
 def get_granule_urls(params):
-    base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
-    # base_url = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
+    # base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+    base_url = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
     # Allow for longer query time from searchAPI: 10 minutes
     resp = requests.get(base_url, params=params, verify=False, timeout=500)
     return resp.json()
 
-def get_granule_urls_streamed(params):
+def get_granule_urls_streamed(params, total_retries = 1):
     """
     Use streamed retrieval of the response from URL request.
     """
     token = ']['
-    base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+    num_seconds = 30
+    # base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+    base_url = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
 
     # Format request URL:
     url = f'{base_url}?'
@@ -40,34 +44,63 @@ def get_granule_urls_streamed(params):
 
     # Get rid of all single quotes if any in URL
     url = url.replace("'", "")
-    logging.info(f'Submitting searchAPI request with url={url}')
-    resp = requests.get(url, stream=True, timeout=300)
+
+    num_retries = 0
+    got_granules = False
+    data = []
 
     # Save response to local file:
     local_path = 'searchAPI_urls.json'
 
-    logging.info(f'Saving searchAPI response to {local_path}')
-    with open(local_path, 'a') as fh:
-        for chunk in resp.iter_content(10240, decode_unicode=True):
-            _ = fh.write(chunk)
+    logging.info(f'Submitting searchAPI request with url={url}')
 
-    # Read data from local file
-    data = ''
-    with open(local_path) as fh:
-        data = fh.readline()
+    while not got_granules and num_retries < total_retries:
+        # Get list of granules:
+        try:
+            logging.info(f"Getting granules from searchAPI: #{num_retries+1} attempt")
+            num_retries += 1
 
-    # if multiple json strings are returned,  then possible to see '][' within
-    # the string, replace it by ','
-    if token in data:
-        logging.info('Got multiple json variables within the same string (len(data)={len(data)})')
-        data = data.replace(token, ',')
+            resp = requests.get(url, stream=True, timeout=500)
 
-        logging.info('Merged multiple json variables into one list (len(data)={len(data)})')
+            logging.info(f'Saving searchAPI response to {local_path}')
+            with open(local_path, 'a') as fh:
+                for chunk in resp.iter_content(10240, decode_unicode=True):
+                    _ = fh.write(chunk)
 
-    data = json.loads(data)
+            # Read data from local file
+            data = ''
+            with open(local_path) as fh:
+                data = fh.readline()
 
-    # Remove local file
-    os.unlink(local_path)
+            # if multiple json strings are returned,  then possible to see '][' within
+            # the string, replace it by ','
+            if token in data:
+                logging.info('Got multiple json variables within the same string (len(data)={len(data)})')
+                data = data.replace(token, ',')
+
+                logging.info('Merged multiple json variables into one list (len(data)={len(data)})')
+
+            data = json.loads(data)
+            got_granules = True
+
+        except:
+            # If failed due to response truncation or searchAPI not being able to respond
+            # (too many requests at the same time?)
+            logging.info(f'Got exception: {sys.exc_info()}')
+            if num_retries < total_retries:
+                # Sleep if it's not last attempt
+                logging.info(f'Sleeping between searchAPI attempts for {num_seconds}')
+                time.sleep(num_seconds)
+
+        finally:
+            # Clean up local file
+            if os.path.exists(local_path):
+                # Remove local file
+                logging.info(f'Removing {local_path}')
+                os.unlink(local_path)
+
+    if not got_granules:
+        raise RuntimeError(f"Failed to get granules from searchAPI.")
 
     return data
 
