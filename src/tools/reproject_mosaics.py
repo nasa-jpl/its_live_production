@@ -68,8 +68,8 @@ PROJECTION_ATTR = 'projection'
 
 # Non-EPSG projection that can be provided on output
 ESRICode = 102027
-ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
-# ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs'
+# last: ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
+ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs'
 # ESRICode_Proj4 = '+proj=lcc +lat_1=15 +lat_2=65 +lat_0=30 +lon_0=95 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
 
 class MosaicsReproject:
@@ -231,12 +231,6 @@ class MosaicsReproject:
 
         output_file: Output file to write reprojected data to.
         """
-        # Re-project: vx, vy, v, v_error
-        v_error_np = self.ds[CompDataVars.V_ERROR]
-
-        masked_np = np.ma.masked_equal(v_error_np, DataVars.MISSING_VALUE, copy=False)
-        logging.info(f"Original v_error:  min={masked_np.min()} max={masked_np.max()}")
-
         # outputBounds --- output bounds as (minX, minY, maxX, maxY) in target SRS
         warp_options = gdal.WarpOptions(
             format=MosaicsReproject.WARP_FORMAT,   # Use virtual memory format to avoid writing warped dataset to the file
@@ -352,6 +346,9 @@ class MosaicsReproject:
             proj_attrs={
                 DataVars.GRID_MAPPING_NAME: 'lambert_conformal_conic',
                 'CoordinateTransformType': 'Projection',
+                'standard_parallel': (15.0, 65.0),
+                'latitude_of_projection_origin': 30.0,
+                'longitude_of_central_meridian': 95.0,
                 'CoordinateAxisTypes': 'GeoX GeoY',
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
@@ -380,11 +377,12 @@ class MosaicsReproject:
             attrs=proj_attrs
         )
 
-        if self.xy_epsg == 102027:
-            reproject_ds[DataVars.MAPPING].attrs['spatial_esri'] = self.xy_epsg
-
-        else:
-            reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
+        # if self.xy_epsg == 102027:
+        #     reproject_ds[DataVars.MAPPING].attrs['spatial_esri'] = self.xy_epsg
+        #
+        # else:
+        #    reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
+        reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
 
         # Format GeoTransform attribute:
         # x top left (cell left most boundary), grid size, 0, y top left (cell upper most boundary), 0, -grid size
@@ -404,8 +402,8 @@ class MosaicsReproject:
         vx_error_ij = self.ds[CompDataVars.VX_ERROR].values
         vy_error_ij = self.ds[CompDataVars.VY_ERROR].values
 
-        vx_error_ij *= MosaicsReproject.TIME_DELTA/self.x_size
-        vy_error_ij *= MosaicsReproject.TIME_DELTA/np.abs(self.y_size)
+        # vx_error_ij *= MosaicsReproject.TIME_DELTA/self.x_size
+        # vy_error_ij *= MosaicsReproject.TIME_DELTA/np.abs(self.y_size)
 
         for y_index in tqdm(range(num_y), ascii=True, desc=f"Re-projecting {CompDataVars.VX_ERROR}, {CompDataVars.VY_ERROR}..."):
             for x_index in range(num_x):
@@ -418,6 +416,7 @@ class MosaicsReproject:
 
                     # If any of the values is NODATA, don't re-project, leave them as NODATA
                     if not np.any(np.isnan(v_ij)) and \
+                       not np.any(v_ij == DataVars.MISSING_VALUE) and \
                        not np.isscalar(self.transformation_matrix[y_index, x_index]):
                         # Apply transformation matrix to (vx, vy) values
                         xy_v = np.matmul(self.transformation_matrix[y_index, x_index], v_ij)
@@ -426,8 +425,13 @@ class MosaicsReproject:
                         vy_error[y_index, x_index] = xy_v[1]
 
                         # ATTN: That should be a sanity check vs. v_error
-                        v_error[y_index, x_index] = xy_v[0]*np.abs(vx[y_index, x_index])/v[y_index, x_index] + \
-                            xy_v[1]*np.abs(vy[y_index, x_index])/v[y_index, x_index]
+                        if vx[y_index, x_index] != DataVars.MISSING_VALUE and \
+                           vy[y_index, x_index] != DataVars.MISSING_VALUE and \
+                           v[y_index, x_index] != DataVars.MISSING_VALUE and \
+                           v[y_index, x_index] != 0:
+
+                           v_error[y_index, x_index] = xy_v[0]*np.abs(vx[y_index, x_index])/v[y_index, x_index] + \
+                                xy_v[1]*np.abs(vy[y_index, x_index])/v[y_index, x_index]
 
         # Add vx_error to dataset
         reproject_ds[CompDataVars.VX_ERROR] = xr.DataArray(
@@ -457,6 +461,45 @@ class MosaicsReproject:
         )
 
         v_error = None
+        gc.collect()
+
+        # Compute x and y distortion maps for the dataset:
+        vx_xunit, vy_xunit, vx_yunit, vy_yunit = self.get_distortion_for_debugging(
+            DataVars.VX,
+            DataVars.VY,
+            warp_options
+        )
+
+        reproject_ds['vx_xunit'] = xr.DataArray(
+            data=vx_xunit,
+            coords=ds_coords,
+            attrs=self.ds[DataVars.VX].attrs
+        )
+        vx_xunit = None
+        gc.collect()
+
+        reproject_ds['vy_xunit'] = xr.DataArray(
+            data=vy_xunit,
+            coords=ds_coords,
+            attrs=self.ds[DataVars.VY].attrs
+        )
+        vy_xunit = None
+        gc.collect()
+
+        reproject_ds['vx_yunit'] = xr.DataArray(
+            data=vx_yunit,
+            coords=ds_coords,
+            attrs=self.ds[DataVars.VX].attrs
+        )
+        vx_yunit = None
+        gc.collect()
+
+        reproject_ds['vy_yunit'] = xr.DataArray(
+            data=vy_yunit,
+            coords=ds_coords,
+            attrs=self.ds[DataVars.VY].attrs
+        )
+        vy_yunit = None
         gc.collect()
 
         # Warp "count" variable
@@ -502,7 +545,8 @@ class MosaicsReproject:
         # Explicitly set dtype for some variables
         for each in [DataVars.V, DataVars.VX, DataVars.VY,
             CompDataVars.VX_ERROR, CompDataVars.VY_ERROR,
-            CompDataVars.V_ERROR, CompDataVars.V_ERROR+'_verify']:
+            CompDataVars.V_ERROR, CompDataVars.V_ERROR+'_verify',
+            'vx_xunit', 'vy_xunit', 'vx_yunit', 'vy_yunit']:
             if each in ds:
                 encoding_settings[each] = {
                     DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
@@ -522,7 +566,6 @@ class MosaicsReproject:
 
         if DataVars.FILL_VALUE_ATTR in ds[CompDataVars.COUNT].attrs:
             del ds[CompDataVars.COUNT].attrs[DataVars.FILL_VALUE_ATTR]
-
 
         logging.info(f'Enconding for {output_file}: {encoding_settings}')
 
@@ -555,47 +598,33 @@ class MosaicsReproject:
         v_var:  name of the variable
         v_error_var: name of the error variable
         """
-        v_error_np = self.ds[v_error_var].values
-
-        masked_np = np.ma.masked_equal(v_error_np, DataVars.MISSING_VALUE, copy=False)
-        logging.info(f"Original v_error:  min={masked_np.min()} max={masked_np.max()}")
-
         # Warp x component
-        # dataset = gdal.Open(f'NETCDF:"{self.input_file}":{vx_var}')
         _vx = self.ds[vx_var].values
-        # _vx = _vx.astype(type(self.x_size))
         _vx[_vx==DataVars.MISSING_VALUE] = np.nan
-        logging.info(f"Original {vx_var}:  min={np.nanmin(_vx)} max={np.nanmax(_vx)}")
-        # dataset = None
+        logging.info(f"reproject_velocity: Original {vx_var}:  min={np.nanmin(_vx)} max={np.nanmax(_vx)}")
 
         np_vx = gdal.Warp('', f'NETCDF:"{self.input_file}":{vx_var}', options=warp_options).ReadAsArray()
-        masked_np = np.ma.masked_equal(np_vx, DataVars.MISSING_VALUE, copy=False)
-        logging.info(f"Warped {vx_var}:  min={masked_np.min()} max={masked_np.max()}")
-
-        np_vx = np_vx.astype(np.float32)
+        # np_vx = np_vx.astype(np.float32)
         np_vx[np_vx==DataVars.MISSING_VALUE] = np.nan
+        logging.info(f"reproject_velocity: Warped {vx_var}:  min={np.nanmin(np_vx)} max={np.nanmax(np_vx)}")
 
         # Warp y component
-        # dataset = gdal.Open(f'NETCDF:"{self.input_file}":{vy_var}')
         _vy = self.ds[vy_var].values
-        # _vy = _vy.astype(type(self.y_size))
         _vy[_vy==DataVars.MISSING_VALUE] = np.nan
-        logging.info(f"Original {vy_var}:  min={np.nanmin(_vy)} max={np.nanmax(_vy)}")
-        # dataset = None
+        logging.info(f"reproject_velocity: Original {vy_var}:  min={np.nanmin(_vy)} max={np.nanmax(_vy)}")
 
         # dataset=gdal.Translate('temp_vy.nc', dataset, **kwargs)
         # vy_ds = gdal.Warp('', dataset, options=warp_options)
         np_vy = gdal.Warp('', f'NETCDF:"{self.input_file}":{vy_var}', options=warp_options).ReadAsArray()
-        masked_np = np.ma.masked_equal(np_vy, DataVars.MISSING_VALUE, copy=False)
-        logging.info(f"Warped {vy_var}:  min={masked_np.min()} max={masked_np.max()}")
 
-        np_vy = np_vy.astype(np.float32)
+        # np_vy = np_vy.astype(np.float32)
         np_vy[np_vy==DataVars.MISSING_VALUE] = np.nan
+        logging.info(f"reproject_velocity: Warped {vy_var}:  min={np.nanmin(np_vy)} max={np.nanmax(np_vy)}")
 
         # Convert velocity components to displacement (per transformation matrix requirement)
         # (displacement values are in pixel units)
-        np_vx *= MosaicsReproject.TIME_DELTA/self.x_size
-        np_vy *= MosaicsReproject.TIME_DELTA/np.abs(self.y_size)
+        # np_vx *= MosaicsReproject.TIME_DELTA/self.x_size
+        # np_vy *= MosaicsReproject.TIME_DELTA/np.abs(self.y_size)
 
         # Number of X and Y points in the output grid
         num_x = len(self.x0_grid)
@@ -606,6 +635,14 @@ class MosaicsReproject:
         v = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
         v_error = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
 
+        # Read error values in
+        v_error_np = self.ds[v_error_var].values
+
+        # Report min and max values for the variable
+        masked_np = np.ma.masked_equal(v_error_np, DataVars.MISSING_VALUE, copy=False)
+        logging.info(f"reproject_velocity: Original {v_error_var}:  min={masked_np.min()} max={masked_np.max()}")
+
+        debug_info = False
         # TODO: make use of parallel processing as cells are independent to speed up
         #       the processing
         for y_index in tqdm(range(num_y), ascii=True, desc=f"Re-projecting {vx_var}, {vy_var}..."):
@@ -645,12 +682,15 @@ class MosaicsReproject:
                             vy[y_index, x_index] = 0
                             v[y_index, x_index] = 0
 
-                    if v_ij_value != DataVars.MISSING_VALUE and v_error_np[v_j, v_i] != DataVars.MISSING_VALUE:
+                    if v_ij_value != DataVars.MISSING_VALUE and \
+                        v_error_np[v_j, v_i] != DataVars.MISSING_VALUE:
+
+                        # Apply scale factor to the error value
                         v_error[y_index, x_index] = v_error_np[v_j, v_i]*scale_factor
 
                         # Track large differences in v_error values in case they happen. If observed,
                         # most likely need to reduce error threshold for the gdal.warp()
-                        if np.abs(v_error[y_index, x_index] - v_error_np[v_j, v_i]) > 100:
+                        if debug_info and np.abs(v_error[y_index, x_index] - v_error_np[v_j, v_i]) > 100:
                             logging.warning(f"Computed {v_var}_error={v_error[y_index, x_index]}: {v_var}_error_old={v_error_np[v_j, v_i]}")
                             logging.info(f"--->indices: i={v_i} j={v_j} vs. x={x_index} y={y_index}")
                             logging.info(f"--->v:       {v_var}_new={v[y_index, x_index]} {v_var}_old={v_ij_value}")
@@ -662,15 +702,201 @@ class MosaicsReproject:
                             logging.info(f"--->transf_matrix: {self.transformation_matrix[y_index, x_index]}")
 
         masked_np = np.ma.masked_equal(vx, DataVars.MISSING_VALUE, copy=False)
-        logging.info(f"Rotated {vx_var}:  min={masked_np.min()} max={masked_np.max()}")
+        logging.info(f"reproject_velocity: Rotated {vx_var}:  min={masked_np.min()} max={masked_np.max()}")
 
         masked_np = np.ma.masked_equal(vy, DataVars.MISSING_VALUE, copy=False)
-        logging.info(f"Rotated {vy_var}:  min={masked_np.min()} max={masked_np.max()}")
+        logging.info(f"reproject_velocity: Rotated {vy_var}:  min={masked_np.min()} max={masked_np.max()}")
 
         masked_np = np.ma.masked_equal(v_error, DataVars.MISSING_VALUE, copy=False)
-        logging.info(f"Scaled {v_error_var}:  min={masked_np.min()} max={masked_np.max()}")
+        logging.info(f"reproject_velocity: Scaled {v_error_var}:  min={masked_np.min()} max={masked_np.max()}")
 
         return (vx, vy, v, v_error)
+
+    def get_distortion_for_debugging(self,
+        vx_var: str,
+        vy_var: str,
+        warp_options: gdal.WarpOptions,
+    ):
+        """
+        Get distortion in x and y dimentions for the variables. This is for
+        debugging purposes only. It replaces values of vx and vy variables with 1(0)
+        to get reprojection distortion map.
+
+        warp_options: GDAL options to use for warping
+        vx_var: name of the variable's X component
+        vy_var: name of the variable's Y component
+        """
+        # Get distortion in x dimension:
+        logging.info(f'Get distortion for {vx_var}')
+        # replace x values with 1, y values with 0
+        _vx = self.ds[vx_var].values
+
+        _vx[_vx==DataVars.MISSING_VALUE] = np.nan
+        _vx[~np.isnan(_vx)] = 1.0
+
+        nrows, ncols = _vx.shape
+        geotransform_str = self.ds.mapping.attrs['GeoTransform']
+        geotransform = tuple(map(float, geotransform_str.split(' ')))
+
+        driver = gdal.GetDriverByName("MEM")
+        raster = driver.Create("myraster", ncols, nrows, 1, gdal.GDT_Float32)
+        raster.SetGeoTransform(geotransform)
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(self.ij_epsg)
+        raster.SetProjection(srs.ExportToWkt())
+        raster.GetRasterBand(1).WriteArray(_vx)
+
+        # Warp x component
+        # np_vx = gdal.Warp('', f'NETCDF:"{self.input_file}":{vx_var}', options=warp_options).ReadAsArray()
+        np_vx = gdal.Warp('', raster, options=warp_options).ReadAsArray()
+        masked_np = np.ma.masked_equal(np_vx, DataVars.MISSING_VALUE, copy=False)
+        logging.info(f"Warped unit {vx_var}:  min={np.nanmin(masked_np)} max={np.nanmax(masked_np)}")
+
+        np_vx = np_vx.astype(np.float32)
+        np_vx[np_vx==DataVars.MISSING_VALUE] = np.nan
+
+        # Warp y component
+        # dataset = gdal.Open(f'NETCDF:"{self.input_file}":{vy_var}')
+        _vy = self.ds[vy_var].values
+        _vy[_vy==DataVars.MISSING_VALUE] = np.nan
+
+        _vy[~np.isnan(_vy)] = 0.0
+
+        # nrows, ncols = _vy.shape
+        #
+        # driver = gdal.GetDriverByName("MEM")
+        # raster = driver.Create("myraster", ncols, nrows, 1, gdal.GDT_Float32)
+        # raster.SetGeoTransform(geotransform)
+        # srs = osr.SpatialReference()
+        # srs.ImportFromEPSG(self.ij_epsg)
+        # raster.SetProjection(srs.ExportToWkt())
+        raster.GetRasterBand(1).WriteArray(_vy)
+
+        # Warp y component
+        # np_vy = gdal.Warp('', f'NETCDF:"{self.input_file}":{vy_var}', options=warp_options).ReadAsArray()
+        np_vy = gdal.Warp('', raster, options=warp_options).ReadAsArray()
+        masked_np = np.ma.masked_equal(np_vy, DataVars.MISSING_VALUE, copy=False)
+        logging.info(f"Warped unit {vy_var}:  min={np.nanmin(masked_np)} max={np.nanmax(masked_np)}")
+
+        np_vy = np_vy.astype(np.float32)
+        np_vy[np_vy==DataVars.MISSING_VALUE] = np.nan
+
+        # Convert velocity components to displacement (per transformation matrix requirement)
+        # (displacement values are in pixel units)
+        # np_vx *= MosaicsReproject.TIME_DELTA/self.x_size
+        # np_vy *= MosaicsReproject.TIME_DELTA/np.abs(self.y_size)
+
+        # Number of X and Y points in the output grid
+        num_x = len(self.x0_grid)
+        num_y = len(self.y0_grid)
+
+        vx = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
+        vy = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
+
+        # TODO: make use of parallel processing as cells are independent to speed up
+        #       the processing
+        for y_index in tqdm(range(num_y), ascii=True, desc=f"Re-projecting unit {vx_var}, {vy_var}..."):
+            for x_index in range(num_x):
+                dv = np.array([
+                    np_vx[y_index, x_index],
+                    np_vy[y_index, x_index]
+                ])
+
+                # There is no transformation matrix available for the point -->
+                # keep it as NODATA
+                if not np.isscalar(self.transformation_matrix[y_index, x_index]) and \
+                   not np.any(np.isnan(dv)):  # some warped points get NODATA for vx but valid vy
+                    # Apply transformation matrix to (vx, vy) values converted to pixel displacement
+                    xy_v = np.matmul(self.transformation_matrix[y_index, x_index], dv)
+
+                    vx[y_index, x_index] = xy_v[0]
+                    vy[y_index, x_index] = xy_v[1]
+
+        masked_np = np.ma.masked_equal(vx, DataVars.MISSING_VALUE, copy=False)
+        logging.info(f"Rotated {vx_var}:  min={np.nanmin(masked_np)} max={np.nanmax(masked_np)}")
+
+        masked_np = np.ma.masked_equal(vy, DataVars.MISSING_VALUE, copy=False)
+        logging.info(f"Rotated {vy_var}:  min={np.nanmin(masked_np)} max={np.nanmax(masked_np)}")
+
+        logging.info(f'Get distortion for {vy_var}')
+        # Get distortion in y dimension: replace x values with 1, y values with 0
+        # Remember vx distortion
+        vx_xunit = np.array(vx)
+        vy_xunit = np.array(vy)
+
+        # replace x values with 1, y values with 0
+        _vx[_vx==DataVars.MISSING_VALUE] = np.nan
+        _vx[~np.isnan(_vx)] = 0.0
+
+        raster.GetRasterBand(1).WriteArray(_vx)
+
+        # Warp x component
+        # np_vx = gdal.Warp('', f'NETCDF:"{self.input_file}":{vx_var}', options=warp_options).ReadAsArray()
+        np_vx = gdal.Warp('', raster, options=warp_options).ReadAsArray()
+        masked_np = np.ma.masked_equal(np_vx, DataVars.MISSING_VALUE, copy=False)
+        logging.info(f"Warped unit {vx_var}:  min={np.nanmin(masked_np)} max={np.nanmax(masked_np)}")
+
+        np_vx = np_vx.astype(np.float32)
+        np_vx[np_vx==DataVars.MISSING_VALUE] = np.nan
+
+        # Warp y component
+        # dataset = gdal.Open(f'NETCDF:"{self.input_file}":{vy_var}')
+        _vy[~np.isnan(_vy)] = 1.0
+
+        # nrows, ncols = _vy.shape
+        #
+        # driver = gdal.GetDriverByName("MEM")
+        # raster = driver.Create("myraster", ncols, nrows, 1, gdal.GDT_Float32)
+        # raster.SetGeoTransform(geotransform)
+        # srs = osr.SpatialReference()
+        # srs.ImportFromEPSG(self.ij_epsg)
+        # raster.SetProjection(srs.ExportToWkt())
+        raster.GetRasterBand(1).WriteArray(_vy)
+
+        # Warp y component
+        # np_vy = gdal.Warp('', f'NETCDF:"{self.input_file}":{vy_var}', options=warp_options).ReadAsArray()
+        np_vy = gdal.Warp('', raster, options=warp_options).ReadAsArray()
+        masked_np = np.ma.masked_equal(np_vy, DataVars.MISSING_VALUE, copy=False)
+        logging.info(f"Warped unit {vy_var}:  min={np.nanmin(masked_np)} max={np.nanmax(masked_np)}")
+
+        np_vy = np_vy.astype(np.float32)
+        np_vy[np_vy==DataVars.MISSING_VALUE] = np.nan
+
+        # Convert velocity components to displacement (per transformation matrix requirement)
+        # (displacement values are in pixel units)
+        # DEBUG: remove adjustment for displacement
+        # np_vx *= MosaicsReproject.TIME_DELTA/self.x_size
+        # np_vy *= MosaicsReproject.TIME_DELTA/np.abs(self.y_size)
+
+        vx = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
+        vy = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
+
+        # TODO: make use of parallel processing as cells are independent to speed up
+        #       the processing
+        for y_index in tqdm(range(num_y), ascii=True, desc=f"Re-projecting unit {vx_var}, {vy_var}..."):
+            for x_index in range(num_x):
+                dv = np.array([
+                    np_vx[y_index, x_index],
+                    np_vy[y_index, x_index]
+                ])
+
+                # There is no transformation matrix available for the point -->
+                # keep it as NODATA
+                if not np.isscalar(self.transformation_matrix[y_index, x_index]) and \
+                   not np.any(np.isnan(dv)):  # some warped points get NODATA for vx but valid vy
+                    # Apply transformation matrix to (vx, vy) values converted to pixel displacement
+                    xy_v = np.matmul(self.transformation_matrix[y_index, x_index], dv)
+
+                    vx[y_index, x_index] = xy_v[0]
+                    vy[y_index, x_index] = xy_v[1]
+
+        masked_np = np.ma.masked_equal(vx, DataVars.MISSING_VALUE, copy=False)
+        logging.info(f"Rotated {vx_var}:  min={np.nanmin(masked_np)} max={np.nanmax(masked_np)}")
+
+        masked_np = np.ma.masked_equal(vy, DataVars.MISSING_VALUE, copy=False)
+        logging.info(f"Rotated {vy_var}:  min={np.nanmin(masked_np)} max={np.nanmax(masked_np)}")
+
+        return (vx_xunit, vy_xunit, vx, vy)
 
     def create_transformation_matrix(self):
         """
@@ -728,6 +954,8 @@ class MosaicsReproject:
         ij0_points = xy_to_ij_transfer.TransformPoints(xy0_points)
 
         # Calculate x unit vector: add unit length to ij0_points.x
+        # TODO: possible optimization - just use already transformed points when
+        #       computing bounding box in target projection as it's only by one cell shift in x dimension
         ij_unit = np.array(ij0_points)
         ij_unit[:, 0] += self.x_size
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit.tolist())
@@ -741,7 +969,8 @@ class MosaicsReproject:
         # Compute unit vector for each cell of the output grid
         for index in range(num_xy0_points):
             xunit_v[index] = np.array(xy_points[index]) - np.array(xy0_points[index])
-            xunit_v[index] /= np.linalg.norm(xunit_v[index])
+            # xunit_v[index] /= np.linalg.norm(xunit_v[index])
+            xunit_v[index] /= self.x_size
 
         # Calculate Y unit vector: add unit length to ij0_points.y
         ij_unit = np.array(ij0_points)
@@ -755,7 +984,8 @@ class MosaicsReproject:
         # in output projection
         for index in range(num_xy0_points):
             yunit_v[index] = np.array(xy_points[index]) - np.array(xy0_points[index])
-            yunit_v[index] /= np.linalg.norm(yunit_v[index])
+            # yunit_v[index] /= np.linalg.norm(yunit_v[index])
+            yunit_v[index] /= np.abs(self.y_size)
 
         # Local normal vector
         normal = np.array([0.0, 0.0, 1.0])
@@ -771,8 +1001,12 @@ class MosaicsReproject:
         # Counter of how many points don't have transformation matrix
         no_value_counter = 0
 
-        scale_factor_x = self.x_size/MosaicsReproject.TIME_DELTA
-        scale_factor_y = self.y_size/MosaicsReproject.TIME_DELTA
+        # scale_factor_x = self.x_size/MosaicsReproject.TIME_DELTA
+        # scale_factor_y = self.y_size/MosaicsReproject.TIME_DELTA
+        # DEBUG: try to remove scale factor and creating T matrix in terms of
+        # displacement
+        scale_factor_x = 1.0
+        scale_factor_y = 1.0
 
         # e = normal[2]*scale_factor_y
         # f = normal[2]*scale_factor_x
