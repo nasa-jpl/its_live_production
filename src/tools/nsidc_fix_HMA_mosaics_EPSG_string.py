@@ -68,8 +68,8 @@ class FixESRIMosaics:
             results = FixESRIMosaics.fix_file(target_bucket, target_dir, self.infiles[start], self.s3)
             logging.info("\n-->".join(results))
 
-        start += 1
-        total_num_files -= 1
+            start += 1
+            total_num_files -= 1
 
     @staticmethod
     def fix_file(target_bucket: str, target_dir: str, infilewithpath: str, s3):
