@@ -99,7 +99,7 @@ class FixESRIMosaics:
 
         # Download file locally - takes too long to read the whole mosaic file
         # from S3 in order for it to write fixed dataset locally
-        logging.info(f"Copying {infilewithpath} locally...")
+        logging.info(f"Copying {infilewithpath} locally to {local_file}...")
         s3_client.download_file(target_bucket, file_path, local_file)
 
         with xr.open_dataset(local_file, engine='h5netcdf') as ds:
