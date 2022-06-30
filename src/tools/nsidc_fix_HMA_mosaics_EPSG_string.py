@@ -138,12 +138,15 @@ class FixESRIMosaics:
         """
         Fix "mapping" attribute.
         """
+        _epsg = 'EPSG'
+        _esri = 'ESRI'
+
         msgs = []
         if epsg_code != NSIDCFormat.ESRI_CODE:
             msgs.append(f'Unexpected EPSG code: {epsg_code} for {new_filename}')
 
         # Extra fixes are required to the mapping data variable
-        ds[DataVars.MAPPING].attrs[FixESRIMosaics.SPATIAL_REF] = ds[DataVars.MAPPING].attrs[FixESRIMosaics.SPATIAL_REF].replace('EPSG', 'ESRI')
+        ds[DataVars.MAPPING].attrs[FixESRIMosaics.SPATIAL_REF] = ds[DataVars.MAPPING].attrs[FixESRIMosaics.SPATIAL_REF].replace(_epsg, _esri)
 
         # Convert dataset to Dask dataset not to run out of memory while writing to the file
         ds = ds.chunk(chunks={'x': chunk_size, 'y': chunk_size})
