@@ -440,6 +440,7 @@ def create_M(y1, start_year, stop_year, dyr):
 
     return M
 
+# Disable numba as its wrapper for lstsq does not support rcond input parameter
 # @nb.jit(nopython=True)
 def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs):
     _two_pi = np.pi * 2
@@ -642,7 +643,6 @@ def itslive_lsqfit_annual(
     iter_runtime = 0
     for i in range(0, _mad_filter_iterations):
         # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-        # p, d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs, dyr)
         runtime = timeit.default_timer()
         p, d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs)
         iter_runtime += (timeit.default_timer() - runtime)
@@ -747,10 +747,8 @@ def itslive_lsqfit_annual(
 
     return A, amp_error, ph, offset, slope, se, count_image_pairs, init_runtime1, init_runtime2, init_runtime3, iter_runtime
 
-# @nb.jit(nopython=True)
+@nb.jit(nopython=True)
 def annual_magnitude(
-    vx0,
-    vy0,
     vx_fit,
     vy_fit,
     vx_fit_err,
@@ -766,8 +764,6 @@ def annual_magnitude(
     from component values projected on the unit flow vector defined by vx0 and vy0.
 
     Inputs:
-        vx0: mean flow in x direction
-        vy0: mean flow in y direction
         vx_fit: annual mean flow in x direction
         vy_fit: annual mean flow in y direction
         vx_fit_err: error in annual mean flow in x direction
@@ -786,12 +782,8 @@ def annual_magnitude(
     y_len, x_len, years_len = v_fit.shape
     expand_dims = (y_len, x_len, years_len)
 
-    vx0_exp = np.broadcast_to(vx0.reshape((y_len, x_len, 1)), expand_dims)
-    vy0_exp = np.broadcast_to(vy0.reshape((y_len, x_len, 1)), expand_dims)
-
-    # logging.info(f'vx0_exp: {vx0_exp.shape} vy0_exp: {vy0_exp.shape}')
-    uv_x = vx0_exp/v_fit # unit flow vector
-    uv_y = vy0_exp/v_fit
+    uv_x = vx_fit/v_fit # unit flow vector
+    uv_y = vy_fit/v_fit
 
     v_fit_err = np.abs(vx_fit_err) * np.abs(uv_x) # flow acceleration in direction of unit flow vector, take absolute values
     v_fit_err += np.abs(vy_fit_err) * np.abs(uv_y)
@@ -1858,8 +1850,6 @@ class ITSLiveComposite:
         self.mean.v[start_y:stop_y, start_x:stop_x, :], \
         self.error.v[start_y:stop_y, start_x:stop_x, :], \
         self.count.v[start_y:stop_y, start_x:stop_x, :] = annual_magnitude(
-            self.offset.vx[start_y:stop_y, start_x:stop_x],
-            self.offset.vy[start_y:stop_y, start_x:stop_x],
             self.mean.vx[start_y:stop_y, start_x:stop_x, :],
             self.mean.vy[start_y:stop_y, start_x:stop_x, :],
             self.error.vx[start_y:stop_y, start_x:stop_x, :],
@@ -2723,6 +2713,13 @@ if __name__ == '__main__':
 
     mosaics = ITSLiveComposite(args.inputCube, args.inputBucket)
     mosaics.create(args.outputStore, args.targetBucket)
+
+    if os.path.exists(args.outputStore):
+        output_size = subprocess.run(['du', '-skh', args.outputStore], capture_output=True, text=True).stdout.split()[0]
+        logging.info(f'Size of {args.outputStore}: {output_size}')
+
+    else:
+        logging.info(f'{args.outputStore} is not created.')
 
     # Copy generated composites to the S3 bucket if provided
     if os.path.exists(args.outputStore) and len(args.targetBucket):
