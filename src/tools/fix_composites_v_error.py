@@ -60,8 +60,9 @@ class FixAnnualComposites:
         self.all_composites.sort()
         logging.info(f"Found number of composites: {len(self.all_composites)}")
 
-        self.all_composites = self.all_composites[:8]
-        logging.info(f"ULRs: {self.all_composites}")
+        # For debugging only
+        # self.all_composites = self.all_composites[:8]
+        # logging.info(f"ULRs: {self.all_composites}")
 
     def debug__call__(self, local_dir: str, num_dask_workers: int, start_index: int=0):
         """
