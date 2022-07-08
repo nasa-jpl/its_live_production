@@ -835,9 +835,6 @@ def annual_magnitude(
     # solve for velocity magnitude
     v_fit = np.sqrt(vx_fit**2 + vy_fit**2) # velocity magnitude
 
-    y_len, x_len, years_len = v_fit.shape
-    expand_dims = (y_len, x_len, years_len)
-
     uv_x = vx_fit/v_fit # unit flow vector
     uv_y = vy_fit/v_fit
 
@@ -1689,6 +1686,7 @@ class ITSLiveComposite:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
 
                 self.cube_time_mean(x_start, x_num_tasks, y_start, y_num_tasks)
+                gc.collect()
 
                 y_num_to_process -= y_num_tasks
                 y_start += y_num_tasks
@@ -1748,6 +1746,7 @@ class ITSLiveComposite:
         stop_y = start_y + num_y
         stop_x = start_x + num_x
         ITSLiveComposite.Chunk = Chunk(start_x, stop_x, num_x, start_y, stop_y, num_y)
+        ITSCube.show_memory_usage(f'starting cube_time_mean(): start_x={start_x} start_y={start_y}')
 
         # Start timer
         start_time = timeit.default_timer()
@@ -2662,7 +2661,6 @@ class ITSLiveComposite:
         # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
         for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
             for i in range(0, ITSLiveComposite.Chunk.x_len):
-                # mask = ~np.isnan(v[:, j, i])
                 mask = ~np.isnan(v[j, i, :])
                 if mask.sum() < _num_valid_points:
                     # Skip the point, return no outliers
