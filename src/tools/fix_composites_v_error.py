@@ -60,8 +60,8 @@ class FixAnnualComposites:
         self.all_composites.sort()
         logging.info(f"Found number of composites: {len(self.all_composites)}")
 
-        # self.all_composites = self.all_composites[:8]
-        # logging.info(f"ULRs: {self.all_composites}")
+        self.all_composites = self.all_composites[:8]
+        logging.info(f"ULRs: {self.all_composites}")
 
     def debug__call__(self, local_dir: str, num_dask_workers: int, start_index: int=0):
         """
@@ -131,8 +131,12 @@ class FixAnnualComposites:
         zarr_store = s3fs.S3Map(root=composite_url, s3=s3_in, check=False)
         composite_basename = os.path.basename(composite_url)
 
+        # Use composite parent directory to format local filename as there are
+        # multiple copies of the same composite filename under different sub-directories
+        dir_tokens = composite_url.split('/')
+
         # Write datacube locally, upload it to the bucket, remove file
-        fixed_file = os.path.join(local_dir, composite_basename)
+        fixed_file = os.path.join(local_dir, f'{dir_tokens[-2]}_{composite_basename}')
 
         with xr.open_dataset(zarr_store, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
             sizes = ds.sizes
