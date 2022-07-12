@@ -15,22 +15,7 @@ import s3fs
 
 from grid import Bounds
 import itslive_utils
-
-
-class CubeJson:
-    """
-    Variables names within GeoJson cube definition file.
-    """
-    FEATURES = 'features'
-    PROPERTIES = 'properties'
-    DATA_EPSG = 'data_epsg'
-    GEOMETRY_EPSG = 'geometry_epsg'
-    COORDINATES = 'coordinates'
-    ROI_PERCENT_COVERAGE = 'roi_percent_coverage'
-    EPSG_SEPARATOR = ':'
-    EPSG_PREFIX = 'EPSG'
-    URL = 'zarr_url'
-    EXIST_FLAG = 'datacube_exist'
+from itscube_types import CubeJson, FilenamePrefix, BatchVars
 
 
 class DataCubeGlobalDefinition:
@@ -41,12 +26,6 @@ class DataCubeGlobalDefinition:
     datacubes), the sript can just "glob" for expected datacube S3 URL to check
     if it exists or not.
     """
-    FILENAME_PREFIX = 'ITS_LIVE_vel'
-    MID_POINT_RESOLUTION = 50.0
-
-    # String representation of longitude/latitude projection
-    LON_LAT_PROJECTION = '4326'
-
     # List of EPSG codes to generate datacubes for. If this list is empty,
     # then generate all ROI!=0 datacubes.
     EPSG_TO_UPDATE = []
@@ -54,11 +33,10 @@ class DataCubeGlobalDefinition:
     # Filename to save found datacubes URLs to
     FOUND_CUBES_FILE = 'found_cubes.json'
 
-    AWS_PREFIX = 'its-live-data'
-    URL_PREFIX = 'http://its-live-data.s3.amazonaws.com'
-
     # Path of datacubes top level directory in S3 bucket
     CUBES_S3_PATH = None
+
+    AWS_PREFIX = 'its-live-data'
 
     # Flag to disable reduced catalog geojson
     DISABLE_REDUCED_CATALOG = False
@@ -87,7 +65,7 @@ class DataCubeGlobalDefinition:
             with open(DataCubeGlobalDefinition.FOUND_CUBES_FILE , 'w') as outfile:
                 json.dump(self.all_cubes, outfile, indent=4)
 
-        self.all_cubes = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, DataCubeGlobalDefinition.URL_PREFIX) for each in self.all_cubes]
+        self.all_cubes = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes]
         logging.info(f'Number of datacubes in Zarr format: {len(self.all_cubes)}')
 
     def __call__(self, cube_file: str, output_file: str):
@@ -180,19 +158,19 @@ class DataCubeGlobalDefinition:
 
                     # Get mid point to the nearest 50
                     logging.info(f"Mid point: x={mid_x} y={mid_y}")
-                    mid_x = int(math.floor(mid_x/DataCubeGlobalDefinition.MID_POINT_RESOLUTION)*DataCubeGlobalDefinition.MID_POINT_RESOLUTION)
-                    mid_y = int(math.floor(mid_y/DataCubeGlobalDefinition.MID_POINT_RESOLUTION)*DataCubeGlobalDefinition.MID_POINT_RESOLUTION)
-                    logging.info(f"Mid point at {DataCubeGlobalDefinition.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
+                    mid_x = int(math.floor(mid_x/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
+                    mid_y = int(math.floor(mid_y/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
+                    logging.info(f"Mid point at {BatchVars.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
 
                     # Convert to lon/lat coordinates to format s3 bucket path
                     # for the datacube
                     mid_lon_lat = itslive_utils.transform_coord(
                         epsg_code,
-                        DataCubeGlobalDefinition.LON_LAT_PROJECTION,
+                        BatchVars.LON_LAT_PROJECTION,
                         mid_x, mid_y
                     )
 
-                    cube_filename = f"{DataCubeGlobalDefinition.FILENAME_PREFIX}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
+                    cube_filename = f"{FilenamePrefix.Datacube}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
                     logging.info(f'Cube name: {cube_filename}')
 
                     if len(DataCubeGlobalDefinition.CUBES_TO_INCLUDE) and \
@@ -205,6 +183,11 @@ class DataCubeGlobalDefinition:
                         # The datacube in Zarr format exists, update GeoJson
                         each_cube[CubeJson.PROPERTIES][CubeJson.URL] = cube_url[0]
                         each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 1
+
+                        # Replace 'data_epsg' with 'epsg' attribute, and store value as integer type
+                        del each_cube[CubeJson.PROPERTIES][CubeJson.DATA_EPSG]
+                        each_cube[CubeJson.PROPERTIES][CubeJson.EPSG] = int(epsg_code)
+
                         num_cubes += 1
 
                         # If constructing reduced catalog, append cube to the result catalog
@@ -299,6 +282,8 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
+
+    logging.info(f"Command-line arguments: {sys.argv}")
 
     epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
