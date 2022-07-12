@@ -53,8 +53,8 @@ class FindGranulesToProcess:
             logging.info(f"Loaded {len(self.infiles)} granules from '{NSIDCFormat.GRANULES_FILE}'")
 
         # Keep only granules of selected EPGS codes
-        self.infiles = [each for each in self.infiles if each.split('/')[-2] in FindGranulesToProcess.EPSG_CODES]
-        logging.info(f"Keeping {len(self.infiles)} granules that correspond to '{FindGranulesToProcess.EPSG_CODES}'")
+        # self.infiles = [each for each in self.infiles if each.split('/')[-2] in FindGranulesToProcess.EPSG_CODES]
+        # logging.info(f"Keeping {len(self.infiles)} granules that correspond to '{FindGranulesToProcess.EPSG_CODES}'")
 
     def no__call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
         """
@@ -102,7 +102,7 @@ class FindGranulesToProcess:
         file_list = []
         prev_size = 0
 
-        json_file = 'nsidc_granules_to_fix.json'
+        json_file = 'nsidc_granules_to_fix_all.json'
 
         while total_num_files > 0:
             num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
@@ -127,13 +127,12 @@ class FindGranulesToProcess:
                 with open(json_file, 'w') as fh:
                     json.dump(file_list, fh, indent=3)
 
-            prev_size = len(file_list)
+                prev_size = len(file_list)
+
             total_num_files -= num_tasks
             start += num_tasks
 
         logging.info(f'Found {len(file_list)} granules to reprocess')
-
-
 
         logging.info(f'Wrote files to fix to {json_file}')
 
