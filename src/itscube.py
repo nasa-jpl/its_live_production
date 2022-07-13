@@ -1906,12 +1906,23 @@ class ITSCube:
                 levels=100)
 
     @staticmethod
-    def validate_cube_datetime(ds: xr.Dataset, start_date: str, cube_url: str):
+    def validate_cube(ds: xr.Dataset, start_date: str, cube_url: str):
         """
-        Validate datetime objects of the cube against start_date of the cube.
+        Validate just written to disk datacube. This method is introduced because
+        of observed corrupted datacube properties:
+        1. Validate X and Y coordinates values: not to include NaN's.
+        2. Validate datetime objects of the cube against start_date of the cube.
+
         This check is introduced to capture corrupted datacubes as early as
         possible in the cube generation.
         """
+        logging.info(f"Validating X and Y coordinates for {cube_url}")
+        if np.any(np.isnan(ds.x.values)):
+            raise RuntimeError(f'Detected NaNs in X: {cube_url} ds.size={ds.sizes}')
+
+        if np.any(np.isnan(ds.y.values)):
+            raise RuntimeError(f'Detected NaNs in Y: {cube_url} ds.size={ds.sizes}')
+
         # ATTN: This checking assumes that start_date corresponds to the start
         # date of the data used to create the datacube
         start_date = np.datetime64(start_date)
@@ -2202,11 +2213,12 @@ if __name__ == '__main__':
     gc.collect()
 
     ITSCube.show_memory_usage('at the end of datacube generation')
+    remove_original_datacube = False
 
     try:
         if not args.disableCubeValidation and os.path.exists(args.outputStore):
             with xr.open_zarr(args.outputStore, decode_timedelta=False, consolidated=True) as ds:
-                ITSCube.validate_cube_datetime(ds, args.searchAPIStartDate, args.outputStore)
+                ITSCube.validate_cube(ds, args.searchAPIStartDate, args.outputStore)
 
             gc.collect()
 
@@ -2215,12 +2227,16 @@ if __name__ == '__main__':
             # resulting in as many error messages as there are files in Zarr store
             # to copy
 
-            # Remove Zarr store in S3 if it exists: updated Zarr, which is stored to the
-            # local file system before copying to the S3 bucket, might have different
-            # "sub-directory" structure. This will result in original "sub-directories"
-            # and "new" ones to co-exist for the same Zarr store. This doubles up
-            # the Zarr disk usage in S3 bucket.
-            ITSCube.remove_s3_datacube(args.outputStore, ITSCube.SKIPPED_GRANULES_FILE, args.outputBucket)
+            # TODO: Might need to make it a command-line option?
+            # This should be done only when Zarr chunking of the existing (in S3 bucket)
+            # datacube is changed
+            if remove_original_datacube:
+                # Remove Zarr store in S3 if it exists: updated Zarr, which is stored to the
+                # local file system before copying to the S3 bucket, might have different
+                # "sub-directory" structure. This will result in original "sub-directories"
+                # and "new" ones to co-exist for the same Zarr store. This doubles up
+                # the Zarr disk usage in S3 bucket.
+                ITSCube.remove_s3_datacube(args.outputStore, ITSCube.SKIPPED_GRANULES_FILE, args.outputBucket)
 
             env_copy = os.environ.copy()
 
@@ -2283,7 +2299,7 @@ if __name__ == '__main__':
                     if each_validate_flag:
                         # Validate just copied to S3 datacube
                         s3_in, cube_store, ds_from_zarr, _ = ITSCube.init_input_store(each_input, args.outputBucket, read_skipped_granules=False)
-                        ITSCube.validate_cube_datetime(ds_from_zarr, args.searchAPIStartDate, os.path.join(args.outputBucket, each_input))
+                        ITSCube.validate_cube(ds_from_zarr, args.searchAPIStartDate, os.path.join(args.outputBucket, each_input))
 
     finally:
         # Remove locally written Zarr store.
