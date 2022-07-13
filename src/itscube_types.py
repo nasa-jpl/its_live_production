@@ -336,6 +336,7 @@ class CubeJson:
     FEATURES = 'features'
     PROPERTIES = 'properties'
     DATA_EPSG = 'data_epsg'
+    EPSG = 'epsg'
     GEOMETRY_EPSG = 'geometry_epsg'
     COORDINATES = 'coordinates'
     ROI_PERCENT_COVERAGE = 'roi_percent_coverage'
@@ -344,6 +345,7 @@ class CubeJson:
     URL = 'zarr_url'
     EXIST_FLAG = 'datacube_exist'
     REGION = 'region'
+    RGI_CODE = 'RGI_CODE'
 
 class FilenamePrefix:
     """
