@@ -89,7 +89,7 @@ def get_granule_urls_streamed(params, total_retries = 1):
             logging.info(f'Got exception: {sys.exc_info()}')
             if num_retries < total_retries:
                 # Sleep if it's not last attempt
-                logging.info(f'Sleeping between searchAPI attempts for {num_seconds}')
+                logging.info(f'Sleeping between searchAPI attempts for {num_seconds} seconds')
                 time.sleep(num_seconds)
 
         finally:
