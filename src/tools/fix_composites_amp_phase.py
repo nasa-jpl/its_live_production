@@ -224,12 +224,12 @@ class FixAnnualComposites:
             # Don't use np.nan values in calculations to avoid warnings
             valid_mask = (~np.isnan(vx_phase_deg)) & (~np.isnan(vy_phase_deg))
 
-            logging.info(f'Degrees: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
+            # logging.info(f'Degrees: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
 
             # Convert degrees to radians as numpy trig. functions take angles in radians
             vx_phase_deg = vx_phase_deg*np.pi/180.0
             vy_phase_deg = vy_phase_deg*np.pi/180.0
-            logging.info(f'Radians: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
+            # logging.info(f'Radians: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
 
             # Matlab prototype code:
             # % Rotation matrix for x component:
@@ -242,7 +242,7 @@ class FixAnnualComposites:
             theta[valid_mask] = np.arctan2(ds.vy0.values[valid_mask], ds.vx0.values[valid_mask])
 
             if np.any(theta<0):
-                logging.info(f'Got negative theta, converting to positive values')
+                # logging.info(f'Got negative theta, converting to positive values')
                 mask = (theta<0)
                 theta[mask] += 2*np.pi
 
