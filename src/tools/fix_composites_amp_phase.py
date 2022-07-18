@@ -287,7 +287,7 @@ class FixAnnualComposites:
             # vx_phase_r = mod(vx_phase_r, 360);
             # vx_phase_r((vx_phase_r == 0) & px) = 360;
             mask = v_phase > 0
-            v_phase = np.remainder(v_phase, 360.0)
+            v_phase[mask] = np.remainder(v_phase[mask], 360.0)
             mask = mask & (v_phase == 0)
             v_phase[mask] = 360
 
