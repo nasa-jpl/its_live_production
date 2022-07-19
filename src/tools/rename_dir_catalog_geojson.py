@@ -4,19 +4,12 @@ AWS S3 bucket. For each granule stored in catalog geojson file it replaces
 "landsat/v00.0" with "landsatOLI/v01".
 
 """
-import copy
 import json
 import logging
-import math
 import os
-from pathlib import Path
 import s3fs
 
-from grid import Bounds
-import itslive_utils
-from itscube_types import CubeJson, FilenamePrefix, BatchVars
-
-AWS_PREFIX = 'its-live-data'
+from itscube_types import CubeJson
 
 # Path to store original and updated catalog geojson files
 S3_INPUT_PATH = 'its-live-data/catalog_geojson/landsat/v01'
@@ -39,7 +32,7 @@ def rename_granule_paths():
 
     # Fix paths in skipped_granules_landsat.json and used_granules_landsat.json files
     for each in ["skipped_granules_landsat.json", "used_granules_landsat.json"]:
-        with s3_in.open(each, 'r') as fhandle:
+        with s3_in.open(os.path.join(S3_INPUT_PATH, each), 'r') as fhandle:
             all_granules = json.load(fhandle)
 
             fixed_granules = []
