@@ -18,6 +18,7 @@ JSON_PATTERN = 'imgpair_*.json'
 
 # Path to original and updated v01 granules
 INPUT_FILE_PATH = 'landsat/v00.0'
+INPUT_L8_FILE_PATH = 'landsat8/v01'
 OUTPUT_FILE_PATH = 'landsatOLI/v01'
 DRY_RUN = False
 
@@ -35,9 +36,7 @@ def rename_granule_paths():
         with s3_in.open(os.path.join(S3_INPUT_PATH, each), 'r') as fhandle:
             all_granules = json.load(fhandle)
 
-            fixed_granules = []
-            for each_path in all_granules:
-                fixed_granules.append(each_path.replace(INPUT_FILE_PATH, OUTPUT_FILE_PATH))
+            fixed_granules = [each_path.replace(INPUT_L8_FILE_PATH, OUTPUT_FILE_PATH) for each_path in all_granules]
 
             output_filename = os.path.join(S3_OUTPUT_PATH, os.path.basename(each))
             logging.info(f'Writing updated geojson {each} to {output_filename}...')
@@ -48,7 +47,7 @@ def rename_granule_paths():
     all_files = s3_in.glob(os.path.join(S3_INPUT_PATH, JSON_PATTERN))
     all_files.sort()
 
-    logging.info(f'Collected len(all_files) geojson catalogs')
+    logging.info(f'Collected {len(all_files)} geojson catalogs')
 
     for each in all_files:
         logging.info(f'Changing {each}')
