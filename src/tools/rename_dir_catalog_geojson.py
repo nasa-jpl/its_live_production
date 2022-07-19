@@ -1,8 +1,8 @@
 """
-Script to rename directory paths in existing catalog geojson files as stored in
-AWS S3 bucket.
+Script to rename directory paths in existing v1 catalog geojson files as stored in
+AWS S3 bucket. For each granule stored in catalog geojson file it replaces
+"landsat/v00.0" with "landsatOLI/v01".
 
-It accepts S3 path with geojson files to modify.
 """
 import copy
 import json
@@ -26,6 +26,7 @@ JSON_PATTERN = 'imgpair_*.json'
 # Path to original and updated v01 granules
 INPUT_FILE_PATH = 'landsat/v00.0'
 OUTPUT_FILE_PATH = 'landsatOLI/v01'
+DRY_RUN = False
 
 def rename_granule_paths():
     """
@@ -47,8 +48,9 @@ def rename_granule_paths():
 
             output_filename = os.path.join(S3_OUTPUT_PATH, os.path.basename(each))
             logging.info(f'Writing updated geojson {each} to {output_filename}...')
-            with s3_out.open(output_filename, 'w') as outf:
-                json.dump(fixed_granules, outf)
+            if not DRY_RUN:
+                with s3_out.open(output_filename, 'w') as outf:
+                    json.dump(fixed_granules, outf)
 
     all_files = s3_in.glob(os.path.join(S3_INPUT_PATH, JSON_PATTERN))
     all_files.sort()
@@ -103,9 +105,9 @@ def rename_granule_paths():
             # Store updated catalog geojson to S3
             output_filename = os.path.join(S3_OUTPUT_PATH, os.path.basename(each))
             logging.info(f"Writing updated geojson to {output_filename}...")
-            with s3_out.open(output_filename, 'w') as outf:
-                json.dump(all_granules, outf)
-
+            if not DRY_RUN:
+                with s3_out.open(output_filename, 'w') as outf:
+                    json.dump(all_granules, outf)
 
 if __name__ == '__main__':
     import argparse
@@ -124,7 +126,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0],
                                      epilog=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        '--dryrun',
+        action='store_true',
+        help='Dry run, do not actually copy any data to AWS S3 bucket'
+    )
+
     args = parser.parse_args()
+    DRY_RUN = args.dryrun
 
     logging.info(f"Command-line arguments: {sys.argv}")
 
