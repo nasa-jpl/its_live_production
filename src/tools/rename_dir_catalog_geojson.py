@@ -34,8 +34,9 @@ def rename_granule_paths():
     # Fix paths in skipped_granules_landsat.json and used_granules_landsat.json files
     for each in ["skipped_granules_landsat.json", "used_granules_landsat.json"]:
         with s3_in.open(os.path.join(S3_INPUT_PATH, each), 'r') as fhandle:
-            all_granules = json.load(fhandle)
+            logging.info(f'Changing {each}')
 
+            all_granules = json.load(fhandle)
             fixed_granules = [each_path.replace(INPUT_L8_FILE_PATH, OUTPUT_FILE_PATH) for each_path in all_granules]
 
             output_filename = os.path.join(S3_OUTPUT_PATH, os.path.basename(each))
