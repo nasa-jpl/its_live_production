@@ -346,6 +346,7 @@ class CubeJson:
     EXIST_FLAG = 'datacube_exist'
     REGION = 'region'
     RGI_CODE = 'RGI_CODE'
+    DIRECTORY = 'directory'
 
 class FilenamePrefix:
     """
