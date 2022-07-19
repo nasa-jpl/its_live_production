@@ -66,9 +66,7 @@ class FixAnnualComposites:
 
     def debug__call__(self, local_dir: str, num_dask_workers: int, start_index: int=0):
         """
-        Fix mapping.GeoTransform of ITS_LIVE datacubes stored in S3 bucket.
-        Strip suffix from original granules names as appear within 'granule_url'
-        data variable and skipped_* datacube attributes.
+        Fix v_error of ITS_LIVE datacubes' composites stored in S3 bucket.
         """
         num_to_fix = len(self.all_composites) - start_index
         start = start_index
