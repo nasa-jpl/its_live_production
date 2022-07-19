@@ -26,7 +26,7 @@ python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
     --processCubesFile HMA_datacubes.json -r HMA
     --mosaicsEpsgCode 'ESRI:102027'
 
-Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Green (JPL), Mark Fahnestock (UAF)
+Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Greene (JPL), Mark Fahnestock (UAF)
 """
 import collections
 import copy
@@ -484,11 +484,19 @@ class ITSLiveAnnualMosaics:
                 self.time_coords.append(ds_time)
                 self.sensor_coords.append(ds_from_zarr.sensor.values)
 
+                if np.any(np.isnan(self.x_coords[-1])):
+                    raise RuntimeError(f'Got nan in x: {composite_s3_path}')
+
+                if np.any(np.isnan(self.y_coords[-1])):
+                    raise RuntimeError(f'Got nan in y: {composite_s3_path}')
+
         # Create one large dataset per each year
         self.time_coords = sorted(list(set(np.concatenate(self.time_coords))))
 
         self.x_coords = sorted(list(set(np.concatenate(self.x_coords))))
         self.y_coords = sorted(list(set(np.concatenate(self.y_coords))))
+
+        logging.info(f'Mosaics grid size: x={len(self.x_coords)} y={len(self.y_coords)}')
 
         # Compute cell size in x and y dimension
         x_cell = self.x_coords[1] - self.x_coords[0]
@@ -536,10 +544,16 @@ class ITSLiveAnnualMosaics:
         # Create summary mosaic (to store all 2d data variables from all composites)
         output_files.append(self.create_summary_mosaics(ds_projection, first_ds, s3_bucket, mosaics_dir, copy_to_s3))
 
+        # Force garbage collection as it not always kicks in
+        gc.collect()
+
         # Create annual mosaics
         logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION}')
         for each_year in self.time_coords:
             output_files.append(self.create_annual_mosaics(ds_projection, first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3))
+
+            # Force garbage collection as it not always kicks in
+            gc.collect()
 
         return output_files
 
