@@ -93,6 +93,9 @@ class FixMosaicsMapping:
         Edit attribute name from spatial_proj4 to proj4text :proj4text = "+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs";
         Required attribute; add attribute and set to 70.0 (standard_parallel is aka latitude_of_origin, but is not the same as latitude_of_projection_origin) :standard_parallel = 70.0; // double
     """
+    HMA = 'HMA'
+    ANT = 'ANT'
+    PAT = 'PAT'
     REST_OF_REGIONS = 'ALA_CAN_GRE_ICE_SRA'
 
     def __init__(self, s3_bucket: str, s3_dir: str, region: str):
@@ -104,13 +107,10 @@ class FixMosaicsMapping:
         s3_bucket: AWS S3 bucket that stores mosaics files.
         s3_dir: Directory in AWS S3 bucket that stores mosaics files.
         """
-        glob_pattern_str = f'{region}_*.nc'
-
-
         fix_method_dict = {
-            'HMA': FixMosaicsMapping.process_HMA_file,
-            'ANT': FixMosaicsMapping.process_ANT_file,
-            'PAT': FixMosaicsMapping.process_PAT_file,
+            FixMosaicsMapping.HMA: FixMosaicsMapping.process_HMA_file,
+            FixMosaicsMapping.ANT: FixMosaicsMapping.process_ANT_file,
+            FixMosaicsMapping.PAT: FixMosaicsMapping.process_PAT_file,
             FixMosaicsMapping.REST_OF_REGIONS: FixMosaicsMapping.process_rest_of_regions_file
         }
 
@@ -458,7 +458,7 @@ if __name__ == '__main__':
         '-region',
         type=str,
         required=True,
-        choices=['HMA', 'ANT', 'PAT', FixMosaicsMapping.REST_OF_REGIONS],
+        choices=[FixMosaicsMapping.HMA, FixMosaicsMapping.ANT, FixMosaicsMapping.PAT, FixMosaicsMapping.REST_OF_REGIONS],
         help='Region code for which to fix mosaics files'
     )
 
