@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 reads image pair list (directory listing from itslive S3 zone produced from
-make_filelists_by_zone.py (s3fs ls)), finds all USGS L8 image pairs from the same 
-path/rows (from current USGS C2 image list - needs to be updated regularly), 
+make_filelists_by_zone.py (s3fs ls)), finds all USGS L8 image pairs from the same
+path/rows (from current USGS C2 image list - needs to be updated regularly),
 then finds missing pairs that have both images in USGS C2 collection
 
 Outputs a file for the zone that is the appropriate scene ids for the pair,
@@ -31,7 +31,7 @@ import gzip
 def img_short_name(full_name):
     """ returns first four fields of name connected with _"""
     return('_'.join(full_name.split('_')[:4]))
-    
+
 
 
 
@@ -40,7 +40,7 @@ parser = argparse.ArgumentParser(
 #             prog = 'find_all_USGS_Collection2_imagepairs_for_zone_list_v2.py',
             formatter_class=argparse.RawDescriptionHelpFormatter
             )
-         
+
 # parser.add_argument('zone', help='original ITS_LIVE zone to find new image pairs for (e.g. 32622) (UTM 326XX and 327XX, ?3413 for GRE, 3031 for ANT)')
 parser.add_argument('-startdatestr', default='20130101',help='oldest date considered for more recent image in a pair (do not process earlier missing pairs)(format is 0 padded YYYYMMDD) [%(default)s]')
 # >>>> default for stopdatestr should be a future date to process up to present <<<<
@@ -53,13 +53,13 @@ parser.add_argument('-geojson_cat_dir', default='/Users/mark/itslive/catalog_geo
 parser.add_argument('-ignore_existing_itslive_pairs', action='store_true',help='produce complete list of possible pairs, ignoring already existing itslive pairs [False]')
 parser.add_argument('-v', action='store_true',help='verbose output about existing pairs [False]')
 parser.add_argument('-log_numbers_file', default=None, help='log file to append existing and new numbers to [%(default)s]')
-args = parser.parse_args()	
+args = parser.parse_args()
 
 if not(args.read_geojsons_from_itslive_S3):
     geojson_cat_dir = args.geojson_cat_dir
     injsonlist = glob.glob(f'{geojson_cat_dir}/imgpair*.json')
 else:
-    s3_path = 'its-live-data.jpl.nasa.gov/catalog_geojson/landsat/v02/'
+    s3_path = 'its-live-data/catalog_geojson/landsatOLI/v02/'
     s3 = s3fs.S3FileSystem(anon=True)
     injsonlist = s3.glob(s3_path+'imgpair_v02*.json')
 
@@ -125,7 +125,7 @@ for injsonfile in injsonlist:
     print(f'{injsonfile}')
     if args.read_geojsons_from_itslive_S3:
         with s3.open(injsonfile) as infile:
-            imgs = json.load(infile)    
+            imgs = json.load(infile)
     else: # local file
         with open(injsonfile) as infile:
             imgs = json.load(infile)
@@ -171,7 +171,7 @@ for pair_name in existing_pairs_files:
             existing_its_live_pairs_crossed_prs += 1
             if 'P000' in pair_name:
                 existing_its_live_pairs_crossed_prs_P000 += 1
-                
+
 print(f'its_live has {total_existing_its_live_pairs_all_pr_combos} L8 pairs, {existing_its_live_pairs_same_prs} same path/row non_RT min_delt {min_delt} max_delt {max_delt} ({existing_its_live_pairs_same_prs_RT} _RT, {existing_its_live_pairs_same_prs_P000} P000), {existing_its_live_pairs_crossed_prs} crossed path/row ({existing_its_live_pairs_crossed_prs_P000} P000)')
 if args.log_numbers_file:
     logfile.write(f'its_live has {total_existing_its_live_pairs_all_pr_combos} L8 pairs, {existing_its_live_pairs_same_prs} same path/row non_RT min_delt {min_delt} max_delt {max_delt} ({existing_its_live_pairs_same_prs_RT} _RT, {existing_its_live_pairs_same_prs_P000} P000), {existing_its_live_pairs_crossed_prs} crossed path/row ({existing_its_live_pairs_crossed_prs_P000} P000)')
@@ -209,7 +209,7 @@ for pair_name in existing_pairs_files:
         if args.v:
             print(f'image pair list value {pair_name} not valid, skipping this pair')
 
-    
+
 
 print(f'reading USGS list of available C2 scenes from {USGS_list_file} that is {l8USGSfile_age.days} days old')
 
@@ -235,7 +235,7 @@ for row in reader:
 
             fields = row['Landsat Product Identifier L1'].split('_') # 'LC08_L1TP_087231_20200604_20200604_01_T1'
 
-            if fields[2] in img_dict.keys(): # a path/row we want 
+            if fields[2] in img_dict.keys(): # a path/row we want
                 img_short = '_'.join(fields[:4])
                 if img_short not in usgs_imagelists_dict[fields[2]]:
                     usgs_imagelists_dict[fields[2]][img_short] = row
@@ -249,11 +249,11 @@ for row in reader:
 
 reader = None
 
-print(f'scanned {counter} L8 scenes: nadir_failed_to_match_zone {nadir_failed_to_match_zone}  off_nadir {off_nadir}  rt_or_lt_count {rt_or_lt_count}')  
+print(f'scanned {counter} L8 scenes: nadir_failed_to_match_zone {nadir_failed_to_match_zone}  off_nadir {off_nadir}  rt_or_lt_count {rt_or_lt_count}')
 
-        
-        
-print('finding missing pairs') 
+
+
+print('finding missing pairs')
 # now find pairs from USGS list that are missing from its_live archive (img_dict)
 total_needed_pairs = 0
 usgs_needed_pairs_dict = {x:{} for x in img_dict.keys()}
@@ -261,16 +261,16 @@ usgs_needed_pairs_dict = {x:{} for x in img_dict.keys()}
 for pathrow in usgs_needed_pairs_dict:
 
     temp_usgs_lowcloud = []
-    
+
     for image in usgs_imagelists_dict[pathrow]:
         if float(usgs_imagelists_dict[pathrow][image]['Land Cloud Cover']) <= cloudfraction_cutoff:
             temp_usgs_lowcloud.append((image.split('_')[3],image))
-    
+
     temp_usgs_lowcloud.sort(reverse=True)
     usgs_lowcloud = [x[1] for x in temp_usgs_lowcloud]
-    
-    
-    
+
+
+
     usgs_needed_pairs_dict[pathrow] = {x:{} for x in usgs_lowcloud}
 
     for index,scene in enumerate(usgs_lowcloud[:-1]): # skip oldest (USGS list returns in reverse time order because file has youngest at top
@@ -281,12 +281,12 @@ for pathrow in usgs_needed_pairs_dict:
         while n < len(usgs_lowcloud) and delt <= max_time_separation_days:
 # a hack to see if this is preventing matches because its_live went to older_younger order in new filenames, but code was written originally for reverse (see changes above to delt calculations)
 #             temp_pair_dict = {
-#                             'img1':usgs_imagelists_dict[pathrow][scene]['Landsat Product Identifier L1'], 
+#                             'img1':usgs_imagelists_dict[pathrow][scene]['Landsat Product Identifier L1'],
 #                             'img2':usgs_imagelists_dict[pathrow][usgs_lowcloud[n]]['Landsat Product Identifier L1']
 #                             }
             temp_pair_dict = {
                             'img1':usgs_imagelists_dict[pathrow][usgs_lowcloud[n]]['Landsat Product Identifier L1'],
-                            'img2':usgs_imagelists_dict[pathrow][scene]['Landsat Product Identifier L1'] 
+                            'img2':usgs_imagelists_dict[pathrow][scene]['Landsat Product Identifier L1']
                             }
             found_match = False
             if not(args.ignore_existing_itslive_pairs): # skip this section if we are creating all possible combinations and ignoring what is in archive already
@@ -307,7 +307,7 @@ for pathrow in usgs_needed_pairs_dict:
 #                 delt = (dt_img1 - dt_img2).days
                 dt_img1 = dt.datetime.strptime(usgs_lowcloud[n].split('_')[3],"%Y%m%d")
                 delt = (dt_img2 - dt_img1).days
-                
+
 # total_existing_its_live_pairs = np.sum([len(img_dict[x][y]) for x in img_dict.keys() for y in img_dict[x]])
 print(f'found {total_needed_pairs} missing/new scene pairs to process; its_live has {same_pr_delt_first_occurence} or {existing_its_live_pairs_same_prs - same_pr_duplicates} (non-duplicate) ({same_pr_duplicates} same_pr_delt_duplicates) L8-only same path/row pairs already')
 if args.log_numbers_file:
@@ -342,10 +342,10 @@ for pathrow in usgs_needed_pairs_dict:
                 img2 = usgs_needed_pairs_dict[pathrow][scene_short][delt]['img2']
                 if args.v:
                     if scene_short.split('_')[-1] <= startdatestr:
-                        print(f'               -> second image too old {img1} {img2}') 
+                        print(f'               -> second image too old {img1} {img2}')
                     else:
                         print(f'               -> second image too young {img1} {img2}')
-            
+
 
 print(f'found {len(image_pair_list)} pairs of images to process; for {pre_cutoff_pairs} pairs both images were earlier than {startdatestr} or second image was later than {stopdatestr}')
 if args.log_numbers_file:
@@ -357,4 +357,3 @@ with open(f'L8_pairs_to_process_{dt.datetime.now().strftime("%Y_%m_%d")}.txt','w
 
 if args.log_numbers_file:
     logfile.close()
-
