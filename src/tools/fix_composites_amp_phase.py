@@ -126,8 +126,8 @@ class FixAnnualComposites:
         logging.info(f"Found number of composites: {len(self.all_composites)}")
 
         # For debugging only
-        # self.all_composites = self.all_composites[:1]
-        # logging.info(f"ULRs: {self.all_composites}")
+        self.all_composites = self.all_composites[:1]
+        logging.info(f"ULRs: {self.all_composites}")
 
     def no__call__(self, local_dir: str, num_dask_workers: int, start_index: int=0):
         """
@@ -198,6 +198,8 @@ class FixAnnualComposites:
         direction of v0 and the other is perpendicular to v0.
         We only want to retain the component that is in the direction of v0.""
         """
+        _two_pi = np.pi * 2
+
         msgs = [f'Processing {composite_url}']
 
         zarr_store = s3fs.S3Map(root=composite_url, s3=s3_in, check=False)
@@ -244,7 +246,7 @@ class FixAnnualComposites:
             if np.any(theta<0):
                 # logging.info(f'Got negative theta, converting to positive values')
                 mask = (theta<0)
-                theta[mask] += 2*np.pi
+                theta[mask] += _two_pi
 
             # Find negative values
             sin_theta = np.sin(theta)
@@ -266,11 +268,15 @@ class FixAnnualComposites:
                 A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask]),
                 A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask])
             )
-            # np.arctan2 returns phase in radians, convert to degrees
+            # np.arctan2 returns phase in radians
             v_phase[valid_mask] = np.arctan2(
                 A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask]),
                 A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask])
             )*180.0/np.pi
+
+            # ??? no need to convert to degrees, as we are going to wrap to 365.25 days
+            # at the end
+            # *180.0/np.pi
 
             # Matlab prototype code:
             # % Make all amplitudes positive (and reverse phase accordingly):
@@ -279,7 +285,8 @@ class FixAnnualComposites:
             # vx_phase_r(nx) = vx_phase_r(nx)+180;
             mask = v_amp < 0
             v_amp[mask] *= -1.0
-            v_phase[mask] += 180;
+            # v_phase[mask] += np.pi
+            v_phase[mask] += 180
 
             # Matlab prototype code:
             # % Wrap to 360 degrees:
@@ -287,14 +294,32 @@ class FixAnnualComposites:
             # vx_phase_r = mod(vx_phase_r, 360);
             # vx_phase_r((vx_phase_r == 0) & px) = 360;
             mask = v_phase > 0
+            # v_phase[mask] = np.remainder(v_phase[mask], _two_pi)
             v_phase[mask] = np.remainder(v_phase[mask], 360.0)
             mask = mask & (v_phase == 0)
-            v_phase[mask] = 360
+            # v_phase[mask] = _two_pi
+            v_phase[mask] = 360.0
+
+            # Convert all values to positive
+            mask = v_phase < 0
+            if np.any(mask):
+                # logging.info(f'Got negative phase, converting to positive values')
+                # v_phase[mask] += _two_pi
+                v_phase[mask] = np.remainder(v_phase[mask], -360.0)
+                v_phase[mask] += 360.0
 
             # Matlab prototype code:
             # % Convert degrees to days:
             # vx_phase_r = vx_phase_r*365.24/360;
             # vy_phase_r = vy_phase_r*365.24/360;
+            # Python: to be consistent with phase calculations in LSQ fit of composites
+            # phase converted such that it reflects the day when value is maximized
+            # TODO: confirm with Alex
+            # Does not generate the same solution as original composites: because it's
+            # shifted by 0.25 again?
+            # v_phase = 365.25*((0.25 - v_phase/_two_pi) % 1)
+
+            # Matlab's solution generates the same solution as original composites
             v_phase = v_phase*365.24/360
 
             # Replace v_amp variable in dataset
