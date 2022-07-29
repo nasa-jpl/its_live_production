@@ -126,8 +126,8 @@ class FixAnnualComposites:
         logging.info(f"Found number of composites: {len(self.all_composites)}")
 
         # For debugging only
-        self.all_composites = self.all_composites[:1]
-        logging.info(f"ULRs: {self.all_composites}")
+        # self.all_composites = self.all_composites[:1]
+        # logging.info(f"ULRs: {self.all_composites}")
 
     def no__call__(self, local_dir: str, num_dask_workers: int, start_index: int=0):
         """
