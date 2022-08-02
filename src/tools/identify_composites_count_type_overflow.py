@@ -232,7 +232,7 @@ class AnnualCompositesCountOverflow:
             # Check if there are any negative "count0" values
             if np.any(ds[CompDataVars.COUNT0].values < 0):
                 sizes = ds.sizes
-                msgs.append('Need to re-process due to the size threshold: {sizes}')
+                msgs.append(f'Need to re-process due to the size threshold: {sizes}')
 
                 if sizes[CompDataVars.TIME] > max_dim_threshold:
                     msgs.append('Adding to OnDemand queue')
@@ -243,7 +243,7 @@ class AnnualCompositesCountOverflow:
                     spot_queue = True
 
             else:
-                msgs.append('Need to change dtype as no negative values are detected for {CompDataVars.COUNT0}')
+                msgs.append(f'Need to change dtype as no negative values are detected for {CompDataVars.COUNT0}')
                 change_type = True
 
         return (msgs, change_type, spot_queue, ondemand_queue, composite_url)
