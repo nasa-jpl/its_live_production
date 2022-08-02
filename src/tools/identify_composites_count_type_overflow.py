@@ -34,7 +34,7 @@ import xarray as xr
 import zarr
 
 from itscube_types import DataVars, Coords
-from itslive_composite import CompDataVars
+from itslive_composite import CompDataVars, CompOutputFormat
 
 
 class AnnualCompositesCountOverflow:
@@ -53,9 +53,9 @@ class AnnualCompositesCountOverflow:
     """
     S3_PREFIX = 's3://'
     FILENAME_PREFIX = 'composites_for_'
-    CHANGE_DTYPE_PREFIX = '_change_dtype.json'
-    SPOT_QUEUE_PREFIX = '_spot_queue.json'
-    ONDEMAND_QUEUE_PREFIX = '_ondemand_queue.json'
+    CHANGE_DTYPE_PREFIX = 'change_dtype.json'
+    SPOT_QUEUE_PREFIX = 'spot_queue.json'
+    ONDEMAND_QUEUE_PREFIX = 'ondemand_queue.json'
 
     # Only for composites that need to be re-created: maximum "time" dimension
     # to qualify re-processing for SPOT AWS queue,
@@ -231,16 +231,26 @@ class AnnualCompositesCountOverflow:
         with xr.open_dataset(zarr_store, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
             # Check if there are any negative "count0" values
             if np.any(ds[CompDataVars.COUNT0].values < 0):
-                sizes = ds.sizes
-                msgs.append(f'Need to re-process due to the size threshold: {sizes}')
+                # Get S3 URL for corresponding datacube
+                datacube_url = ds.attrs[CompOutputFormat.DATECUBE_URL].replace('https:', 's3:')
+                datacube_url = datacube_url.replace('.s3.amazonaws.com', '')
+                zarr_store = s3fs.S3Map(root=datacube_url, s3=s3_in, check=False)
 
-                if sizes[CompDataVars.TIME] > max_dim_threshold:
-                    msgs.append('Adding to OnDemand queue')
-                    ondemand_queue = True
+                with xr.open_dataset(zarr_store, decode_timedelta=False, engine='zarr', consolidated=True) as datacube_ds:
+                    # Find corresponding datacube and check on its size which will
+                    # determine AWSs queue for the composite to re-create
+                    sizes = datacube_ds.sizes
+                    queue_msg = f'Need to re-process due to the datacube size threshold ({sizes}): adding to '
 
-                else:
-                    msgs.append('Adding to SPOT queue')
-                    spot_queue = True
+                    if sizes[Coords.MID_DATE] > max_dim_threshold:
+                        queue_msg += 'OnDemand queue'
+                        ondemand_queue = True
+
+                    else:
+                        queue_msg += 'SPOT queue'
+                        spot_queue = True
+
+                msgs.append(queue_msg)
 
             else:
                 msgs.append(f'Need to change dtype as no negative values are detected for {CompDataVars.COUNT0}')
