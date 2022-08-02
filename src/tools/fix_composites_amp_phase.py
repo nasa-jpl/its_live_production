@@ -98,8 +98,6 @@ class FixAnnualComposites:
     * Re-compute v_amp and v_phase data based on analytical solution instead of
       imperical solution as used in original composites code.
     """
-    # Suffix to remove in original granule URLs
-    SUFFIX_TO_USE = '.nc'
     S3_PREFIX = 's3://'
     DRY_RUN = False
 
