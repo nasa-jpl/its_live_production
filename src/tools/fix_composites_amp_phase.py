@@ -218,18 +218,17 @@ class FixAnnualComposites:
             # % Convert phase values from day-of-year to degrees:
             # vx_phase_deg = vx_phase*360/365.24;
             # vy_phase_deg = vy_phase*360/365.24;
-            vx_phase_deg = (ds.vx_phase.values*360/365.24)
-            vy_phase_deg = (ds.vy_phase.values*360/365.24)
+
+            # Convert phase to fraction of the year
+            vx_phase = (ds.vx_phase.values/365.25)
+            vy_phase = (ds.vy_phase.values/365.25)
 
             # Don't use np.nan values in calculations to avoid warnings
-            valid_mask = (~np.isnan(vx_phase_deg)) & (~np.isnan(vy_phase_deg))
-
-            # logging.info(f'Degrees: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
+            valid_mask = (~np.isnan(vx_phase)) & (~np.isnan(vy_phase))
 
             # Convert degrees to radians as numpy trig. functions take angles in radians
-            vx_phase_deg = vx_phase_deg*np.pi/180.0
-            vy_phase_deg = vy_phase_deg*np.pi/180.0
-            # logging.info(f'Radians: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
+            vx_phase = vx_phase*_two_pi
+            vy_phase = vy_phase*_two_pi
 
             # Matlab prototype code:
             # % Rotation matrix for x component:
@@ -238,7 +237,8 @@ class FixAnnualComposites:
 
             # Python code: compute theta rotation angle
             # theta = arctan(vy0/vx0), since sin(theta)=vy0 and cos(theta)=vx0,
-            theta = np.full_like(vx_phase_deg, np.nan)
+            # can't just use vy0 and vx0 values instead of sin/cos as they are not normalized
+            theta = np.full_like(vx_phase, np.nan)
             theta[valid_mask] = np.arctan2(ds.vy0.values[valid_mask], ds.vx0.values[valid_mask])
 
             if np.any(theta<0):
@@ -259,22 +259,18 @@ class FixAnnualComposites:
 
             # We want to retain the component only in the direction of v0,
             # which becomes new v_amp and v_phase
-            v_amp = np.full_like(vx_phase_deg, np.nan)
-            v_phase = np.full_like(vx_phase_deg, np.nan)
+            v_amp = np.full_like(vx_phase, np.nan)
+            v_phase = np.full_like(vx_phase, np.nan)
 
             v_amp[valid_mask] = np.hypot(
-                A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask]),
-                A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask])
+                A1[valid_mask]*np.cos(vx_phase[valid_mask]) + B1[valid_mask]*np.cos(vy_phase[valid_mask]),
+                A1[valid_mask]*np.sin(vx_phase[valid_mask]) + B1[valid_mask]*np.sin(vy_phase[valid_mask])
             )
-            # np.arctan2 returns phase in radians
+            # np.arctan2 returns phase in radians, convert to degrees
             v_phase[valid_mask] = np.arctan2(
-                A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask]),
-                A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask])
+                A1[valid_mask]*np.sin(vx_phase[valid_mask]) + B1[valid_mask]*np.sin(vy_phase[valid_mask]),
+                A1[valid_mask]*np.cos(vx_phase[valid_mask]) + B1[valid_mask]*np.cos(vy_phase[valid_mask])
             )*180.0/np.pi
-
-            # ??? no need to convert to degrees, as we are going to wrap to 365.25 days
-            # at the end
-            # *180.0/np.pi
 
             # Matlab prototype code:
             # % Make all amplitudes positive (and reverse phase accordingly):
@@ -310,15 +306,13 @@ class FixAnnualComposites:
             # % Convert degrees to days:
             # vx_phase_r = vx_phase_r*365.24/360;
             # vy_phase_r = vy_phase_r*365.24/360;
-            # Python: to be consistent with phase calculations in LSQ fit of composites
-            # phase converted such that it reflects the day when value is maximized
-            # TODO: confirm with Alex
-            # Does not generate the same solution as original composites: because it's
-            # shifted by 0.25 again?
-            # v_phase = 365.25*((0.25 - v_phase/_two_pi) % 1)
+            # Composites code does:
+            # v_phase = 365.25*((0.25 - phase_rad/_two_pi) % 1),
+            # and since vx_phase and vy_phase are already shifted by 0.25 in original projection,
+            # so we don't need to do it after rotation in direction of v0
 
-            # Matlab's solution generates the same solution as original composites
-            v_phase = v_phase*365.24/360
+            # Convert phase to the day of the year
+            v_phase = v_phase*365.25/360
 
             # Replace v_amp variable in dataset
             ds[CompDataVars.V_AMP] = xr.DataArray(
