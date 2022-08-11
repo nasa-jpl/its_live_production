@@ -818,7 +818,7 @@ def fix_mapping_attrs(mapping, epsgcode: int):
 
     # Apply corrections based on the EPSG code
     if epsgcode not in required_attrs and epsgcode != 3031:
-        return [f'No extra mapping attributes need to be set for {espgcode}']
+        return [f'No extra mapping attributes need to be set for {epsgcode}']
 
     if epsgcode in required_attrs:
         attrs[Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN] = 0.9996
