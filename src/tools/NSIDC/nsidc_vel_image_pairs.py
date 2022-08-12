@@ -760,6 +760,12 @@ required_attrs = {
         Mapping.FALSE_EASTING: 500000.0,
         Mapping.FALSE_NORTHING: 0.0
     },
+    32718: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -75.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 10000000.0
+    },
     32719: {
         Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -69.0,
         Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
@@ -860,6 +866,10 @@ class NSIDCFormat:
     # Flag if corresponding NSIDC metadata files need to be created for the granules
     CREATE_META_FILES = False
 
+    # Token to be present in granule's path - this is to process only selected granules,
+    # such as belonging to the same EPSG code
+    PATH_TOKEN = ''
+
     def __init__(
         self,
         start_index: int=0,
@@ -889,15 +899,20 @@ class NSIDCFormat:
                 self.infiles = json.load(ins3file)
                 logging.info(f"Loaded {len(self.infiles)} granules from '{NSIDCFormat.GRANULES_FILE}'")
 
-            if start_index != 0 or stop_index != -1:
-                # Start index is provided for the granule to begin with
-                if stop_index != -1:
-                    self.infiles = self.infiles[start_index:stop_index]
+        if start_index != 0 or stop_index != -1:
+            # Start index is provided for the granule to begin with
+            if stop_index != -1:
+                self.infiles = self.infiles[start_index:stop_index]
 
-                else:
-                    self.infiles = self.infiles[start_index:]
+            else:
+                self.infiles = self.infiles[start_index:]
 
-                logging.info(f"Starting with granule #{start_index} (stop={stop_index}), remains {len(self.infiles)} granules to fix")
+        logging.info(f"Starting with granule #{start_index} (stop={stop_index}), remains {len(self.infiles)} granules to fix")
+
+        if len(NSIDCFormat.PATH_TOKEN):
+            # Leave only granules with provided token in their path
+            self.infiles = [each for each in self.infiles if NSIDCFormat.PATH_TOKEN in each]
+            logging.info(f'Leaving granules with {NSIDCFormat.PATH_TOKEN} in their path: {len(self.infiles)}')
 
     @staticmethod
     def object_exists(bucket, key: str) -> bool:
@@ -1328,11 +1343,19 @@ if __name__ == '__main__':
         help='Flag to enable generation of NSIDC required metadata files. Default is False.'
     )
 
+    parser.add_argument(
+        '-t', '--path_token',
+        type=str,
+        default='',
+        help="Path token to be present in granule S3 target path in order for the granule to be processed [%(default)s]."
+    )
+
     args = parser.parse_args()
 
     NSIDCFormat.GRANULES_FILE = os.path.join(args.bucket, args.catalog_dir, args.granules_file)
     NSIDCFormat.DRY_RUN = args.dryrun
     NSIDCFormat.CREATE_META_FILES = args.create_meta_files
+    NSIDCFormat.PATH_TOKEN = args.path_token
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
