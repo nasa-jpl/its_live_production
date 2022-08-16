@@ -173,6 +173,11 @@ class MosaicsReproject:
             self.x0_grid = None
             self.y0_grid = None
 
+            # Sensor dimension if present (static mosaics only)
+            self.sensors = None
+            if CompDataVars.SENSORS in self.ds:
+                self.sensors = self.ds[CompDataVars.SENSORS].values
+
             self.xy_central_meridian = None
 
             # Indices for original cells that correspond to the re-projected cells:
@@ -182,6 +187,12 @@ class MosaicsReproject:
             # Transformation matrix to rotate warped velocity components (vx* and vy*)
             # in output projection taking distortion factor into consideration
             self.transformation_matrix = None
+
+            # GDAL options to use for warping to new output grid
+            self.warp_options = None
+
+            # A "pointer" to the method to invoke to process the mosaic: static or annual
+            self.mosaic_function = None
 
     def bounding_box(self):
         """
@@ -218,14 +229,125 @@ class MosaicsReproject:
         if not self.reproject:
             logging.info(f'Nothing to do.')
 
-        self.create_transformation_matrix()
-
-        # Check if v0 is present in mosaic, then it's static mosaic
-        if CompDataVars.V0 in self.ds:
-            self.reproject_static_mosaic(output_file)
+        # Flag if v0 is present in the mosaic, which indicates it's static mosaic
+        is_static_mosaic = (CompDataVars.V0 in self.ds)
+        if is_static_mosaic:
+            self.create_transformation_matrix(CompDataVars.VX0, CompDataVars.VY0, CompDataVars.V0)
+            self.mosaic_function = self.reproject_static_mosaic
 
         else:
-            self.reproject_annual_mosaic(output_file)
+            self.create_transformation_matrix(DataVars.VX, DataVars.VY, DataVars.V)
+            self.mosaic_function = self.reproject_annual_mosaic
+
+        # outputBounds --- output bounds as (minX, minY, maxX, maxY) in target SRS
+        self.warp_options = gdal.WarpOptions(
+            # format='netCDF',
+            format=MosaicsReproject.WARP_FORMAT,
+            outputBounds=(self.x0_bbox.min, self.y0_bbox.min, self.x0_bbox.max, self.y0_bbox.max),
+            xRes=self.x_size,
+            yRes=self.y_size,
+            srcSRS=f'{self.ij_epsg_str}:{self.ij_epsg}',
+            dstSRS=f'{self.xy_epsg_str}:{self.xy_epsg}',
+            srcNodata=DataVars.MISSING_BYTE,
+            dstNodata=DataVars.MISSING_BYTE,
+            resampleAlg=gdal.GRA_NearestNeighbour,
+            errorThreshold=MosaicsReproject.WARP_ET
+        )
+
+        self.mosaic_function(output_file)
+
+    def set_mapping(self, reproject_ds):
+        """
+        Set mapping data variable and related attributes for the result dataset.
+
+        Inputs:
+        =======
+        reproject_ds - Dataset to set mapping for.
+        """
+        # Change projection attribute of re-projected mosaic:
+        reproject_ds.attrs[PROJECTION_ATTR] = self.xy_epsg
+
+        # Add projection data variable
+        proj_attrs = None
+        if self.xy_epsg == 3031:
+            proj_attrs={
+                DataVars.GRID_MAPPING_NAME: 'polar_stereographic',
+                'straight_vertical_longitude_from_pole': 0,
+                'latitude_of_projection_origin': -90.0,
+                'latitude_of_origin': -71.0,
+                'scale_factor_at_projection_origin': 1,
+                'false_easting': 0.0,
+                'false_northing': 0.0,
+                'semi_major_axis': 6378.137,
+                'semi_minor_axis': 6356.752,
+                'inverse_flattening': 298.257223563,
+                'crs_wkt': spatial_ref_3031,
+                'spatial_proj4': "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+            }
+
+        elif self.xy_epsg == 3413:
+            proj_attrs={
+                DataVars.GRID_MAPPING_NAME: 'polar_stereographic',
+                'straight_vertical_longitude_from_pole': -45,
+                'latitude_of_projection_origin': 90.0,
+                'latitude_of_origin': 70.0,
+                'scale_factor_at_projection_origin': 1,
+                'false_easting': 0.0,
+                'false_northing': 0.0,
+                'semi_major_axis': 6378.137,
+                'semi_minor_axis': 6356.752,
+                'inverse_flattening': 298.257223563,
+                'crs_wkt': spatial_ref_3413,
+                'spatial_proj4': "+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+            }
+
+        elif self.xy_epsg == 102027:
+            proj_attrs={
+                DataVars.GRID_MAPPING_NAME: 'lambert_conformal_conic',
+                'CoordinateTransformType': 'Projection',
+                'standard_parallel': (15.0, 65.0),
+                'latitude_of_projection_origin': 30.0,
+                'longitude_of_central_meridian': 95.0,
+                'CoordinateAxisTypes': 'GeoX GeoY',
+                'semi_major_axis': 6378137.0,
+                'inverse_flattening': 298.257223563,
+                'crs_wkt': spatial_ref_102027,
+                'spatial_proj4': ESRICode_Proj4
+            }
+
+        else:
+            zone, spacial_ref_value = self.spatial_ref_32x()
+
+            proj_attrs={
+                DataVars.GRID_MAPPING_NAME: 'universal_transverse_mercator',
+                'utm_zone_number': zone,
+                'semi_major_axis': 6378137,
+                'inverse_flattening': 298.257223563,
+                'CoordinateTransformType': 'Projection',
+                'CoordinateAxisTypes': 'GeoX GeoY',
+                'crs_wkt': spacial_ref_value,
+                'spatial_proj4': f"+proj=utm +zone={zone} +datum=WGS84 +units=m +no_defs"
+            }
+
+        reproject_ds[DataVars.MAPPING] = xr.DataArray(
+            data='',
+            coords={},
+            dims=[],
+            attrs=proj_attrs
+        )
+
+        # if self.xy_epsg == 102027:
+        #     reproject_ds[DataVars.MAPPING].attrs['spatial_esri'] = self.xy_epsg
+        #
+        # else:
+        #    reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
+        reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
+
+        # Format GeoTransform attribute:
+        # x top left (cell left most boundary), grid size, 0, y top left (cell upper most boundary), 0, -grid size
+        half_x_cell = self.x_size/2.0
+        half_y_cell = self.y_size/2.0
+        reproject_ds[DataVars.MAPPING].attrs['GeoTransform'] = f"{self.x0_grid[0] - half_x_cell} {self.x_size} 0 {self.y0_grid[0] - half_y_cell} 0 {self.y_size}"
 
     def reproject_static_mosaic(self, output_file: str):
         """
@@ -233,7 +355,231 @@ class MosaicsReproject:
 
         output_file: Output file to write reprojected data to.
         """
-        raise RuntimeError(f'reproject_static_mosaic(): not implemented')
+        # Compute vx0, vy0, v0, vx0_error, vy0_error and v0_error
+        vx0, vy0, v0, v0_error, vx0_error, vy0_error = self.reproject_velocity(
+            CompDataVars.SLOPE_VX,
+            CompDataVars.SLOPE_VY,
+            CompDataVars.SLOPE_V,
+            CompDataVars.VX0_ERROR,
+            CompDataVars.VY0_ERROR,
+            CompDataVars.V0_ERROR
+        )
+
+        # Create new granule in target projection
+        ds_coords=[
+            (Coords.Y, self.y0_grid, self.ds.y.attrs),
+            (Coords.X, self.x0_grid, self.ds.x.attrs),
+            (CompDataVars.SENSORS, self.sensors, self.ds.sensor.attrs)
+        ]
+
+        ds_coords_2d=[
+            (Coords.Y, self.y0_grid, self.ds.y.attrs),
+            (Coords.X, self.x0_grid, self.ds.x.attrs)
+        ]
+
+        reproject_ds = xr.Dataset(
+            data_vars={
+                CompDataVars.V0: xr.DataArray(
+                    data=v0,
+                    coords=ds_coords_2d,
+                    attrs=self.ds[CompDataVars.V0].attrs
+                )
+            },
+            coords={
+                Coords.Y: (Coords.Y, self.y0_grid, self.ds[Coords.Y].attrs),
+                Coords.X: (Coords.X, self.x0_grid, self.ds[Coords.X].attrs),
+                CompDataVars.SENSORS: (CompDataVars.SENSORS, self.sensors, self.ds[CompDataVars.SENSORS].attrs)
+            },
+            attrs=self.ds.attrs
+        )
+        v0 = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.V0_ERROR] = xr.DataArray(
+            data=v0_error,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.V0_ERROR].attrs
+        )
+
+        v0_error = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.VX0_ERROR] = xr.DataArray(
+            data=vx0_error,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VX0_ERROR].attrs
+        )
+
+        vx0_error = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.VY0_ERROR] = xr.DataArray(
+            data=vy0_error,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VY0_ERROR].attrs
+        )
+
+        vy0_error = None
+        gc.collect()
+
+        # Re-project variables that depend on direction of unit flow vector [vx0, vy0]
+        dvx_dt, \
+        dvy_dt, \
+        dv_dt, \
+        vx_amp, \
+        vy_amp, \
+        v_amp, \
+        vx_amp_error, \
+        vy_amp_error, \
+        v_amp_error, \
+        vx_phase, \
+        vy_phase, \
+        v_phase = self.reproject_static_vars(vx0, vy0)
+
+        # No more need for vx0 and vy0,
+        reproject_ds[CompDataVars.VX0] = xr.DataArray(
+            data=vx0,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VX0].attrs
+        )
+        vx0 = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.VY0] = xr.DataArray(
+            data=vy0,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VY0].attrs
+        )
+        vy0 = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.SLOPE_VX] = xr.DataArray(
+            data=dvx_dt,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.SLOPE_VX].attrs
+        )
+        dvx_dt = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.SLOPE_VY] = xr.DataArray(
+            data=dvy_dt,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.SLOPE_VY].attrs
+        )
+        dvy_dt = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.SLOPE_V] = xr.DataArray(
+            data=dv_dt,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.SLOPE_V].attrs
+        )
+        dv_dt = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.VX_AMP] = xr.DataArray(
+            data=vx_amp,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VX_AMP].attrs
+        )
+        vx_amp = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.VY_AMP] = xr.DataArray(
+            data=vy_amp,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VY_AMP].attrs
+        )
+        vy_amp = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.V_AMP] = xr.DataArray(
+            data=v_amp,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.V_AMP].attrs
+        )
+        v_amp = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.VX_AMP_ERROR] = xr.DataArray(
+            data=vx_amp_error,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VX_AMP_ERROR].attrs
+        )
+        vx_amp_error = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.VY_AMP_ERROR] = xr.DataArray(
+            data=vy_amp_error,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VY_AMP_ERROR].attrs
+        )
+        vy_amp_error = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.V_AMP_ERROR] = xr.DataArray(
+            data=v_amp_error,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.V_AMP_ERROR].attrs
+        )
+        v_amp_error = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.VX_PHASE] = xr.DataArray(
+            data=vx_phase,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VX_PHASE].attrs
+        )
+        vx_phase = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.VY_PHASE] = xr.DataArray(
+            data=vy_phase,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VY_PHASE].attrs
+        )
+        vy_phase = None
+        gc.collect()
+
+        reproject_ds[CompDataVars.V_PHASE] = xr.DataArray(
+            data=v_phase,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.V_PHASE].attrs
+        )
+        v_phase = None
+        gc.collect()
+
+        # Warp "count0" variable
+        reproject_ds[CompDataVars.COUNT0] = xr.DataArray(
+            data=self.warp_var(CompDataVars.COUNT0, self.warp_options),
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.COUNT0].attrs
+        )
+
+        self.set_mapping(reproject_ds)
+
+        # Warp "dt_max" variable: per each sensor dimension?
+        reproject_ds[CompDataVars.MAX_DT] = xr.DataArray(
+            data=self.warp_var(CompDataVars.MAX_DT, self.warp_options),
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.MAX_DT].attrs
+        )
+
+        # Warp "outlier_frac" variable: per each sensor dimension?
+        reproject_ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
+            data=self.warp_var(CompDataVars.OUTLIER_FRAC, self.warp_options),
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.OUTLIER_FRAC].attrs
+        )
+
+        # Warp "sensor_flag" variable: per each sensor dimension?
+        reproject_ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
+            data=self.warp_var(CompDataVars.SENSOR_INCLUDE, self.warp_options),
+            coords=ds_coords,
+            attrs=self.ds[CompDataVars.SENSOR_INCLUDE].attrs
+        )
+
+        MosaicsReproject.write_static_to_netCDF(reproject_ds, output_file)
 
     def reproject_annual_mosaic(self, output_file):
         """
@@ -241,20 +587,6 @@ class MosaicsReproject:
 
         output_file: Output file to write reprojected data to.
         """
-        # outputBounds --- output bounds as (minX, minY, maxX, maxY) in target SRS
-        warp_options = gdal.WarpOptions(
-            format=MosaicsReproject.WARP_FORMAT,   # Use virtual memory format to avoid writing warped dataset to the file
-            outputBounds=(self.x0_bbox.min, self.y0_bbox.min, self.x0_bbox.max, self.y0_bbox.max),
-            xRes=self.x_size,
-            yRes=self.y_size,
-            srcSRS=f'{self.ij_epsg_str}:{self.ij_epsg}',
-            dstSRS=f'{self.xy_epsg_str}:{self.xy_epsg}',
-            srcNodata=DataVars.MISSING_VALUE,
-            dstNodata=DataVars.MISSING_VALUE,
-            resampleAlg=gdal.GRA_NearestNeighbour,
-            errorThreshold=MosaicsReproject.WARP_ET
-        )
-
         # Compute new vx, vy, v, v_error, vx_error and vy_error
         vx, vy, v, v_error, vx_error, vy_error = self.reproject_velocity(
             DataVars.VX,
@@ -359,97 +691,13 @@ class MosaicsReproject:
             v_error_verify = None
             gc.collect()
 
-        # Change projection attribute of re-projected mosaic:
-        reproject_ds.attrs[PROJECTION_ATTR] = self.xy_epsg
-
-        # Add projection data variable
-        proj_attrs = None
-        if self.xy_epsg == 3031:
-            proj_attrs={
-                DataVars.GRID_MAPPING_NAME: 'polar_stereographic',
-                'straight_vertical_longitude_from_pole': 0,
-                'latitude_of_projection_origin': -90.0,
-                'latitude_of_origin': -71.0,
-                'scale_factor_at_projection_origin': 1,
-                'false_easting': 0.0,
-                'false_northing': 0.0,
-                'semi_major_axis': 6378.137,
-                'semi_minor_axis': 6356.752,
-                'inverse_flattening': 298.257223563,
-                'crs_wkt': spatial_ref_3031,
-                'spatial_proj4': "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
-            }
-
-        elif self.xy_epsg == 3413:
-            proj_attrs={
-                DataVars.GRID_MAPPING_NAME: 'polar_stereographic',
-                'straight_vertical_longitude_from_pole': -45,
-                'latitude_of_projection_origin': 90.0,
-                'latitude_of_origin': 70.0,
-                'scale_factor_at_projection_origin': 1,
-                'false_easting': 0.0,
-                'false_northing': 0.0,
-                'semi_major_axis': 6378.137,
-                'semi_minor_axis': 6356.752,
-                'inverse_flattening': 298.257223563,
-                'crs_wkt': spatial_ref_3413,
-                'spatial_proj4': "+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
-            }
-
-        elif self.xy_epsg == 102027:
-            proj_attrs={
-                DataVars.GRID_MAPPING_NAME: 'lambert_conformal_conic',
-                'CoordinateTransformType': 'Projection',
-                'standard_parallel': (15.0, 65.0),
-                'latitude_of_projection_origin': 30.0,
-                'longitude_of_central_meridian': 95.0,
-                'CoordinateAxisTypes': 'GeoX GeoY',
-                'semi_major_axis': 6378137.0,
-                'inverse_flattening': 298.257223563,
-                'crs_wkt': spatial_ref_102027,
-                'spatial_proj4': ESRICode_Proj4
-            }
-
-        else:
-            zone, spacial_ref_value = self.spatial_ref_32x()
-
-            proj_attrs={
-                DataVars.GRID_MAPPING_NAME: 'universal_transverse_mercator',
-                'utm_zone_number': zone,
-                'semi_major_axis': 6378137,
-                'inverse_flattening': 298.257223563,
-                'CoordinateTransformType': 'Projection',
-                'CoordinateAxisTypes': 'GeoX GeoY',
-                'crs_wkt': spacial_ref_value,
-                'spatial_proj4': f"+proj=utm +zone={zone} +datum=WGS84 +units=m +no_defs"
-            }
-
-        reproject_ds[DataVars.MAPPING] = xr.DataArray(
-            data='',
-            coords={},
-            dims=[],
-            attrs=proj_attrs
-        )
-
-        # if self.xy_epsg == 102027:
-        #     reproject_ds[DataVars.MAPPING].attrs['spatial_esri'] = self.xy_epsg
-        #
-        # else:
-        #    reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
-        reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
-
-        # Format GeoTransform attribute:
-        # x top left (cell left most boundary), grid size, 0, y top left (cell upper most boundary), 0, -grid size
-        half_x_cell = self.x_size/2.0
-        half_y_cell = self.y_size/2.0
-        reproject_ds[DataVars.MAPPING].attrs['GeoTransform'] = f"{self.x0_grid[0] - half_x_cell} {self.x_size} 0 {self.y0_grid[0] - half_y_cell} 0 {self.y_size}"
+        self.set_mapping(reproject_ds)
 
         # Compute x and y distortion maps for the dataset if enabled
         if MosaicsReproject.COMPUTE_DEBUG_VARS:
             vx_xunit, vy_xunit, vx_yunit, vy_yunit = self.get_distortion_for_debugging(
                 DataVars.VX,
-                DataVars.VY,
-                warp_options
+                DataVars.VY
             )
 
             # Distortion in X direction
@@ -487,23 +735,8 @@ class MosaicsReproject:
             gc.collect()
 
         # Warp "count" variable
-        warp_options = gdal.WarpOptions(
-            # format='netCDF',
-            format=MosaicsReproject.WARP_FORMAT,
-            outputBounds=(self.x0_bbox.min, self.y0_bbox.min, self.x0_bbox.max, self.y0_bbox.max),
-            xRes=self.x_size,
-            yRes=self.y_size,
-            srcSRS=f'{self.ij_epsg_str}:{self.ij_epsg}',
-            dstSRS=f'{self.xy_epsg_str}:{self.xy_epsg}',
-            srcNodata=DataVars.MISSING_BYTE,
-            dstNodata=DataVars.MISSING_BYTE,
-            resampleAlg=gdal.GRA_NearestNeighbour,
-            errorThreshold=MosaicsReproject.WARP_ET
-        )
-
-        # All formats have the following data variables
         reproject_ds[CompDataVars.COUNT] = xr.DataArray(
-            data=self.warp_var(CompDataVars.COUNT, warp_options),
+            data=self.warp_var(CompDataVars.COUNT, self.warp_options),
             coords=ds_coords,
             attrs=self.ds[CompDataVars.COUNT].attrs
         )
@@ -564,6 +797,79 @@ class MosaicsReproject:
         # write re-projected data to the file
         ds.to_netcdf(output_file, engine="h5netcdf", encoding = encoding_settings)
 
+    @staticmethod
+    def write_static_to_netCDF(ds, output_file: str):
+        """
+        Write static mosaic dataset to the netCDF format file.
+        """
+        if output_file is None:
+            # Output filename is not provided, don't write to the file
+            return
+
+        encoding_settings = {}
+        compression = {"zlib": True, "complevel": 2, "shuffle": True}
+
+        # Disable FillValue for coordinates
+        for each in [Coords.X, Coords.Y, CompDataVars.SENSORS]:
+            encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: None}
+
+        vars = [
+            CompDataVars.VX_AMP_ERROR,
+            CompDataVars.VY_AMP_ERROR,
+            CompDataVars.V_AMP_ERROR,
+            CompDataVars.VX_AMP,
+            CompDataVars.VY_AMP,
+            CompDataVars.V_AMP,
+            CompDataVars.VX_PHASE,
+            CompDataVars.VY_PHASE,
+            CompDataVars.V_PHASE,
+            CompDataVars.OUTLIER_FRAC,
+            CompDataVars.VX0,
+            CompDataVars.VY0,
+            CompDataVars.V0,
+            CompDataVars.VX0_ERROR,
+            CompDataVars.VY0_ERROR,
+            CompDataVars.V0_ERROR,
+            CompDataVars.SLOPE_VX,
+            CompDataVars.SLOPE_VY,
+            CompDataVars.SLOPE_V
+        ]
+
+        # Explicitly set dtype for some variables
+        for each in vars:
+            encoding_settings[each] = {
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                'dtype': np.float32
+            }
+            encoding_settings[each].update(compression)
+
+            if DataVars.FILL_VALUE_ATTR in ds[each].attrs:
+                del ds[each].attrs[DataVars.FILL_VALUE_ATTR]
+
+        # Set encoding for 'count' data variable
+        encoding_settings[CompDataVars.COUNT0] = {
+            DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+            'dtype': np.uint32
+        }
+        encoding_settings[CompDataVars.COUNT0].update(compression)
+
+        if DataVars.FILL_VALUE_ATTR in ds[CompDataVars.COUNT0].attrs:
+            del ds[CompDataVars.COUNT0].attrs[DataVars.FILL_VALUE_ATTR]
+
+        # Settings for "max_dt" datatypes
+        encoding_settings[CompDataVars.MAX_DT] = {
+            DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+            'dtype': np.short
+        }
+
+        if DataVars.FILL_VALUE_ATTR in ds[CompDataVars.MAX_DT].attrs:
+            del ds[CompDataVars.MAX_DT].attrs[DataVars.FILL_VALUE_ATTR]
+
+        logging.info(f'Enconding for {output_file}: {encoding_settings}')
+
+        # write re-projected data to the file
+        ds.to_netcdf(output_file, engine="h5netcdf", encoding = encoding_settings)
+
     def warp_var(self, var: str, warp_options: gdal.WarpOptions):
         """
         Warp variable into new projection.
@@ -609,12 +915,12 @@ class MosaicsReproject:
         num_y = len(self.y0_grid)
 
         # Allocate output data
-        vx = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
-        vy = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
-        v = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
-        v_error = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
-        vx_error = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
-        vy_error = np.full((num_y, num_x), DataVars.MISSING_VALUE, dtype=np.float32)
+        vx = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        vy = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        v = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        v_error = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        vx_error = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        vy_error = np.full((num_y, num_x), np.nan, dtype=np.float32)
 
         # Read original error values in
         _v_error = self.ds[v_error_var].values
@@ -661,7 +967,7 @@ class MosaicsReproject:
                     vx[y, x] = xy_v[0]
                     vy[y, x] = xy_v[1]
 
-                    # Compute v: sqrt(vx^2 + vy^2)
+                    # # Compute v: sqrt(vx^2 + vy^2)
                     v[y, x] = np.sqrt(xy_v[0]**2 + xy_v[1]**2)
 
                     # Look up original velocity value to compute the scale factor
@@ -704,34 +1010,435 @@ class MosaicsReproject:
                         vx_error[y, x], vy_error[y, x] = np.matmul(np.abs(t_matrix), dv)
 
         if MosaicsReproject.VERBOSE:
-            masked_np = np.ma.masked_equal(vx, DataVars.MISSING_VALUE, copy=False)
-            logging.info(f"reproject_velocity: Rotated {vx_var}:  min={masked_np.min()} max={masked_np.max()}")
+            logging.info(f"reproject_velocity: re-projected {vx_var}:  min={np.nanmin(vx)} max={np.nanmax(vx)}")
+            logging.info(f"reproject_velocity: re-projected {vy_var}:  min={np.nanmin(vy)} max={np.nanmax(vy)}")
+            logging.info(f"reproject_velocity: re-projected {v_var}:  min={np.nanmin(v)} max={np.nanmax(v)}")
+            logging.info(f"reproject_velocity: re-projected {vx_error_var}:  min={np.nanmin(vx_error)} max={np.nanmax(vx_error)}")
+            logging.info(f"reproject_velocity: re-projected {vy_error_var}:  min={np.nanmin(vy_error)} max={np.nanmax(vy_error)}")
+            logging.info(f"reproject_velocity: re-projected {v_error_var}:  min={np.nanmin(v_error)} max={np.nanmax(v_error)}")
 
-            masked_np = np.ma.masked_equal(vy, DataVars.MISSING_VALUE, copy=False)
-            logging.info(f"reproject_velocity: Rotated {vy_var}:  min={masked_np.min()} max={masked_np.max()}")
-
-            masked_np = np.ma.masked_equal(v_error, DataVars.MISSING_VALUE, copy=False)
-            logging.info(f"reproject_velocity: Scaled {v_error_var}:  min={masked_np.min()} max={masked_np.max()}")
-
-            masked_np = np.ma.masked_equal(vx_error, DataVars.MISSING_VALUE, copy=False)
-            logging.info(f"reproject_velocity: Rotated {vx_error_var}:  min={masked_np.min()} max={masked_np.max()}")
-
-            masked_np = np.ma.masked_equal(vy_error, DataVars.MISSING_VALUE, copy=False)
-            logging.info(f"reproject_velocity: Rotated {vy_error_var}:  min={masked_np.min()} max={masked_np.max()}")
+        # Replace np.nan with DataVars.MISSING_VALUE
+        MosaicsReproject.replace_nan_by_missing_value(vx)
+        MosaicsReproject.replace_nan_by_missing_value(vy)
+        MosaicsReproject.replace_nan_by_missing_value(v)
+        MosaicsReproject.replace_nan_by_missing_value(v_error)
+        MosaicsReproject.replace_nan_by_missing_value(vx_error)
+        MosaicsReproject.replace_nan_by_missing_value(vy_error)
 
         return (vx, vy, v, v_error, vx_error, vy_error)
 
-    def get_distortion_for_debugging(self,
-        vx_var: str,
-        vy_var: str,
-        warp_options: gdal.WarpOptions,
+    def reproject_static_vars(
+        self,
+        vx0: np.ndarray,
+        vy0: np.ndarray
     ):
         """
-        Get distortion in X and Y dimentions for the variables. This is for
+        Re-project:
+        * dv_dt's X and Y components, and compute dv_dt based on re-projected unit flow vector.
+        * v_amp's X and Y components, and compute v_amp based on re-projected unit flow vector.
+        * v_amp_error's X and Y components (compute v_amp_error outside of this method as need to
+            compute re-projected v_phase first).
+        * v_phase's X and Y components, and compute v_phase in direction of re-projected unit flow.
+
+        Inputs:
+        =======
+        vx0: numpy array that stores re-projected vx0 data, used to compute unit flow vector
+        vy0: numpy array that stores re-projected vy0 data, used to compute unit flow vector
+
+        Outputs:
+        ========
+        dvx_dt
+        dvy_dt
+        dv_dt
+        vx_amp
+        vy_amp
+        v_amp
+        vx_amp_error
+        vy_amp_error
+        v_amp_error
+        vx_phase
+        vy_phase
+        v_phase
+
+        Example:
+        dvx_dt, \
+        dvy_dt, \
+        dv_dt, \
+        vx_amp, \
+        vy_amp, \
+        v_amp, \
+        vx_amp_error, \
+        vy_amp_error, \
+        v_amp_error, \
+        vx_phase, \
+        vy_phase, \
+        v_phase = self.reproject_static_vars(vx0, vy0)
+        """
+        # Compute flow unit vector
+        v0 = np.sqrt(vx0**2 + vy0**2) # velocity magnitude
+        uv_x = vx0/v0 # unit flow vector in x direction
+        uv_y = vy0/v0 # unit flow vector in y direction
+
+        # Read X component of dv_dt
+        _dvx_dt = self.ds[CompDataVars.SLOPE_VX].values
+        _dvx_dt[_dvx_dt==DataVars.MISSING_VALUE] = np.nan
+
+        # Read Y component of dv_dt
+        _dvy_dt = self.ds[CompDataVars.SLOPE_VY].values
+        _dvy_dt[_dvy_dt==DataVars.MISSING_VALUE] = np.nan
+
+        # Read X component of v_phase
+        _vx_phase = self.ds[CompDataVars.VX_PHASE].values
+        _vx_phase[_vx_phase==DataVars.MISSING_VALUE] = np.nan
+
+        # Read Y component of v_phase
+        _vy_phase = self.ds[CompDataVars.VY_PHASE].values
+        _vy_phase[_vy_phase==DataVars.MISSING_VALUE] = np.nan
+
+        # Read X component of v_amp
+        _vx_amp = self.ds[CompDataVars.VX_AMP].values
+        _vx_amp[_vx_amp==DataVars.MISSING_VALUE] = np.nan
+
+        # Read Y component of v_amp
+        _vy_amp = self.ds[CompDataVars.VY_AMP].values
+        _vy_amp[_vy_amp==DataVars.MISSING_VALUE] = np.nan
+
+        # Read X component of v_amp_error
+        _vx_amp_error = self.ds[CompDataVars.VX_AMP_ERROR].values
+        _vx_amp_error[_vx_amp_error==DataVars.MISSING_VALUE] = np.nan
+
+        # Read Y component of v_amp_error
+        _vy_amp_error = self.ds[CompDataVars.VY_AMP_ERROR].values
+        _vy_amp_error[_vy_amp_error==DataVars.MISSING_VALUE] = np.nan
+
+        if MosaicsReproject.VERBOSE:
+            logging.info(f"reproject_static_vars: Original {CompDataVars.SLOPE_VX}:  min={np.nanmin(_dvx_dt)} max={np.nanmax(_dvx_dt)}")
+            logging.info(f"reproject_static_vars: Original {CompDataVars.SLOPE_VY}:  min={np.nanmin(_dvy_dt)} max={np.nanmax(_dvy_dt)}")
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VX_AMP}:  min={np.nanmin(_vx_amp)} max={np.nanmax(_vx_amp)}")
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VY_AMP}:  min={np.nanmin(_vy_amp)} max={np.nanmax(_vy_amp)}")
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VX_AMP_ERROR}:  min={np.nanmin(_vx_amp_error)} max={np.nanmax(_vx_amp_error)}")
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VY_AMP_ERROR}:  min={np.nanmin(_vy_amp_error)} max={np.nanmax(_vy_amp_error)}")
+
+        # Number of X and Y points in the output grid
+        num_x = len(self.x0_grid)
+        num_y = len(self.y0_grid)
+        xy_dims = (num_y, num_x)
+
+        # TODO: may be too many variables are allocated at the same time - break it up
+        # into multiple functions (don't re-project all at once)
+
+        # Allocate output data for dv_dt variables
+        dvx_dt = np.full(xy_dims, np.nan, dtype=np.float32)
+        dvy_dt = np.full(xy_dims, np.nan, dtype=np.float32)
+        dv_dt = np.full(xy_dims, np.nan, dtype=np.float32)
+
+        # Allocate output data for v_amp variables
+        vx_amp = np.full(xy_dims, np.nan, dtype=np.float32)
+        vy_amp = np.full(xy_dims, np.nan, dtype=np.float32)
+        v_amp = np.full(xy_dims, np.nan, dtype=np.float32)
+
+        # Allocate output data for v_amp_error variables
+        vx_amp_error = np.full(xy_dims, np.nan, dtype=np.float32)
+        vy_amp_error = np.full(xy_dims, np.nan, dtype=np.float32)
+        v_amp_error = np.full(xy_dims, np.nan, dtype=np.float32)
+
+        # Allocate output data for v_phase variables
+        vx_phase = np.full(xy_dims, np.nan, dtype=np.float32)
+        vy_phase = np.full(xy_dims, np.nan, dtype=np.float32)
+        v_phase = np.full(xy_dims, np.nan, dtype=np.float32)
+
+        if MosaicsReproject.VERBOSE:
+            # Read original dv_dt values
+            _v = self.ds[CompDataVars.SLOPE_V].values
+            _v[_v==DataVars.MISSING_VALUE] = np.nan
+
+            # Report min and max values for the error variable
+            logging.info(f"reproject_static_vars: Original {CompDataVars.SLOPE_V}: min={np.nanmin(_v)} max={np.nanmax(_v)}")
+
+        for y in tqdm(range(num_y), ascii=True, desc=f"Re-projecting {CompDataVars.SLOPE_V}, {CompDataVars.V_AMP}, {CompDataVars.V_AMP_ERROR}, {CompDataVars.V_PHASE}..."):
+            for x in range(num_x):
+                # There is no transformation matrix available for the point -->
+                # keep it as NODATA
+                t_matrix = self.transformation_matrix[y, x]
+                if np.isscalar(t_matrix):
+                    continue
+
+                # Look up original cell in input ij-projection
+                i, j = self.original_ij_index[y, x]
+
+                # Re-project dv_dt's X and Y components
+                dv = np.array([_dvx_dt[j, i], _dvy_dt[j, i]])
+
+                # Some points get NODATA for vx but valid vy and v.
+                if not np.any(np.isnan(dv)):
+                    # Apply transformation matrix to (dvx_dt, dvy_dt) vector
+                    dvx_dt[y, x], dvy_dt[y, x] = np.matmul(t_matrix, dv)
+
+                    # Compute dv_dt: flow acceleration in direction of unit flow vector
+                    dv_dt[y, x] = dvx_dt[y, x] * uv_x[y, x]
+                    dv_dt[y, x] += dvy_dt[y, x] * uv_y[y, x]
+
+                # Re-project v_amp's X and Y components
+                dv = np.array([_vx_amp[j, i], _vy_amp[j, i]])
+
+                # Some points get NODATA for vx but valid vy and v.
+                if not np.any(np.isnan(dv)):
+                    # Apply transformation matrix to (vx, vy) values
+                    vx_amp[y, x], vy_amp[y, x] = np.matmul(t_matrix, dv)
+
+                # Re-project v_amp_error's components
+                dv = [_vx_amp_error[j, i], _vy_amp_error[j, i]]
+
+                # If any of the values is NODATA, don't re-project, leave them as NODATA
+                if not np.any(np.isnan(dv)):
+                    # vx_error and vy_error must be positive:
+                    # use absolute values of transformation matrix to avoid
+                    # negative re-projected vx_error and vy_error values
+                    vx_amp_error[y, x], vy_amp_error[y, x] = np.matmul(np.abs(t_matrix), dv)
+
+                # Re-project v_phase's components
+                dv = [_vx_phase[j, i], _vy_phase[j, i]]
+
+                # If any of the values is NODATA, don't re-project, leave them as NODATA
+                if not np.any(np.isnan(dv)):
+                    vx_phase[y, x], vy_phase[y, x] = np.matmul(t_matrix, dv)
+
+        # No need for some of original data, cleanup
+        _dvx_dt = None
+        _dvy_dt = None
+        _vx_amp = None
+        _vy_amp = None
+        gc.collect()
+
+        # Compute dv_dt: flow acceleration in direction of unit flow vector
+        dv_dt = dvx_dt * uv_x
+        dv_dt += dvy_dt * uv_y
+
+        # Compute v_phase and v_amp using analytical solution
+        v_phase, v_amp = MosaicsReproject.seasonal_velocity_rotation(vx0, vy0, vx_phase, vy_phase, vx_amp, vy_amp)
+
+        # Compute v_amp_error using scale factor b/w old and newly re-projected v_amp values
+        # (don't project v_amp_error in direction of unit flow vector
+        # like in composites)
+        # Scale the "v_amp_error" as new "v_amp" is computed now
+
+        _v_amp = self.ds[CompDataVars.V_AMP].values
+        _v_amp[_v_amp==DataVars.MISSING_VALUE] = np.nan
+
+        _v_amp_error = self.ds[CompDataVars.V_AMP_ERROR].values
+        _v_amp_error[_v_amp_error==DataVars.MISSING_VALUE] = np.nan
+
+        if MosaicsReproject.VERBOSE:
+            # Report min and max values for the error variable
+            logging.info(f"reproject_static_vars: Original {CompDataVars.V_AMP}: min={np.nanmin(_v_amp)} max={np.nanmax(_v_amp)}")
+            logging.info(f"reproject_static_vars: Original {CompDataVars.V_AMP_ERROR}: min={np.nanmin(_v_amp_error)} max={np.nanmax(_v_amp_error)}")
+
+        for y in tqdm(range(num_y), ascii=True, desc=f"Scaling {CompDataVars.V_AMP_ERROR}..."):
+            for x in range(num_x):
+                if np.isnan(v_amp[y, x]):
+                    continue
+
+                # Look up original cell in input ij-projection
+                i, j = self.original_ij_index[y, x]
+
+                # Look up original velocity value to compute the scale factor
+                # for v_error: scale_factor = v_old / v_new
+                v_ij_value = _v_amp[j, i]
+
+                scale_factor = 1.0
+                if v_ij_value != 0:
+                    scale_factor = v_amp[y, x]/v_ij_value
+
+                if v_ij_value and (not np.any(np.isnan(_v_amp_error[j, i]))):
+                    # Apply scale factor to the error value
+                    v_amp_error[y, x] = _v_amp_error[j, i]*scale_factor
+
+        if MosaicsReproject.VERBOSE:
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.SLOPE_VX}:  min={np.nanmin(dvx_dt)} max={np.nanmax(dvx_dt)}")
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.SLOPE_VY}:  min={np.nanmin(dvy_dt)} max={np.nanmax(dvy_dt)}")
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.SLOPE_V}:  min={np.nanmin(dv_dt)} max={np.nanmax(dv_dt)}")
+
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VX_AMP}:  min={np.nanmin(vx_amp)} max={np.nanmax(vx_amp)}")
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VY_AMP}:  min={np.nanmin(vy_amp)} max={np.nanmax(vy_amp)}")
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.V_AMP}:  min={np.nanmin(v_amp)} max={np.nanmax(v_amp)}")
+
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VX_PHASE}:  min={np.nanmin(vx_phase)} max={np.nanmax(vx_phase)}")
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VY_PHASE}:  min={np.nanmin(vy_phase)} max={np.nanmax(vy_phase)}")
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.V_PHASE}:  min={np.nanmin(v_phase)} max={np.nanmax(v_phase)}")
+
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VX_AMP_ERROR}:  min={np.nanmin(vx_amp_error)} max={np.nanmax(vx_amp_error)}")
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VY_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
+            logging.info(f"reproject_static_vars: re-projected {CompDataVars.V_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
+
+
+        # Replace np.nan with DataVars.MISSING_VALUE
+        MosaicsReproject.replace_nan_by_missing_value(dvx_dt)
+        MosaicsReproject.replace_nan_by_missing_value(dvy_dt)
+        MosaicsReproject.replace_nan_by_missing_value(dv_dt)
+        MosaicsReproject.replace_nan_by_missing_value(vx_amp)
+        MosaicsReproject.replace_nan_by_missing_value(vy_amp)
+        MosaicsReproject.replace_nan_by_missing_value(v_amp)
+        MosaicsReproject.replace_nan_by_missing_value(vx_amp_error)
+        MosaicsReproject.replace_nan_by_missing_value(vy_amp_error)
+        MosaicsReproject.replace_nan_by_missing_value(v_amp_error)
+        MosaicsReproject.replace_nan_by_missing_value(vx_phase)
+        MosaicsReproject.replace_nan_by_missing_value(vy_phase)
+        MosaicsReproject.replace_nan_by_missing_value(v_phase)
+
+        return (dvx_dt, dvy_dt, dv_dt, vx_amp, vy_amp, v_amp, vx_amp_error, vy_amp_error, v_amp_error, vx_phase, vy_phase, v_phase)
+
+    @staticmethod
+    def replace_nan_by_missing_value(data):
+        """
+        Replace np.nan with DataVars.MISSING_VALUE.
+
+        Inputs:
+        =======
+        data: numpy.ndarray to replace the values of.
+        """
+        mask = np.isnan(data)
+        data[mask] = DataVars.MISSING_VALUE
+
+    @staticmethod
+    def seasonal_velocity_rotation(vx0, vy0, vx_phase, vy_phase, vx_amp, vy_amp):
+        """
+        Rotate v_phase and v_amp in the direction of v which is defined by vx0 and vy0.
+
+        % seasonal_velocity_rotation gives the amplitude and phase of seasonal
+        % velocity components. (Only the x and y components change when rotation is
+        % applied, i.e., v_amp and v_phase are unchanged).
+        %
+        % Inputs:
+        % theta (degrees) rotation of the coordinate system.
+        % vx_amp (m/yr) x component of seasonal amplitude in the original coordinate system.
+        % vx_phase (doy) day of maximum x velocity in original coordinate system.
+        % vy_amp (m/yr) y component of seasonal amplitude in the original coordinate system.
+        % vy_phase (doy) day of maximum y velocity in original coordinate system.
+        %
+        % Outputs:
+        % vx_amp_r (m/yr) x component of seasonal amplitude in the original coordinate system.
+        % vx_phase_r (doy) day of maximum x velocity in original coordinate system.
+        % vy_amp_r (m/yr) y component of seasonal amplitude in the original coordinate system.
+        % vy_phase_r (doy) day of maximum y velocity in original coordinate system.
+        %
+        % Written (in Matlab) by Alex Gardner and Chad Greene, July 2022.
+
+        Returns:
+        v_phase (doy) - day of maximum velocity in original coordinate system
+        v_amp (m/yr) - seasonal amplitude in the original coordinate system
+        """
+        _two_pi = np.pi * 2
+
+        # Matlab prototype code:
+        # % Convert phase values from day-of-year to degrees:
+        # vx_phase_deg = vx_phase*360/365.24;
+        # vy_phase_deg = vy_phase*360/365.24;
+        # TODO: avoid conversion to degrees - go from day-of-year to radians
+        vx_phase_deg = vx_phase/365.24
+        vy_phase_deg = vy_phase/365.24
+
+        # Don't use np.nan values in calculations to avoid warnings
+        valid_mask = (~np.isnan(vx_phase_deg)) & (~np.isnan(vy_phase_deg))
+
+        # logging.info(f'Degrees: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
+
+        # Convert degrees to radians as numpy trig. functions take angles in radians
+        vx_phase_deg *= _two_pi
+        vy_phase_deg *= _two_pi
+        # logging.info(f'Radians: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
+
+        # Matlab prototype code:
+        # % Rotation matrix for x component:
+        # A1 =  vx_amp.*cosd(theta);
+        # B1 = -vy_amp.*sind(theta);
+
+        # New in Python code: compute theta rotation angle
+        # theta = arctan(vy0/vx0), since sin(theta)=vy0 and cos(theta)=vx0,
+        theta = np.full_like(vx_phase_deg, np.nan)
+        theta[valid_mask] = np.arctan2(vy0[valid_mask], vx0[valid_mask])
+
+        if np.any(theta<0):
+            # logging.info(f'Got negative theta, converting to positive values')
+            mask = (theta<0)
+            theta[mask] += _two_pi
+
+        sin_theta = np.sin(theta)
+        cos_theta = np.cos(theta)
+
+        # New in Python: assume clockwise rotation by theta as we need to align
+        # vector with v0 direction. Therefore  use clockwise transformation matrix
+        # for rotation, not counter-clockwise as in Matlab prototype code.
+        A1 = vx_amp*cos_theta
+        B1 = vy_amp*sin_theta
+
+        # Matlab prototype code:
+        # vx_amp_r   =   hypot(A1.*cosd(vx_phase_deg) + B1.*cosd(vy_phase_deg),  A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg));
+        # vx_phase_r = atan2d((A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg)),(A1.*cosd(vx_phase_deg) + B1.*(cosd(vy_phase_deg))));
+
+        # We want to retain the component only in the direction of v0,
+        # which becomes new v_amp and v_phase
+        v_amp = np.full_like(vx_phase_deg, np.nan)
+        v_phase = np.full_like(vx_phase_deg, np.nan)
+
+        v_amp[valid_mask] = np.hypot(
+            A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask]),
+            A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask])
+        )
+        # np.arctan2 returns phase in radians, convert to degrees
+        v_phase[valid_mask] = np.arctan2(
+            A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask]),
+            A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask])
+        )*180.0/np.pi
+
+        # Matlab prototype code:
+        # % Make all amplitudes positive (and reverse phase accordingly):
+        # nx = vx_amp_r<0; % indices of negative Ax_r
+        # vx_amp_r(nx) = -vx_amp_r(nx);
+        # vx_phase_r(nx) = vx_phase_r(nx)+180;
+        mask = v_amp < 0
+        v_amp[mask] *= -1.0
+        # v_phase[mask] += np.pi
+        v_phase[mask] += 180
+
+        # Matlab prototype code:
+        # % Wrap to 360 degrees:
+        # px = vx_phase_r > 0;
+        # vx_phase_r = mod(vx_phase_r, 360);
+        # vx_phase_r((vx_phase_r == 0) & px) = 360;
+        mask = v_phase > 0
+        # v_phase[mask] = np.remainder(v_phase[mask], _two_pi)
+        v_phase[mask] = np.remainder(v_phase[mask], 360.0)
+        mask = mask & (v_phase == 0)
+        # v_phase[mask] = _two_pi
+        v_phase[mask] = 360.0
+
+        # New in Python: convert all values to positive
+        mask = v_phase < 0
+        if np.any(mask):
+            # logging.info(f'Got negative phase, converting to positive values')
+            # v_phase[mask] += _two_pi
+            v_phase[mask] = np.remainder(v_phase[mask], -360.0)
+            v_phase[mask] += 360.0
+
+        # Matlab prototype code:
+        # % Convert degrees to days:
+        # vx_phase_r = vx_phase_r*365.24/360;
+        # vy_phase_r = vy_phase_r*365.24/360;
+        # Composites code does:
+        # v_phase = 365.25*((0.25 - phase_rad/_two_pi) % 1),
+        # and since vx_phase and vy_phase are already shifted by 0.25 in original projection,
+        # so we don't need to do it after rotation in direction of v0
+        # Convert phase to the day of the year:
+        v_phase = v_phase*365.24/360
+
+        return v_phase, v_amp
+
+    def get_distortion_for_debugging(self, vx_var: str, vy_var: str):
+        """
+        Get distortion in X and Y dimensions for the variables. This is for
         debugging purposes only. It replaces values of vx(vy) variables with 1(0),
         then vx(vy) with 0(1) to get reprojection distortion map for each coordinate.
 
-        warp_options: GDAL options to use for warping
         vx_var: name of the variable's X component
         vy_var: name of the variable's Y component
         """
@@ -833,9 +1540,15 @@ class MosaicsReproject:
 
         return (vx_xunit, vy_xunit, vx, vy)
 
-    def create_transformation_matrix(self):
+    def create_transformation_matrix(self, vx_var, vy_var, v_var):
         """
         This method creates transformation matrix for each point of the grid.
+
+        vx_var - Name of the X component of the variable to decide if there is
+                 data in the cell.
+        vy_var - Name of the Y component of the variable to decide if there is
+                 data in the cell.
+        v_var - Name of the variable to decide if there is data in the cell.
         """
         # Project the bounding box into output projection
         input_projection = osr.SpatialReference()
@@ -985,15 +1698,15 @@ class MosaicsReproject:
 
             # Check if velocity=NODATA_VALUE for original point -->
             # don't compute the matrix
-            v_value = self.ds.v.isel(y=y_index, x=x_index).values
+            v_value = self.ds[v_var].isel(y=y_index, x=x_index).values
 
             if np.isnan(v_value) or v_value.item() == DataVars.MISSING_VALUE:
                 no_value_counter += 1
                 continue
 
             # Double check that vx and vy are valid for the point in original projection
-            vx_value = self.ds.vx.isel(y=y_index, x=x_index).values
-            vy_value = self.ds.vy.isel(y=y_index, x=x_index).values
+            vx_value = self.ds[vx_var].isel(y=y_index, x=x_index).values
+            vy_value = self.ds[vy_var].isel(y=y_index, x=x_index).values
 
             if np.isnan(vx_value) or np.isnan(vy_value) or \
                (vx_value.item() == DataVars.MISSING_VALUE) or \
