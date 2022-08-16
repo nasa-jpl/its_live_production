@@ -24,7 +24,7 @@ python ./itslive_annual_mosaics.py -c ~/itslive_data/catalog_v2_Alaska.json
  ** create mosaics in 102027 ESRI projection code
 python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
     --processCubesFile HMA_datacubes.json -r HMA
-    --mosaicsEpsgCode 'ESRI:102027'
+    --mosaicsEpsgCode 102027
 
 Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Greene (JPL), Mark Fahnestock (UAF)
 """
@@ -98,6 +98,18 @@ class MosaicsOutputFormat:
         INSTITUTION: 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
     }
 
+def repr_composite(composites):
+    """
+    Representation for the composite.
+    """
+    composites_repr = {}
+    for each_file, each_ds in composites.items():
+        composites_repr[each_file] = {
+            'x': [np.min(each_ds.x), np.max(each_ds.x)],
+            'y': [np.max(each_ds.y), np.min(each_ds.y)]
+        }
+
+    return composites_repr
 
 class ITSLiveAnnualMosaics:
     """
@@ -127,6 +139,10 @@ class ITSLiveAnnualMosaics:
     CHUNK_SIZE = 5000
 
     REGION = None
+
+    # Postfixes of the files to write collected region information
+    COMPOSITES_CENTERS_FILE = '_composites_center_coords.json'
+    COMPOSITES_RANGES_FILE = '_composites_x_y_ranges.json'
 
     # Data variables for summary mosaics
     SUMMARY_VARS = [
@@ -239,20 +255,24 @@ class ITSLiveAnnualMosaics:
 
         # If it's multi-EPSG region, create mosaics per each EPSG code first, then
         # combine them into target EPSG
-        check_for_epsg = (len(self.composites) == 1)
+        need_to_reproject = (len(self.composites) != 1)
 
         # Disable write to the S3 bucket if it's multi-EPSG mosaics:
         # create mosaics per each of EPSG, re-project them into target EPSG,
         # then combine them into one mosaic and copy to the target S3 bucket
         # OR
         # if it's a dry run - don't actually push results to the S3 bucket
-        copy_to_s3 = check_for_epsg or self.is_dry_run
+        copy_to_s3 = not self.is_dry_run
+        if need_to_reproject:
+            copy_to_s3 = False
+
+        logging.info(f'Copying to AWS S3: {copy_to_s3} (need_to_reproject={need_to_reproject}; dryrun={self.is_dry_run})')
 
         result_files = []
         for each_epsg in self.composites.keys():
             logging.info(f'Opening annual composites for EPSG={each_epsg}')
             epsg = self.composites[each_epsg]
-            epsg_result_files = self.make_mosaics(epsg, s3_bucket, mosaics_dir, check_for_epsg, copy_to_s3)
+            epsg_result_files = self.make_mosaics(each_epsg, epsg, s3_bucket, mosaics_dir, not need_to_reproject, copy_to_s3)
 
             logging.info(f'Created mosaics files: {epsg_result_files}')
             result_files.extend(epsg_result_files)
@@ -284,6 +304,8 @@ class ITSLiveAnnualMosaics:
         composite_dir: Directory path within S3 bucket that stores datacubes' composites.
         """
         logging.info(f'BatchVars.POLYGON_SHAPE: {BatchVars.POLYGON_SHAPE}')
+
+        all_composites = {}
         with open(cubes_file, 'r') as fhandle:
             cubes = json.load(fhandle)
 
@@ -376,18 +398,18 @@ class ITSLiveAnnualMosaics:
                         # Provided polygon does not contain cube's center point
                         continue
 
-                    cube_filename = os.path.basename(properties[CubeJson.URL])
-
-                    # Process specific datacubes only
-                    if len(BatchVars.CUBES_TO_GENERATE) and cube_filename not in BatchVars.CUBES_TO_GENERATE:
-                        # logging.info(f"Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
-                        continue
-
                     # Format filename for the cube's composites
                     cube_s3 = properties[CubeJson.URL].replace(
                         BatchVars.HTTP_PREFIX,
                         BatchVars.AWS_PREFIX
                     )
+
+                    # Process specific datacubes only: check for full path of original cube as
+                    if len(BatchVars.CUBES_TO_GENERATE) and cube_s3 not in BatchVars.CUBES_TO_GENERATE:
+                        # logging.info(f"Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
+                        continue
+
+                    logging.info(f'Cube name: {cube_s3}')
 
                     # Check if cube exists in S3 bucket (should exist, just to be sure)
                     cube_exists = self.s3.ls(cube_s3)
@@ -405,7 +427,12 @@ class ITSLiveAnnualMosaics:
                         logging.info(f"Datacube composite {composite_s3} does not exist, skipping.")
                         continue
 
-                    logging.info(f'Cube name: {cube_filename}')
+                    if composite_s3 in all_composites:
+                        # TODO: For now just issue a warning. Once composites are re-created, enable exception
+                        # raise RuntimeError(f'Composite {composite_s3} already exists for {all_composites[composite_s3]} datacube. Check on {cube_s3}!!!')
+                        logging.info(f'WARNING_ATTENTION: Composite {composite_s3} already exists for {all_composites[composite_s3]} datacube. Check on {cube_s3}!!!')
+
+                    all_composites[composite_s3] = cube_s3
 
                     # Update EPSG: Y: X: composite_s3_path nested dictionary
                     epsg_dict = self.composites.setdefault(epsg_code, {})
@@ -414,31 +441,35 @@ class ITSLiveAnnualMosaics:
 
                     # Format cube composites filename:
                     # s3://its-live-data/composites/annual/v02/N60W130/ITS_LIVE_vel_annual_EPSG3413_G0120_X-3250000_Y250000.zarr
-                    logging.info(f'Cube composite name: {composite_s3}')
-
                     num_processed += 1
 
             logging.info(f"Number of collected composites: {num_processed}")
             logging.info(f'Collected composites: {json.dumps(self.composites, indent=4)}')
 
-    def make_mosaics(self, epsg: dict, s3_bucket: str, mosaics_dir: str, check_for_epsg: bool, copy_to_s3: bool):
+            centers_filename = ITSLiveAnnualMosaics.REGION + ITSLiveAnnualMosaics.COMPOSITES_CENTERS_FILE
+            logging.info(f'Writing collected composites to {centers_filename}...')
+            with open(centers_filename, 'w') as fh:
+                json.dump(self.composites, fh, indent=4)
+
+    def make_mosaics(self, epsg_code: str, epsg: dict, s3_bucket: str, mosaics_dir: str, check_for_epsg: bool, copy_to_s3: bool):
         """
         Build annual mosaics from collected datacube composites per each EPSG code.
 
-        epsg: Dictionary of center_x->center_y->s3_path_to_composite format to
-            provide composites that should contribute to mosaics.
-        s3_bucket: S3 bucket that stores all data (assumes that all datacubes,
-            composites, and mosaics are stored in the same bucket).
-        mosaics_dir: Directory path within S3 bucket that stores datacubes' mosaics.
+        epsg_code:      Current EPSG code the mosaics are built for.
+        epsg:           Dictionary of center_x->center_y->s3_path_to_composite format to
+                        provide composites that should contribute to mosaics.
+        s3_bucket:      S3 bucket that stores all data (assumes that all datacubes,
+                        composites, and mosaics are stored in the same bucket).
+        mosaics_dir:    Directory path within S3 bucket that stores datacubes' mosaics.
         check_for_epsg: Boolean flag to indicate if source data should be of the same EPSG code as
-            requested target EPSG for mosaics.
-        copy_to_s3: Boolean flag to indicate if generated mosaics files should be copied
-            to the target S3 bucket.
+                        requested target EPSG for mosaics.
+        copy_to_s3:     Boolean flag to indicate if generated mosaics files should be copied
+                        to the target S3 bucket.
         """
         # xarray.Dataset's objects for opened Zarr composites
         self.composites_ds = {}
 
-        # "united" coordinates for mosaics
+        # "united" coordinates for mosaics within the same EPSG code
         self.time_coords = []
         self.x_coords = []
         self.y_coords = []
@@ -449,8 +480,7 @@ class ITSLiveAnnualMosaics:
 
         gc.collect()
 
-        # Current projection for the mosaics
-        ds_projection = None
+        epsg_code = int(epsg_code)
 
         # For each y from sorted list of composites center's y's:
         for each_mid_y in sorted(epsg.keys()):
@@ -462,9 +492,15 @@ class ITSLiveAnnualMosaics:
                 # TODO: Should preserve s3_store or just reopen the composite when needed?
                 s3_store = s3fs.S3Map(root=composite_s3_path, s3=self.s3, check=False)
                 ds_from_zarr = xr.open_dataset(s3_store, decode_timedelta=False, engine='zarr', consolidated=True)
-                ds_projection = int(ds_from_zarr.attrs['projection'])
 
-                # # Make sure all composites are of the target projection
+                # Make sure processed composite is of the EPSG code being processed
+                if epsg_code != int(ds_from_zarr.attrs['projection']):
+                    logging.info(f'WARNING_ATTENTION: ds.projection {int(ds_from_zarr.attrs["projection"])} differs from epsg_code {epsg_code} being processed for {composite_s3_path}')
+
+                if epsg_code != int(ds_from_zarr.mapping.attrs['spatial_epsg']):
+                    logging.info(f'WARNING_ATTENTION: ds.mapping.spatial_epsg {int(ds_from_zarr.mapping.attrs["spatial_epsg"])} differs from epsg_code {epsg_code} being processed for {composite_s3_path}')
+
+                # Make sure all composites are of the target projection if no re-projection is needed
                 if check_for_epsg and (ds_projection != self.epsg):
                     raise RuntimeError(f'Expected composites in {self.epsg} projection, got {ds_projection} for {composite_s3_path}.')
 
@@ -512,8 +548,13 @@ class ITSLiveAnnualMosaics:
         self.sensor_coords = sorted(list(set(np.concatenate(self.sensor_coords))))
         logging.info(f'Got unique sensor groups: {self.sensor_coords}')
 
-        for each_file, each_ds in self.composites_ds.items():
-            logging.info(f'{each_file}: x={json.dumps([np.min(each_ds.x), np.max(each_ds.x)])} y={json.dumps([np.max(each_ds.y), np.min(each_ds.y)])}')
+        composites_info = repr_composite(self.composites_ds)
+        epsg_range_filename = f'{ITSLiveAnnualMosaics.REGION}_{epsg_code}{ITSLiveAnnualMosaics.COMPOSITES_RANGES_FILE}'
+        logging.info(f'Writing collected X/Y info to {epsg_range_filename}...')
+        with open(epsg_range_filename, 'w') as fh:
+            json.dump(composites_info, fh, indent=4)
+
+        logging.info(json.dumps(composites_info))
 
         composites_urls = sorted(list(self.composites_ds.keys()))
         # Use first composite to "collect" global attributes
@@ -542,7 +583,7 @@ class ITSLiveAnnualMosaics:
         output_files = []
 
         # Create summary mosaic (to store all 2d data variables from all composites)
-        output_files.append(self.create_summary_mosaics(ds_projection, first_ds, s3_bucket, mosaics_dir, copy_to_s3))
+        output_files.append(self.create_summary_mosaics(epsg_code, first_ds, s3_bucket, mosaics_dir, copy_to_s3))
 
         # Force garbage collection as it not always kicks in
         gc.collect()
@@ -550,7 +591,7 @@ class ITSLiveAnnualMosaics:
         # Create annual mosaics
         logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION}')
         for each_year in self.time_coords:
-            output_files.append(self.create_annual_mosaics(ds_projection, first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3))
+            output_files.append(self.create_annual_mosaics(epsg_code, first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3))
 
             # Force garbage collection as it not always kicks in
             gc.collect()
@@ -787,7 +828,8 @@ class ITSLiveAnnualMosaics:
         ds.attrs['date_created'] = self.date_created
         # Create sensors_labels = "Band 1: S1A_S1B; Band 2: S2A_S2B; Band 3: L8_L9";
         sensors_labels = [f'Band {index+1}: {self.sensor_coords[index]}' for index in range(len(self.sensor_coords))]
-        ds.attrs['sensors_labels'] = f'{"; ".join(sensors_labels)}'
+        sensors_labels = f'{"; ".join(sensors_labels)}'
+        ds.attrs['sensors_labels'] = sensors_labels
 
         ds[DataVars.MAPPING] = self.mapping
 
@@ -805,16 +847,32 @@ class ITSLiveAnnualMosaics:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.MAX_DT],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.MAX_DT],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
+                CompOutputFormat.SENSORS_LABELS: sensors_labels,
                 DataVars.UNITS: DataVars.ImgPairInfo.UNITS[DataVars.ImgPairInfo.DATE_DT]
             }
         )
 
+        ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
+            data=np.full(sensor_dims, 0, dtype=np.uint32),
+            coords=var_coords,
+            dims=var_dims,
+            attrs={
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSOR_INCLUDE],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                CompOutputFormat.SENSORS_LABELS: sensors_labels,
+                DataVars.UNITS: DataVars.BINARY_UNITS
+            }
+        )
+
         # Create lists of attributes that correspond to multiple composites that
-        # contribute to each of the annual mosaic
+        # contribute to each of the static mosaic
         all_attributes = {key: [] for key in ITSLiveAnnualMosaics.ALL_ATTR}
 
-        # Concatenate data for each data variable
+        # For debugging only to speed up the runtime
         # index = 0
+
+        # Concatenate data for each data variable
         for each_file, each_ds in self.composites_ds.items():
             logging.info(f'Collecting summary data from {each_file}')
             for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
@@ -826,15 +884,17 @@ class ITSLiveAnnualMosaics:
                 else:
                     ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var].load()
 
+            # For debugging only to speed up the runtime
             # index += 1
 
-            # Collect dt_max per each sensor group: self.sensor_coords
-            each_var = CompDataVars.MAX_DT
+            # Collect "dt_max" and "sensor_flag" values per each sensor group: self.sensor_coords
             for each_group in self.sensor_coords:
                 if each_group in each_ds.sensor:
                     sensor_index = each_ds.sensor.index(each_group)
-                    # logging.info(f'Update dt_max for {each_group} by {each_file}')
-                    ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y, sensor=each_group)] = each_ds.s3.ds[each_var][sensor_index].load()
+
+                    for each_var in [CompDataVars.MAX_DT, CompDataVars.SENSOR_INCLUDE]:
+                        # logging.info(f'Update {each_var} for {each_group} by {each_file}')
+                        ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y, sensor=each_group)] = each_ds.s3.ds[each_var][sensor_index].load()
 
             # Update attributes
             for each_attr in all_attributes.keys():
@@ -985,9 +1045,11 @@ class ITSLiveAnnualMosaics:
                 "zlib": True, "complevel": 2, "shuffle": True
             })
 
+        # TODO: Change dtype to np.uint32 once count0 is fixed in all composites
         for each in [
             CompDataVars.COUNT0,
-            CompDataVars.MAX_DT
+            CompDataVars.MAX_DT,
+            CompDataVars.SENSOR_INCLUDE
         ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
@@ -1207,8 +1269,8 @@ def parse_args():
         with open(args.processCubesFile, 'r') as fhandle:
             BatchVars.CUBES_TO_GENERATE = json.load(fhandle)
 
-        # Replace each path by the datacube basename
-        BatchVars.CUBES_TO_GENERATE = [os.path.basename(each) for each in BatchVars.CUBES_TO_GENERATE if len(each)]
+        # Replace each path by the datacube s3 path
+        BatchVars.CUBES_TO_GENERATE = [each.replace(BatchVars.HTTP_PREFIX, BatchVars.AWS_PREFIX) for each in BatchVars.CUBES_TO_GENERATE if len(each)]
         logging.info(f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubesFile}: {BatchVars.CUBES_TO_GENERATE}")
 
     elif args.processCubes:
