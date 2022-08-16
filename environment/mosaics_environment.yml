@@ -1,0 +1,45 @@
+#
+# Configuration file to create conda environment to run ITS_LIVE mosaics code.
+#
+# To create conda environment, run command:
+#
+# $ conda env create -f mosaics_environment.yml
+#
+# Followed by the following command to activate the environment:
+#
+# $ conda activate itslive_mosaics
+#
+name: itslive_mosaics
+
+channels:
+  - defaults
+  - conda-forge
+
+# Use MKL installation of numpy: from "defaults" channel,
+# as "conda-forge" channel provides OpenBLAS installation of numpy (slower)
+dependencies:
+  - python==3.9.6
+  - dask==2.30.0
+  - gdal
+  - pandas
+  - defaults::numpy
+  - numpy
+  - numba==0.55.0
+  - h5py
+  - h5netcdf
+  - requests
+  - pyproj
+  - xarray==0.20.1
+  - netcdf4
+  - flake8
+  - scipy
+  - s3fs==0.4.2
+  - fsspec==0.8.3
+  - shapely
+  - tqdm
+  - utm
+  - zarr==2.6.1
+  - pip
+  - pip:
+    - geojson
+    - awscliv2
