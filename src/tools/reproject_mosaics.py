@@ -17,6 +17,7 @@ import gc
 import logging
 import math
 import numpy as np
+import os
 from osgeo import osr, gdalnumeric, gdal
 from tqdm import tqdm
 import xarray as xr
@@ -122,6 +123,12 @@ class MosaicsReproject:
     # Flag to enable computation of debug/validation variables (map distortion
     # in X and Y dimensions, v_error)
     COMPUTE_DEBUG_VARS = False
+
+    # Filename to store transformation matrix as numpy array to npy binary file.
+    # Large regions, such as HMA, contain over 93M points and it takes ~3.5 hours
+    # to build the transformation matrix.
+    # Since all mosaics use the same transformation matrix, build it once.
+    TRANSFORMATION_MATRIX_FILE = None
 
     def __init__(self, data, output_projection: int):
         """
@@ -355,11 +362,11 @@ class MosaicsReproject:
 
         output_file: Output file to write reprojected data to.
         """
-        # Compute vx0, vy0, v0, vx0_error, vy0_error and v0_error
-        vx0, vy0, v0, v0_error, vx0_error, vy0_error = self.reproject_velocity(
-            CompDataVars.SLOPE_VX,
-            CompDataVars.SLOPE_VY,
-            CompDataVars.SLOPE_V,
+        # Compute v0 and v0_error and their X and Y components
+        vx0, vy0, v0, vx0_error, vy0_error, v0_error = self.reproject_velocity(
+            CompDataVars.VX0,
+            CompDataVars.VY0,
+            CompDataVars.V0,
             CompDataVars.VX0_ERROR,
             CompDataVars.VY0_ERROR,
             CompDataVars.V0_ERROR
@@ -367,9 +374,9 @@ class MosaicsReproject:
 
         # Create new granule in target projection
         ds_coords=[
+            (CompDataVars.SENSORS, self.sensors, self.ds.sensor.attrs),
             (Coords.Y, self.y0_grid, self.ds.y.attrs),
             (Coords.X, self.x0_grid, self.ds.x.attrs),
-            (CompDataVars.SENSORS, self.sensors, self.ds.sensor.attrs)
         ]
 
         ds_coords_2d=[
@@ -423,6 +430,10 @@ class MosaicsReproject:
         gc.collect()
 
         # Re-project variables that depend on direction of unit flow vector [vx0, vy0]
+
+        # This is memory hungry function as it reads all the variables that
+        # need to be re-projected, but it saves on access to transformation matrix -
+        # should probably re-consider the approach.
         dvx_dt, \
         dvy_dt, \
         dv_dt, \
@@ -558,26 +569,66 @@ class MosaicsReproject:
 
         self.set_mapping(reproject_ds)
 
-        # Warp "dt_max" variable: per each sensor dimension?
+        # Warp "dt_max" variable: per each sensor dimension
+        warp_data = self.warp_var(CompDataVars.MAX_DT, self.warp_options)
+
+        if warp_data.ndim == 2:
+            # If warped data is 2d array
+            _y_dim, _x_dim = warp_data.shape
+            logging.info(f'Warped dims: {warp_data.shape}')
+
+            # Convert to 3d array as MAX_DT is 3d data (has sensor dimension)
+            warp_data = warp_data.reshape((1, _y_dim, _x_dim))
+            logging.info(f'Warped dims: {warp_data.shape}')
+
+        if MosaicsReproject.VERBOSE:
+            _values = self.ds[CompDataVars.MAX_DT].values
+            verbose_mask = np.isfinite(_values)
+            logging.info(f"Original {CompDataVars.MAX_DT}:  min={np.nanmin(_values[verbose_mask])} max={np.nanmax(_values[verbose_mask])}")
+
+            verbose_mask = np.isfinite(warp_data)
+            logging.info(f"Warped {CompDataVars.MAX_DT}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
+
         reproject_ds[CompDataVars.MAX_DT] = xr.DataArray(
-            data=self.warp_var(CompDataVars.MAX_DT, self.warp_options),
-            coords=ds_coords_2d,
+            data=warp_data,
+            coords=ds_coords,
             attrs=self.ds[CompDataVars.MAX_DT].attrs
         )
 
-        # Warp "outlier_frac" variable: per each sensor dimension?
+        # Warp "outlier_frac" variable: per each sensor dimension
         reproject_ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
             data=self.warp_var(CompDataVars.OUTLIER_FRAC, self.warp_options),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.OUTLIER_FRAC].attrs
         )
 
-        # Warp "sensor_flag" variable: per each sensor dimension?
-        reproject_ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
-            data=self.warp_var(CompDataVars.SENSOR_INCLUDE, self.warp_options),
-            coords=ds_coords,
-            attrs=self.ds[CompDataVars.SENSOR_INCLUDE].attrs
-        )
+        # Warp "sensor_flag" variable: per each sensor dimension
+        if CompDataVars.SENSOR_INCLUDE in self.ds:
+
+            warp_data = self.warp_var(CompDataVars.SENSOR_INCLUDE, self.warp_options)
+
+            if warp_data.ndim == 2:
+                # If warped data is 2d array
+                _y_dim, _x_dim = warp_data.shape
+
+                # Convert to 3d array as MAX_DT is 3d data (has sensor dimension)
+                warp_data = warp_data.reshape((1, _y_dim, _x_dim))
+
+            # This is workaround for missing variable in original mosaics code
+            # so can test the code with originally generated small test sets
+            reproject_ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
+                data=warp_data,
+                coords=ds_coords,
+                attrs=self.ds[CompDataVars.SENSOR_INCLUDE].attrs
+            )
+
+            if MosaicsReproject.VERBOSE:
+                _values = self.ds[CompDataVars.SENSOR_INCLUDE].values
+                verbose_mask = np.isfinite(_values)
+                logging.info(f"Original {CompDataVars.SENSOR_INCLUDE}:  min={np.nanmin(_values[verbose_mask])} max={np.nanmax(_values[verbose_mask])}")
+
+                verbose_mask = np.isfinite(warp_data)
+                logging.info(f"gdal.warp(): Original {CompDataVars.SENSOR_INCLUDE}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
 
         MosaicsReproject.write_static_to_netCDF(reproject_ds, output_file)
 
@@ -587,14 +638,14 @@ class MosaicsReproject:
 
         output_file: Output file to write reprojected data to.
         """
-        # Compute new vx, vy, v, v_error, vx_error and vy_error
-        vx, vy, v, v_error, vx_error, vy_error = self.reproject_velocity(
+        # Compute new v, v_error and their components
+        vx, vy, v, vx_error, vy_error, v_error = self.reproject_velocity(
             DataVars.VX,
             DataVars.VY,
             DataVars.V,
-            CompDataVars.V_ERROR,
             CompDataVars.VX_ERROR,
-            CompDataVars.VY_ERROR
+            CompDataVars.VY_ERROR,
+            CompDataVars.V_ERROR
         )
 
         v_error_verify = None
@@ -846,7 +897,7 @@ class MosaicsReproject:
             if DataVars.FILL_VALUE_ATTR in ds[each].attrs:
                 del ds[each].attrs[DataVars.FILL_VALUE_ATTR]
 
-        # Set encoding for 'count' data variable
+        # Set encoding for 'count0' data variable
         encoding_settings[CompDataVars.COUNT0] = {
             DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
             'dtype': np.uint32
@@ -855,6 +906,18 @@ class MosaicsReproject:
 
         if DataVars.FILL_VALUE_ATTR in ds[CompDataVars.COUNT0].attrs:
             del ds[CompDataVars.COUNT0].attrs[DataVars.FILL_VALUE_ATTR]
+
+        # Settings for "sensor_include" datatypes
+        if CompDataVars.SENSOR_INCLUDE in ds:
+            # This is workaround for missing variable in original mosaics code
+            # so can test the code with originally generated small test sets
+            encoding_settings.setdefault(CompDataVars.SENSOR_INCLUDE, {}).update({
+                    'dtype': np.short
+                })
+            encoding_settings[CompDataVars.SENSOR_INCLUDE].update(compression)
+
+            if DataVars.FILL_VALUE_ATTR in ds[CompDataVars.SENSOR_INCLUDE].attrs:
+                del ds[CompDataVars.SENSOR_INCLUDE].attrs[DataVars.FILL_VALUE_ATTR]
 
         # Settings for "max_dt" datatypes
         encoding_settings[CompDataVars.MAX_DT] = {
@@ -883,9 +946,9 @@ class MosaicsReproject:
         vx_var: str,
         vy_var: str,
         v_var: str,
-        v_error_var: str,
         vx_error_var: str,
-        vy_error_var: str
+        vy_error_var: str,
+        v_error_var: str,
     ):
         """
         Re-project variable's X and Y components, compute its magnitude and
@@ -894,9 +957,9 @@ class MosaicsReproject:
         vx_var: name of the variable's X component
         vy_var: name of the variable's Y component
         v_var:  name of the variable
-        v_error_var: name of the error variable
         vx_error_var: name of X component of error
         vy_error_var: name of Y component of error
+        v_error_var: name of the error variable
         """
         # Read X component of variable
         _vx = self.ds[vx_var].values
@@ -906,29 +969,13 @@ class MosaicsReproject:
         _vy = self.ds[vy_var].values
         _vy[_vy==DataVars.MISSING_VALUE] = np.nan
 
-        if MosaicsReproject.VERBOSE:
-            logging.info(f"reproject_velocity: Original {vx_var}:  min={np.nanmin(_vx)} max={np.nanmax(_vx)}")
-            logging.info(f"reproject_velocity: Original {vy_var}:  min={np.nanmin(_vy)} max={np.nanmax(_vy)}")
-
-        # Number of X and Y points in the output grid
-        num_x = len(self.x0_grid)
-        num_y = len(self.y0_grid)
-
-        # Allocate output data
-        vx = np.full((num_y, num_x), np.nan, dtype=np.float32)
-        vy = np.full((num_y, num_x), np.nan, dtype=np.float32)
-        v = np.full((num_y, num_x), np.nan, dtype=np.float32)
-        v_error = np.full((num_y, num_x), np.nan, dtype=np.float32)
-        vx_error = np.full((num_y, num_x), np.nan, dtype=np.float32)
-        vy_error = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        # Read original velocity values
+        _v = self.ds[v_var].values
+        _v[_v==DataVars.MISSING_VALUE] = np.nan
 
         # Read original error values in
         _v_error = self.ds[v_error_var].values
         _v_error[_v_error==DataVars.MISSING_VALUE] = np.nan
-
-        # Read original velocity values in
-        _v = self.ds[v_var].values
-        _v[_v==DataVars.MISSING_VALUE] = np.nan
 
         # Read X component of v_error
         _vx_error = self.ds[vx_error_var].values
@@ -938,12 +985,37 @@ class MosaicsReproject:
         _vy_error = self.ds[vy_error_var].values
         _vy_error[_vy_error==DataVars.MISSING_VALUE] = np.nan
 
+        # Number of X and Y points in the output grid
+        num_x = len(self.x0_grid)
+        num_y = len(self.y0_grid)
+
+        # Allocate output data
+        vx = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        vy = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        v = np.full((num_y, num_x), np.nan, dtype=np.float32)
+
+        v_error = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        vx_error = np.full((num_y, num_x), np.nan, dtype=np.float32)
+        vy_error = np.full((num_y, num_x), np.nan, dtype=np.float32)
+
         if MosaicsReproject.VERBOSE:
-            # Report min and max values for the error variable
-            logging.info(f"reproject_velocity: Original {v_error_var}: min={np.nanmin(_v_error)} max={np.nanmax(_v_error)}")
-            logging.info(f"reproject_velocity: Original {v_var}: min={np.nanmin(_v)} max={np.nanmax(_v)}")
-            logging.info(f"reproject error:    Original {vx_error_var}: min={np.nanmin(_vx_error)} max={np.nanmax(_vx_error)}")
-            logging.info(f"reproject error:    Original {vy_error_var}: min={np.nanmin(_vy_error)} max={np.nanmax(_vy_error)}")
+            verbose_mask = np.isfinite(_vx)
+            logging.info(f"reproject_velocity: Original {vx_var}:  min={np.nanmin(_vx[verbose_mask])} max={np.nanmax(_vx[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_vy)
+            logging.info(f"reproject_velocity: Original {vy_var}:  min={np.nanmin(_vy[verbose_mask])} max={np.nanmax(_vy[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_v)
+            logging.info(f"reproject_velocity: Original {v_var}: min={np.nanmin(_v[verbose_mask])} max={np.nanmax(_v[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_vx_error)
+            logging.info(f"reproject_velocity: Original {vx_error_var}: min={np.nanmin(_vx_error[verbose_mask])} max={np.nanmax(_vx_error[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_vy_error)
+            logging.info(f"reproject_velocity: Original {vy_error_var}: min={np.nanmin(_vy_error[verbose_mask])} max={np.nanmax(_vy_error[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_v_error)
+            logging.info(f"reproject_velocity: Original {v_error_var}: min={np.nanmin(_v_error[verbose_mask])} max={np.nanmax(_v_error[verbose_mask])}")
 
         for y in tqdm(range(num_y), ascii=True, desc=f"Re-projecting {vx_var}, {vy_var}, {vx_error_var}, {vy_error_var}..."):
             for x in range(num_x):
@@ -1010,12 +1082,23 @@ class MosaicsReproject:
                         vx_error[y, x], vy_error[y, x] = np.matmul(np.abs(t_matrix), dv)
 
         if MosaicsReproject.VERBOSE:
-            logging.info(f"reproject_velocity: re-projected {vx_var}:  min={np.nanmin(vx)} max={np.nanmax(vx)}")
-            logging.info(f"reproject_velocity: re-projected {vy_var}:  min={np.nanmin(vy)} max={np.nanmax(vy)}")
-            logging.info(f"reproject_velocity: re-projected {v_var}:  min={np.nanmin(v)} max={np.nanmax(v)}")
-            logging.info(f"reproject_velocity: re-projected {vx_error_var}:  min={np.nanmin(vx_error)} max={np.nanmax(vx_error)}")
-            logging.info(f"reproject_velocity: re-projected {vy_error_var}:  min={np.nanmin(vy_error)} max={np.nanmax(vy_error)}")
-            logging.info(f"reproject_velocity: re-projected {v_error_var}:  min={np.nanmin(v_error)} max={np.nanmax(v_error)}")
+            verbose_mask = np.isfinite(vx)
+            logging.info(f"reproject_velocity: Re-projected {vx_var}:  min={np.nanmin(vx[verbose_mask])} max={np.nanmax(vx[verbose_mask])}")
+
+            verbose_mask = np.isfinite(vy)
+            logging.info(f"reproject_velocity: Re-projected {vy_var}:  min={np.nanmin(vy[verbose_mask])} max={np.nanmax(vy[verbose_mask])}")
+
+            verbose_mask = np.isfinite(v)
+            logging.info(f"reproject_velocity: Re-projected {v_var}:  min={np.nanmin(v[verbose_mask])} max={np.nanmax(v[verbose_mask])}")
+
+            verbose_mask = np.isfinite(vx_error)
+            logging.info(f"reproject_velocity: Re-projected {vx_error_var}:  min={np.nanmin(vx_error[verbose_mask])} max={np.nanmax(vx_error[verbose_mask])}")
+
+            verbose_mask = np.isfinite(vy_error)
+            logging.info(f"reproject_velocity: Re-projected {vy_error_var}:  min={np.nanmin(vy_error[verbose_mask])} max={np.nanmax(vy_error[verbose_mask])}")
+
+            verbose_mask = np.isfinite(v_error)
+            logging.info(f"reproject_velocity: Re-projected {v_error_var}:  min={np.nanmin(v_error[verbose_mask])} max={np.nanmax(v_error[verbose_mask])}")
 
         # Replace np.nan with DataVars.MISSING_VALUE
         MosaicsReproject.replace_nan_by_missing_value(vx)
@@ -1025,7 +1108,7 @@ class MosaicsReproject:
         MosaicsReproject.replace_nan_by_missing_value(vx_error)
         MosaicsReproject.replace_nan_by_missing_value(vy_error)
 
-        return (vx, vy, v, v_error, vx_error, vy_error)
+        return (vx, vy, v, vx_error, vy_error, v_error)
 
     def reproject_static_vars(
         self,
@@ -1112,12 +1195,29 @@ class MosaicsReproject:
         _vy_amp_error[_vy_amp_error==DataVars.MISSING_VALUE] = np.nan
 
         if MosaicsReproject.VERBOSE:
-            logging.info(f"reproject_static_vars: Original {CompDataVars.SLOPE_VX}:  min={np.nanmin(_dvx_dt)} max={np.nanmax(_dvx_dt)}")
-            logging.info(f"reproject_static_vars: Original {CompDataVars.SLOPE_VY}:  min={np.nanmin(_dvy_dt)} max={np.nanmax(_dvy_dt)}")
-            logging.info(f"reproject_static_vars: Original {CompDataVars.VX_AMP}:  min={np.nanmin(_vx_amp)} max={np.nanmax(_vx_amp)}")
-            logging.info(f"reproject_static_vars: Original {CompDataVars.VY_AMP}:  min={np.nanmin(_vy_amp)} max={np.nanmax(_vy_amp)}")
-            logging.info(f"reproject_static_vars: Original {CompDataVars.VX_AMP_ERROR}:  min={np.nanmin(_vx_amp_error)} max={np.nanmax(_vx_amp_error)}")
-            logging.info(f"reproject_static_vars: Original {CompDataVars.VY_AMP_ERROR}:  min={np.nanmin(_vy_amp_error)} max={np.nanmax(_vy_amp_error)}")
+            verbose_mask = np.isfinite(_dvx_dt)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.SLOPE_VX}:  min={np.nanmin(_dvx_dt[verbose_mask])} max={np.nanmax(_dvx_dt[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_dvy_dt)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.SLOPE_VY}:  min={np.nanmin(_dvy_dt[verbose_mask])} max={np.nanmax(_dvy_dt[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_vx_phase)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VX_PHASE}:  min={np.nanmin(_vx_phase[verbose_mask])} max={np.nanmax(_vx_phase[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_vy_phase)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VY_PHASE}:  min={np.nanmin(_vy_phase[verbose_mask])} max={np.nanmax(_vy_phase[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_vx_amp)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VX_AMP}:  min={np.nanmin(_vx_amp[verbose_mask])} max={np.nanmax(_vx_amp[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_vy_amp)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VY_AMP}:  min={np.nanmin(_vy_amp[verbose_mask])} max={np.nanmax(_vy_amp[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_vx_amp_error)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VX_AMP_ERROR}:  min={np.nanmin(_vx_amp_error[verbose_mask])} max={np.nanmax(_vx_amp_error[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_vy_amp_error)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.VY_AMP_ERROR}:  min={np.nanmin(_vy_amp_error[verbose_mask])} max={np.nanmax(_vy_amp_error[verbose_mask])}")
 
         # Number of X and Y points in the output grid
         num_x = len(self.x0_grid)
@@ -1152,8 +1252,20 @@ class MosaicsReproject:
             _v = self.ds[CompDataVars.SLOPE_V].values
             _v[_v==DataVars.MISSING_VALUE] = np.nan
 
+            verbose_mask = np.isfinite(_v)
+
             # Report min and max values for the error variable
-            logging.info(f"reproject_static_vars: Original {CompDataVars.SLOPE_V}: min={np.nanmin(_v)} max={np.nanmax(_v)}")
+            logging.info(f"reproject_static_vars: Original {CompDataVars.SLOPE_V}: min={np.nanmin(_v[verbose_mask])} max={np.nanmax(_v[verbose_mask])}")
+
+            # Read original v_phase values
+            _v = None
+            _v = self.ds[CompDataVars.V_PHASE].values
+            _v[_v==DataVars.MISSING_VALUE] = np.nan
+
+            verbose_mask = np.isfinite(_v)
+
+            # Report min and max values for the error variable
+            logging.info(f"reproject_static_vars: Original {CompDataVars.V_PHASE}: min={np.nanmin(_v[verbose_mask])} max={np.nanmax(_v[verbose_mask])}")
 
         for y in tqdm(range(num_y), ascii=True, desc=f"Re-projecting {CompDataVars.SLOPE_V}, {CompDataVars.V_AMP}, {CompDataVars.V_AMP_ERROR}, {CompDataVars.V_PHASE}..."):
             for x in range(num_x):
@@ -1170,27 +1282,23 @@ class MosaicsReproject:
                 dv = np.array([_dvx_dt[j, i], _dvy_dt[j, i]])
 
                 # Some points get NODATA for vx but valid vy and v.
-                if not np.any(np.isnan(dv)):
+                if np.all(np.isfinite(dv)):
                     # Apply transformation matrix to (dvx_dt, dvy_dt) vector
                     dvx_dt[y, x], dvy_dt[y, x] = np.matmul(t_matrix, dv)
-
-                    # Compute dv_dt: flow acceleration in direction of unit flow vector
-                    dv_dt[y, x] = dvx_dt[y, x] * uv_x[y, x]
-                    dv_dt[y, x] += dvy_dt[y, x] * uv_y[y, x]
 
                 # Re-project v_amp's X and Y components
                 dv = np.array([_vx_amp[j, i], _vy_amp[j, i]])
 
                 # Some points get NODATA for vx but valid vy and v.
-                if not np.any(np.isnan(dv)):
+                if np.all(np.isfinite(dv)):
                     # Apply transformation matrix to (vx, vy) values
-                    vx_amp[y, x], vy_amp[y, x] = np.matmul(t_matrix, dv)
+                    vx_amp[y, x], vy_amp[y, x] = np.matmul(np.abs(t_matrix), dv)
 
                 # Re-project v_amp_error's components
                 dv = [_vx_amp_error[j, i], _vy_amp_error[j, i]]
 
                 # If any of the values is NODATA, don't re-project, leave them as NODATA
-                if not np.any(np.isnan(dv)):
+                if np.all(np.isfinite(dv)):
                     # vx_error and vy_error must be positive:
                     # use absolute values of transformation matrix to avoid
                     # negative re-projected vx_error and vy_error values
@@ -1200,8 +1308,8 @@ class MosaicsReproject:
                 dv = [_vx_phase[j, i], _vy_phase[j, i]]
 
                 # If any of the values is NODATA, don't re-project, leave them as NODATA
-                if not np.any(np.isnan(dv)):
-                    vx_phase[y, x], vy_phase[y, x] = np.matmul(t_matrix, dv)
+                if np.all(np.isfinite(dv)):
+                    vx_phase[y, x], vy_phase[y, x] = np.matmul(np.abs(t_matrix), dv)
 
         # No need for some of original data, cleanup
         _dvx_dt = None
@@ -1214,6 +1322,10 @@ class MosaicsReproject:
         dv_dt = dvx_dt * uv_x
         dv_dt += dvy_dt * uv_y
 
+        # Wrap components of v_amp and v_phase to make sure they are in valid ranges
+        vx_phase, vx_amp = MosaicsReproject.wrap_amp_phase(vx_phase, vx_amp)
+        vy_phase, vy_amp = MosaicsReproject.wrap_amp_phase(vy_phase, vy_amp)
+
         # Compute v_phase and v_amp using analytical solution
         v_phase, v_amp = MosaicsReproject.seasonal_velocity_rotation(vx0, vy0, vx_phase, vy_phase, vx_amp, vy_amp)
 
@@ -1221,7 +1333,6 @@ class MosaicsReproject:
         # (don't project v_amp_error in direction of unit flow vector
         # like in composites)
         # Scale the "v_amp_error" as new "v_amp" is computed now
-
         _v_amp = self.ds[CompDataVars.V_AMP].values
         _v_amp[_v_amp==DataVars.MISSING_VALUE] = np.nan
 
@@ -1230,12 +1341,15 @@ class MosaicsReproject:
 
         if MosaicsReproject.VERBOSE:
             # Report min and max values for the error variable
-            logging.info(f"reproject_static_vars: Original {CompDataVars.V_AMP}: min={np.nanmin(_v_amp)} max={np.nanmax(_v_amp)}")
-            logging.info(f"reproject_static_vars: Original {CompDataVars.V_AMP_ERROR}: min={np.nanmin(_v_amp_error)} max={np.nanmax(_v_amp_error)}")
+            verbose_mask = np.isfinite(_v_amp)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.V_AMP}: min={np.nanmin(_v_amp[verbose_mask])} max={np.nanmax(_v_amp[verbose_mask])}")
+
+            verbose_mask = np.isfinite(_v_amp_error)
+            logging.info(f"reproject_static_vars: Original {CompDataVars.V_AMP_ERROR}: min={np.nanmin(_v_amp_error[verbose_mask])} max={np.nanmax(_v_amp_error[verbose_mask])}")
 
         for y in tqdm(range(num_y), ascii=True, desc=f"Scaling {CompDataVars.V_AMP_ERROR}..."):
             for x in range(num_x):
-                if np.isnan(v_amp[y, x]):
+                if not np.isfinite(v_amp[y, x]):
                     continue
 
                 # Look up original cell in input ij-projection
@@ -1254,22 +1368,22 @@ class MosaicsReproject:
                     v_amp_error[y, x] = _v_amp_error[j, i]*scale_factor
 
         if MosaicsReproject.VERBOSE:
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.SLOPE_VX}:  min={np.nanmin(dvx_dt)} max={np.nanmax(dvx_dt)}")
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.SLOPE_VY}:  min={np.nanmin(dvy_dt)} max={np.nanmax(dvy_dt)}")
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.SLOPE_V}:  min={np.nanmin(dv_dt)} max={np.nanmax(dv_dt)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_VX}:  min={np.nanmin(dvx_dt)} max={np.nanmax(dvx_dt)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_VY}:  min={np.nanmin(dvy_dt)} max={np.nanmax(dvy_dt)}")
 
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VX_AMP}:  min={np.nanmin(vx_amp)} max={np.nanmax(vx_amp)}")
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VY_AMP}:  min={np.nanmin(vy_amp)} max={np.nanmax(vy_amp)}")
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.V_AMP}:  min={np.nanmin(v_amp)} max={np.nanmax(v_amp)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VX_AMP}:  min={np.nanmin(vx_amp)} max={np.nanmax(vx_amp)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VY_AMP}:  min={np.nanmin(vy_amp)} max={np.nanmax(vy_amp)}")
 
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VX_PHASE}:  min={np.nanmin(vx_phase)} max={np.nanmax(vx_phase)}")
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VY_PHASE}:  min={np.nanmin(vy_phase)} max={np.nanmax(vy_phase)}")
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.V_PHASE}:  min={np.nanmin(v_phase)} max={np.nanmax(v_phase)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VX_AMP_ERROR}:  min={np.nanmin(vx_amp_error)} max={np.nanmax(vx_amp_error)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VY_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
 
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VX_AMP_ERROR}:  min={np.nanmin(vx_amp_error)} max={np.nanmax(vx_amp_error)}")
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.VY_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
-            logging.info(f"reproject_static_vars: re-projected {CompDataVars.V_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VX_PHASE}:  min={np.nanmin(vx_phase)} max={np.nanmax(vx_phase)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VY_PHASE}:  min={np.nanmin(vy_phase)} max={np.nanmax(vy_phase)}")
 
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_V}:  min={np.nanmin(dv_dt)} max={np.nanmax(dv_dt)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_PHASE}:  min={np.nanmin(v_phase)} max={np.nanmax(v_phase)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP}:  min={np.nanmin(v_amp)} max={np.nanmax(v_amp)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
 
         # Replace np.nan with DataVars.MISSING_VALUE
         MosaicsReproject.replace_nan_by_missing_value(dvx_dt)
@@ -1286,6 +1400,52 @@ class MosaicsReproject:
         MosaicsReproject.replace_nan_by_missing_value(v_phase)
 
         return (dvx_dt, dvy_dt, dv_dt, vx_amp, vy_amp, v_amp, vx_amp_error, vy_amp_error, v_amp_error, vx_phase, vy_phase, v_phase)
+
+    @staticmethod
+    def wrap_amp_phase(v_phase_days, v_amp):
+        """
+        Wrap phase and amplitude to be within valid ranges.
+        """
+        # Convert phase from days to degrees
+        v_phase = v_phase_days*360/365.24
+
+        mask = v_amp < 0
+        v_amp[mask] *= -1.0
+        v_phase[mask] += 180
+
+        # Matlab prototype code:
+        # % Wrap to 360 degrees:
+        # px = vx_phase_r > 0;
+        # vx_phase_r = mod(vx_phase_r, 360);
+        # vx_phase_r((vx_phase_r == 0) & px) = 360;
+        mask = v_phase > 0
+        # v_phase[mask] = np.remainder(v_phase[mask], _two_pi)
+        v_phase[mask] = np.remainder(v_phase[mask], 360.0)
+        mask = mask & (v_phase == 0)
+        # v_phase[mask] = _two_pi
+        v_phase[mask] = 360.0
+
+        # New in Python: convert all values to positive
+        mask = v_phase < 0
+        if np.any(mask):
+            # logging.info(f'Got negative phase, converting to positive values')
+            # v_phase[mask] += _two_pi
+            v_phase[mask] = np.remainder(v_phase[mask], -360.0)
+            v_phase[mask] += 360.0
+
+        # Matlab prototype code:
+        # % Convert degrees to days:
+        # vx_phase_r = vx_phase_r*365.24/360;
+        # vy_phase_r = vy_phase_r*365.24/360;
+        # Composites code does:
+        # v_phase = 365.25*((0.25 - phase_rad/_two_pi) % 1),
+        # and since vx_phase and vy_phase are already shifted by 0.25 in original projection,
+        # so we don't need to do it after rotation in direction of v0
+
+        # Convert phase back to the day of the year:
+        v_phase = v_phase*365.24/360
+
+        return v_phase, v_amp
 
     @staticmethod
     def replace_nan_by_missing_value(data):
@@ -1550,6 +1710,8 @@ class MosaicsReproject:
                  data in the cell.
         v_var - Name of the variable to decide if there is data in the cell.
         """
+        logging.info(f'Creating trasformation matrix...')
+
         # Project the bounding box into output projection
         input_projection = osr.SpatialReference()
         input_projection.ImportFromEPSG(self.ij_epsg)
@@ -1596,10 +1758,30 @@ class MosaicsReproject:
         logging.info(f"Grid in P_out: num_x={len(self.x0_grid)} num_y={len(self.y0_grid)}")
         # logging.info(f"Cell centers in P_out: x_min={self.x0_grid[0]} x_max={self.x0_grid[-1]} y_max={self.y0_grid[0]} y_min={self.y0_grid[-1]}")
 
+        # Read transformation matrix if it exists
+        if os.path.exists(MosaicsReproject.TRANSFORMATION_MATRIX_FILE):
+            # Transformation matrix exists, just load it.
+            # There is no security concern about "allow_pickle" as this code
+            # runs only manually to generate annual mosaics
+            logging.info(f'Loading {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
+            npzfile = np.load(MosaicsReproject.TRANSFORMATION_MATRIX_FILE, allow_pickle=True)
+            self.transformation_matrix = npzfile['transformation_matrix']
+            self.original_ij_index = npzfile['original_ij_index']
+            logging.info(f'Loaded transformation_matrix and original_ij_index from {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
+
+            # Make sure matrix dimensions correspond to the target grid
+            if self.transformation_matrix.shape != (len(self.y0_grid), len(self.x0_grid)):
+                raise RuntimeError(f'Unexpected shape of transformation matrix: {self.transformation_matrix.shape}' \
+                                    'vs. expected {(len(self.y0_grid), len(self.x0_grid))}')
+
+            return
+
         xy0_points = MosaicsReproject.dims_to_grid(self.x0_grid, self.y0_grid)
 
         # Get corresponding to xy0_points in original projection
         ij0_points = xy_to_ij_transfer.TransformPoints(xy0_points)
+
+        logging.info(f'Got list of points in original projection...')
 
         # Calculate x unit vector: add unit length to ij0_points.x
         # TODO: possible optimization - just use already transformed points when
@@ -1613,6 +1795,8 @@ class MosaicsReproject:
         # Compute X unit vector based on xy0_points, xy_points
         # in output projection
         xunit_v = np.zeros((num_xy0_points, 3))
+
+        logging.info(f'Creating unit vectors...')
 
         # Compute unit vector for each cell of the output grid
         for index in range(num_xy0_points):
@@ -1634,9 +1818,6 @@ class MosaicsReproject:
             # yunit_v[index] /= np.linalg.norm(yunit_v[index])
             yunit_v[index] /= np.abs(self.y_size)
 
-        # Local normal vector
-        normal = np.array([0.0, 0.0, 1.0])
-
         # Compute transformation matrix per cell
         self.transformation_matrix = np.full((num_xy0_points), DataVars.MISSING_VALUE, dtype=object)
         # self.transformation_matrix.fill(DataVars.MISSING_VALUE)
@@ -1655,6 +1836,9 @@ class MosaicsReproject:
         scale_factor_x = 1.0
         scale_factor_y = 1.0
 
+        # Local normal vector
+        # normal = np.array([0.0, 0.0, 1.0])
+
         # e = normal[2]*scale_factor_y
         # f = normal[2]*scale_factor_x
 
@@ -1664,6 +1848,8 @@ class MosaicsReproject:
         # debug = False
 
         # For each point on the output grid:
+        logging.info(f'Populating transformation matrix...')
+
         for each_index in tqdm(range(num_xy0_points), ascii=True, desc="Creating transformation matrix..."):
             # Find corresponding point in source P_in projection
             ij_point = ij0_points[each_index]
@@ -1741,6 +1927,18 @@ class MosaicsReproject:
         self.original_ij_index = self.original_ij_index.reshape((len(self.y0_grid), len(self.x0_grid)))
         logging.info(f"Number of points with no transformation matrix: {no_value_counter} out of {num_xy0_points} points ({no_value_counter/num_xy0_points*100.0}%)")
 
+        #  transformation matrix and mapping to original ij index for output grid to
+        # numpy archive - don't need to calculate these every time need to re-project each
+        # of the annual and static mosaics for the same region.
+        logging.info(f'Saving transformation_matrix and original_ij_index arrays to {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
+
+        np.savez(
+            MosaicsReproject.TRANSFORMATION_MATRIX_FILE,
+            transformation_matrix=self.transformation_matrix,
+            original_ij_index=self.original_ij_index
+        )
+        logging.info(f'Saved data to {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
+
     def spatial_ref_32x(self):
         """
         Format spatial_ref attribute value for the UTM_Projection.
@@ -1796,6 +1994,8 @@ if __name__ == '__main__':
     """
     Re-project ITS_LIVE mosaic (static or annual) to the target projection.
     """
+    import sys
+
     parser = argparse.ArgumentParser(description='Re-project ITS_LIVE static or annual mosaics to new projection.')
     parser.add_argument(
         '-i', '--input',
@@ -1826,11 +2026,21 @@ if __name__ == '__main__':
         action='store_true',
         help='Enable computation of validation variables, done to assist debugging only [False]'
     )
+    parser.add_argument(
+        '-m', '--transformation_matrix_file',
+        default='transformation_matrix.npy',
+        type=str,
+        help='Store transformation matrix to provided file and re-use it to build all mosaics for the same region [%(default)s]'
+    )
 
     command_args = parser.parse_args()
+    logging.info(f"Command-line arguments: {sys.argv}")
+    logging.info(f'Command args: {command_args}')
+
 
     MosaicsReproject.VERBOSE = command_args.verbose
     MosaicsReproject.COMPUTE_DEBUG_VARS = command_args.compute_debug_vars
+    MosaicsReproject.TRANSFORMATION_MATRIX_FILE = command_args.transformation_matrix_file
 
     reproject = MosaicsReproject(command_args.input_file, command_args.output_proj)
     reproject(command_args.output_file)
