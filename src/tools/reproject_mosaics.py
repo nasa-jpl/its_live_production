@@ -604,7 +604,8 @@ class MosaicsReproject:
 
         # Warp "sensor_flag" variable: per each sensor dimension
         if CompDataVars.SENSOR_INCLUDE in self.ds:
-
+            # This is workaround for missing variable in original mosaics code
+            # so can test the code with originally generated small test sets
             warp_data = self.warp_var(CompDataVars.SENSOR_INCLUDE, self.warp_options)
 
             if warp_data.ndim == 2:
@@ -614,8 +615,6 @@ class MosaicsReproject:
                 # Convert to 3d array as MAX_DT is 3d data (has sensor dimension)
                 warp_data = warp_data.reshape((1, _y_dim, _x_dim))
 
-            # This is workaround for missing variable in original mosaics code
-            # so can test the code with originally generated small test sets
             reproject_ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
                 data=warp_data,
                 coords=ds_coords,
