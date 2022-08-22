@@ -247,6 +247,11 @@ class MosaicsReproject:
             self.mosaic_function = self.reproject_annual_mosaic
 
         # outputBounds --- output bounds as (minX, minY, maxX, maxY) in target SRS
+
+        # MISSING_BYTE      = 0.0
+        # MISSING_UBYTE     = 0.0
+        # MISSING_VALUE     = -32767.0
+        # MISSING_POS_VALUE = 32767.0
         self.warp_options = gdal.WarpOptions(
             # format='netCDF',
             format=MosaicsReproject.WARP_FORMAT,
@@ -575,11 +580,9 @@ class MosaicsReproject:
         if warp_data.ndim == 2:
             # If warped data is 2d array
             _y_dim, _x_dim = warp_data.shape
-            logging.info(f'Warped dims: {warp_data.shape}')
 
             # Convert to 3d array as MAX_DT is 3d data (has sensor dimension)
             warp_data = warp_data.reshape((1, _y_dim, _x_dim))
-            logging.info(f'Warped dims: {warp_data.shape}')
 
         if MosaicsReproject.VERBOSE:
             _values = self.ds[CompDataVars.MAX_DT].values
@@ -937,7 +940,10 @@ class MosaicsReproject:
         Warp variable into new projection.
         """
         np_ds = gdal.Warp('', f'NETCDF:"{self.input_file}":{var}', options=warp_options).ReadAsArray()
-        logging.info(f"Warped with GDAL: {var}.shape = {np_ds.shape}")
+
+        if MosaicsReproject.VERBOSE:
+            verbose_mask = np.isfinite(np_ds)
+            logging.info(f"Warped {var}:  min={np.nanmin(np_ds[verbose_mask])} max={np.nanmax(np_ds[verbose_mask])}")
 
         return np_ds
 
@@ -1976,17 +1982,26 @@ class MosaicsReproject:
         """
         Convert x, y dimensions of the dataset into numpy grid array in (y, x) order.
         """
-        # Use z=0 as osr.CoordinateTransformation.TransformPoints() returns 3d point coordinates
-        grid = np.zeros((len(x)*len(y), 3))
+        # Use z=0 as osr.CoordinateTransformation.TransformPoints() returns 3d point coordinates,
+        # so have to keep grip points defined in 3D.
+        x_1, y_1 = np.meshgrid(x, y)
+        z_1 = np.zeros_like(x_1)
 
-        num_row = 0
-        for each_y in y:
-            for each_x in x:
-                grid[num_row][0] = each_x
-                grid[num_row][1] = each_y
-                num_row += 1
+        return list(zip(x_1.flatten(), y_1.flatten(), z_1.flatten()))
 
-        return grid
+def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, verbose_flag: bool, compute_debug_vars: bool):
+    """
+    Main function of the module to be able to invoke the code from
+    another Python module.
+    """
+    MosaicsReproject.VERBOSE = verbose_flag
+    MosaicsReproject.COMPUTE_DEBUG_VARS = compute_debug_vars
+    MosaicsReproject.TRANSFORMATION_MATRIX_FILE = matrix_file
+
+    reproject = MosaicsReproject(input_file, output_proj)
+    reproject(output_file)
+
+    logging.info(f'Done re-projection of {input_file}')
 
 
 if __name__ == '__main__':
@@ -2036,12 +2051,13 @@ if __name__ == '__main__':
     logging.info(f"Command-line arguments: {sys.argv}")
     logging.info(f'Command args: {command_args}')
 
-
-    MosaicsReproject.VERBOSE = command_args.verbose
-    MosaicsReproject.COMPUTE_DEBUG_VARS = command_args.compute_debug_vars
-    MosaicsReproject.TRANSFORMATION_MATRIX_FILE = command_args.transformation_matrix_file
-
-    reproject = MosaicsReproject(command_args.input_file, command_args.output_proj)
-    reproject(command_args.output_file)
+    main(
+        command_args.input_file,
+        command_args.output_file,
+        command_args.output_proj,
+        command_args.transformation_matrix_file,
+        command_args.verbose,
+        command_args.compute_debug_vars
+    )
 
     logging.info('Done.')
