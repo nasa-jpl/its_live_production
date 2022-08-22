@@ -61,6 +61,7 @@ from itscube_types import \
     composite_filename_zarr, \
     summary_mosaics_filename_nc
 from itslive_composite import CompDataVars, CompOutputFormat
+from reproject_mosaics import main as reproject_main
 
 # Set up logging
 logging.basicConfig(
@@ -143,6 +144,10 @@ class ITSLiveAnnualMosaics:
     # Postfixes of the files to write collected region information
     COMPOSITES_CENTERS_FILE = '_composites_center_coords.json'
     COMPOSITES_RANGES_FILE = '_composites_x_y_ranges.json'
+
+    # File to store transformation matrix and index mapping to original grid
+    # (generate once per each EPSG and re-use to create all mosaics for the region)
+    TRANSFORMATION_MATRIX_FILE = ''
 
     # Data variables for summary mosaics
     SUMMARY_VARS = [
@@ -255,6 +260,8 @@ class ITSLiveAnnualMosaics:
 
         # If it's multi-EPSG region, create mosaics per each EPSG code first, then
         # combine them into target EPSG
+        # We don't support re-projection of a single EPSG code mosaics into new EPSG -
+        # that can be done manually after such mosaics are created.
         need_to_reproject = (len(self.composites) != 1)
 
         # Disable write to the S3 bucket if it's multi-EPSG mosaics:
@@ -268,19 +275,18 @@ class ITSLiveAnnualMosaics:
 
         logging.info(f'Copying to AWS S3: {copy_to_s3} (need_to_reproject={need_to_reproject}; dryrun={self.is_dry_run})')
 
-        result_files = []
+        # Dictionary of mosaics per each EPSG code
+        result_files = {}
         for each_epsg in self.composites.keys():
             logging.info(f'Opening annual composites for EPSG={each_epsg}')
             epsg = self.composites[each_epsg]
-            epsg_result_files = self.make_mosaics(each_epsg, epsg, s3_bucket, mosaics_dir, not need_to_reproject, copy_to_s3)
+            result_files[each_epsg] = self.make_mosaics(each_epsg, epsg, s3_bucket, mosaics_dir, not need_to_reproject, copy_to_s3)
 
-            logging.info(f'Created mosaics files: {epsg_result_files}')
-            result_files.extend(epsg_result_files)
+            logging.info(f'Created mosaics files: {result_files[each_epsg]}')
 
-        # TODO:
-        # if len(self.composites) > 1:
-        #     # Re-project data to the same target EPSG code
-        #     result_files = self.merge_epsg_mosaics(s3_bucket, mosaics_dir)
+        if len(self.composites) > 1:
+            # Combine re-projected mosaics per EPSG code into one
+            result_files = self.merge_epsg_mosaics(result_files, s3_bucket, mosaics_dir)
 
         # Otherwise it's only one projection mosaics and we are done
         return result_files
@@ -493,12 +499,16 @@ class ITSLiveAnnualMosaics:
                 s3_store = s3fs.S3Map(root=composite_s3_path, s3=self.s3, check=False)
                 ds_from_zarr = xr.open_dataset(s3_store, decode_timedelta=False, engine='zarr', consolidated=True)
 
-                # Make sure processed composite is of the EPSG code being processed
-                if epsg_code != int(ds_from_zarr.attrs['projection']):
-                    logging.info(f'WARNING_ATTENTION: ds.projection {int(ds_from_zarr.attrs["projection"])} differs from epsg_code {epsg_code} being processed for {composite_s3_path}')
-
-                if epsg_code != int(ds_from_zarr.mapping.attrs['spatial_epsg']):
-                    logging.info(f'WARNING_ATTENTION: ds.mapping.spatial_epsg {int(ds_from_zarr.mapping.attrs["spatial_epsg"])} differs from epsg_code {epsg_code} being processed for {composite_s3_path}')
+                # Make sure processed composite is of the EPSG code being processed:
+                # this is to address the problem we introduced by removing EPSG code
+                # from composites filenames
+                ds_projection = int(ds_from_zarr.attrs['projection'])
+                if epsg_code != ds_projection:
+                    logging.info(f'WARNING_ATTENTION: ds.projection {ds_projection} ' \
+                        f'differs from epsg_code {epsg_code} being processed for {composite_s3_path}, ignoring the file')
+                    # For now to be able to test with "combo" composites, don't
+                    # include such composite for EPSG
+                    continue
 
                 # Make sure all composites are of the target projection if no re-projection is needed
                 if check_for_epsg and (ds_projection != self.epsg):
@@ -520,6 +530,8 @@ class ITSLiveAnnualMosaics:
                 self.time_coords.append(ds_time)
                 self.sensor_coords.append(ds_from_zarr.sensor.values)
 
+                # We had some corrupted composites (EC2 was terminated during copy to S3)
+                # that had NaNs in x and y, check for it
                 if np.any(np.isnan(self.x_coords[-1])):
                     raise RuntimeError(f'Got nan in x: {composite_s3_path}')
 
@@ -585,8 +597,31 @@ class ITSLiveAnnualMosaics:
         # Create summary mosaic (to store all 2d data variables from all composites)
         output_files.append(self.create_summary_mosaics(epsg_code, first_ds, s3_bucket, mosaics_dir, copy_to_s3))
 
-        # Force garbage collection as it not always kicks in
+        # Force garbage collection as it does not always kick in
         gc.collect()
+
+        # Re-project mosaics if target projection is other than EPSG being processed
+        local_dir = None
+        if epsg_code != self.epsg:
+            mosaics_file = output_files[-1]
+
+            # Create sub-directory to store EPSG mosaics to
+            local_dir = f'{epsg_code}_reproject_to_{self.epsg}'
+            if not os.path.exists(local_dir):
+                logging.info(f'Creating EPSG specific directory to write re-projected mosaics to: {local_dir}')
+                os.mkdir(local_dir)
+
+            # Append local path to the filename to store mosaics and transformation matrix to
+            reproject_mosaics_filename = os.path.join(local_dir, mosaics_file)
+            reproject_matrix_filename = os.path.join(local_dir, ITSLiveAnnualMosaics.TRANSFORMATION_MATRIX_FILE)
+
+            reproject_main(mosaics_file, reproject_mosaics_filename, self.epsg, reproject_matrix_filename, verbose_flag=True)
+
+            # Replace output file with re-projected file
+            output_files[-1] = reproject_mosaics_filename
+
+            # Force garbage collection as it does not always kick in
+            gc.collect()
 
         # Create annual mosaics
         logging.info(f'Creating annual mosaics for {ITSLiveAnnualMosaics.REGION}')
@@ -596,17 +631,37 @@ class ITSLiveAnnualMosaics:
             # Force garbage collection as it not always kicks in
             gc.collect()
 
+            if epsg_code != self.epsg:
+                mosaics_file = output_files[-1]
+
+                # Append local path to the filename to store mosaics and transformation matrix to
+                reproject_mosaics_filename = os.path.join(local_dir, mosaics_file)
+                reproject_matrix_filename = os.path.join(local_dir, ITSLiveAnnualMosaics.TRANSFORMATION_MATRIX_FILE)
+
+                reproject_main(mosaics_file, reproject_mosaics_filename, self.epsg, reproject_matrix_filename, verbose_flag=True)
+
+                # Replace output file with re-projected file
+                output_files[-1] = reproject_mosaics_filename
+
+                # Force garbage collection as it does not always kick in
+                gc.collect()
+
         return output_files
 
-    def merge_epsg_mosaics(self, s3_bucket: str, mosaics_dir: str):
+    def merge_epsg_mosaics(self, epsg_mosaics_files: dict, s3_bucket: str, mosaics_dir: str):
         """
-        Build annual mosaics from collected datacube composites.
+        Combine re-projected to the target EPSG code annual and static mosaics
+        for the region.
+        Apply "average" to overlapping cells that originte from different EPSG codes.
 
+        epsg_mosaics: Dictionary of re-projected mosaics per EPSG code. All mosaics
+                      in this dictionary correspond to the same EPSG target code.
         s3_bucket: S3 bucket that stores all data (assumes that all datacubes,
                    composites, and mosaics are stored in the same bucket).
         mosaics_dir: Directory path within S3 bucket that stores datacubes' mosaics.
         """
-        # TODO: merge all EPSG mosaics and re-project data to the target EPSG code
+        return epsg_mosaics_files
+        # TODO: merge all EPSG mosaics into one
 
     def create_annual_mosaics(self, ds_projection, first_ds, year_date, s3_bucket, mosaics_dir, copy_to_s3):
         """
@@ -853,7 +908,7 @@ class ITSLiveAnnualMosaics:
         )
 
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
-            data=np.full(sensor_dims, 0, dtype=np.uint32),
+            data=np.full(sensor_dims, 0, dtype=np.short),
             coords=var_coords,
             dims=var_dims,
             attrs={
@@ -1222,6 +1277,12 @@ def parse_args():
         default='h5netcdf',
         help="NetCDF engine to use to store NetCDF data to the file [%(default)s]."
     )
+    parser.add_argument(
+        '-t', '--transformation_matrix_file',
+        default='',
+        type=str,
+        help='Store transformation matrix to provided file and re-use it to build all mosaics for the same region [%(default)s]'
+    )
 
     # One of --processCubes or --processCubesFile options is allowed for the datacube names
     group = parser.add_mutually_exclusive_group()
@@ -1248,6 +1309,7 @@ def parse_args():
     ITSLiveAnnualMosaics.REGION = args.region
     ITSLiveAnnualMosaics.CELL_SIZE = args.gridCellSize
     ITSLiveAnnualMosaics.NC_ENGINE = args.engine
+    ITSLiveAnnualMosaics.TRANSFORMATION_MATRIX_FILE = args.transformation_matrix_file
 
     epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
