@@ -603,7 +603,7 @@ class ITSLiveAnnualMosaics:
         # Re-project mosaics if target projection is other than EPSG being processed
         local_dir = None
         if epsg_code != self.epsg:
-            mosaics_file = output_files[-1]
+            mosaics_file = os.path.basename(output_files[-1])
 
             # Create sub-directory to store EPSG mosaics to
             local_dir = f'{epsg_code}_reproject_to_{self.epsg}'
@@ -632,7 +632,7 @@ class ITSLiveAnnualMosaics:
             gc.collect()
 
             if epsg_code != self.epsg:
-                mosaics_file = output_files[-1]
+                mosaics_file =  os.path.basename(output_files[-1])
 
                 # Append local path to the filename to store mosaics and transformation matrix to
                 reproject_mosaics_filename = os.path.join(local_dir, mosaics_file)
