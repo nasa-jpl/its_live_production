@@ -3,7 +3,7 @@ ITSLiveComposite class creates yearly composites of ITS_LIVE datacubes with data
 within the same target projection, bounding polygon and datetime period as
 specified at the time the datacube was constructed/updated.
 
-Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Green (JPL), Mark Fahnestock (UAF)
+Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Greene (JPL), Mark Fahnestock (UAF)
 
 Jet Propulsion Laboratory, California Institute of Technology, Pasadena, California
 March 21, 2022
@@ -440,7 +440,7 @@ def create_M(y1, start_year, stop_year, dyr):
 
     return M
 
-# Disable numba as its wrapper for lstsq does not support rcond input parameter
+# Disable numba as its wrapper for lstsq does not support "rcond" input parameter for LSQ fit
 # @nb.jit(nopython=True)
 def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs):
     _two_pi = np.pi * 2
@@ -455,6 +455,7 @@ def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs):
              (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi), axis=-1)
 
     # Add M: a different constant for each year (annual mean)
+    # logging.info(f'DEBUG: LSQ fit: D={D}')
     D = np.concatenate((D, M), axis=1)
 
     # Make numpy happy: have all data 2D
@@ -551,6 +552,8 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
     start_year, stop_year, v_in, v_err_in, dyr, w_v, w_d, d_obs, y1, M_in: Filtered by data
                    validity mask and pre-processed for LSQ fit input data variables.
     """
+    _num_valid_points = 30
+
     # Remove outliers based on MAD filter for v, subtract from v to get residual
     v_residual = np.abs(v_input - v_median)
 
@@ -558,7 +561,10 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
     v_sigma = np.median(v_residual)*mad_std_ratio
 
     non_outlier_mask  = ~(v_residual > (2.0 * mad_thresh * v_sigma))
-    results_valid = np.any(non_outlier_mask)
+
+    # If less than _num_valid_points don't do the fit
+    results_valid = (np.sum(non_outlier_mask) >= _num_valid_points)
+    # results_valid = np.any(non_outlier_mask)
 
     if not results_valid:
         # All results will be ignored, but they must match in type to valid returned
@@ -617,7 +623,8 @@ def itslive_lsqfit_annual(
     mad_std_ratio,
     mean,  # outputs to populate
     error,
-    count
+    count,
+    v_limit
 ):
     # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,count_image_pairs] data
     # variables.
@@ -701,25 +708,44 @@ def itslive_lsqfit_annual(
         p, d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs)
         iter_runtime += (timeit.default_timer() - runtime)
 
-        # Divide by dt to avoid penalizing long dt [asg]
-        d_resid = np.abs(d_obs - d_model)/dyr
-
-        # Robust standard deviation of errors, using median absolute deviation
-        d_sigma = np.median(d_resid)*mad_std_ratio
-
-        outliers = d_resid > (_mad_thresh * d_sigma)
-        if np.all(outliers):
-            # All are outliers, return from the function
-            results_valid = False
-            return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
-
-        if (outliers.sum() / totalnum) < 0.01 and i != last_iteration:
-            # There are less than 1% outliers, skip the rest of iterations
-            # if it's not the last iteration
-            # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
-            break
+        # Original code:
+        # # Divide by dt to avoid penalizing long dt [asg]
+        # d_resid = np.abs(d_obs - d_model)/dyr
+        #
+        # # Robust standard deviation of errors, using median absolute deviation
+        # d_sigma = np.median(d_resid)*mad_std_ratio
+        #
+        # outliers = d_resid > (_mad_thresh * d_sigma)
+        # if np.all(outliers):
+        #     # All are outliers, return from the function
+        #     results_valid = False
+        #     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
+        #
+        # if (outliers.sum() / totalnum) < 0.01 and i != last_iteration:
+        #     # There are less than 1% outliers, skip the rest of iterations
+        #     # if it's not the last iteration
+        #     # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
+        #     break
 
         if i < last_iteration:
+            # Divide by dt to avoid penalizing long dt [asg]
+            d_resid = np.abs(d_obs - d_model)/dyr
+
+            # Robust standard deviation of errors, using median absolute deviation
+            d_sigma = np.median(d_resid)*mad_std_ratio
+
+            outliers = d_resid > (_mad_thresh * d_sigma)
+            if np.all(outliers):
+                # All are outliers, return from the function
+                results_valid = False
+                return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
+
+            if (outliers.sum() / totalnum) < 0.01:
+                # There are less than 1% outliers, skip the rest of iterations
+                # if it's not the last iteration
+                # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
+                break
+
             # Remove outliers
             non_outlier_mask = ~outliers
             start_year = start_year[non_outlier_mask]
@@ -799,7 +825,13 @@ def itslive_lsqfit_annual(
     error[ind] = v_int_err
     count[ind] = N_int
 
+    # logging.info(f'DEBUG: LSQ fit error: {error}')
     offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
+
+    if offset >= v_limit:
+        # Since it's invalid v0, report all output as invalid
+        results_valid = False
+        return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
 
     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs])
 
@@ -1043,6 +1075,7 @@ class CompositeVariable:
     """
     Class to hold values for v, vx and vy components of the variables.
     """
+    # Index order for data to be continuous in X dimension
     CONT_IN_X = (2, 0, 1)
 
     def __init__(self, dims: list, name: str):
@@ -1277,6 +1310,8 @@ class SensorExcludeFilter:
                         ds_mid_date
                     )
 
+                    # logging.info(f'Excluded sensors: {exclude_sensors[j_index, i_index]}')
+
         return exclude_sensors
 
     def iteration(self, ds_date_dt, ds_vx, ds_vy, ds_mid_date, plot=False):
@@ -1452,7 +1487,8 @@ class ITSLiveComposite:
         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
         DataVars.FLAG_STABLE_SHIFT,
         DataVars.ImgPairInfo.SATELLITE_IMG1,
-        DataVars.ImgPairInfo.MISSION_IMG1
+        DataVars.ImgPairInfo.MISSION_IMG1,
+        DataVars.URL
     ]
     # % maltab can't read in 'mission_img1' but this needs to be implemented in python verson
 
@@ -1522,6 +1558,17 @@ class ITSLiveComposite:
         # Store "shallow" version of the cube for carrying over some of the metadata
         # when writing composites to the Zarr store
         cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
+        logging.info(f'Datacube sizes: {cube_ds.sizes}')
+
+        # Exclude "faulty" S2 data: filenames containing '23WPN'
+        logging.info(f'Excluding S2 data for 23WPN...')
+        url_values = cube_ds[DataVars.URL].values
+        sel_indices = [index for index, each in enumerate(url_values) if (not os.path.basename(each).startswith('S2') or (os.path.basename(each).startswith('S2') and not('23WPN' in each)))]
+
+        logging.info(f'Leaving {len(sel_indices)} layers...')
+        cube_ds = cube_ds.isel(mid_date=sel_indices)
+        logging.info(f'Datacube sizes after S2 exclusion: {cube_ds.sizes}')
+
         self.data = cube_ds[[DataVars.VX, DataVars.VY]]
 
         # Add systematic error based on level of co-registration
@@ -1666,9 +1713,20 @@ class ITSLiveComposite:
         x_num_to_process = self.cube_sizes[Coords.X]
 
         # For debugging only
-        # x_start = 300
-        # x_num_to_process = self.cube_sizes[Coords.X] - x_start
-        # x_num_to_process = 100
+        # ======================
+        # Alex's Julia code
+        # datacubes/v02/N60W040/ITS_LIVE_vel_EPSG3413_G0120_X150000_Y-2650000.zarr
+        # x_start = 118  # good point
+        # x_start = 265  # bad point
+
+        # GRE huge v0 values
+        # x_start = 512
+        # ======================
+
+        x_num_to_process = self.cube_sizes[Coords.X] - x_start
+        # For debugging only
+        # ======================
+        # x_num_to_process = 1
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -1678,9 +1736,18 @@ class ITSLiveComposite:
             y_num_to_process = self.cube_sizes[Coords.Y]
 
             # For debugging only
-            # y_start = 700
-            # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-            # y_num_to_process = 100
+            # ======================
+            # Alex's Julia code
+            # y_start = 428  # good point
+            # y_start = 432  # bad point
+
+            # GRE huge v0 values
+            # y_start = 32
+
+            y_num_to_process = self.cube_sizes[Coords.Y] - y_start
+            # For debugging only
+            # ======================
+            # y_num_to_process = 1
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -1746,7 +1813,7 @@ class ITSLiveComposite:
         stop_y = start_y + num_y
         stop_x = start_x + num_x
         ITSLiveComposite.Chunk = Chunk(start_x, stop_x, num_x, start_y, stop_y, num_y)
-        ITSCube.show_memory_usage(f'starting cube_time_mean(): start_x={start_x} start_y={start_y}')
+        ITSCube.show_memory_usage(f'before cube_time_mean(): start_x={start_x} start_y={start_y}')
 
         # Start timer
         start_time = timeit.default_timer()
@@ -1802,6 +1869,14 @@ class ITSLiveComposite:
             exclude_sensors
         )
         logging.info(f'Done with velocity projection to median flow unit vector (took {timeit.default_timer() - start_time} seconds)')
+
+        mask = np.isfinite(vp)
+        logging.info(f'Number of isfinite values: {np.sum(mask[0, 0, :])} out of {vp.shape}')
+
+        # DEBUG only: store vp to CSV file
+        # logging.info(f'vp.size={vp.shape}')
+        # filename = f'good_vp.csv'
+        # np.savetxt(filename, vp[0, 0, :], delimiter=',')
 
         # Apply dt filter: step through all sensors groups
         for i, sensor_group in enumerate(self.sensors_groups):
@@ -1860,6 +1935,24 @@ class ITSLiveComposite:
         logging.info(f'Find vx annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
+        # filename = f'good_vx.csv'
+        # np.savetxt(filename, vx[0, 0, :], delimiter=',')
+        #
+        # filename = f'good_start_dec_year.csv'
+        # np.savetxt(filename, ITSLiveComposite.START_DECIMAL_YEAR, delimiter=',')
+        #
+        # filename = f'good_stop_dec_year.csv'
+        # np.savetxt(filename, ITSLiveComposite.STOP_DECIMAL_YEAR, delimiter=',')
+        #
+        # filename = f'good_dec_dt.csv'
+        # np.savetxt(filename, ITSLiveComposite.DECIMAL_DT, delimiter=',')
+
+        filename = f'good_mid_date.csv'
+        debug_dates = [str(t.astype('M8[ms]').astype('O')) for t in self.mid_date]
+        with open(filename, 'w') as debug_fh:
+            debug_fh.write('\n'.join(debug_dates))
+
+        # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
         # Transform vx data to make time series continuous in memory: [y, x, t]
         ITSLiveComposite.cubelsqfit2(
             vx,
@@ -1883,6 +1976,10 @@ class ITSLiveComposite:
         logging.info(f'Find vy annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
+        filename = f'good_vy.csv'
+        np.savetxt(filename, vy[0, 0, :], delimiter=',')
+
+        # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
         ITSLiveComposite.cubelsqfit2(
             vy,
             self.vy_error,
@@ -1979,7 +2076,7 @@ class ITSLiveComposite:
         # Create list of sensors groups labels
         sensors_labels = [each.sensors_label for each in self.sensors_groups]
 
-        sensors_labels_attr = [f'layer {index+1}: {sensors_labels[index]}' for index in range(len(sensors_labels))]
+        sensors_labels_attr = [f'Band {index+1}: {sensors_labels[index]}' for index in range(len(sensors_labels))]
         sensors_labels_attr = f'{", ".join(sensors_labels_attr)}'
 
         ds = xr.Dataset(
@@ -2552,7 +2649,7 @@ class ITSLiveComposite:
         ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-                'dtype': np.short
+                'dtype': np.uint32
             })
 
         # Settings for "max_dt" datatypes
@@ -2681,7 +2778,8 @@ class ITSLiveComposite:
                     ITSLiveComposite.MAD_STD_RATIO,
                     mean[global_j, global_i, :],
                     error[global_j, global_i, :],
-                    count[global_j, global_i, :]
+                    count[global_j, global_i, :],
+                    ITSLiveComposite.V_LIMIT,
                 )
 
                 init_time1 += init_runtime1
