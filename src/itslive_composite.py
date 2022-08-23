@@ -1563,7 +1563,7 @@ class ITSLiveComposite:
         # Exclude "faulty" S2 data: filenames containing '23WPN'
         logging.info(f'Excluding S2 data for 23WPN...')
         url_values = cube_ds[DataVars.URL].values
-        sel_indices = [index for index, each in enumerate(url_values) if (not os.path.basename(each).startswith('S2') or (os.path.basename(each).startswith('S2') and not('23WPN' in each)))]
+        sel_indices = [index for index, each in enumerate(url_values) if (not os.path.basename(each).startswith('S2') or (os.path.basename(each).startswith('S2') and not('23WPP' in each)))]
 
         logging.info(f'Leaving {len(sel_indices)} layers...')
         cube_ds = cube_ds.isel(mid_date=sel_indices)
@@ -2642,19 +2642,22 @@ class ITSLiveComposite:
                 'compressor': compressor
             })
 
-        # Settings for "short" datatypes
+        # Settings for "uint32" datatypes
+        # Don't provide _FillValue as it will avoid datatype specification for the
+        # variable (according to xarray support, _FillValue is used for floating point
+        # datatypes only)
         for each in [
             CompDataVars.COUNT,
             CompDataVars.COUNT0
         ]:
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
                 'dtype': np.uint32
             })
 
         # Settings for "max_dt" datatypes
+        # Don't provide _FillValue as it will avoid datatype specification for the
+        # variable
         encoding_settings.setdefault(CompDataVars.MAX_DT, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
                 'dtype': np.short
             })
 
