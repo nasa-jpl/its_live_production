@@ -1989,7 +1989,7 @@ class MosaicsReproject:
 
         return list(zip(x_1.flatten(), y_1.flatten(), z_1.flatten()))
 
-def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, verbose_flag: bool, compute_debug_vars: bool):
+def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, verbose_flag: bool, compute_debug_vars: bool=False):
     """
     Main function of the module to be able to invoke the code from
     another Python module.
