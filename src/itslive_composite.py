@@ -1536,6 +1536,11 @@ class ITSLiveComposite:
     # Original data as stored in [time, y, x] dimension order.
     CONT_TIME_ORDER = [1, 2, 0]
 
+    # Filename token for S2 granules
+    S2_TOKEN = 'S2'
+    # Finename token to exclude S2 data with.
+    S2_EXCLUDE = '23WPP'
+
     def __init__(self, cube_store: str, s3_bucket: str):
         """
         Initialize composites.
@@ -1560,10 +1565,14 @@ class ITSLiveComposite:
         cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
         logging.info(f'Datacube sizes: {cube_ds.sizes}')
 
-        # Exclude "faulty" S2 data: filenames containing '23WPN'
-        logging.info(f'Excluding S2 data for 23WPN...')
+        # Exclude "faulty" S2 data: filenames containing '23WPP'
+        logging.info(f'Excluding S2 data for {ITSLiveComposite.S2_EXCLUDE}...')
         url_values = cube_ds[DataVars.URL].values
-        sel_indices = [index for index, each in enumerate(url_values) if (not os.path.basename(each).startswith('S2') or (os.path.basename(each).startswith('S2') and not('23WPP' in each)))]
+        sel_indices = [
+            index for index, each in enumerate(url_values) if
+            (not os.path.basename(each).startswith(ITSLiveComposite.S2_TOKEN) or
+            (os.path.basename(each).startswith(ITSLiveComposite.S2_TOKEN) and not(ITSLiveComposite.S2_EXCLUDE in each)))
+        ]
 
         logging.info(f'Leaving {len(sel_indices)} layers...')
         cube_ds = cube_ds.isel(mid_date=sel_indices)
