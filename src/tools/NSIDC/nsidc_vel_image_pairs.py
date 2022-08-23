@@ -755,7 +755,7 @@ required_attrs = {
         Mapping.FALSE_NORTHING: 0.0
     },
     32648: {
-        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 106.0,
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 105.0,
         Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
         Mapping.FALSE_EASTING: 500000.0,
         Mapping.FALSE_NORTHING: 0.0
