@@ -983,6 +983,8 @@ class ITSLiveAnnualMosaics:
                     concatenated = xr.concat(data_list, _concat_dim_name, join="outer")
                     data_list = [concatenated]
 
+                gc.collect()
+
             # Take average of all overlapping cells
             avg_overlap = concatenated.mean(_concat_dim_name, skipna=True)
 
@@ -993,6 +995,8 @@ class ITSLiveAnnualMosaics:
 
             # Set values for the output dataset
             ds[each_var].loc[avg_overlap_dims] = avg_overlap
+
+            gc.collect()
 
         logging.info(f'Merged all data.')
 
