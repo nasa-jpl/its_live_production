@@ -816,7 +816,7 @@ class ITSLiveAnnualMosaics:
         logging.info(json.dumps(mosaics_info))
 
         # Set mapping data variable for the target mosaics
-        first_ds = self.set_mapping()
+        first_ds = self.set_mapping(x_cell, y_cell)
 
         # Dictionary of generated mosaics:
         # year -> mosaic file
