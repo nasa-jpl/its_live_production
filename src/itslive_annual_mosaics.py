@@ -316,8 +316,9 @@ class ITSLiveAnnualMosaics:
         if len(self.composites) > 1:
             # Determine if target mosaics need to be placed into S3 bucket
             copy_to_s3 = not self.is_dry_run
+            logging.info(f'Merge mosaics: copy_to_s3={copy_to_s3}')
 
-            # Combine re-projected mosaics per EPSG code into one
+            # Combine re-projected mosaics per EPSG code into the whole region mosaic
             result_files = self.merge_mosaics(result_files, s3_bucket, mosaics_dir, copy_to_s3)
 
         # Otherwise it's only mosaics for one projection and we are done
@@ -951,7 +952,7 @@ class ITSLiveAnnualMosaics:
             # to be able to compute the average - xr.merge() does not support
             # function to apply on merging
             for each_file, each_ds in self.raw_ds.items():
-                logging.info(f'Merging summary data from {each_file}')
+                logging.info(f'Merging {each_var} from {each_file}')
 
                 if each_var not in ds:
                     # Read shape of the data in dataset, and set dimensions
@@ -992,6 +993,8 @@ class ITSLiveAnnualMosaics:
 
             # Set values for the output dataset
             ds[each_var].loc[avg_overlap_dims] = avg_overlap
+
+        logging.info(f'Merged all data.')
 
         # Collect coordinates of polygons union
         geo_polygon = []
