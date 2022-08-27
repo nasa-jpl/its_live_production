@@ -616,7 +616,7 @@ class ITSLiveAnnualMosaics:
         # Re-project mosaics if target projection is other than EPSG being processed
         local_dir = None
         if epsg_code != self.epsg:
-            mosaics_file = output_files[-1]
+            mosaics_file = output_files[ITSLiveAnnualMosaics.SUMMARY_KEY]
 
             # Create sub-directory to store EPSG mosaics to
             local_dir = f'{epsg_code}_reproject_to_{self.epsg}'
