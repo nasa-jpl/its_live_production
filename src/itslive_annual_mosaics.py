@@ -935,6 +935,60 @@ class ITSLiveAnnualMosaics:
             for each_attr in all_attributes.keys():
                 all_attributes[each_attr].append(each_ds.s3.ds.attrs[each_attr])
 
+        # Collect coordinates of polygons union
+        geo_polygon = []
+
+        mosaics_attrs = {}
+        # Set cumulative attributes for the mosaic
+        for key, each_value in all_attributes.items():
+            # Each value is a list of polygon lists collected over
+            # EPSG mosaics, iterate through each list of polygons and unite them
+            value = each_value
+
+            if key in [CompOutputFormat.GEO_POLYGON, CompOutputFormat.PROJ_POLYGON]:
+                # Join polygons:
+                polygons = [geometry.Polygon(each_polygon) for each_polygon in json.loads(value)]
+
+                # Unite polygons
+                united_polygon = unary_union(polygons)
+
+                if isinstance(united_polygon, geometry.MultiPolygon):
+                    # Collect geometry per polygon
+                    value = []
+                    for each_obj in united_polygon.geoms:
+                        # By default coordinates are returned as tuple, convert to "list"
+                        # datatype to be consistent with other data products
+                        value.append([list(each) for each in each_obj.exterior.coords])
+
+                        if key == CompOutputFormat.GEO_POLYGON:
+                            # Collect numeric coordinates to calculate center lon/lat for each polygon
+                            geo_polygon.append(list(each_obj.exterior.coords))
+
+                # This is just a single polygon
+                else:
+                    # By default coordinates are returned as tuple, convert to "list"
+                    # datatype to be consistent with other data products
+                    value.append([list(each) for each in united_polygon.exterior.coords])
+
+                    if key == CompOutputFormat.GEO_POLYGON:
+                        geo_polygon.append(list(united_polygon.exterior.coords))
+
+            mosaics_attrs[key] = json.dumps(value)
+
+        # Set center point's longitude and latitude for each polygon (if more than one) of the mosaic
+        lon = []
+        lat = []
+        for each_polygon in geo_polygon:
+            lon.append(Bounds([each[0] for each in each_polygon]).middle_point())
+            lat.append(Bounds([each[1] for each in each_polygon]).middle_point())
+
+        ds.attrs['latitude']  = json.dumps([f"{each_lat:.2f}" for each_lat in lat])
+        ds.attrs['longitude'] = json.dumps([f"{each_lon:.2f}" for each_lon in lon])
+
+        # Save attributes for the use by annual mosaics
+        for each_attr in ['latitude', 'longitude']:
+            self.attrs[each_attr] = ds.attrs[each_attr]
+
         # Concatenate data for each data variable
         for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
             data_list = []
@@ -999,58 +1053,6 @@ class ITSLiveAnnualMosaics:
             gc.collect()
 
         logging.info(f'Merged all data.')
-
-        # Collect coordinates of polygons union
-        geo_polygon = []
-
-        mosaics_attrs = {}
-        # Set cumulative attributes for the mosaic
-        for key, each_value in all_attributes.items():
-            value = each_value
-
-            if key in [CompOutputFormat.GEO_POLYGON, CompOutputFormat.PROJ_POLYGON]:
-                # Join polygons
-                polygons = [geometry.Polygon(json.loads(each_polygon)) for each_polygon in each_value]
-
-                # Unite polygons
-                united_polygon = unary_union(polygons)
-
-                if isinstance(united_polygon, geometry.MultiPolygon):
-                    # Collect geometry per polygon
-                    value = []
-                    for each_obj in united_polygon.geoms:
-                        # By default coordinates are returned as tuple, convert to "list"
-                        # datatype to be consistent with other data products
-                        value.append([list(each) for each in each_obj.exterior.coords])
-
-                        if each_key == CompOutputFormat.GEO_POLYGON:
-                            # Collect numeric coordinates to calculate center lon/lat for each polygon
-                            geo_polygon.append(list(each_obj.exterior.coords))
-
-                # This is just a single polygon
-                else:
-                    # By default coordinates are returned as tuple, convert to "list"
-                    # datatype to be consistent with other data products
-                    value.append([list(each) for each in united_polygon.exterior.coords])
-
-                    if each_key == CompOutputFormat.GEO_POLYGON:
-                        geo_polygon.append(list(united_polygon.exterior.coords))
-
-            mosaics_attrs[key] = json.dumps(value)
-
-        # Set center point's longitude and latitude for each polygon (if more than one) of the mosaic
-        lon = []
-        lat = []
-        for each_polygon in geo_polygon:
-            lon.append(Bounds([each[0] for each in each_polygon]).middle_point())
-            lat.append(Bounds([each[1] for each in each_polygon]).middle_point())
-
-        ds.attrs['latitude']  = json.dumps([f"{each_lat:.2f}" for each_lat in lat])
-        ds.attrs['longitude'] = json.dumps([f"{each_lon:.2f}" for each_lon in lon])
-
-        # Save attributes for the use by annual mosaics
-        for each_attr in ['latitude', 'longitude']:
-            self.attrs[each_attr] = ds.attrs[each_attr]
 
         if copy_to_s3:
             ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
