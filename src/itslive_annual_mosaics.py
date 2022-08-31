@@ -38,6 +38,7 @@ import math
 import numba as nb
 import numpy  as np
 import os
+from osgeo import osr
 from pathlib import Path
 import pandas as pd
 import s3fs
@@ -62,7 +63,10 @@ from itscube_types import \
     summary_mosaics_filename_nc
 from itslive_composite import CompDataVars, CompOutputFormat
 from reproject_mosaics import main as reproject_main
+from reproject_mosaics import ESRICode, ESRICode_Proj4
+
 from itslive_composite import CENTER_DATE
+
 
 # Set up logging
 logging.basicConfig(
@@ -654,6 +658,15 @@ class ITSLiveAnnualMosaics:
                 # Force garbage collection as it does not always kick in
                 gc.collect()
 
+            # Create corresponding "robust" attributes JSON file for re-projected
+            # mosaic if it does not exist
+            ITSLiveAnnualMosaics.reproject_attributes(
+                epsg_code,
+                mosaics_file,
+                self.epsg,
+                reproject_mosaics_filename
+            )
+
             # Replace output file with re-projected file
             output_files[ITSLiveAnnualMosaics.SUMMARY_KEY] = reproject_mosaics_filename
 
@@ -690,6 +703,64 @@ class ITSLiveAnnualMosaics:
                 gc.collect()
 
         return output_files
+
+    @staticmethod
+    def reproject_attributes(
+        mosaics_epsg,
+        mosaic_filename,
+        target_epsg,
+        reproject_mosaic_filename
+    ):
+        """
+        Re-project "proj_polygon" attribute of original mosaic and save it to
+        new JSON format file that corresponds to re-projected mosaic.
+
+        Inputs:
+        =======
+        mosaics_epsg: Source EPSG of original mosaic.
+        mosaic_filename: Filename of original mosaic.
+        target_epsg: Target EPSG of re-projected mosaic.
+        reproject_mosaic_filename: Filename of re-projected mosaic.
+        """
+        reproject_attrs_filename = ITSLiveAnnualMosaics.filename_nc_to_json(reproject_mosaic_filename)
+
+        if not os.path.exists(reproject_attrs_filename):
+            # Original attribute filename
+            attrs_filename = ITSLiveAnnualMosaics.filename_nc_to_json(mosaic_filename)
+
+            logging.info(f'Re-projecting attributes from {attrs_filename} to {reproject_attrs_filename}')
+
+            # Read original attributes
+            mosaic_attrs = {}
+            with open(attrs_filename, 'r') as fh:
+                mosaic_attrs = json.load(fh)
+
+            # Re-project proj_polygon of original attribute file to target_epsg
+            polygons = mosaic_attrs[CompOutputFormat.PROJ_POLYGON]
+
+            input_projection = osr.SpatialReference()
+            input_projection.ImportFromEPSG(mosaics_epsg)
+
+            output_projection = osr.SpatialReference()
+
+            if target_epsg != ESRICode:
+                output_projection.ImportFromEPSG(target_epsg)
+
+            else:
+                output_projection.ImportFromProj4(ESRICode_Proj4)
+
+            source_to_target_transfer = osr.CoordinateTransformation(input_projection, output_projection)
+
+            # Step through all polygons and transfer coordinates to target projection
+            target_polygons = []
+            for each in polygons:
+                target_polygons.append([list(coord) for coord in source_to_target_transfer.TransformPoints(each)])
+
+            mosaic_attrs[CompOutputFormat.PROJ_POLYGON] = target_polygons
+
+            # Save re-projected attributes to file
+            with open(reproject_attrs_filename, 'w') as fh:
+                json.dump(mosaic_attrs, fh, indent=4)
 
     def set_mapping(self, x_cell, y_cell):
         """
@@ -901,7 +972,7 @@ class ITSLiveAnnualMosaics:
         # Format filename for the mosaics
         mosaics_filename = summary_mosaics_filename_nc(self.grid_size_str, ITSLiveAnnualMosaics.REGION, ITSLiveAnnualMosaics.FILE_VERSION)
 
-        if ITSLiveAnnualMosaics.USE_EXISTING_FILES:
+        if ITSLiveAnnualMosaics.USE_EXISTING_FILES and os.path.exists(mosaics_filename):
             attrs_filename = ITSLiveAnnualMosaics.filename_nc_to_json(mosaics_filename)
 
             if os.path.exists(attrs_filename):
@@ -909,6 +980,9 @@ class ITSLiveAnnualMosaics:
                 logging.info(f'Loading attributes from existing {attrs_filename}...')
                 with open(attrs_filename, 'r') as fh:
                     self.attrs = json.load(fh)
+
+            else:
+                raise RuntimeError(f'Attributes file {attrs_filename} is missing for {mosaics_filename}')
 
             return mosaics_filename
 
@@ -1545,6 +1619,8 @@ class ITSLiveAnnualMosaics:
 
                 if each_var not in ds:
                     # Create data variable in result dataset
+                    # This applies only to 2d variables as 3d variables need to
+                    # be allocated before this loop
                     ds[each_var] = each_ds.s3.ds[each_var].load()
 
                     # Set mapping attribute
