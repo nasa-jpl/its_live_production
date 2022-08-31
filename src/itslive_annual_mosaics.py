@@ -1388,7 +1388,7 @@ class ITSLiveAnnualMosaics:
             del ds[CompDataVars.TIME]
 
 
-        two_dim_chunks_settings = (len(self.y_coords), len(self.x_coords))
+        two_dim_chunks_settings = (ds.y.size, ds.x.size)
 
         compression = {"zlib": True, "complevel": 2, "shuffle": True}
 
@@ -1727,8 +1727,8 @@ class ITSLiveAnnualMosaics:
         # encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'S1', "zlib": True, "complevel": 2, "shuffle": True})
         encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'S1'})
 
-        two_dim_chunks_settings = (len(self.y_coords), len(self.x_coords))
-        three_dim_chunks_settings = (1, len(self.y_coords), len(self.x_coords))
+        two_dim_chunks_settings = (ds.y.size, ds.x.size)
+        three_dim_chunks_settings = (1, ds.y.size, ds.x.size)
 
         compression = {"zlib": True, "complevel": 2, "shuffle": True}
 
