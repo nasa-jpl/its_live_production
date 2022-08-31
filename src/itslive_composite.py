@@ -29,6 +29,9 @@ import zarr
 from itscube import ITSCube
 from itscube_types import Coords, DataVars
 
+# Intercept date used for a weighted linear fit
+CENTER_DATE = datetime.datetime(2019, 7, 2)
+
 class CompDataVars:
     """
     Data variables and their descriptions to write to Zarr or NetCDF output store.
@@ -998,7 +1001,7 @@ def climatology_magnitude(
 
     return v, dv_dt, v_amp, v_amp_err, v_phase, v_se
 
-def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2019, 7, 2)):
+def weighted_linear_fit(t, v, v_err, datetime0=CENTER_DATE):
     """
     Returns the offset, slope, and error for a weighted linear fit to v with an intercept of datetime0.
 
@@ -1007,7 +1010,7 @@ def weighted_linear_fit(t, v, v_err, datetime0=datetime.datetime(2019, 7, 2)):
    - v_err: estimate errors
    - datetime0: model intercept
    """
-    yr = np.array([decimal_year(datetime.datetime(each, 7, 2)) for each in t])
+    yr = np.array([decimal_year(datetime.datetime(each, CENTER_DATE.month, CENTER_DATE.day)) for each in t])
     yr0 = decimal_year(datetime0)
     yr = yr - yr0
 
@@ -2079,7 +2082,7 @@ class ITSLiveComposite:
         }
 
         # Convert years to datetime objects to represent the center of calendar year
-        ITSLiveComposite.YEARS = [datetime.datetime(each, 7, 2) for each in ITSLiveComposite.YEARS]
+        ITSLiveComposite.YEARS = [datetime.datetime(each, CENTER_DATE.month, CENTER_DATE.day) for each in ITSLiveComposite.YEARS]
         logging.info(f"Converted years to datetime objs: {ITSLiveComposite.YEARS}")
 
         # Create list of sensors groups labels
