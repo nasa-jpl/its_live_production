@@ -812,9 +812,14 @@ class MosaicsReproject:
         for each in [Coords.X, Coords.Y]:
             encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: None}
 
-        vars = [DataVars.V, DataVars.VX, DataVars.VY,
-            CompDataVars.VX_ERROR, CompDataVars.VY_ERROR,
-            CompDataVars.V_ERROR]
+        vars = [
+            DataVars.V,
+            DataVars.VX,
+            DataVars.VY,
+            CompDataVars.VX_ERROR,
+            CompDataVars.VY_ERROR,
+            CompDataVars.V_ERROR
+        ]
 
         if MosaicsReproject.COMPUTE_DEBUG_VARS:
             # Handle debug variables, if any, automatically
@@ -824,11 +829,14 @@ class MosaicsReproject:
                 if each in ds:
                     vars.append(each)
 
+        two_dim_chunks_settings = (ds.y.size, ds.x.size)
+
         # Explicitly set dtype for some variables
         for each in vars:
             encoding_settings[each] = {
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                'dtype': np.float32
+                'dtype': np.float32,
+                'chunksizes': two_dim_chunks_settings
             }
             encoding_settings[each].update(compression)
 
@@ -838,7 +846,8 @@ class MosaicsReproject:
         # Set encoding for 'count' data variable
         encoding_settings[CompDataVars.COUNT] = {
             DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-            'dtype': np.uint32
+            'dtype': np.uint32,
+            'chunksizes': two_dim_chunks_settings
         }
         encoding_settings[CompDataVars.COUNT].update(compression)
 
@@ -866,6 +875,9 @@ class MosaicsReproject:
         for each in [Coords.X, Coords.Y, CompDataVars.SENSORS]:
             encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: None}
 
+        two_dim_chunks_settings = (ds.y.size, ds.x.size)
+        three_dim_chunks_settings = (1, ds.y.size, ds.x.size)
+
         vars = [
             CompDataVars.VX_AMP_ERROR,
             CompDataVars.VY_AMP_ERROR,
@@ -890,9 +902,15 @@ class MosaicsReproject:
 
         # Explicitly set dtype for some variables
         for each in vars:
+            _chunks = two_dim_chunks_settings
+
+            if ds[each].ndim == 3:
+                _chunks = three_dim_chunks_settings
+
             encoding_settings[each] = {
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                'dtype': np.float32
+                'dtype': np.float32,
+                'chunksizes': _chunks
             }
             encoding_settings[each].update(compression)
 
@@ -902,7 +920,8 @@ class MosaicsReproject:
         # Set encoding for 'count0' data variable
         encoding_settings[CompDataVars.COUNT0] = {
             DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-            'dtype': np.uint32
+            'dtype': np.uint32,
+            'chunksizes': two_dim_chunks_settings
         }
         encoding_settings[CompDataVars.COUNT0].update(compression)
 
@@ -914,7 +933,8 @@ class MosaicsReproject:
             # This is workaround for missing variable in original mosaics code
             # so can test the code with originally generated small test sets
             encoding_settings.setdefault(CompDataVars.SENSOR_INCLUDE, {}).update({
-                    'dtype': np.short
+                    'dtype': np.short,
+                    'chunksizes': three_dim_chunks_settings
                 })
             encoding_settings[CompDataVars.SENSOR_INCLUDE].update(compression)
 
@@ -924,7 +944,8 @@ class MosaicsReproject:
         # Settings for "max_dt" datatypes
         encoding_settings[CompDataVars.MAX_DT] = {
             DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
-            'dtype': np.short
+            'dtype': np.short,
+            'chunksizes': three_dim_chunks_settings
         }
 
         if DataVars.FILL_VALUE_ATTR in ds[CompDataVars.MAX_DT].attrs:
