@@ -374,8 +374,21 @@ def annual_mosaics_filename_nc(grid_size: str, region: str, year_date, version: 
     """
     Format filename for the annual mosaics of the region:
     ITS_LIVE_velocity_120m_ALA_2013_v02.nc
+
+    Inputs:
+    =======
+    grid_size: Size of the grid cell (assumes the same in X and Y dimentions)
+    region: Region for which mosaic file is created.
+    year_date: Year for which mosaic file is created. Can be a string or a
+               datetime object.
     """
-    return f"{FilenamePrefix.Mosaics}_{grid_size}m_{region}_{year_date.year}_{version}.nc"
+    year_value = year_date
+
+    if not isinstance(year_value, str):
+        # Provided as datetime object, extract year value
+        year_value = year_date.year
+
+    return f"{FilenamePrefix.Mosaics}_{grid_size}m_{region}_{year_value}_{version}.nc"
 
 def summary_mosaics_filename_nc(grid_size: str, region: str, version: str):
     """
