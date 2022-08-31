@@ -1507,6 +1507,8 @@ class ITSLiveAnnualMosaics:
         var_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
         sensor_dims = (len(self.sensor_coords), len(self.y_coords), len(self.x_coords))
 
+        # These data variables need to be pre-allocated as their sensor dimension
+        # is cumulative over all datasets
         ds[CompDataVars.MAX_DT] = xr.DataArray(
             data=np.full(sensor_dims, np.nan),
             coords=var_coords,
@@ -1543,25 +1545,27 @@ class ITSLiveAnnualMosaics:
         # Concatenate data for each data variable
         for each_file, each_ds in self.raw_ds.items():
             logging.info(f'Collecting summary data from {each_file}')
-            for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
-                if each_var not in ds:
-                    logging.info(f'Collecting {each_var} from {each_file}')
-                    if each_ds.s3.ds[each_var].ndim == 3:
-                        # If it has a sensor dimension, then data variable is already in
-                        # dataset and need to specify sensor to avoid an exception
-                        # if number of sensors is different in loaded dataset
-                        ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y, sensor=each_ds.sensor)] = each_ds.s3.ds[each_var].load()
 
-                    else:
-                        # Create data variable in result dataset
-                        ds[each_var] = each_ds.s3.ds[each_var].load()
+            for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
+                logging.info(f'Collecting {each_var} from {each_file}')
+
+                if each_var not in ds:
+                    # Create data variable in result dataset
+                    ds[each_var] = each_ds.s3.ds[each_var].load()
 
                     # Set mapping attribute
                     ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
 
                 else:
+                    _coords = dict(x=each_ds.x, y=each_ds.y)
+                    if each_ds.s3.ds[each_var].ndim == 3:
+                        # If it has a sensor dimension, then data variable is already in
+                        # dataset and need to specify sensor to avoid an exception
+                        # if number of sensors is different in loaded dataset
+                        _coords = dict(x=each_ds.x, y=each_ds.y, sensor=each_ds.sensor)
+
                     # Update data variable in result dataset
-                    ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var].load()
+                    ds[each_var].loc[_coords] = each_ds.s3.ds[each_var].load()
 
             # For debugging only to speed up the runtime
             # index += 1
