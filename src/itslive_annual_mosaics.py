@@ -1344,10 +1344,6 @@ class ITSLiveAnnualMosaics:
             ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
             ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
 
-        else:
-            # Use EPSG in path to the filename to store mosaics to
-            mosaics_filename = ITSLiveAnnualMosaics.epsg_mosaics_path(ds_projection, mosaics_filename)
-
         # Write mosaic to NetCDF format file
         ITSLiveAnnualMosaics.annual_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename, copy_to_s3)
 
@@ -1650,10 +1646,6 @@ class ITSLiveAnnualMosaics:
         if copy_to_s3:
             ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
             ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
-
-        else:
-            # Append local path to the filename to store mosaics to
-            mosaics_filename = ITSLiveAnnualMosaics.epsg_mosaics_path(ds_projection, mosaics_filename)
 
         # Convert dataset to Dask dataset not to run out of memory while writing to the file
         ds = ds.chunk(chunks={'x': ITSLiveAnnualMosaics.CHUNK_SIZE, 'y': ITSLiveAnnualMosaics.CHUNK_SIZE})
