@@ -150,6 +150,8 @@ class CompOutputFormat:
     PROJ_POLYGON = 'proj_polygon'
     GEO_POLYGON = 'geo_polygon'
     SENSORS_LABELS = 'sensors_labels'
+    LATITUDE = 'latitude'
+    LONGITUDE = 'longitude'
 
     # Composites specific attributes
     DATE_CREATED = 'date_created'
@@ -2157,8 +2159,8 @@ class ITSLiveComposite:
             ds.attrs['proj_polygon'] = self.cube_ds.attrs['proj_polygon']
 
         ds.attrs['institution'] = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
-        ds.attrs['latitude']  = self.cube_ds.attrs['latitude']
-        ds.attrs['longitude'] = self.cube_ds.attrs['longitude']
+        ds.attrs[CompOutputFormat.LATITUDE]  = self.cube_ds.attrs[CompOutputFormat.LATITUDE]
+        ds.attrs[CompOutputFormat.LONGITUDE] = self.cube_ds.attrs[CompOutputFormat.LONGITUDE]
         # ds.attrs['proj_polygon'] = self.cube_ds.attrs['proj_polygon']
         ds.attrs['projection'] = self.cube_ds.attrs['projection']
         ds.attrs['s3'] = ITSLiveComposite.S3

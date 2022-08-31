@@ -94,8 +94,6 @@ class MosaicsOutputFormat:
     INSTITUTION = 'institution'
     REGION = 'region'
     YEAR = 'year'
-    LATITUDE = 'latitude'
-    LONGITUDE = 'longitude'
 
     ATTR_VALUES = {
         AUTHOR:      'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)',
@@ -1547,7 +1545,7 @@ class ITSLiveAnnualMosaics:
             logging.info(f'Collecting summary data from {each_file}')
 
             for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
-                logging.info(f'Collecting {each_var} from {each_file}')
+                # logging.info(f'Collecting {each_var} from {each_file}')
 
                 if each_var not in ds:
                     # Create data variable in result dataset
