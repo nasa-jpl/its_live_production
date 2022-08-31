@@ -1545,8 +1545,17 @@ class ITSLiveAnnualMosaics:
             logging.info(f'Collecting summary data from {each_file}')
             for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
                 if each_var not in ds:
-                    # Create data variable in result dataset
-                    ds[each_var] = each_ds.s3.ds[each_var].load()
+                    logging.info(f'Collecting {each_var} from {each_file}')
+                    if each_ds.s3.ds[each_var].ndim == 3:
+                        # If it has a sensor dimension, then data variable is already in
+                        # dataset and need to specify sensor to avoid an exception
+                        # if number of sensors is different in loaded dataset
+                        ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y, sensor=each_ds.sensor)] = each_ds.s3.ds[each_var].load()
+
+                    else:
+                        # Create data variable in result dataset
+                        ds[each_var] = each_ds.s3.ds[each_var].load()
+
                     # Set mapping attribute
                     ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
 
