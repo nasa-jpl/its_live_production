@@ -95,6 +95,10 @@ class MosaicsOutputFormat:
         CubeOutputFormat.URL:          COMPOSITES_URL
     }
 
+    # This is to fix the case when composites attributes were collected using
+    # composites attributes and not their corresponding mosaics attributes names
+    ATTR_REVERT_MAP = {value:key for key, value in ATTR_MAP.items()}
+
     REGION = 'region'
     YEAR = 'year'
 
@@ -1052,18 +1056,18 @@ class ITSLiveAnnualMosaics:
                     for each_attr in self.attrs.keys():
                         key = each_attr
 
-                        if (key not in self.attrs):
+                        if key not in _attrs:
                             # If attribute was collected using its original name
                             # "date_created" instead of mosaic's specific "composite_date_created",
                             # look it up by original name
-                            if key in MosaicsOutputFormat.ATTR_MAP:
+                            if key in MosaicsOutputFormat.ATTR_REVERT_MAP:
                                 # Get name for the mosaic's attribute - some will have different
                                 # name as it appears in composites datasets
-                                key = MosaicsOutputFormat.ATTR_MAP[each_attr]
+                                key = MosaicsOutputFormat.ATTR_REVERT_MAP[each_attr]
 
                             else:
                                 # Should never happen, just in case
-                                raise RuntimeError(f'Not known attribute {key} in {attrs_filename}, one of {MosaicsOutputFormat.ALL_ATTR} is expected')
+                                raise RuntimeError(f'Expected attribute {key} is missing in {attrs_filename}, one of {MosaicsOutputFormat.ALL_ATTR} is expected')
 
                         self.attrs[each_attr].extend(_attrs[key])
 
