@@ -750,7 +750,7 @@ class ITSLiveAnnualMosaics:
             for each in polygons:
                 target_polygons.append([list(coord) for coord in source_to_target_transfer.TransformPoints(each)])
 
-            mosaic_attrs[CompOutputFormat.PROJ_POLYGON] = target_polygons
+            mosaic_attrs[CubeOutputFormat.PROJ_POLYGON] = target_polygons
 
             # Save re-projected attributes to file
             with open(reproject_attrs_filename, 'w') as fh:
