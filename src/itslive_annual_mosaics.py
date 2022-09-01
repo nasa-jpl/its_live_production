@@ -1013,7 +1013,7 @@ class ITSLiveAnnualMosaics:
         ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT]
         ds.attrs[MosaicsOutputFormat.MOSAICS_SOFTWARE_VERSION] = ITSLiveAnnualMosaics.VERSION
         ds.attrs[CubeOutputFormat.PROJECTION] = self.epsg
-        ds.attrs[CubeOutputFormat.TITLE] = ITSLiveAnnualMosaics.STATIC_TITLE
+        ds.attrs[CubeOutputFormat.TITLE] = MosaicsOutputFormat.STATIC_TITLE
         ds.attrs[CubeOutputFormat.DATE_CREATED] = self.date_created
 
         # Create sensors_labels = "Band 1: S1A_S1B; Band 2: S2A_S2B; Band 3: L8_L9";
