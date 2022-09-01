@@ -1105,12 +1105,12 @@ class ITSLiveAnnualMosaics:
         lat = [round(each_lat, 2) for each_lat in lat]
         lon = [round(each_lon, 2) for each_lon in lon]
 
-        ds.attrs[CompOutputFormat.LATITUDE] = json.dumps(lat)
-        ds.attrs[CompOutputFormat.LONGITUDE] = json.dumps(lon)
+        ds.attrs[CubeOutputFormat.LATITUDE] = lat
+        ds.attrs[CubeOutputFormat.LONGITUDE] = lon
 
         # Save attributes for the use by annual mosaics
-        self.attrs[CompOutputFormat.LATITUDE] = lat
-        self.attrs[CompOutputFormat.LONGITUDE] = lon
+        self.attrs[CubeOutputFormat.LATITUDE] = lat
+        self.attrs[CubeOutputFormat.LONGITUDE] = lon
 
         _concat_dim_name  = 'new_dim'
 
@@ -1253,8 +1253,8 @@ class ITSLiveAnnualMosaics:
         ds[DataVars.MAPPING] = self.mapping
 
         # Re-use attributes as set by static mosaics
-        ds.attrs[CompOutputFormat.LATITUDE] = json.dumps(self.attrs[CompOutputFormat.LATITUDE])
-        ds.attrs[CompOutputFormat.LONGITUDE] = json.dumps(self.attrs[CompOutputFormat.LONGITUDE])
+        ds.attrs[CubeOutputFormat.LATITUDE] = json.dumps(self.attrs[CubeOutputFormat.LATITUDE])
+        ds.attrs[CubeOutputFormat.LONGITUDE] = json.dumps(self.attrs[CubeOutputFormat.LONGITUDE])
 
         two_coords = [self.y_coords, self.x_coords]
         two_dims = [Coords.Y, Coords.X]
@@ -1377,8 +1377,8 @@ class ITSLiveAnnualMosaics:
         # Cumulative attributes are already collected by generation of summary mosaic,
         # so longitude and latitude of center points are already computed for the
         # region.
-        ds.attrs[CompOutputFormat.LATITUDE] = json.dumps(self.attrs[CompOutputFormat.LATITUDE])
-        ds.attrs[CompOutputFormat.LONGITUDE] = json.dumps(self.attrs[CompOutputFormat.LONGITUDE])
+        ds.attrs[CubeOutputFormat.LATITUDE] = json.dumps(self.attrs[CubeOutputFormat.LATITUDE])
+        ds.attrs[CubeOutputFormat.LONGITUDE] = json.dumps(self.attrs[CubeOutputFormat.LONGITUDE])
 
         ds[DataVars.MAPPING] = self.mapping
 
@@ -1684,12 +1684,12 @@ class ITSLiveAnnualMosaics:
         lat = [round(each_lat, 2) for each_lat in lat]
         lon = [round(each_lon, 2) for each_lon in lon]
 
-        ds.attrs[CompOutputFormat.LATITUDE] = json.dumps(lat)
-        ds.attrs[CompOutputFormat.LONGITUDE] = json.dumps(lon)
+        ds.attrs[CubeOutputFormat.LATITUDE] = json.dumps(lat)
+        ds.attrs[CubeOutputFormat.LONGITUDE] = json.dumps(lon)
 
         # Save attributes for the use by annual mosaics
-        self.attrs[CompOutputFormat.LATITUDE] = lat
-        self.attrs[CompOutputFormat.LONGITUDE] = lon
+        self.attrs[CubeOutputFormat.LATITUDE] = lat
+        self.attrs[CubeOutputFormat.LONGITUDE] = lon
 
         if copy_to_s3:
             ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
