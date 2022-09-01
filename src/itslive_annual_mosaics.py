@@ -730,7 +730,7 @@ class ITSLiveAnnualMosaics:
                 mosaic_attrs = json.load(fh)
 
             # Re-project proj_polygon of original attribute file to target_epsg
-            polygons = mosaic_attrs[CompOutputFormat.PROJ_POLYGON]
+            polygons = mosaic_attrs[CubeOutputFormat.PROJ_POLYGON]
 
             input_projection = osr.SpatialReference()
             input_projection.ImportFromEPSG(mosaics_epsg)
