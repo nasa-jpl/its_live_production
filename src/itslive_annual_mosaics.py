@@ -1086,7 +1086,7 @@ class ITSLiveAnnualMosaics:
 
             if key in [CubeOutputFormat.GEO_POLYGON, CubeOutputFormat.PROJ_POLYGON]:
                 # Collect polygons:
-                polygons = [geometry.Polygon(json.loads(each_polygon)) for each_polygon in each_value]
+                polygons = [geometry.Polygon(each_polygon) for each_polygon in each_value]
                 # for each_mosaics_value in value:
                 #     polygons.extend([geometry.Polygon(each_polygon) for each_polygon in each_mosaics_value])
 
