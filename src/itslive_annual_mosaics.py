@@ -1010,7 +1010,7 @@ class ITSLiveAnnualMosaics:
             }
         )
 
-        ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT]
+        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT]
         ds.attrs[MosaicsOutputFormat.MOSAICS_SOFTWARE_VERSION] = ITSLiveAnnualMosaics.VERSION
         ds.attrs[CubeOutputFormat.PROJECTION] = self.epsg
         ds.attrs[CubeOutputFormat.TITLE] = MosaicsOutputFormat.STATIC_TITLE
@@ -1225,7 +1225,7 @@ class ITSLiveAnnualMosaics:
             }
         )
 
-        ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT]
+        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT]
         ds.attrs[MosaicsOutputFormat.MOSAICS_SOFTWARE_VERSION] = ITSLiveAnnualMosaics.VERSION
         ds.attrs[CubeOutputFormat.PROJECTION] = self.epsg
         ds.attrs[CubeOutputFormat.TITLE] = MosaicsOutputFormat.ANNUAL_TITLE
@@ -1341,9 +1341,9 @@ class ITSLiveAnnualMosaics:
                 )
             },
             attrs = {
-                MosaicsOutputFormat.AUTHOR: MosaicsOutputFormat.ATTR_VALUES[MosaicsOutputFormat.AUTHOR],
+                CubeOutputFormat.AUTHOR: CubeOutputFormat.Values.AUTHOR,
                 CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE],
-                MosaicsOutputFormat.INSTITUTION: MosaicsOutputFormat.ATTR_VALUES[MosaicsOutputFormat.INSTITUTION],
+                CubeOutputFormat.INSTITUTION: CubeOutputFormat.Values.INSTITUTION,
                 MosaicsOutputFormat.REGION: ITSLiveAnnualMosaics.REGION,
                 MosaicsOutputFormat.YEAR: year_date.strftime('%d-%b-%Y')
             }
@@ -1517,14 +1517,14 @@ class ITSLiveAnnualMosaics:
                 )
             },
             attrs = {
-                MosaicsOutputFormat.AUTHOR: MosaicsOutputFormat.ATTR_VALUES[MosaicsOutputFormat.AUTHOR],
+                CubeOutputFormat.AUTHOR: CubeOutputFormat.Values.AUTHOR,
                 CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE],
-                MosaicsOutputFormat.INSTITUTION: MosaicsOutputFormat.ATTR_VALUES[MosaicsOutputFormat.INSTITUTION],
+                CubeOutputFormat.INSTITUTION: CubeOutputFormat.Values.INSTITUTION,
                 MosaicsOutputFormat.REGION: ITSLiveAnnualMosaics.REGION
             }
         )
 
-        ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CompOutputFormat.GDAL_AREA_OR_POINT]
+        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT]
         ds.attrs[MosaicsOutputFormat.MOSAICS_SOFTWARE_VERSION] = ITSLiveAnnualMosaics.VERSION
         ds.attrs[CubeOutputFormat.PROJECTION] = ds_projection
         ds.attrs[CubeOutputFormat.TITLE] = MosaicsOutputFormat.STATIC_TITLE
