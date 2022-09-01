@@ -26,7 +26,7 @@ import xarray as xr
 import zarr
 
 # Local imports
-from itscube import ITSCube
+from itscube import ITSCube, CubeOutputFormat
 from itscube_types import Coords, DataVars
 
 # Intercept date used for a weighted linear fit
@@ -138,26 +138,18 @@ class CompOutputFormat:
     """
     Class to represent attributes for the output format of the data.
     """
-    GDAL_AREA_OR_POINT = 'GDAL_AREA_OR_POINT'
     COMPOSITES_SOFTWARE_VERSION = 'composites_software_version'
     DATACUBE_AUTORIFT_PARAMETER_FILE = 'datacube_autoRIFT_parameter_file'
-    DATACUBE_SOFTWARE_VERSION = 'datacube_software_version'
-    DATECUBE_CREATED = 'datecube_created'
-    DATECUBE_S3 = 'datecube_s3'
-    DATECUBE_UPDATED = 'datecube_updated'
-    DATECUBE_URL = 'datecube_url'
-    PROJECTION = 'projection'
-    PROJ_POLYGON = 'proj_polygon'
-    GEO_POLYGON = 'geo_polygon'
     SENSORS_LABELS = 'sensors_labels'
-    LATITUDE = 'latitude'
-    LONGITUDE = 'longitude'
 
-    # Composites specific attributes
-    DATE_CREATED = 'date_created'
-    DATE_UPDATED = 'date_updated'
-    S3 = 's3'
-    URL = 'url'
+    # TODO: Fix typo in "datecube": should be "datacube"
+    DATACUBE_CREATED = 'datecube_created'
+    DATACUBE_UPDATED = 'datecube_updated'
+    DATACUBE_S3 = 'datecube_s3'
+    DATACUBE_URL = 'datecube_url'
+
+    class Values:
+        TITLE = 'ITS_LIVE annual composites of image pair velocities'
 
 # Set up logging
 logging.basicConfig(
@@ -2131,42 +2123,40 @@ class ITSLiveComposite:
                 )
             },
             attrs = {
-                'author': 'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)'
+                CubeOutputFormat.AUTHOR: CubeOutputFormat.Values.AUTHOR
             }
         )
 
-        ds.attrs['composites_software_version'] = ITSLiveComposite.VERSION
-        ds.attrs['date_created'] = self.date_created
-        ds.attrs['date_updated'] = self.date_updated
+        ds.attrs[CubeOutputFormat.COMPOSITES_SOFTWARE_VERSION] = ITSLiveComposite.VERSION
+        ds.attrs[CubeOutputFormat.DATE_CREATED] = self.date_created
+        ds.attrs[CubeOutputFormat.DATE_UPDATED] = self.date_updated
 
         # To support old format datacubes for testing
         # TODO: remove once done testing with old cubes (to compare to Matlab)
-        if 's3' in self.cube_ds.attrs:
-            ds.attrs['datecube_s3'] = self.cube_ds.attrs['s3']
-            ds.attrs['datecube_url'] = self.cube_ds.attrs['url']
+        if CubeOutputFormat.S3 in self.cube_ds.attrs:
+            ds.attrs[CompOutputFormat.DATACUBE_S3] = self.cube_ds.attrs[CubeOutputFormat.S3]
+            ds.attrs[CompOutputFormat.DATACUBE_URL] = self.cube_ds.attrs[CubeOutputFormat.URL]
 
-        ds.attrs['datecube_created'] = self.cube_ds.attrs['date_created']
-        ds.attrs['datecube_updated'] = self.cube_ds.attrs['date_updated']
-        ds.attrs['datacube_software_version'] = self.cube_ds.attrs['datacube_software_version']
-        ds.attrs['datacube_autoRIFT_parameter_file'] = self.cube_ds.attrs['autoRIFT_parameter_file']
+        ds.attrs[CompOutputFormat.DATACUBE_CREATED] = self.cube_ds.attrs[CubeOutputFormat.DATE_CREATED]
+        ds.attrs[CompOutputFormat.DATACUBE_UPDATED] = self.cube_ds.attrs[CubeOutputFormat.DATE_UPDATED]
+        ds.attrs[CubeOutputFormat.DATACUBE_SOFTWARE_VERSION] = self.cube_ds.attrs[CubeOutputFormat.DATACUBE_SOFTWARE_VERSION]
+        ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE] = self.cube_ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE]
 
-        ds.attrs['GDAL_AREA_OR_POINT'] = 'Area'
+        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = CubeOutputFormat.Values.Area
 
         # To support old format datacubes for testing
         # TODO: remove once done testing with old cubes (to compare to Matlab)
-        if 'geo_polygon' in self.cube_ds.attrs:
-            ds.attrs['geo_polygon']  = self.cube_ds.attrs['geo_polygon']
-            ds.attrs['proj_polygon'] = self.cube_ds.attrs['proj_polygon']
+        if CubeOutputFormat.GEO_POLYGON in self.cube_ds.attrs:
+            ds.attrs[CubeOutputFormat.GEO_POLYGON]  = self.cube_ds.attrs[CubeOutputFormat.GEO_POLYGON]
+            ds.attrs[CubeOutputFormat.PROJ_POLYGON] = self.cube_ds.attrs[CubeOutputFormat.PROJ_POLYGON]
 
-        ds.attrs['institution'] = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
-        ds.attrs[CompOutputFormat.LATITUDE]  = self.cube_ds.attrs[CompOutputFormat.LATITUDE]
-        ds.attrs[CompOutputFormat.LONGITUDE] = self.cube_ds.attrs[CompOutputFormat.LONGITUDE]
-        # ds.attrs['proj_polygon'] = self.cube_ds.attrs['proj_polygon']
-        ds.attrs['projection'] = self.cube_ds.attrs['projection']
-        ds.attrs['s3'] = ITSLiveComposite.S3
-        ds.attrs['url'] = ITSLiveComposite.URL
-        ds.attrs['institution'] = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
-        ds.attrs['title'] = 'ITS_LIVE annual composites of image_pair velocities'
+        ds.attrs[CubeOutputFormat.INSTITUTION] = CubeOutputFormat.Values.INSTITUTION
+        ds.attrs[CubeOutputFormat.LATITUDE]  = self.cube_ds.attrs[CubeOutputFormat.LATITUDE]
+        ds.attrs[CubeOutputFormat.LONGITUDE] = self.cube_ds.attrs[CubeOutputFormat.LONGITUDE]
+        ds.attrs[CubeOutputFormat.PROJECTION] = self.cube_ds.attrs[CubeOutputFormat.PROJECTION]
+        ds.attrs[CubeOutputFormat.S3] = ITSLiveComposite.S3
+        ds.attrs[CubeOutputFormat.URL] = ITSLiveComposite.URL
+        ds.attrs[CubeOutputFormat.TITLE] = CubeOutputFormat.Values.TITLE
 
         # Add data as variables
         ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
