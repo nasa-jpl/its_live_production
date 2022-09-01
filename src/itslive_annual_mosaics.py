@@ -1050,7 +1050,22 @@ class ITSLiveAnnualMosaics:
 
                     # Collect attributes
                     for each_attr in self.attrs.keys():
-                        self.attrs[each_attr].extend(_attrs[each_attr])
+                        key = each_attr
+
+                        if (key not in self.attrs):
+                            # If attribute was collected using its original name
+                            # "date_created" instead of mosaic's specific "composite_date_created",
+                            # look it up by original name
+                            if key in MosaicsOutputFormat.ATTR_MAP:
+                                # Get name for the mosaic's attribute - some will have different
+                                # name as it appears in composites datasets
+                                key = MosaicsOutputFormat.ATTR_MAP[each_attr]
+
+                            else:
+                                # Should never happen, just in case
+                                raise RuntimeError(f'Not known attribute {key} in {attrs_filename}, one of {MosaicsOutputFormat.ALL_ATTR} is expected')
+
+                        self.attrs[each_attr].extend(_attrs[key])
 
             else:
                 raise RuntimeError(f'Missing {attrs_filename} file for {each_file}')
@@ -1652,7 +1667,13 @@ class ITSLiveAnnualMosaics:
                         lat.append(Bounds([each[1] for each in each_polygon]).middle_point())
 
             # Save to be used by annual mosaics
-            self.attrs[each_key] = value
+            self.attrs[key] = value
+
+        for each_key in MosaicsOutputFormat.ATTR_MAP.keys():
+            # The key value has changed when stored as "mosaic" attributes,
+            # delete original keys
+            if each_key in self.attrs:
+                del self.attrs[each_key]
 
         # Set center point's longitude and latitude for each polygon (if more than one) of the mosaic
         # Reset to 2 digits of precision
