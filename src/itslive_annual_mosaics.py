@@ -161,7 +161,7 @@ class ITSLiveAnnualMosaics:
 
     # Chunk size to use for writing to NetCDF file
     # (otherwise running out of memory if attempting to write the whole dataset to the file)
-    CHUNK_SIZE = 5000
+    CHUNK_SIZE = 1500
 
     REGION = None
 
@@ -1437,15 +1437,17 @@ class ITSLiveAnnualMosaics:
         if copy_to_s3:
             target_file = os.path.join(s3_bucket, bucket_dir, filename)
 
-        logging.info(f'Writing summary mosaics to {target_file}')
+        logging.info(f'Writing annual mosaics to {target_file}')
 
         if CompDataVars.TIME in ds:
             # "time" coordinate can propagate into dataset when assigning
             # xr.DataArray values from composites, which have "time" dimension
             del ds[CompDataVars.TIME]
 
-
-        two_dim_chunks_settings = (ds.y.size, ds.x.size)
+        two_dim_chunks_settings = (
+            min(ds.y.size, ITSLiveAnnualMosaics.CHUNK_SIZE),
+            min(ds.x.size, ITSLiveAnnualMosaics.CHUNK_SIZE)
+        )
 
         compression = {"zlib": True, "complevel": 2, "shuffle": True}
 
@@ -1767,8 +1769,11 @@ class ITSLiveAnnualMosaics:
         # encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'S1', "zlib": True, "complevel": 2, "shuffle": True})
         encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'S1'})
 
-        two_dim_chunks_settings = (ds.y.size, ds.x.size)
-        three_dim_chunks_settings = (1, ds.y.size, ds.x.size)
+        x_chunk = min(ITSLiveAnnualMosaics.CHUNK_SIZE, ds.x.size)
+        y_chunk = min(ITSLiveAnnualMosaics.CHUNK_SIZE, ds.y.size)
+
+        two_dim_chunks_settings = (y_chunk, x_chunk)
+        three_dim_chunks_settings = (1, y_chunk, x_chunk)
 
         compression = {"zlib": True, "complevel": 2, "shuffle": True}
 
