@@ -940,7 +940,7 @@ class ITSLiveAnnualMosaics:
                     ds_from_nc.x.values,
                     ds_from_nc.y.values,
                     None,
-                    ds_from_nc.sensor.values.tolist()
+                    None
                 )
 
             output_files[each_year] = self.merge_annual_mosaics(first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3)
