@@ -53,7 +53,7 @@ class CompDataVars:
     V_PHASE = 'v_phase'
     COUNT = 'count'
     MAX_DT = 'dt_max'
-    OUTLIER_FRAC = 'outlier_frac'
+    OUTLIER_FRAC = 'outlier_percent'
     SENSOR_INCLUDE = 'sensor_flag'
     VX0 = 'vx0'
     VY0 = 'vy0'
@@ -87,7 +87,7 @@ class CompDataVars:
         COUNT: 'count',
         MAX_DT: 'dt_maximum',
         SENSOR_INCLUDE: 'sensor_flag',
-        OUTLIER_FRAC: 'outlier_fraction',
+        OUTLIER_FRAC: 'outlier_percent',
         VX0: 'climatological_x_velocity',
         VY0: 'climatological_y_velocity',
         V0: 'climatological_velocity',
@@ -120,7 +120,7 @@ class CompDataVars:
         COUNT:          'number of image pairs used in error weighted least squares fit',
         MAX_DT:         'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
         SENSOR_INCLUDE: 'flag = 1 if sensor group (see sensor variable) is included, flag = 0 if sensor group is excluded',
-        OUTLIER_FRAC:   'fraction of data identified as outliers and excluded from error weighted least squares fit',
+        OUTLIER_FRAC:   'percentage of data identified as outliers and excluded from error weighted least squares fit',
         SENSORS:        'combinations of unique sensors and missions that are grouped together for date_dt filtering',
         VX0:            'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
         VY0:            'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
@@ -142,11 +142,10 @@ class CompOutputFormat:
     DATACUBE_AUTORIFT_PARAMETER_FILE = 'datacube_autoRIFT_parameter_file'
     SENSORS_LABELS = 'sensors_labels'
 
-    # TODO: Fix typo in "datecube": should be "datacube"
-    DATACUBE_CREATED = 'datecube_created'
-    DATACUBE_UPDATED = 'datecube_updated'
-    DATACUBE_S3 = 'datecube_s3'
-    DATACUBE_URL = 'datecube_url'
+    DATACUBE_CREATED = 'datacube_created'
+    DATACUBE_UPDATED = 'datacube_updated'
+    DATACUBE_S3 = 'datacube_s3'
+    DATACUBE_URL = 'datacube_url'
 
     class Values:
         TITLE = 'ITS_LIVE annual composites of image pair velocities'
@@ -246,7 +245,7 @@ def create_projected_velocity(x_in, y_in, dt):
 
     return x0_in
 
-# @nb.jit(nopython=True)
+@nb.jit(nopython=True)
 def cube_filter_iteration(vp, dt, mad_std_ratio):
     """
     Filter one spacial point by dt (date separation) between the images.
@@ -347,6 +346,7 @@ def cube_filter_iteration(vp, dt, mad_std_ratio):
 
     return (maxdt, invalid)
 
+# numba does not like vp.shape for some reason
 # @nb.jit(nopython=True, parallel=True)
 def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_groups):
     """
@@ -705,25 +705,6 @@ def itslive_lsqfit_annual(
         p, d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs)
         iter_runtime += (timeit.default_timer() - runtime)
 
-        # Original code:
-        # # Divide by dt to avoid penalizing long dt [asg]
-        # d_resid = np.abs(d_obs - d_model)/dyr
-        #
-        # # Robust standard deviation of errors, using median absolute deviation
-        # d_sigma = np.median(d_resid)*mad_std_ratio
-        #
-        # outliers = d_resid > (_mad_thresh * d_sigma)
-        # if np.all(outliers):
-        #     # All are outliers, return from the function
-        #     results_valid = False
-        #     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
-        #
-        # if (outliers.sum() / totalnum) < 0.01 and i != last_iteration:
-        #     # There are less than 1% outliers, skip the rest of iterations
-        #     # if it's not the last iteration
-        #     # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
-        #     break
-
         if i < last_iteration:
             # Divide by dt to avoid penalizing long dt [asg]
             d_resid = np.abs(d_obs - d_model)/dyr
@@ -839,10 +820,7 @@ def annual_magnitude(
     vx_fit_err,
     vy_fit_err,
     vx_fit_count,
-    vy_fit_count,
-    # v_fit, # outputs
-    # v_fit_err,
-    # v_fit_count
+    vy_fit_count
 ):
     """
     Computes and returns the annual mean, error, count, and outlier fraction
@@ -860,6 +838,12 @@ def annual_magnitude(
         self.mean.v[start_y:stop_y, start_x:stop_x, :]
         self.error.v[start_y:stop_y, start_x:stop_x, :]
         self.count.v[start_y:stop_y, start_x:stop_x, :]
+
+    Outputs map to:
+        * v_fit
+        * v_fit_err
+        * v_fit_count
+
     """
     # solve for velocity magnitude
     v_fit = np.sqrt(vx_fit**2 + vy_fit**2) # velocity magnitude
@@ -1098,6 +1082,37 @@ class CompositeVariable:
         self.vx = self.vx.transpose(dims)
         self.vy = self.vy.transpose(dims)
 
+    @staticmethod
+    def to_int_type(data, data_type = np.uint16):
+        """
+        Convert data to requested integer datatype
+
+        Inputs:
+        =======
+        data: Data to convert to new datatype to.
+        data_type: numpy data type to convert data to. Default is np.uint16.
+        """
+        # Replace NaN's with zero's as it will store garbage for NaN's
+        _mask = np.isnan(data)
+        data[_mask] = 0
+
+        # Round to nearest int value
+        int_data = np.rint(data).astype(data_type)
+
+        return int_data
+
+    def to_uint16(self, data_type=np.uint16):
+        """
+        Convert data to uint16 datatype to store to output file.
+
+        Inputs:
+        =======
+        data_type: numpy data type to convert data to
+        """
+        self.v = CompositeVariable.to_int_type(self.v, data_type)
+        self.vx = CompositeVariable.to_int_type(self.vx, data_type)
+        self.vy = CompositeVariable.to_int_type(self.vy, data_type)
+
 # Currently processed datacube chunk
 Chunk = collections.namedtuple("Chunk", ['start_x', 'stop_x', 'x_len', 'start_y', 'stop_y', 'y_len'])
 
@@ -1229,7 +1244,15 @@ class SensorExcludeFilter:
     # Longest dt to use for all sensor groups
     MAX_DT = 64
 
-    # Sensor group to compare others to
+    # Reference sensor group to compare other sensor groups to.
+    # ATTN: this variable serves two purposes and has opposite meaning for two
+    # filters it's used in:
+    # 1. The first exclude filter (implemented by this SensorExcludeFilter class)
+    # is designed to remove L8 and S1 (and possibly other mission) data over
+    # very narrow glaciers where S2 outperforms.
+    # 2. The second filter (second step in LSQ fit applied to all but S2 data)
+    # is designed to exclude S2 data in areas of low contrast with very little
+    # stable terrain (i.e. ice sheet interiors)
     REF_SENSOR = MissionSensor.SENTINEL2
 
     # Multiplier of standard error to use in comparison
@@ -1257,6 +1280,12 @@ class SensorExcludeFilter:
         self.binedges = None
         self.groups = sensors_groups
 
+        # Flag if there should be second LSQ fit based on all data except for S2
+        # (this is done to exclude trouble S2 data from composites:
+        # if (amp_all) > (S1+L8_amp) * 2 then use lsqfit_annual output from S1+L8
+        # and add S2 to the excluded sensors mask
+        self.excludeS2FromLSQ = False
+
         # Map each sensor to its mission group
         # Use homogeneous type as keys (numba allows for key values of the same type only)
         self.sensors_str = np.array([MissionSensor.GROUPS_MISSIONS[str(x)] for x in sensors])
@@ -1265,6 +1294,10 @@ class SensorExcludeFilter:
         if SensorExcludeFilter.REF_SENSOR in sensors_groups:
             logging.info(f'Reference sensor {SensorExcludeFilter.REF_SENSOR.mission} is present')
             self.apply = True
+
+            # Check if there is other than S2 data
+            if len(sensors_groups) > 1:
+                self.excludeS2FromLSQ = True
 
             # mask = np.zeros((len(sensors)), dtype=np.bool_)
 
@@ -1417,40 +1450,6 @@ class SensorExcludeFilter:
         if refsensor not in bindicts:
             return sensors_to_exclude
 
-        # if plot:
-        #     # Not the best practice, but done for debugging only, so it's OK
-        #     from matplotlib import pyplot as plt
-        #
-        #     # Plotting is for debugging purposes only
-        #     # bin centers as datetime64's
-        #     bincenters = self.binedges[:-1] + ((self.binedges[1:] - self.binedges[:-1]) / 2.0)
-        #
-        #     bin_colors = {'S1': 'r', 'S2': 'b', 'L89': 'g'}
-        #     plt.figure(figsize=(7, 7))
-        #     for sen in bindicts.keys():
-        #         plt.plot(bincenters, bindicts[sen]['vbin'], f'o{bin_colors[sen]}-', label=sen)
-        #     plt.legend()
-        #     plt.ion()
-        #     plt.show()
-
-        #
-        #     # check if Setinel-2 mean is different from Landsat-8
-        #     # calculate mean (m) and standard error (s)
-        #     m = fill(NaN, numsg)
-        #     s = fill(NaN, numsg)
-        #     for sg = 1:numsg
-        #         covalid = .~isnan.(vbin[id_refsensor,:]) .& .~isnan.(vbin[sg,:])
-        #         if sum(covalid) > 3
-        #             delta =   vbin[sg,covalid] - vbin[id_refsensor,covalid];
-        #             m[sg,1] = mean(delta)
-        #             s[sg,1] = std(delta)/sqrt((sum(covalid)-1))
-        #         end
-        #     end
-        #
-        #     # check if the mean difference + se < zero,
-        #     # if < zero then id_refsensor has a sginificanlty faster mean
-        #     disagree = (m .+ (s.*sescale)) .< 0
-
         stats = {sen: {} for sen in sensorgroups}
 
         for sen in sensorgroups:
@@ -1476,19 +1475,17 @@ class ITSLiveComposite:
     VARS = [
         DataVars.VX,
         DataVars.VY,
-        'vx_error',
-        'vy_error',
+        CompDataVars.VX_ERROR,
+        CompDataVars.VY_ERROR,
         DataVars.ImgPairInfo.DATE_DT,
         Coords.MID_DATE,
         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
         DataVars.FLAG_STABLE_SHIFT,
         DataVars.ImgPairInfo.SATELLITE_IMG1,
-        DataVars.ImgPairInfo.MISSION_IMG1,
-        DataVars.URL
+        DataVars.ImgPairInfo.MISSION_IMG1
+        # DataVars.URL
     ]
-    # % maltab can't read in 'mission_img1' but this needs to be implemented in python verson
-
     # S3 store location for the Zarr composite
     S3 = ''
     # URL location of the Zarr composite
@@ -1533,10 +1530,9 @@ class ITSLiveComposite:
     # Original data as stored in [time, y, x] dimension order.
     CONT_TIME_ORDER = [1, 2, 0]
 
-    # Filename token for S2 granules
-    S2_TOKEN = 'S2'
-    # Finename token to exclude S2 data with.
-    S2_EXCLUDE = '23WPP'
+    # Scale factor for amplitude comparison b/w LSQ fit using all data and
+    # LSQ fit excluding S2 data
+    LSQ_AMP_SCALE = 2
 
     def __init__(self, cube_store: str, s3_bucket: str):
         """
@@ -1562,19 +1558,6 @@ class ITSLiveComposite:
         cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
         logging.info(f'Datacube sizes: {cube_ds.sizes}')
 
-        # Exclude "faulty" S2 data: filenames containing '23WPP'
-        logging.info(f'Excluding S2 data for {ITSLiveComposite.S2_EXCLUDE}...')
-        url_values = cube_ds[DataVars.URL].values
-        sel_indices = [
-            index for index, each in enumerate(url_values) if
-            (not os.path.basename(each).startswith(ITSLiveComposite.S2_TOKEN) or
-            (os.path.basename(each).startswith(ITSLiveComposite.S2_TOKEN) and not(ITSLiveComposite.S2_EXCLUDE in each)))
-        ]
-
-        logging.info(f'Leaving {len(sel_indices)} layers...')
-        cube_ds = cube_ds.isel(mid_date=sel_indices)
-        logging.info(f'Datacube sizes after S2 exclusion: {cube_ds.sizes}')
-
         self.data = cube_ds[[DataVars.VX, DataVars.VY]]
 
         # Add systematic error based on level of co-registration
@@ -1598,7 +1581,8 @@ class ITSLiveComposite:
         ITSLiveComposite.DECIMAL_DT = ITSLiveComposite.STOP_DECIMAL_YEAR - ITSLiveComposite.START_DECIMAL_YEAR
 
         # logging.info('DEBUG: Reading date values from Matlab files')
-        # Read Matlab values instead of generating them internally
+        # Read Matlab values instead of generating them internally: proves that slight
+        # variation in date can cause deviation in Matlab vs. Python results
         # with open('/Users/mliukis/Documents/ITS_LIVE/source/github-mliukis/itslive/src/cubesForAlex/start_dates.txt','r') as fh:
         #     ITSLiveComposite.START_DECIMAL_YEAR = np.array([float(each) for each in fh.readlines()[0].rstrip().split(' ')])
         #
@@ -1641,13 +1625,11 @@ class ITSLiveComposite:
         y_len = self.cube_sizes[Coords.Y]
 
         # Allocate memory for composite outputs
-        dims = (y_len, x_len, ITSLiveComposite.YEARS_LEN)
+        years_dims = (y_len, x_len, ITSLiveComposite.YEARS_LEN)
 
-        self.error = CompositeVariable(dims, 'error')
-        self.count = CompositeVariable(dims, 'count')
-        # WAS: self.amplitude = CompositeVariable(dims, 'amplitude')
-        # WAS: self.phase = CompositeVariable(dims, 'phase')
-        self.mean = CompositeVariable(dims, 'mean')
+        self.error = CompositeVariable(years_dims, 'error')
+        self.count = CompositeVariable(years_dims, 'count')
+        self.mean = CompositeVariable(years_dims, 'mean')
 
         dims = (y_len, x_len)
         self.outlier_fraction = np.full(dims, np.nan)
@@ -1688,10 +1670,9 @@ class ITSLiveComposite:
                 self.sensors_groups.append(MissionSensor.GROUPS[each])
                 collected_sensors.extend(self.sensors_groups[-1].sensors)
 
-        dims = (y_len, x_len, len(self.sensors_groups))
-        self.max_dt = np.full(dims, np.nan)
-        # np.bool_ - to make numba happy
-        self.sensor_include = np.ones(dims)
+        sensor_dims = (y_len, x_len, len(self.sensors_groups))
+        self.max_dt = np.full(sensor_dims, np.nan)
+        self.sensor_include = np.ones(sensor_dims)
 
         # Date when composites were created
         self.date_created = datetime.datetime.now().strftime('%d-%b-%Y %H:%M:%S')
@@ -1704,6 +1685,21 @@ class ITSLiveComposite:
             self.sensors,
             self.sensors_groups
         )
+
+        if self.sensor_filter.excludeS2FromLSQ:
+            # Need a 2 step LSQ fit: including S2 data and excluding S2 data,
+            # allocate memory to store results of second LSQ fit
+            self.excludeS2_error = CompositeVariable(years_dims, 'error')
+            self.excludeS2_count = CompositeVariable(years_dims, 'count')
+            self.excludeS2_mean = CompositeVariable(years_dims, 'mean')
+
+            self.excludeS2_count_image_pairs = CompositeVariable(dims, 'count_image_pairs')
+            self.excludeS2_amplitude = CompositeVariable(dims, 'amplitude')
+            self.excludeS2_sigma = CompositeVariable(dims, 'sigma')
+            self.excludeS2_phase = CompositeVariable(dims, 'phase')
+            self.excludeS2_offset = CompositeVariable(dims, 'offset')
+            self.excludeS2_slope = CompositeVariable(dims, 'slope')
+            self.excludeS2_std_error = CompositeVariable(dims, 'std_error')
 
         # TODO: take care of self.date_updated when support for composites updates
         # is implemented
@@ -1725,11 +1721,7 @@ class ITSLiveComposite:
         # x_start = 118  # good point
         # x_start = 265  # bad point
 
-        # GRE huge v0 values
-        # x_start = 512
-        # ======================
-
-        x_num_to_process = self.cube_sizes[Coords.X] - x_start
+        # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
         # ======================
         # x_num_to_process = 1
@@ -1747,13 +1739,10 @@ class ITSLiveComposite:
             # y_start = 428  # good point
             # y_start = 432  # bad point
 
-            # GRE huge v0 values
-            # y_start = 32
-
-            y_num_to_process = self.cube_sizes[Coords.Y] - y_start
+            # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # For debugging only
             # ======================
-            # y_num_to_process = 1
+            # y_num_to_process = 10
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -1771,7 +1760,6 @@ class ITSLiveComposite:
         self.to_zarr(output_store, s3_bucket)
 
     @staticmethod
-    # @nb.jit(nopython=True, parallel=True)
     def project_v_to_median_flow(ds_vx, ds_vy, ds_date_dt, ds_sensors_str, exclude_sensors):
         """
         Project valid velocity values to median flow unit vector.
@@ -1790,8 +1778,6 @@ class ITSLiveComposite:
         y_len = dims[0]
         x_len = dims[1]
 
-        # for j_index in nb.prange(y_len):
-        #     for i_index in nb.prange(x_len):
         for j_index in range(0, y_len):
             for i_index in range(0, x_len):
                 # Exclude all identified invalid sensor groups per [y, x] point
@@ -1876,9 +1862,6 @@ class ITSLiveComposite:
         )
         logging.info(f'Done with velocity projection to median flow unit vector (took {timeit.default_timer() - start_time} seconds)')
 
-        mask = np.isfinite(vp)
-        logging.info(f'Number of isfinite values: {np.sum(mask[0, 0, :])} out of {vp.shape}')
-
         # DEBUG only: store vp to CSV file
         # logging.info(f'vp.size={vp.shape}')
         # filename = f'good_vp.csv'
@@ -1917,46 +1900,11 @@ class ITSLiveComposite:
         vx[invalid] = np.nan
         vy[invalid] = np.nan
 
-        # plot = True
-        # if plot:
-        #     # Not the best practice, but done for debugging only, so leave it
-        #     from matplotlib import pyplot as plt
-        #
-        #     vp[invalid] = np.nan
-        #
-        #     # Plotting is for debugging purposes only
-        #     plt.figure(figsize=(7, 7))
-        #     plt.plot(self.mid_date, np.hypot(vx[0, 0, :], vy[0, 0, :]), 'xg', label='hypot(vx, vy)')
-        #     plt.plot(self.mid_date, vp[0, 0, :], 'xr', label='vp')
-        #     plt.legend()
-        #     plt.ion()
-        #     plt.show()
-
-        invalid = np.nansum(invalid, axis=2)
-        invalid = np.divide(invalid, np.sum(np.isnan(vx), 2) + invalid)
-
         logging.info(f'Finished filtering with invalid mask ({timeit.default_timer() - start_time} seconds)')
 
         # %% Least-squares fits to detemine amplitude, phase and annual means
         logging.info(f'Find vx annual means using LSQ fit... ')
         start_time = timeit.default_timer()
-
-        # filename = f'good_vx.csv'
-        # np.savetxt(filename, vx[0, 0, :], delimiter=',')
-        #
-        # filename = f'good_start_dec_year.csv'
-        # np.savetxt(filename, ITSLiveComposite.START_DECIMAL_YEAR, delimiter=',')
-        #
-        # filename = f'good_stop_dec_year.csv'
-        # np.savetxt(filename, ITSLiveComposite.STOP_DECIMAL_YEAR, delimiter=',')
-        #
-        # filename = f'good_dec_dt.csv'
-        # np.savetxt(filename, ITSLiveComposite.DECIMAL_DT, delimiter=',')
-
-        filename = f'good_mid_date.csv'
-        debug_dates = [str(t.astype('M8[ms]').astype('O')) for t in self.mid_date]
-        with open(filename, 'w') as debug_fh:
-            debug_fh.write('\n'.join(debug_dates))
 
         # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
         # Transform vx data to make time series continuous in memory: [y, x, t]
@@ -1976,14 +1924,8 @@ class ITSLiveComposite:
         )
         logging.info(f'Finished vx LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
-        # Outlier fraction is based on vx data (count for vx and v are identical to vx's count)
-        self.outlier_fraction[start_y:stop_y, start_x:stop_x] = 1 - (self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x] / count0_vx)
-
         logging.info(f'Find vy annual means using LSQ fit... ')
         start_time = timeit.default_timer()
-
-        filename = f'good_vy.csv'
-        np.savetxt(filename, vy[0, 0, :], delimiter=',')
 
         # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
         ITSLiveComposite.cubelsqfit2(
@@ -2001,21 +1943,6 @@ class ITSLiveComposite:
             self.std_error.vy
         )
         logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
-
-        logging.info(f'Find annual magnitude... ')
-        start_time = timeit.default_timer()
-
-        self.mean.v[start_y:stop_y, start_x:stop_x, :], \
-        self.error.v[start_y:stop_y, start_x:stop_x, :], \
-        self.count.v[start_y:stop_y, start_x:stop_x, :] = annual_magnitude(
-            self.mean.vx[start_y:stop_y, start_x:stop_x, :],
-            self.mean.vy[start_y:stop_y, start_x:stop_x, :],
-            self.error.vx[start_y:stop_y, start_x:stop_x, :],
-            self.error.vy[start_y:stop_y, start_x:stop_x, :],
-            self.count.vx[start_y:stop_y, start_x:stop_x, :],
-            self.count.vy[start_y:stop_y, start_x:stop_x, :],
-        )
-        logging.info(f'Finished annual magnitude (took {timeit.default_timer() - start_time} seconds)')
 
         logging.info(f'Find climatology magnitude...')
         start_time = timeit.default_timer()
@@ -2042,8 +1969,168 @@ class ITSLiveComposite:
         )
         logging.info(f'Finished climatology magnitude (took {timeit.default_timer() - start_time} seconds)')
 
+        if self.sensor_filter.excludeS2FromLSQ:
+            # Need to compare to LSQ fit excluding all S2 data: to see if
+            # S2 contains "faulty" data
+            mission_index = self.sensors_groups.index(SensorExcludeFilter.REF_SENSOR)
+
+            logging.info(f'Excluding "{SensorExcludeFilter.REF_SENSOR.mission}" (index={mission_index}) from vx and vy')
+
+            # Find which layers correspond to the sensor group
+            mask = (self.sensor_filter.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
+
+            # Filter current block's variables
+            vx[:, :, mask] = np.nan
+            vy[:, :, mask] = np.nan
+
+            # %% Least-squares fits to detemine amplitude, phase and annual means
+            logging.info(f'Find vx annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
+            start_time = timeit.default_timer()
+
+            # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
+            # Transform vx data to make time series continuous in memory: [y, x, t]
+            ITSLiveComposite.cubelsqfit2(
+                vx,
+                self.vx_error,
+                self.excludeS2_amplitude.vx,
+                self.excludeS2_phase.vx,
+                self.excludeS2_mean.vx,
+                self.excludeS2_error.vx,
+                self.excludeS2_sigma.vx,
+                self.excludeS2_count.vx,
+                self.excludeS2_count_image_pairs.vx,
+                self.excludeS2_offset.vx,
+                self.excludeS2_slope.vx,
+                self.excludeS2_std_error.vx
+            )
+            logging.info(f'Finished vx LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
+
+            logging.info(f'Find vy annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
+            start_time = timeit.default_timer()
+
+            # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
+            ITSLiveComposite.cubelsqfit2(
+                vy,
+                self.vy_error,
+                self.excludeS2_amplitude.vy,
+                self.excludeS2_phase.vy,
+                self.excludeS2_mean.vy,
+                self.excludeS2_error.vy,
+                self.excludeS2_sigma.vy,
+                self.excludeS2_count.vy,
+                self.excludeS2_count_image_pairs.vy,
+                self.excludeS2_offset.vy,
+                self.excludeS2_slope.vy,
+                self.excludeS2_std_error.vy
+            )
+            logging.info(f'Finished vy LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
+
+            logging.info(f'Find climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data...')
+            start_time = timeit.default_timer()
+
+            self.excludeS2_offset.v[start_y:stop_y, start_x:stop_x], \
+            self.excludeS2_slope.v[start_y:stop_y, start_x:stop_x], \
+            self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x], \
+            self.excludeS2_sigma.v[start_y:stop_y, start_x:stop_x], \
+            self.excludeS2_phase.v[start_y:stop_y, start_x:stop_x], \
+            self.excludeS2_std_error.v[start_y:stop_y, start_x:stop_x] = \
+            climatology_magnitude(
+                self.excludeS2_offset.vx[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_offset.vy[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_slope.vx[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_slope.vy[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_amplitude.vy[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_sigma.vx[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_sigma.vy[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_phase.vx[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_phase.vy[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_std_error.vx[start_y:stop_y, start_x:stop_x],
+                self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x]
+            )
+            logging.info(f'Finished climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
+
+            # Check if there are any values that satisfy:
+            # if (amp_all) > (S1+L8_amp) * 2
+            # then use lsqfit_annual output from S1+L8 and add S2 to the excluded sensors mask
+            amp_mask = (self.amplitude.v[start_y:stop_y, start_x:stop_x] > (self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x] * ITSLiveComposite.LSQ_AMP_SCALE))
+
+            if np.sum(amp_mask) > 0:
+                # Use results from LSQ fit when excluding S2 for the spacial points
+                # where (amp_all) > (S1+L8_amp) * 2
+                logging.info(f'Using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data: {np.sum(amp_mask)} spacial points')
+
+                # Re-compute the mask for valid count
+                count_mask = ~np.isnan(vx)
+                count0_vx = count_mask.sum(axis=2)
+
+                # Set output data to
+                self.amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.amplitude.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.amplitude.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                self.phase.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_phase.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.phase.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_phase.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.phase.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_phase.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                self.mean.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_mean.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.mean.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_mean.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.mean.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_mean.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                self.error.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_error.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.error.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_error.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.error.v[start_y:stop_y, start_x:stop_x] = self.excludeS2_error.v[start_y:stop_y, start_x:stop_x]
+
+                self.sigma.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_sigma.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.sigma.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_sigma.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.sigma.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_sigma.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                self.count.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.count.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.count.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                # Don't really use vx and v components of count_image_pairs, just to be complete:
+                self.count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                self.offset.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.offset.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.offset.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                self.slope.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_slope.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.slope.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_slope.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.slope.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_slope.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                self.std_error.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_std_error.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.std_error.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                self.std_error.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_std_error.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                # Update self.sensor_include[start_y:stop_y, start_x:stop_x, i] to exclude S2 data
+                self.sensor_include[start_y:stop_y, start_x:stop_x, mission_index][amp_mask] = 0
+
+                # Re-set max_dt to NaNs
+                self.max_dt[start_y:stop_y, start_x:stop_x, mission_index][amp_mask] = np.nan
+
+        # Outlier fraction is based on vx data (count for vx and v are identical to vx's count)
+        self.outlier_fraction[start_y:stop_y, start_x:stop_x] = 1 - (self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x] / count0_vx)
+
+        logging.info(f'Find annual magnitude... ')
+        start_time = timeit.default_timer()
+
+        self.mean.v[start_y:stop_y, start_x:stop_x, :], \
+        self.error.v[start_y:stop_y, start_x:stop_x, :], \
+        self.count.v[start_y:stop_y, start_x:stop_x, :] = annual_magnitude(
+            self.mean.vx[start_y:stop_y, start_x:stop_x, :],
+            self.mean.vy[start_y:stop_y, start_x:stop_x, :],
+            self.error.vx[start_y:stop_y, start_x:stop_x, :],
+            self.error.vy[start_y:stop_y, start_x:stop_x, :],
+            self.count.vx[start_y:stop_y, start_x:stop_x, :],
+            self.count.vy[start_y:stop_y, start_x:stop_x, :],
+        )
+        logging.info(f'Finished annual magnitude (took {timeit.default_timer() - start_time} seconds)')
+
         # Nan out invalid values
-        # WAS: invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT) | (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
         invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT)
         self.mean.v[invalid_mask] = np.nan
 
@@ -2127,7 +2214,7 @@ class ITSLiveComposite:
             }
         )
 
-        ds.attrs[CubeOutputFormat.COMPOSITES_SOFTWARE_VERSION] = ITSLiveComposite.VERSION
+        ds.attrs[CompOutputFormat.COMPOSITES_SOFTWARE_VERSION] = ITSLiveComposite.VERSION
         ds.attrs[CubeOutputFormat.DATE_CREATED] = self.date_created
         ds.attrs[CubeOutputFormat.DATE_UPDATED] = self.date_updated
 
@@ -2142,7 +2229,7 @@ class ITSLiveComposite:
         ds.attrs[CubeOutputFormat.DATACUBE_SOFTWARE_VERSION] = self.cube_ds.attrs[CubeOutputFormat.DATACUBE_SOFTWARE_VERSION]
         ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE] = self.cube_ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE]
 
-        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = CubeOutputFormat.Values.Area
+        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = CubeOutputFormat.Values.AREA
 
         # To support old format datacubes for testing
         # TODO: remove once done testing with old cubes (to compare to Matlab)
@@ -2171,6 +2258,18 @@ class ITSLiveComposite:
         self.mean.transpose()
         self.error.transpose()
         self.count.transpose()
+
+        # Convert data to output desired datatype
+        self.error.to_uint16()       # v_error
+        self.amplitude.to_uint16()
+        self.sigma.to_uint16()       # amp. error
+        self.phase.to_uint16()
+        self.std_error.to_uint16()   # v0_error
+
+        # Only these components are used in output, no need to convert the rest
+        # of components
+        self.count.v = CompositeVariable.to_int_type(self.count.v, np.uint32)
+        self.count_image_pairs.vx = CompositeVariable.to_int_type(self.count_image_pairs.vx, np.uint32)
 
         ds[DataVars.V] = xr.DataArray(
             data=self.mean.v,
@@ -2403,6 +2502,7 @@ class ITSLiveComposite:
         var_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
 
         self.max_dt = self.max_dt.transpose(CompositeVariable.CONT_IN_X)
+        self.max_dt = CompositeVariable.to_int_type(self.max_dt)
 
         ds[CompDataVars.MAX_DT] = xr.DataArray(
             data=self.max_dt,
@@ -2420,6 +2520,7 @@ class ITSLiveComposite:
         gc.collect()
 
         self.sensor_include = self.sensor_include.transpose(CompositeVariable.CONT_IN_X)
+        self.sensor_include = CompositeVariable.to_int_type(self.sensor_include, np.uint8)
 
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
             data=self.sensor_include,
@@ -2435,6 +2536,10 @@ class ITSLiveComposite:
         )
         self.sensor_include = None
         gc.collect()
+
+        # Convert to percent and use uint8 datatype
+        self.outlier_fraction *= 100
+        self.outlier_fraction = CompositeVariable.to_int_type(self.outlier_fraction, np.uint8)
 
         ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
             data=self.outlier_fraction,
@@ -2612,11 +2717,30 @@ class ITSLiveComposite:
         # Compression for the data
         compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
 
-        # Settings for "float" data types
+        # Settings for variables of "float" data type
         for each in [
             DataVars.VX,
             DataVars.VY,
             DataVars.V,
+            CompDataVars.VX0,
+            CompDataVars.VY0,
+            CompDataVars.V0,
+            CompDataVars.SLOPE_VX,
+            CompDataVars.SLOPE_VY,
+            CompDataVars.SLOPE_V
+            ]:
+            encoding_settings.setdefault(each, {}).update({
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                'dtype': np.float32,
+                'compressor': compressor
+            })
+
+        # Don't provide _FillValue for int types as it will avoid datatype specification for the
+        # variable (according to xarray support, _FillValue is used for floating point
+        # datatypes only)
+
+        # Settings for vrailable of "uint16" data type
+        for each in [
             CompDataVars.VX_ERROR,
             CompDataVars.VY_ERROR,
             CompDataVars.V_ERROR,
@@ -2629,24 +2753,27 @@ class ITSLiveComposite:
             CompDataVars.VX_PHASE,
             CompDataVars.VY_PHASE,
             CompDataVars.V_PHASE,
-            CompDataVars.OUTLIER_FRAC,
-            CompDataVars.VX0,
-            CompDataVars.VY0,
-            CompDataVars.V0,
             CompDataVars.VX0_ERROR,
             CompDataVars.VY0_ERROR,
             CompDataVars.V0_ERROR,
-            CompDataVars.SLOPE_VX,
-            CompDataVars.SLOPE_VY,
-            CompDataVars.SLOPE_V
+            CompDataVars.MAX_DT
             ]:
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                'dtype': np.float32,
+                'dtype': np.uint16,
                 'compressor': compressor
             })
 
-        # Settings for "uint32" datatypes
+        # Settings for vrailable of "uint8" data type
+        for each in [
+            CompDataVars.OUTLIER_FRAC,
+            CompDataVars.SENSOR_INCLUDE
+            ]:
+            encoding_settings.setdefault(each, {}).update({
+                'dtype': np.uint8,
+                'compressor': compressor
+            })
+
+        # Settings for variables of "uint32" data type
         # Don't provide _FillValue as it will avoid datatype specification for the
         # variable (according to xarray support, _FillValue is used for floating point
         # datatypes only)
@@ -2656,18 +2783,6 @@ class ITSLiveComposite:
         ]:
             encoding_settings.setdefault(each, {}).update({
                 'dtype': np.uint32
-            })
-
-        # Settings for "max_dt" datatypes
-        # Don't provide _FillValue as it will avoid datatype specification for the
-        # variable
-        encoding_settings.setdefault(CompDataVars.MAX_DT, {}).update({
-                'dtype': np.short
-            })
-
-        # Settings for "sensor_include" datatypes
-        encoding_settings.setdefault(CompDataVars.SENSOR_INCLUDE, {}).update({
-                'dtype': np.short
             })
 
         # Chunking to apply when writing datacube to the Zarr store
