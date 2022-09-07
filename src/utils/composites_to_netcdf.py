@@ -49,7 +49,7 @@ ENCODING = {
     'v0_error':                  {'_FillValue': 0, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
     'count':                     {'_FillValue': 0, 'dtype': np.uint32, "zlib": True, "complevel": 2, "shuffle": True},
     'count0':                    {'_FillValue': 0, 'dtype': np.uint32, "zlib": True, "complevel": 2, "shuffle": True},
-    'outlier_frac':              {'_FillValue': 0, 'dtype': np.uint8, "zlib": True, "complevel": 2, "shuffle": True},
+    'outlier_percent':           {'_FillValue': 0, 'dtype': np.uint8, "zlib": True, "complevel": 2, "shuffle": True},
     'sensor_flag':               {'_FillValue': 0, 'dtype': np.uint8, "zlib": True, "complevel": 2, "shuffle": True},
     'time':                      {'_FillValue': None, 'units': 'days since 1970-01-01'},
     'sensor':                    {'_FillValue': None, 'dtype': 'S1'},
@@ -131,7 +131,7 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--output', type=str, required=True,
                         help="NetCDF filename to store data to.")
     parser.add_argument('-e', '--engine', type=str, required=False, default='h5netcdf',
-                        help="NetCDF engine to use to store NetCDF data to the file.")
+                        help="NetCDF engine to use to store NetCDF data to the file [%(default)s].")
     parser.add_argument('-b', '--outputBucket', type=str, default="",
                         help="S3 bucket to copy composites in NetCDF format to [%(default)s].")
     parser.add_argument('-c', '--chunks', type=int, default=100,
