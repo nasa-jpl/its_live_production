@@ -122,10 +122,11 @@ class DataVars:
     MAPPING = 'mapping' # New format
 
     # Missing (FillValue) values for data variables
-    MISSING_BYTE      = 0.0
-    MISSING_UBYTE     = 0.0
-    MISSING_VALUE     = -32767.0
-    MISSING_POS_VALUE = 32767.0
+    MISSING_BYTE         = 0.0
+    MISSING_UBYTE        = 0.0
+    MISSING_VALUE        = -32767
+    MISSING_POS_VALUE    = 32767
+    MISSING_UINT8_VALUE  = 255
 
     NAME = {
         INTERP_MASK: "interpolated_value_mask",
