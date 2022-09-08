@@ -1083,35 +1083,35 @@ class CompositeVariable:
         self.vy = self.vy.transpose(dims)
 
     @staticmethod
-    def to_int_type(data, data_type = np.uint16):
+    def to_int_type(data, data_type = np.uint16, fill_value=DataVars.MISSING_POS_VALUE):
         """
-        Convert data to requested integer datatype
+        Convert data to requested integer datatype. Replace NaNs with
+        corresponding to the datatype _FillValue:
+        -32767 for int16/32
+        32767 for uint16/32
 
         Inputs:
         =======
         data: Data to convert to new datatype to.
         data_type: numpy data type to convert data to. Default is np.uint16.
+        fill_value: value to replace NaN's with before conversion to integer type.
         """
         # Replace NaN's with zero's as it will store garbage for NaN's
         _mask = np.isnan(data)
-        data[_mask] = 0
+        data[_mask] = fill_value
 
         # Round to nearest int value
         int_data = np.rint(data).astype(data_type)
 
         return int_data
 
-    def to_uint16(self, data_type=np.uint16):
+    def to_uint16(self):
         """
         Convert data to uint16 datatype to store to output file.
-
-        Inputs:
-        =======
-        data_type: numpy data type to convert data to
         """
-        self.v = CompositeVariable.to_int_type(self.v, data_type)
-        self.vx = CompositeVariable.to_int_type(self.vx, data_type)
-        self.vy = CompositeVariable.to_int_type(self.vy, data_type)
+        self.v = CompositeVariable.to_int_type(self.v)
+        self.vx = CompositeVariable.to_int_type(self.vx)
+        self.vy = CompositeVariable.to_int_type(self.vy)
 
 # Currently processed datacube chunk
 Chunk = collections.namedtuple("Chunk", ['start_x', 'stop_x', 'x_len', 'start_y', 'stop_y', 'y_len'])
@@ -1534,6 +1534,9 @@ class ITSLiveComposite:
     # LSQ fit excluding S2 data
     LSQ_AMP_SCALE = 2
 
+    # minimum difference in amplitude between LSQ fit results before removing S2 data
+    LSQ_MIN_AMP_DIFF = 2
+
     def __init__(self, cube_store: str, s3_bucket: str):
         """
         Initialize composites.
@@ -1724,7 +1727,7 @@ class ITSLiveComposite:
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
         # ======================
-        # x_num_to_process = 1
+        # x_num_to_process = 10
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -2051,9 +2054,14 @@ class ITSLiveComposite:
             logging.info(f'Finished climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
 
             # Check if there are any values that satisfy:
-            # if (amp_all) > (S1+L8_amp) * 2
+            # if (amp_all) > (S1+L8_amp) * 2 and (amp_all) - (S1+L8_amp) > 5)
             # then use lsqfit_annual output from S1+L8 and add S2 to the excluded sensors mask
-            amp_mask = (self.amplitude.v[start_y:stop_y, start_x:stop_x] > (self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x] * ITSLiveComposite.LSQ_AMP_SCALE))
+            amp_mask = (
+                self.amplitude.v[start_y:stop_y, start_x:stop_x] >
+                (self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x] * ITSLiveComposite.LSQ_AMP_SCALE)
+            ) & (
+                (self.amplitude.v[start_y:stop_y, start_x:stop_x] - self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x]) > ITSLiveComposite.LSQ_MIN_AMP_DIFF
+            )
 
             if np.sum(amp_mask) > 0:
                 # Use results from LSQ fit when excluding S2 for the spacial points
@@ -2268,8 +2276,16 @@ class ITSLiveComposite:
 
         # Only these components are used in output, no need to convert the rest
         # of components
-        self.count.v = CompositeVariable.to_int_type(self.count.v, np.uint32)
-        self.count_image_pairs.vx = CompositeVariable.to_int_type(self.count_image_pairs.vx, np.uint32)
+        self.count.v = CompositeVariable.to_int_type(
+            self.count.v,
+            np.uint32,
+            DataVars.MISSING_UBYTE
+        )
+        self.count_image_pairs.vx = CompositeVariable.to_int_type(
+            self.count_image_pairs.vx,
+            np.uint32,
+            DataVars.MISSING_UBYTE
+        )
 
         ds[DataVars.V] = xr.DataArray(
             data=self.mean.v,
@@ -2520,7 +2536,11 @@ class ITSLiveComposite:
         gc.collect()
 
         self.sensor_include = self.sensor_include.transpose(CompositeVariable.CONT_IN_X)
-        self.sensor_include = CompositeVariable.to_int_type(self.sensor_include, np.uint8)
+        self.sensor_include = CompositeVariable.to_int_type(
+            self.sensor_include,
+            np.uint8,
+            DataVars.MISSING_UINT8_VALUE
+        )
 
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
             data=self.sensor_include,
@@ -2539,7 +2559,11 @@ class ITSLiveComposite:
 
         # Convert to percent and use uint8 datatype
         self.outlier_fraction *= 100
-        self.outlier_fraction = CompositeVariable.to_int_type(self.outlier_fraction, np.uint8)
+        self.outlier_fraction = CompositeVariable.to_int_type(
+            self.outlier_fraction,
+            np.uint8,
+            DataVars.MISSING_UINT8_VALUE
+        )
 
         ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
             data=self.outlier_fraction,
