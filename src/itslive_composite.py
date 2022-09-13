@@ -1356,12 +1356,10 @@ class SensorExcludeFilter:
             if len(sensors_groups) > 1:
                 self.excludeS2FromLSQ = True
 
-            # mask = np.zeros((len(sensors)), dtype=np.bool_)
-
             # Extract start and end dates that correspond to the sensor group
             mask = (self.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
             # for each in SensorExcludeFilter.REF_SENSOR.sensors:
-            #     # logging.info(f'Update mask with {each} as part of the sensor group')
+            #     # logging.info(f'DEBUG: Update mask with {each} as part of the sensor group')
             #     mask |= (sensors == each)
 
             start_date = np.array(acquisition_start_time)[mask]
@@ -1404,21 +1402,33 @@ class SensorExcludeFilter:
 
             # # SensorExcludeFilter should only be applied if land_ice 2km inbuffer mask == 0.
             # # Find such indices in data
-            valid_mask_ind = np.argwhere(ds_land_ice_mask == 0)
-            logging.info(f'Applying SensorExcludeFilter to {len(valid_mask_ind)} points.')
+            if ds_land_ice_mask:
+                valid_mask_ind = np.argwhere(ds_land_ice_mask == 0)
+                logging.info(f'Applying SensorExcludeFilter to {len(valid_mask_ind)} points.')
 
-            for each_index in valid_mask_ind:
-                j_index = each_index[0]
-                i_index = each_index[1]
+                for each_index in valid_mask_ind:
+                    j_index = each_index[0]
+                    i_index = each_index[1]
 
-                exclude_sensors[j_index, i_index] = self.iteration(
-                    ds_date_dt,
-                    ds_vx[j_index, i_index, :],
-                    ds_vy[j_index, i_index, :],
-                    ds_mid_date
-                )
+                    exclude_sensors[j_index, i_index] = self.iteration(
+                        ds_date_dt,
+                        ds_vx[j_index, i_index, :],
+                        ds_vy[j_index, i_index, :],
+                        ds_mid_date
+                    )
 
-                # logging.info(f'Excluded sensors: {exclude_sensors[j_index, i_index]}')
+            else:
+                # Apply filter to all points
+                for j_index in range(0, y_len):
+                    for i_index in range(0, x_len):
+                        exclude_sensors[j_index, i_index] = self.iteration(
+                            ds_date_dt,
+                            ds_vx[j_index, i_index, :],
+                            ds_vy[j_index, i_index, :],
+                            ds_mid_date
+                        )
+
+                    # logging.info(f'Excluded sensors: {exclude_sensors[j_index, i_index]}')
 
         return exclude_sensors
 
@@ -1978,12 +1988,14 @@ class ITSLiveComposite:
         # Call filter to exclude sensors if any
         logging.info(f'Sensor exclude filter...')
         start_time = timeit.default_timer()
+        land_ice_mask = None if self.land_ice_mask is None else self.land_ice_mask[start_y:stop_y, start_x:stop_x]
+
         exclude_sensors = self.sensor_filter(
             ITSLiveComposite.DATE_DT.values,
             vx,
             vy,
             self.mid_date,
-            self.land_ice_mask[start_y:stop_y, start_x:stop_x]
+            land_ice_mask
         )
         logging.info(f'Finished sensor exclude filter ({timeit.default_timer() - start_time} seconds)')
 
@@ -2127,10 +2139,12 @@ class ITSLiveComposite:
 
         if self.sensor_filter.excludeS2FromLSQ:
             # The 2nd LSQ S2 filter should only be applied where land_ice_2km_inbuff == 1
-            mask = (self.land_ice_mask[start_y:stop_y, start_x:stop_x] == 1)
-            vx[~mask] = np.nan
-            vy[~mask] = np.nan
-            logging.info(f'Applying 2nd LSQ fit to {np.sum(mask)} out of {ITSLiveComposite.Chunk.y_len * ITSLiveComposite.Chunk.x_len} points.')
+            if self.land_ice_mask is not None:
+                # Apply mask if it's available for the cube
+                mask = (self.land_ice_mask[start_y:stop_y, start_x:stop_x] == 1)
+                vx[~mask] = np.nan
+                vy[~mask] = np.nan
+                logging.info(f'Applying 2nd LSQ fit to {np.sum(mask)} out of {ITSLiveComposite.Chunk.y_len * ITSLiveComposite.Chunk.x_len} points.')
 
             # Need to compare to LSQ fit excluding all S2 data: to see if
             # S2 contains "faulty" data
