@@ -18,6 +18,7 @@ import numba as nb
 import numpy  as np
 import os
 import pandas as pd
+import rioxarray
 import s3fs
 from scipy import ndimage
 import timeit
@@ -31,6 +32,13 @@ from itscube_types import Coords, DataVars
 
 # Intercept date used for a weighted linear fit
 CENTER_DATE = datetime.datetime(2019, 7, 2)
+
+# Map of EPSG to land ice mask file.
+# The SensorExcludeFilter should only be applied if landice_2km_inbuff == 0
+# and the 2nd LSQ S2 filter should only be applied where landice_2km_inbuff == 1
+LAND_ICE_MASK = {
+    3413: 's3://its-live-data/autorift_parameters/v001/NPS_0120m_landice_2km_inbuff.tif'
+}
 
 class CompDataVars:
     """
@@ -381,6 +389,7 @@ def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_grou
             # Check if filter should be skipped due to exclude_sensor_groups
             if exclude_sensor_groups[j_index, i_index] and \
                current_sensor_group in exclude_sensor_groups[j_index, i_index]:
+                # logging.info(f'DEBUG: exclude_sensors: {exclude_sensor_groups[j_index, i_index]}')
                 # logging.info(f'j={j_index} i={i_index}: skipping {current_sensor_group} due to exclude_groups={exclude_sensor_groups[j_index, i_index]}')
                 invalid[j_index, i_index, :] = True
                 sensor_include[j_index, i_index] = 0
@@ -393,6 +402,7 @@ def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_grou
             )
             # logging.info(f'DEBUG: j={j_index} i={i_index} after cube_filter: maxdt={maxdt[j_index, i_index]}')
 
+    # logging.info(f'DEBUG: Excluded sensors: {sensor_include}')
     return invalid, maxdt, sensor_include
 
 @nb.jit(nopython=True)
@@ -559,9 +569,9 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
 
     non_outlier_mask  = ~(v_residual > (2.0 * mad_thresh * v_sigma))
 
-    # If less than _num_valid_points don't do the fit
+    # If less than _num_valid_points don't do the fit: not enough observations
     results_valid = (np.sum(non_outlier_mask) >= _num_valid_points)
-    # results_valid = np.any(non_outlier_mask)
+    # WAS: results_valid = np.any(non_outlier_mask)
 
     if not results_valid:
         # All results will be ignored, but they must match in type to valid returned
@@ -620,8 +630,7 @@ def itslive_lsqfit_annual(
     mad_std_ratio,
     mean,  # outputs to populate
     error,
-    count,
-    v_limit
+    count
 ):
     # Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,count_image_pairs] data
     # variables.
@@ -806,11 +815,6 @@ def itslive_lsqfit_annual(
     # logging.info(f'DEBUG: LSQ fit error: {error}')
     offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
 
-    if offset >= v_limit:
-        # Since it's invalid v0, report all output as invalid
-        results_valid = False
-        return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
-
     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs])
 
 @nb.jit(nopython=True)
@@ -858,7 +862,8 @@ def annual_magnitude(
 
     return v_fit, v_fit_err, v_fit_count
 
-@nb.jit(nopython=True, parallel=True)
+# No need for numba as all is done in Numpy internally
+# @nb.jit(nopython=True, parallel=True)
 def climatology_magnitude(
     vx0,
     vy0,
@@ -871,7 +876,8 @@ def climatology_magnitude(
     vx_phase,
     vy_phase,
     vx_se,
-    vy_se
+    vy_se,
+    v_limit
 ):
     """
     Computes and populates the mean, trend, seasonal amplitude, error in seasonal amplitude,
@@ -889,8 +895,9 @@ def climatology_magnitude(
     vy_amp_err: error in seasonal amplitude in y direction
     vx_phase: seasonal phase in x direction [day of maximum flow]
     vy_phase: seasonal phase in y direction [day of maximum flow]
-    vx_se:
-    vy_se:
+    vx_se: standard error in x direction
+    vy_se: standard error in y direction
+    v_limit: maximum limit for the flow magnitude
 
     Correlation to actual inputs:
     =============================
@@ -930,6 +937,12 @@ def climatology_magnitude(
     # solve for velocity magnitude and acceleration
     # [do this using vx and vy as to not bias the result due to the Rician distribution of v]
     v = np.sqrt(vx0**2 + vy0**2) # velocity magnitude
+
+    invalid_mask = (v >= v_limit)
+    if np.sum(invalid_mask) > 0:
+        # Since it's invalid v0, report all output as invalid
+        v[invalid_mask] = np.nan
+
     uv_x = vx0/v # unit flow vector in x direction
     uv_y = vy0/v # unit flow vector in y direction
 
@@ -939,43 +952,87 @@ def climatology_magnitude(
     v_amp_err = np.abs(vx_amp_err) * np.abs(uv_x) # flow acceleration in direction of unit flow vector, take absolute values
     v_amp_err += np.abs(vy_amp_err) * np.abs(uv_y)
 
-    # solve for amplitude and phase in unit flow direction
-    t0 = np.arange(0, 1+0.1, 0.1)
-
-    # Design matrix for LSQ fit
-    D = np.stack((np.cos(t0 * _two_pi), np.sin(t0 * _two_pi)), axis=-1)
-    # logging.info(f'D: {D}')
-
-    # Step through all spacial points
-    y_len, x_len = vx_amp.shape
-
     v_se = np.full_like(vx_se, np.nan)
     v_se = vx_se * np.abs(uv_x)
     v_se += vy_se * np.abs(uv_y)
 
+    # Analytical solution for amplitude and phase
+    # -------------------------------------------
+    # Per Slack chat with Alex on July 12, 2022:
+    # "we need to rotate the vx/y_amp and vx/y_phase into the direction of v,
+    # which is defined by vx0 and vy0. If you replace the rotation matrix in
+    # the sudo [Matlab] code (coordinate projection rotation) by the rotation matrix
+    # defined by vx0 and vy0 then one of the rotated component is in the
+    # direction of v0 and the other is perpendicular to v0.
+    # We only want to retain the component that is in the direction of v0."
+    vx_phase_rad = vx_phase/365.25
+    vy_phase_rad = vy_phase/365.25
+
+    # Convert degrees to radians as numpy trig. functions take angles in radians
+    vx_phase_rad *= _two_pi
+    vy_phase_rad *= _two_pi
+
+    # Don't use np.nan values in calculations to avoid warnings
+    valid_mask = (~np.isnan(vx_phase_rad)) & (~np.isnan(vy_phase_rad))
+
+    # Compute theta rotation angle
+    # theta = arctan(vy0/vx0), since sin(theta)=vy0 and cos(theta)=vx0,
+    # can't just use vy0 and vx0 values instead of sin/cos as they are not normalized
+    theta = np.full_like(vx_phase_rad, np.nan)
+    theta[valid_mask] = np.arctan2(vy0[valid_mask], vx0[valid_mask])
+
+    if np.any(theta<0):
+        # logging.info(f'Got negative theta, converting to positive values')
+        mask = (theta<0)
+        theta[mask] += _two_pi
+
+    # Find negative values
+    sin_theta = np.sin(theta)
+    cos_theta = np.cos(theta)
+
+    A1 = vx_amp*cos_theta
+    B1 = vy_amp*sin_theta
+
+    # Matlab prototype code:
+    # vx_amp_r   =   hypot(A1.*cosd(vx_phase_deg) + B1.*cosd(vy_phase_deg),  A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg));
+    # vx_phase_r = atan2d((A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg)),(A1.*cosd(vx_phase_deg) + B1.*(cosd(vy_phase_deg))));
+
+    # We want to retain the component only in the direction of v0,
+    # which becomes new v_amp and v_phase
     v_amp = np.full_like(vx_amp, np.nan)
     v_phase = np.full_like(vx_phase, np.nan)
 
-    # for j in range(0, y_len):
-    #   for i in range(0, x_len):
-    for j in nb.prange(y_len):
-        for i in nb.prange(x_len):
-            # Skip [y, x] point if unit vector value is nan
-            if np.isnan(uv_x[j, i]) or np.isnan(uv_y[j, i]):
-                continue
+    v_amp[valid_mask] = np.hypot(
+        A1[valid_mask]*np.cos(vx_phase_rad[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_rad[valid_mask]),
+        A1[valid_mask]*np.sin(vx_phase_rad[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_rad[valid_mask])
+    )
+    # np.arctan2 returns phase in radians, convert to degrees
+    v_phase[valid_mask] = np.arctan2(
+        A1[valid_mask]*np.sin(vx_phase_rad[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_rad[valid_mask]),
+        A1[valid_mask]*np.cos(vx_phase_rad[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_rad[valid_mask])
+    )*180.0/np.pi
 
-            vx_sin = vx_amp[j, i] * np.sin((t0 + (-vx_phase[j, i]/365.25 + 0.25))*_two_pi)  # must convert phase to fraction of a year and adjust from peak to phase
-            vy_sin = vy_amp[j, i] * np.sin((t0 + (-vy_phase[j, i]/365.25 + 0.25))*_two_pi)  # must convert phase to fraction of a year and adjust from peak to phase
+    mask = v_amp < 0
+    v_amp[mask] *= -1.0
+    v_phase[mask] += 180
 
-            v_sin  = vx_sin * uv_x[j, i]  # seasonality in direction of unit flow vector
-            v_sin += vy_sin * uv_y[j, i]
+    mask = v_phase > 0
+    v_phase[mask] = np.remainder(v_phase[mask], 360.0)
+    mask = mask & (v_phase == 0)
+    v_phase[mask] = 360.0
 
-            # Solve for coefficients of each column:
-            a1, a2 = np.linalg.lstsq(D, v_sin)[0]
+    # Convert all values to positive
+    mask = v_phase < 0
+    if np.any(mask):
+        # logging.info(f'Got negative phase, converting to positive values')
+        v_phase[mask] = np.remainder(v_phase[mask], -360.0)
+        v_phase[mask] += 360.0
 
-            v_amp[j, i] = np.hypot(a1, a2) # amplitude of sinusoid from trig identity a*sin(t) + b*cos(t) = d*sin(t+phi), where d=hypot(a,b) and phi=atan2(b,a).
-            phase_rad = np.arctan2(a1, a2) # phase in radians
-            v_phase[j, i] = 365.25*((0.25 - phase_rad/_two_pi) % 1) # phase converted such that it reflects the day when value is maximized
+    # Since vx_phase and vy_phase are already shifted by 0.25 in original projection,
+    # so we don't need to do it after rotation in direction of v0
+
+    # Convert phase to the day of the year
+    v_phase = v_phase*365.25/360
 
     return v, dv_dt, v_amp, v_amp_err, v_phase, v_se
 
@@ -1322,25 +1379,46 @@ class SensorExcludeFilter:
         else:
             logging.info(f'Reference sensor {SensorExcludeFilter.REF_SENSOR.mission} is missing, disable SensorExclude filter.')
 
-    def __call__(self, ds_date_dt, ds_vx, ds_vy, ds_mid_date):
+    def __call__(self, ds_date_dt, ds_vx, ds_vy, ds_mid_date, ds_land_ice_mask):
         """
         Invoke filter for the block of spacial points.
+
+        Inputs:
+        =======
+        ds_date_dt:       Date separation b/w image pairs for spacial points.
+        ds_vx:            X component of velocity for the spacial points.
+        ds_vy:            Y component of velicity for the spacial points.
+        ds_mid_date:      Middle date for the spacial points.
+        ds_land_ice_mask: 2km inbuffer land ice mask for spacial points. SensorExcludeFilter
+                          should only be applied if land_ice 2km inbuffer mask == 0.
+
+        Returns:
+        ========
+        Array of lists of sensors to exclude per each spacial point.
         """
         y_len, x_len, _ = ds_vx.shape
         dims = (y_len, x_len)
         exclude_sensors = np.frompyfunc(list, 0, 1)(np.empty(dims, dtype=object))
 
         if self.apply:
-            for j_index in range(0, y_len):
-                for i_index in range(0, x_len):
-                    exclude_sensors[j_index, i_index] = self.iteration(
-                        ds_date_dt,
-                        ds_vx[j_index, i_index, :],
-                        ds_vy[j_index, i_index, :],
-                        ds_mid_date
-                    )
 
-                    # logging.info(f'Excluded sensors: {exclude_sensors[j_index, i_index]}')
+            # # SensorExcludeFilter should only be applied if land_ice 2km inbuffer mask == 0.
+            # # Find such indices in data
+            valid_mask_ind = np.argwhere(ds_land_ice_mask == 0)
+            logging.info(f'Applying SensorExcludeFilter to {len(valid_mask_ind)} points.')
+
+            for each_index in valid_mask_ind:
+                j_index = each_index[0]
+                i_index = each_index[1]
+
+                exclude_sensors[j_index, i_index] = self.iteration(
+                    ds_date_dt,
+                    ds_vx[j_index, i_index, :],
+                    ds_vy[j_index, i_index, :],
+                    ds_mid_date
+                )
+
+                # logging.info(f'Excluded sensors: {exclude_sensors[j_index, i_index]}')
 
         return exclude_sensors
 
@@ -1357,7 +1435,7 @@ class SensorExcludeFilter:
         ds_vy:      vy timeseries
         ds_mid_date: mid_date timeseries
 
-        Returns list of sensor groups to exclude.
+        Returns list of sensor groups to exclude for the spacial point.
         """
         #     # trim data to redude computations
         #     dtind = dt .<= dtmax;
@@ -1459,10 +1537,11 @@ class SensorExcludeFilter:
                 delta = bindicts[sen]['vbin'][covalid] - bindicts[refsensor]['vbin'][covalid]
                 stats[sen]['mean'] = np.mean(delta)
                 stats[sen]['se'] = np.std(delta)/np.sqrt((sum(covalid)-1))
-                stats[sen]['disagree_with_refsensor'] =  (stats[sen]['mean'] + (stats[sen]['se'] * SensorExcludeFilter.SESCALE)) < 0
+                stats[sen]['disagree_with_refsensor'] = (stats[sen]['mean'] + (stats[sen]['se'] * SensorExcludeFilter.SESCALE)) < 0
                 if stats[sen]['disagree_with_refsensor']:
                     sensors_to_exclude.append(sen)
 
+        # logging.info(f'DEBUG: SensorExclude: {stats}')
         return sensors_to_exclude
 
 class ITSLiveComposite:
@@ -1548,6 +1627,59 @@ class ITSLiveComposite:
             s3_bucket,
             read_skipped_granules_flag
         )
+        # Check if land ice mask is provided for the cube's projection (or should use
+        # other than projection keys into the map?)
+        self.land_ice_mask = None
+
+        cube_projection = int(self.cube_ds.attrs[CubeOutputFormat.PROJECTION])
+        if cube_projection in LAND_ICE_MASK:
+            # Load the mask
+            mask_ds = rioxarray.open_rasterio(LAND_ICE_MASK[cube_projection])
+
+            # Zoom into cube polygon
+            mask_x = (mask_ds.x >= self.cube_ds.x.min()) & (mask_ds.x <= self.cube_ds.x.max())
+            mask_y = (mask_ds.y >= self.cube_ds.y.min()) & (mask_ds.y <= self.cube_ds.y.max())
+            mask = (mask_x & mask_y)
+
+            if mask.sum().item() == 0:
+                # Mask does not overlap with the cube
+                logging.info(f'No overlap is detected with mask data {LAND_ICE_MASK[cube_projection]}')
+
+            else:
+                cropped_mask_ds = mask_ds.where(mask, drop=True)
+
+                # Allocate xr.DataArray to match cube dimentions
+                ice_land_mask = xr.DataArray(
+                    np.zeros((len(self.cube_ds.y), len(self.cube_ds.x))),
+                    coords = {
+                        Coords.X: self.cube_ds.x,
+                        Coords.Y: self.cube_ds.y
+                    },
+                    dims=[Coords.Y, Coords.X]
+                )
+
+                 # Populate mask data into cube-size array
+                if cropped_mask_ds.ndim == 3:
+                    # If it's 3d data, it should have first dimension=1: just
+                    # one layer is expected
+                    mask_data_sizes = cropped_mask_ds.shape
+                    if mask_data_sizes[0] != 1:
+                        raise RuntimeError(f'Unexpected size for mask data from {LAND_ICE_MASK[cube_projection]} file: {mask_data_sizes}')
+
+                    else:
+                        ice_land_mask.loc[dict(x=cropped_mask_ds.x, y=cropped_mask_ds.y)] = cropped_mask_ds[0]
+
+                else:
+                    ice_land_mask.loc[dict(x=ds.x, y=ds.y)] = cropped_mask_ds
+
+                # Store mask as numpy array since all calcuations are done using
+                # numpy arrays
+                self.land_ice_mask = ice_land_mask.values
+                logging.info(f'Got land ice mask for {int(np.sum(self.land_ice_mask))} cells of the datacube')
+
+        else:
+            logging.info(f'No land ice mask is provided.')
+
         # If reading NetCDF data cube
         # cube_ds = xr.open_dataset(cube_store, decode_timedelta=False)
 
@@ -1724,10 +1856,13 @@ class ITSLiveComposite:
         # x_start = 118  # good point
         # x_start = 265  # bad point
 
+        # datacubes/v02/N60W040/ITS_LIVE_vel_EPSG3413_G0120_X-150000_Y-2250000.zarr
+        # x_start = 216    # large diff in vx0 for S2 excluded in LSQ fit
+
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
         # ======================
-        # x_num_to_process = 10
+        # x_num_to_process = 1
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -1741,11 +1876,12 @@ class ITSLiveComposite:
             # Alex's Julia code
             # y_start = 428  # good point
             # y_start = 432  # bad point
+            # y_start = 216    # large diff in vx0 for S2 excluded in LSQ fit
 
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # For debugging only
             # ======================
-            # y_num_to_process = 10
+            # y_num_to_process = 1
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -1842,7 +1978,13 @@ class ITSLiveComposite:
         # Call filter to exclude sensors if any
         logging.info(f'Sensor exclude filter...')
         start_time = timeit.default_timer()
-        exclude_sensors = self.sensor_filter(ITSLiveComposite.DATE_DT.values, vx, vy, self.mid_date)
+        exclude_sensors = self.sensor_filter(
+            ITSLiveComposite.DATE_DT.values,
+            vx,
+            vy,
+            self.mid_date,
+            self.land_ice_mask[start_y:stop_y, start_x:stop_x]
+        )
         logging.info(f'Finished sensor exclude filter ({timeit.default_timer() - start_time} seconds)')
 
         # Project valid (excluding sensors) v onto median flow vector:
@@ -1902,6 +2044,15 @@ class ITSLiveComposite:
         # Mask data
         vx[invalid] = np.nan
         vy[invalid] = np.nan
+
+        # logging.info(f'DEBUG: total number of valid vx points: {np.sum(~np.isnan(vx))}')
+        #
+        # # DEBUG: how many valid points per each mission
+        # _debug_mask = (self.sensor_filter.sensors_str == MissionSensor.SENTINEL1.mission)
+        # logging.info(f'DEBUG: total number of valid vx points for S1: {np.sum(~np.isnan(vx[:, :, _debug_mask]))}')
+        #
+        # _debug_mask = (self.sensor_filter.sensors_str == MissionSensor.LANDSAT89.mission)
+        # logging.info(f'DEBUG: total number of valid vx points for L89: {np.sum(~np.isnan(vx[:, :, _debug_mask]))}')
 
         logging.info(f'Finished filtering with invalid mask ({timeit.default_timer() - start_time} seconds)')
 
@@ -1968,23 +2119,35 @@ class ITSLiveComposite:
             self.phase.vx[start_y:stop_y, start_x:stop_x],
             self.phase.vy[start_y:stop_y, start_x:stop_x],
             self.std_error.vx[start_y:stop_y, start_x:stop_x],
-            self.std_error.vy[start_y:stop_y, start_x:stop_x]
+            self.std_error.vy[start_y:stop_y, start_x:stop_x],
+            ITSLiveComposite.V_LIMIT
         )
+
         logging.info(f'Finished climatology magnitude (took {timeit.default_timer() - start_time} seconds)')
 
         if self.sensor_filter.excludeS2FromLSQ:
+            # The 2nd LSQ S2 filter should only be applied where land_ice_2km_inbuff == 1
+            mask = (self.land_ice_mask[start_y:stop_y, start_x:stop_x] == 1)
+            vx[~mask] = np.nan
+            vy[~mask] = np.nan
+            logging.info(f'Applying 2nd LSQ fit to {np.sum(mask)} out of {ITSLiveComposite.Chunk.y_len * ITSLiveComposite.Chunk.x_len} points.')
+
             # Need to compare to LSQ fit excluding all S2 data: to see if
             # S2 contains "faulty" data
             mission_index = self.sensors_groups.index(SensorExcludeFilter.REF_SENSOR)
-
             logging.info(f'Excluding "{SensorExcludeFilter.REF_SENSOR.mission}" (index={mission_index}) from vx and vy')
 
             # Find which layers correspond to the sensor group
             mask = (self.sensor_filter.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
+            # logging.info(f'DEBUG: total number of valid S2 points: {np.sum(~np.isnan(vx[:, :, mask]))}')
 
             # Filter current block's variables
             vx[:, :, mask] = np.nan
             vy[:, :, mask] = np.nan
+            logging.info(f'Excluding {np.sum(mask)} S2 points')
+
+            # logging.info(f'DEBUG: Excluded S2 {self.sensors[mask]}')
+            # logging.info(f'DEBUG: left total valid vx points: {np.sum(~np.isnan(vx))}')
 
             # %% Least-squares fits to detemine amplitude, phase and annual means
             logging.info(f'Find vx annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
@@ -2049,7 +2212,8 @@ class ITSLiveComposite:
                 self.excludeS2_phase.vx[start_y:stop_y, start_x:stop_x],
                 self.excludeS2_phase.vy[start_y:stop_y, start_x:stop_x],
                 self.excludeS2_std_error.vx[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x]
+                self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x],
+                ITSLiveComposite.V_LIMIT
             )
             logging.info(f'Finished climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
 
@@ -2907,6 +3071,7 @@ class ITSLiveComposite:
                 mask = ~np.isnan(v[j, i, :])
                 if mask.sum() < _num_valid_points:
                     # Skip the point, return no outliers
+                    # logging.info(f'DEBUG: Not enough valid points for [{global_j}, {global_i}]')
                     continue
 
                 global_i = i + ITSLiveComposite.Chunk.start_x
@@ -2924,8 +3089,7 @@ class ITSLiveComposite:
                     ITSLiveComposite.MAD_STD_RATIO,
                     mean[global_j, global_i, :],
                     error[global_j, global_i, :],
-                    count[global_j, global_i, :],
-                    ITSLiveComposite.V_LIMIT,
+                    count[global_j, global_i, :]
                 )
 
                 init_time1 += init_runtime1
@@ -2934,6 +3098,7 @@ class ITSLiveComposite:
                 lsq_time += lsq_runtime
 
                 if not results_valid:
+                    # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
                     continue
 
                 amplitude[global_j, global_i], \
@@ -2944,9 +3109,10 @@ class ITSLiveComposite:
                 se[global_j, global_i], \
                 count_image_pairs[global_j, global_i] = results
 
+                # logging.info(f'DEBUG: Offset [{global_j}, {global_i}]: {offset[global_j, global_i]}')
+
         logging.info(f'Init_time1: {init_time1} sec, Init_time2: {init_time2} sec, Init_time3: {init_time3} sec, lsq_time: {lsq_time} seconds')
         return
-
 
 if __name__ == '__main__':
     import argparse
@@ -2955,7 +3121,6 @@ if __name__ == '__main__':
     import subprocess
     import sys
     from urllib.parse import urlparse
-
 
     warnings.filterwarnings('ignore')
 
