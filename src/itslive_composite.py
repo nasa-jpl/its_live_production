@@ -1402,7 +1402,7 @@ class SensorExcludeFilter:
 
             # # SensorExcludeFilter should only be applied if land_ice 2km inbuffer mask == 0.
             # # Find such indices in data
-            if ds_land_ice_mask:
+            if ds_land_ice_mask is not None:
                 valid_mask_ind = np.argwhere(ds_land_ice_mask == 0)
                 logging.info(f'Applying SensorExcludeFilter to {len(valid_mask_ind)} points.')
 
