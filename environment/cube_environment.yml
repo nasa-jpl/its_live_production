@@ -24,7 +24,7 @@ dependencies:
   - pandas
   - defaults::numpy
   - numpy
-  - numba==0.55.1
+  - numba==0.55.0
   - h5py
   - h5netcdf
   - requests
@@ -43,3 +43,4 @@ dependencies:
   - pip:
     - geojson
     - awscliv2
+    - rioxarray
