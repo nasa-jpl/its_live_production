@@ -4,6 +4,9 @@ Script to drive Batch processing for datacube's annual composites generation at 
 It accepts shape file with region definition and generates annual composites for
 the datacubes which centers fall within the region.
 
+Caller can provide a set of datacubes to generate composites for. Then only these
+datacubes are used.
+
 If no shape file is provided, then it generates annual composites for all
 existing datacubes as found in the source S3 bucket.
 
@@ -23,7 +26,11 @@ import sys
 import s3fs
 
 from grid import Bounds
-from itscube_types import BatchVars, CubeJson, FilenamePrefix
+from itscube_types import BatchVars, \
+    CubeJson, \
+    FilenamePrefix, \
+    datacube_filename_zarr, \
+    composite_filename_zarr
 import itslive_utils
 
 
@@ -35,6 +42,8 @@ class DataCubeCompositeBatch:
 
     # Chunk size in X and Y dimensions to load data in at one time: [:, 100, 100]
     X_Y_CHUNK = 100
+
+    COMPOSITES_TO_GENERATE = []
 
     def __init__(self, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
@@ -64,6 +73,8 @@ class DataCubeCompositeBatch:
 
         # List of submitted datacubes for processing
         jobs_files = []
+
+        num_existing_composites = 0
 
         with open(cube_file, 'r') as fhandle:
             cubes = json.load(fhandle)
@@ -167,12 +178,16 @@ class DataCubeCompositeBatch:
                         logging.info(f"Skipping non-{BatchVars.PATH_TOKEN}")
                         continue
 
-                    cube_filename = f"{FilenamePrefix.Datacube}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
+                    cube_filename = datacube_filename_zarr(epsg, self.grid_size, mid_x, mid_y)
                     logging.info(f'Cube name: {cube_filename}')
 
                     # Process specific datacubes only
                     if len(BatchVars.CUBES_TO_GENERATE) and cube_filename not in BatchVars.CUBES_TO_GENERATE:
-                        logging.info(f"Skipping {cube_filename} as not provided in BatchVars.CUBES_TO_GENERATE")
+                        # logging.info(f"Skipping {cube_filename} as not provided in BatchVars.CUBES_TO_GENERATE")
+                        continue
+
+                    if len(BatchVars.CUBES_TO_EXCLUDE) and cube_filename in BatchVars.CUBES_TO_EXCLUDE:
+                        logging.info(f"Skipping as provided in BatchVars.CUBES_TO_EXCLUDE")
                         continue
 
                     # Check if datacube exists in S3 bucket as not all cubes
@@ -184,16 +199,23 @@ class DataCubeCompositeBatch:
 
                     # Format cube composites filename:
                     # s3://its-live-data/composites/annual/v02/N60W130/ITS_LIVE_velocity_120m_X-3250000_Y250000.zarr
-                    composite_filename =f"{FilenamePrefix.Composites}_{int(self.grid_size_str):03d}m_X{mid_x}_Y{mid_y}.zarr"
+                    # composite_filename =f"{FilenamePrefix.Composites}_{int(self.grid_size_str):03d}m_X{mid_x}_Y{mid_y}.zarr"
+                    composite_filename = composite_filename_zarr(epsg, self.grid_size, mid_x, mid_y)
                     logging.info(f'Cube composite name: {composite_filename}')
+
+                    # Check if list of specific composites was provided
+                    if len(DataCubeCompositeBatch.COMPOSITES_TO_GENERATE) and composite_filename not in DataCubeCompositeBatch.COMPOSITES_TO_GENERATE:
+                        continue
 
                     composite_dir = bucket_dir.replace(bucket_dir_path, output_bucket_dir)
                     logging.info(f'Cube composite S3 directory: {composite_dir}')
 
-                    # Work around to process only failed composites from prevoius run
+                    # Work around to process only non-existent composites (if they
+                    # failed from prevoius run or were not generated to begin with)
                     # TODO: make a command-line option
                     composite_exists = self.s3.ls(os.path.join(s3_bucket, composite_dir, composite_filename))
                     if len(composite_exists) != 0:
+                        num_existing_composites += 1
                         logging.info(f"Composite {os.path.join(composite_dir, composite_filename)} exists, skipping composite generation.")
                         continue
 
@@ -209,8 +231,11 @@ class DataCubeCompositeBatch:
                     # Submit AWS Batch job
                     response = None
                     if self.is_dry_run is False:
+                        # Use datacube filename as that is guaranteed to be unique - it uses
+                        # EPSG code as part of the filename. There are multiple composites with the same
+                        # filename but in different target directories
                         response = DataCubeCompositeBatch.CLIENT.submit_job(
-                            jobName=composite_filename.replace('.zarr', ''),
+                            jobName='composite_'+cube_filename.replace('.zarr', ''),
                             jobQueue=self.batch_queue,
                             jobDefinition=self.batch_job,
                             parameters=cube_params,
@@ -230,8 +255,9 @@ class DataCubeCompositeBatch:
                             retryStrategy={
                                 'attempts': 1
                             },
+                            # Set timeout to 72 hours
                             timeout={
-                                'attemptDurationSeconds': 86400
+                                'attemptDurationSeconds': 259200
                             }
                         )
 
@@ -265,6 +291,7 @@ class DataCubeCompositeBatch:
             with open(job_files_file, 'w') as output_fhandle:
                 json.dump(jobs_files, output_fhandle, indent=4)
 
+            logging.info(f'Number of existing composites: {num_existing_composites}')
             return
 
 def main(
@@ -359,13 +386,17 @@ def parse_args():
         type=str,
         action='store',
         default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-64Gb:1',
+        # default = 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-256Gb:2',
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-128Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-convert-8vCPU-64GB',
+        default='datacube-spot-8vCPU-64GB',
+        # default = 'datacube-ondemand-32vCPU-256GB',
+        # default='datacube-spot-16vCPU-128GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
@@ -413,6 +444,12 @@ def parse_args():
         default='',
         help="Path token to be present in datacube S3 target path in order for the datacube to be processed [%(default)s]."
     )
+    parser.add_argument(
+        '--excludeCubesFile',
+        type=Path,
+        default=None,
+        help="Json file that stores a list of datacubes to exclude from processing [%(default)s]."
+    )
 
     # One of --processCubes or --processCubesFile options is allowed for the datacube names
     group = parser.add_mutually_exclusive_group()
@@ -429,6 +466,13 @@ def parse_args():
         action='store',
         default=None,
         help="File that contains JSON list of filenames for datacube to process [%(default)s]."
+    )
+    group.add_argument(
+        '--processCompositesFile',
+        type=Path,
+        action='store',
+        default=None,
+        help="File that contains JSON list of filenames for composites to process [%(default)s]."
     )
 
     args = parser.parse_args()
@@ -456,9 +500,19 @@ def parse_args():
     if args.processCubesFile:
         # Check for this option first as another mutually exclusive option has a default value
         BatchVars.CUBES_TO_GENERATE = json.loads(args.processCubesFile.read_text())
-        # Replace each path by the datacube basename
-        BatchVars.CUBES_TO_GENERATE = [os.path.basename(each) for each in BatchVars.CUBES_TO_GENERATE if len(each)]
+
+        # Replace each path by the datacube basename, and make sure cubefilenames are
+        # unique
+        BatchVars.CUBES_TO_GENERATE = list(set([os.path.basename(each) for each in BatchVars.CUBES_TO_GENERATE if len(each)]))
+
         logging.info(f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubesFile}: {BatchVars.CUBES_TO_GENERATE}")
+
+    elif args.processCompositesFile:
+        DataCubeCompositeBatch.COMPOSITES_TO_GENERATE = json.loads(args.processCompositesFile.read_text())
+        DataCubeCompositeBatch.COMPOSITES_TO_GENERATE = [os.path.basename(each) for each in DataCubeCompositeBatch.COMPOSITES_TO_GENERATE if len(each)]
+
+        if len(DataCubeCompositeBatch.COMPOSITES_TO_GENERATE):
+            logging.info(f"Found {len(DataCubeCompositeBatch.COMPOSITES_TO_GENERATE)} of datacubes to generate from {args.processCompositesFile}: {DataCubeCompositeBatch.COMPOSITES_TO_GENERATE}")
 
     elif args.processCubes:
         BatchVars.CUBES_TO_GENERATE = json.loads(args.processCubes)
@@ -475,6 +529,13 @@ def parse_args():
             line = geometry.LineString(shapefile_coords[0][0])
             BatchVars.POLYGON_SHAPE = geometry.Polygon(line)
             logging.info(f'Set polygon: {BatchVars.POLYGON_SHAPE}')
+
+    if args.excludeCubesFile:
+        BatchVars.CUBES_TO_EXCLUDE = json.loads(args.excludeCubesFile.read_text())
+
+        # Replace each path by the datacube basename
+        BatchVars.CUBES_TO_EXCLUDE = [os.path.basename(each) for each in BatchVars.CUBES_TO_EXCLUDE if len(each)]
+        logging.info(f"Found {len(BatchVars.CUBES_TO_EXCLUDE)} of datacubes to exclude per {args.excludeCubesFile}: {BatchVars.CUBES_TO_EXCLUDE}")
 
     return args
 
