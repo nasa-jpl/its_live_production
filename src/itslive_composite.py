@@ -28,7 +28,7 @@ import zarr
 
 # Local imports
 from itscube import ITSCube, CubeOutputFormat
-from itscube_types import Coords, DataVars
+from itscube_types import Coords, DataVars, Output
 
 # Intercept date used for a weighted linear fit
 CENTER_DATE = datetime.datetime(2019, 7, 2)
@@ -1399,7 +1399,6 @@ class SensorExcludeFilter:
         exclude_sensors = np.frompyfunc(list, 0, 1)(np.empty(dims, dtype=object))
 
         if self.apply:
-
             # # SensorExcludeFilter should only be applied if land_ice 2km inbuffer mask == 0.
             # # Find such indices in data
             if ds_land_ice_mask is not None:
@@ -1872,7 +1871,7 @@ class ITSLiveComposite:
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
         # ======================
-        # x_num_to_process = 1
+        # x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -1891,7 +1890,7 @@ class ITSLiveComposite:
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # For debugging only
             # ======================
-            # y_num_to_process = 1
+            # y_num_to_process = 100
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -2914,7 +2913,7 @@ class ITSLiveComposite:
         for each in [CompDataVars.TIME, CompDataVars.SENSORS, Coords.X, Coords.Y]:
             encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
 
-        encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({'dtype': 'str'})
+        encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({Output.DTYPE_ATTR: 'str'})
 
         # Compression for the data
         compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
@@ -2930,12 +2929,15 @@ class ITSLiveComposite:
             CompDataVars.SLOPE_VX,
             CompDataVars.SLOPE_VY,
             CompDataVars.SLOPE_V
-            ]:
+        ]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                'dtype': np.float32,
-                'compressor': compressor
+                Output.DTYPE_ATTR: np.float32,
+                Output.COMPRESSOR_ATTR: compressor
             })
+            # No need to set "missing_value" attribute for floating point data
+            # as it has _FillValue set for encoding.
+            # ds[each].attrs[Output.MISSING_VALUE_ATTR] = DataVars.MISSING_VALUE
 
         # Don't provide _FillValue for int types as it will avoid datatype specification for the
         # variable (according to xarray support, _FillValue is used for floating point
@@ -2959,20 +2961,24 @@ class ITSLiveComposite:
             CompDataVars.VY0_ERROR,
             CompDataVars.V0_ERROR,
             CompDataVars.MAX_DT
-            ]:
+        ]:
             encoding_settings.setdefault(each, {}).update({
-                'dtype': np.uint16,
-                'compressor': compressor
+                Output.DTYPE_ATTR: np.uint16,
+                Output.COMPRESSOR_ATTR: compressor,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE
             })
+
+            logging.info(f'{each} attrs: {ds[each].attrs}')
 
         # Settings for vrailable of "uint8" data type
         for each in [
             CompDataVars.OUTLIER_FRAC,
             CompDataVars.SENSOR_INCLUDE
-            ]:
+        ]:
             encoding_settings.setdefault(each, {}).update({
-                'dtype': np.uint8,
-                'compressor': compressor
+                Output.DTYPE_ATTR: np.uint8,
+                Output.COMPRESSOR_ATTR: compressor,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE
             })
 
         # Settings for variables of "uint32" data type
@@ -2984,7 +2990,8 @@ class ITSLiveComposite:
             CompDataVars.COUNT0
         ]:
             encoding_settings.setdefault(each, {}).update({
-                'dtype': np.uint32
+                Output.DTYPE_ATTR: np.uint32,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE
             })
 
         # Chunking to apply when writing datacube to the Zarr store
@@ -3000,7 +3007,7 @@ class ITSLiveComposite:
             CompDataVars.MAX_DT
         ]:
             encoding_settings[each].update({
-                'chunks': chunks_settings
+                Output.CHUNKS_ATTR: chunks_settings
             })
 
         # Chunking to apply when writing datacube to the Zarr store
@@ -3029,7 +3036,7 @@ class ITSLiveComposite:
             CompDataVars.SLOPE_V
             ]:
             encoding_settings[each].update({
-                'chunks': chunks_settings
+                Output.CHUNKS_ATTR: chunks_settings
             })
 
         logging.info(f"Encoding settings: {encoding_settings}")

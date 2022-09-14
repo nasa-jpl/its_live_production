@@ -7,8 +7,12 @@ class Output:
     Attributes specific to the output store format (Zarr or NetCDF)
     """
     DTYPE_ATTR      = 'dtype'
+    COMPRESSOR_ATTR = 'compressor'
+    # For the floating point types in Zarr format, any datatype in NetCDF format
     FILL_VALUE_ATTR = '_FillValue'
-
+    # For integer types in Zarr format
+    MISSING_VALUE_ATTR = 'missing_value'
+    CHUNKS_ATTR = 'chunks'
 
 class Coords:
     """
