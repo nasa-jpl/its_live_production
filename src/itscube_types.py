@@ -13,6 +13,7 @@ class Output:
     # For integer types in Zarr format
     MISSING_VALUE_ATTR = 'missing_value'
     CHUNKS_ATTR = 'chunks'
+    CHUNKSIZES_ATTR = 'chunksizes'
 
 class Coords:
     """
