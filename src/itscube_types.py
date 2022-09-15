@@ -355,7 +355,7 @@ class CubeJson:
     DIRECTORY = 'directory'
 
     # String token to use in filenames to specify EPSG code for the data
-    EPSG = 'EPSG'
+    EPSG_TOKEN = 'EPSG'
 
 class FilenamePrefix:
     """
@@ -384,7 +384,7 @@ def composite_filename_zarr(epsg_format: int, grid_size: str, mid_x: int, mid_y:
     mid_x: X coordinate of datacube centroid
     mid_y: Y coordinate of datacube centroid
     """
-    return f"{FilenamePrefix.Composites}_{CubeJson.EPSG}{epsg_format}_{int(grid_size):03d}m_X{mid_x}_Y{mid_y}.zarr"
+    return f"{FilenamePrefix.Composites}_{CubeJson.EPSG_TOKEN}{epsg_format}_{int(grid_size):03d}m_X{mid_x}_Y{mid_y}.zarr"
 
 def annual_mosaics_filename_nc(grid_size: str, region: str, year_date, version: str):
     """
