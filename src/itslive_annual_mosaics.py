@@ -433,7 +433,7 @@ class ITSLiveAnnualMosaics:
                     # Convert to lon/lat coordinates to format s3 bucket path
                     # for the datacube
                     mid_lon_lat = itslive_utils.transform_coord(
-                        epsg_code,
+                        str(epsg_code),
                         BatchVars.LON_LAT_PROJECTION,
                         mid_x, mid_y
                     )
