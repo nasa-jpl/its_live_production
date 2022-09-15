@@ -1661,7 +1661,7 @@ class ITSLiveAnnualMosaics:
         lat = []
 
         # Set cumulative attributes for the mosaic
-        for each_key in self.attrs.keys():
+        for each_key in list(self.attrs.keys()):
             each_value = self.attrs[each_key]
             key = each_key
 
