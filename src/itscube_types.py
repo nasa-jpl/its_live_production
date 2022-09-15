@@ -354,6 +354,9 @@ class CubeJson:
     RGI_CODE = 'RGI_CODE'
     DIRECTORY = 'directory'
 
+    # String token to use in filenames to specify EPSG code for the data
+    EPSG = 'EPSG'
+
 class FilenamePrefix:
     """
     Filename prefixes used by ITS_LIVE data products.
@@ -369,7 +372,7 @@ def datacube_filename_zarr(epsg_format: str, grid_size: int, mid_x: int, mid_y: 
     """
     return f"{FilenamePrefix.Datacube}_{epsg_format}_G{grid_size:04d}_X{mid_x}_Y{mid_y}.zarr"
 
-def composite_filename_zarr(epsg_format: str, grid_size: str, mid_x: int, mid_y: int):
+def composite_filename_zarr(epsg_format: int, grid_size: str, mid_x: int, mid_y: int):
     """
     Format filename for the datacube's composite:
     ITS_LIVE_velocity_EPSG3413_120m_X-3250000_Y250000.zarr
@@ -381,7 +384,7 @@ def composite_filename_zarr(epsg_format: str, grid_size: str, mid_x: int, mid_y:
     mid_x: X coordinate of datacube centroid
     mid_y: Y coordinate of datacube centroid
     """
-    return f"{FilenamePrefix.Composites}_{epsg_format}_{int(grid_size):03d}m_X{mid_x}_Y{mid_y}.zarr"
+    return f"{FilenamePrefix.Composites}_{CubeJson.EPSG}{epsg_format}_{int(grid_size):03d}m_X{mid_x}_Y{mid_y}.zarr"
 
 def annual_mosaics_filename_nc(grid_size: str, region: str, year_date, version: str):
     """

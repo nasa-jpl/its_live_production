@@ -404,9 +404,7 @@ class ITSLiveAnnualMosaics:
                 roi = properties[CubeJson.ROI_PERCENT_COVERAGE]
                 if roi != 0.0:
                     # Format filename for the cube
-                    epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
-                    # Extract int EPSG code
-                    epsg_code = epsg.replace(CubeJson.EPSG_PREFIX, '')
+                    epsg_code = properties[CubeJson.EPSG]
 
                     # Include only specific EPSG code(s) if specified
                     if len(BatchVars.EPSG_TO_GENERATE) and \
@@ -466,7 +464,7 @@ class ITSLiveAnnualMosaics:
                         continue
 
                     s3_composite_dir = itslive_utils.point_to_prefix(mid_lon_lat[1], mid_lon_lat[0], composite_dir)
-                    composite_s3 = os.path.join(s3_bucket, s3_composite_dir, composite_filename_zarr(ITSLiveAnnualMosaics.CELL_SIZE, mid_x, mid_y))
+                    composite_s3 = os.path.join(s3_bucket, s3_composite_dir, composite_filename_zarr(epsg_code, ITSLiveAnnualMosaics.CELL_SIZE, mid_x, mid_y))
                     logging.info(f'Composite file: {composite_s3}')
 
                     # Check if composite exists in S3 bucket (should exist, just to be sure)
@@ -2081,12 +2079,12 @@ def parse_args():
     ITSLiveAnnualMosaics.TRANSFORMATION_MATRIX_FILE = args.transformation_matrix_file
     ITSLiveAnnualMosaics.USE_EXISTING_FILES = args.use_existing_files
 
-    epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
+    epsg_codes = list(map(int, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
         logging.info(f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes")
         BatchVars.EPSG_TO_GENERATE = epsg_codes
 
-    epsg_codes = list(map(str, json.loads(args.excludeEPSG))) if args.excludeEPSG is not None else None
+    epsg_codes = list(map(int, json.loads(args.excludeEPSG))) if args.excludeEPSG is not None else None
     if epsg_codes and len(epsg_codes):
         logging.info(f"Got EPSG codes to exclude: {epsg_codes}")
         BatchVars.EPSG_TO_EXCLUDE = epsg_codes
