@@ -55,6 +55,7 @@ import itslive_utils
 from itscube_types import \
     Coords, \
     DataVars, \
+    Output, \
     BatchVars, \
     CubeJson, \
     FilenamePrefix, \
@@ -180,6 +181,8 @@ class ITSLiveAnnualMosaics:
     # Key into dictionary of generated mosaics files for the static mosaic (since
     # it does not have a year associated with it - just use its filename token)
     SUMMARY_KEY = '0000'
+
+    COMPRESSION = {"zlib": True, "complevel": 2, "shuffle": True}
 
     # Data variables for summary mosaics
     SUMMARY_VARS = [
@@ -1449,8 +1452,6 @@ class ITSLiveAnnualMosaics:
             min(ds.x.size, ITSLiveAnnualMosaics.CHUNK_SIZE)
         )
 
-        compression = {"zlib": True, "complevel": 2, "shuffle": True}
-
         # Set encoding
         encoding_settings = {}
         for each in [Coords.X, Coords.Y]:
@@ -1460,25 +1461,35 @@ class ITSLiveAnnualMosaics:
         for each in [
             DataVars.VX,
             DataVars.VY,
-            DataVars.V,
+            DataVars.V
+            ]:
+            encoding_settings.setdefault(each, {}).update({
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                Output.DTYPE_ATTR: np.float32,
+                Output.CHUNKSIZES: two_dim_chunks_settings
+            })
+            encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        # Settings for "int" data types
+        for each in [
             CompDataVars.VX_ERROR,
             CompDataVars.VY_ERROR,
             CompDataVars.V_ERROR
             ]:
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                'dtype': np.float32,
-                'chunksizes': two_dim_chunks_settings
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                Output.DTYPE_ATTR: np.uint16,
+                Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             })
-            encoding_settings[each].update(compression)
+            encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
         for each in [CompDataVars.COUNT]:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-                'dtype': np.short,
-                'chunksizes': two_dim_chunks_settings
+                Output.DTYPE_ATTR: np.uint32,
+                Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             })
-            encoding_settings[each].update(compression)
+            encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
         # Write locally
         ds.to_netcdf(f'{filename}', engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
@@ -1775,8 +1786,6 @@ class ITSLiveAnnualMosaics:
         two_dim_chunks_settings = (y_chunk, x_chunk)
         three_dim_chunks_settings = (1, y_chunk, x_chunk)
 
-        compression = {"zlib": True, "complevel": 2, "shuffle": True}
-
         # Settings for "float" data types
         for each in [
             CompDataVars.SLOPE_V,
@@ -1784,7 +1793,21 @@ class ITSLiveAnnualMosaics:
             CompDataVars.SLOPE_VY,
             CompDataVars.V0,
             CompDataVars.VX0,
-            CompDataVars.VY0,
+            CompDataVars.VY0
+        ]:
+            _chunks = two_dim_chunks_settings
+            if ds[each].ndim == 3:
+                _chunks = three_dim_chunks_settings
+
+            encoding_settings.setdefault(each, {}).update({
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                Output.DTYPE_ATTR: np.float32,
+                Output.CHUNKSIZES_ATTR: _chunks
+            })
+            encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        # Settings for "int" data types
+        for each in [
             CompDataVars.V0_ERROR,
             CompDataVars.VX0_ERROR,
             CompDataVars.VY0_ERROR,
@@ -1796,30 +1819,38 @@ class ITSLiveAnnualMosaics:
             CompDataVars.VY_AMP_ERROR,
             CompDataVars.V_PHASE,
             CompDataVars.VX_PHASE,
-            CompDataVars.VY_PHASE
+            CompDataVars.VY_PHASE,
+            CompDataVars.MAX_DT
         ]:
             _chunks = two_dim_chunks_settings
             if ds[each].ndim == 3:
                 _chunks = three_dim_chunks_settings
 
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
-                'dtype': np.float32,
-                'chunksizes': _chunks
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                Output.DTYPE_ATTR: np.uint32,
+                Output.CHUNKSIZES_ATTR: _chunks
             })
-            encoding_settings[each].update(compression)
+            encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
         for each in [Coords.X, Coords.Y]:
             encoding_settings.setdefault(each, {}).update({
-                'dtype': np.float32
+                Output.DTYPE_ATTR: np.float32
             })
-            encoding_settings[each].update(compression)
+            encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
-
-        # TODO: Change dtype to np.uint32 once count0 is fixed in all composites
         for each in [
-            CompDataVars.COUNT0,
-            CompDataVars.MAX_DT,
+            CompDataVars.COUNT0
+        ]:
+            encoding_settings.setdefault(each, {}).update({
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+                Output.DTYPE_ATTR: np.uint32,
+                Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
+            })
+            encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        for each in [
+            CompDataVars.OUTLIER_FRAC,
             CompDataVars.SENSOR_INCLUDE
         ]:
             _chunks = two_dim_chunks_settings
@@ -1828,20 +1859,11 @@ class ITSLiveAnnualMosaics:
                 _chunks = three_dim_chunks_settings
 
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-                'dtype': np.short,
-                'chunksizes': _chunks
+                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                Output.DTYPE_ATTR: np.uint8,
+                Output.CHUNKSIZES_ATTR: _chunks
             })
-            encoding_settings[each].update(compression)
-
-
-        # Set encoding for CompDataVars.OUTLIER_FRAC
-        encoding_settings.setdefault(CompDataVars.OUTLIER_FRAC, {}).update({
-            DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-            'dtype': np.float32,
-            'chunksizes': two_dim_chunks_settings
-        })
-        encoding_settings[CompDataVars.OUTLIER_FRAC].update(compression)
+            encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
         logging.info(f'DS: {ds}')
         logging.info(f'DS encoding: {encoding_settings}')
