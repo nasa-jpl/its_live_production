@@ -1080,7 +1080,8 @@ class ITSLiveAnnualMosaics:
         lat = []
 
         # Set cumulative attributes for the mosaic
-        for key, each_value in self.attrs.items():
+        for key in self.attrs.keys():
+            each_value = self.attrs[key]
             # Each value is a list of polygon lists collected over
             # EPSG mosaics, iterate through each list of polygons and unite them
             value = each_value
@@ -1660,7 +1661,8 @@ class ITSLiveAnnualMosaics:
         lat = []
 
         # Set cumulative attributes for the mosaic
-        for each_key, each_value in self.attrs.items():
+        for each_key in self.attrs.keys():
+            each_value = self.attrs[each_key]
             key = each_key
 
             if each_key in MosaicsOutputFormat.ATTR_MAP:
