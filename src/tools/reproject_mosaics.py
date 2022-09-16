@@ -680,9 +680,6 @@ class MosaicsReproject:
                 attrs=self.ds[CompDataVars.SENSOR_INCLUDE].attrs
             )
 
-            warp_data = None
-            gc.collect()
-
             if MosaicsReproject.VERBOSE:
                 _values = self.ds[CompDataVars.SENSOR_INCLUDE].values
                 verbose_mask = np.isfinite(_values)
@@ -690,6 +687,9 @@ class MosaicsReproject:
 
                 verbose_mask = np.isfinite(warp_data)
                 logging.info(f"gdal.warp(): Original {CompDataVars.SENSOR_INCLUDE}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
+
+            warp_data = None
+            gc.collect()
 
         MosaicsReproject.write_static_to_netCDF(reproject_ds, output_file)
 
