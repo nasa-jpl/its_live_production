@@ -1345,6 +1345,17 @@ class ITSLiveAnnualMosaics:
         if ITSLiveAnnualMosaics.USE_EXISTING_FILES and os.path.exists(mosaics_filename):
             # Mosaic file exists, don't create it
             logging.info(f'Using existing {mosaics_filename}')
+
+            # Read mosaics attributes in to be used by annual mosaics
+            attrs_filename = ITSLiveAnnualMosaics.filename_nc_to_json(mosaics_filename)
+
+            # Read "robust" attributes into self.attrs
+            if not os.path.exists(attrs_filename):
+                raise RuntimeError(f'Expected mosaics attribute file {attrs_filename} does not exist.')
+
+            with open(attrs_filename) as fh:
+                self.attrs = json.load(fh)
+
             return mosaics_filename
 
         # Dataset to represent annual mosaic
@@ -1662,6 +1673,9 @@ class ITSLiveAnnualMosaics:
 
         # Set cumulative attributes for the mosaic
         for each_key in list(self.attrs.keys()):
+            # Don't iterate over items() (i.e. keys() and values()) in "for"
+            # statement as we are going to change self.attrs dictionary in place
+            # for some of the keys
             each_value = self.attrs[each_key]
             key = each_key
 
