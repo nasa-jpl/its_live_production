@@ -142,7 +142,7 @@ class MosaicsReproject:
         if isinstance(data, str):
             # Filename for the dataset is provided, read it in
             self.input_file = data
-            self.ds = xr.open_dataset(data, mask_and_scale=False)
+            self.ds = xr.open_dataset(data)
             self.ds.load()
 
             logging.info(f'Grid in P_in: num_x={len(self.ds.x)} num_y={len(self.ds.y)}')
