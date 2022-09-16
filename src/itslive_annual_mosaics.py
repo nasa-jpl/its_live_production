@@ -1465,7 +1465,7 @@ class ITSLiveAnnualMosaics:
             encoding_settings.setdefault(each, {}).update({
                 DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
                 Output.DTYPE_ATTR: np.float32,
-                Output.CHUNKSIZES: two_dim_chunks_settings
+                Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             })
             encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
