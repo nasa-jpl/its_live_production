@@ -178,6 +178,9 @@ class ITSLiveAnnualMosaics:
     # mosaics when need to pick up from where previous processing stopped)
     USE_EXISTING_FILES = False
 
+    # If mosaics for only specific EPSG is requested to be generated
+    CREATE_EPSG_ONLY = None
+
     # Key into dictionary of generated mosaics files for the static mosaic (since
     # it does not have a year associated with it - just use its filename token)
     SUMMARY_KEY = '0000'
@@ -315,20 +318,40 @@ class ITSLiveAnnualMosaics:
 
         # Dictionary of mosaics per each EPSG code
         result_files = {}
-        for each_epsg in self.composites.keys():
-            logging.info(f'Opening annual composites for EPSG={each_epsg}')
-            epsg = self.composites[each_epsg]
-            result_files[each_epsg] = self.make_mosaics(each_epsg, epsg, s3_bucket, mosaics_dir, not need_to_reproject, copy_to_s3)
+        if ITSLiveAnnualMosaics.CREATE_EPSG_ONLY and \
+            ITSLiveAnnualMosaics.CREATE_EPSG_ONLY in self.composites.keys():
+            # Create mosaics only for specific EPSG
+            logging.info(f'Opening annual composites only for EPSG={ITSLiveAnnualMosaics.CREATE_EPSG_ONLY}')
+
+            epsg = self.composites[ITSLiveAnnualMosaics.CREATE_EPSG_ONLY]
+
+            result_files[ITSLiveAnnualMosaics.CREATE_EPSG_ONLY] = self.make_mosaics(
+                ITSLiveAnnualMosaics.CREATE_EPSG_ONLY,
+                epsg,
+                s3_bucket,
+                mosaics_dir,
+                not need_to_reproject,
+                copy_to_s3
+            )
 
             logging.info(f'Created mosaics files: {result_files[each_epsg]}')
 
-        if len(self.composites) > 1:
-            # Determine if target mosaics need to be placed into S3 bucket
-            copy_to_s3 = not self.is_dry_run
-            logging.info(f'Merge mosaics: copy_to_s3={copy_to_s3}')
+        else:
+            # Create mosaics based on all EPSG composites
+            for each_epsg in self.composites.keys():
+                logging.info(f'Opening annual composites for EPSG={each_epsg}')
+                epsg = self.composites[each_epsg]
+                result_files[each_epsg] = self.make_mosaics(each_epsg, epsg, s3_bucket, mosaics_dir, not need_to_reproject, copy_to_s3)
 
-            # Combine re-projected mosaics per EPSG code into the whole region mosaic
-            result_files = self.merge_mosaics(result_files, s3_bucket, mosaics_dir, copy_to_s3)
+                logging.info(f'Created mosaics files: {result_files[each_epsg]}')
+
+            if len(self.composites) > 1:
+                # Determine if target mosaics need to be placed into S3 bucket
+                copy_to_s3 = not self.is_dry_run
+                logging.info(f'Merge mosaics: copy_to_s3={copy_to_s3}')
+
+                # Combine re-projected mosaics per EPSG code into the whole region mosaic
+                result_files = self.merge_mosaics(result_files, s3_bucket, mosaics_dir, copy_to_s3)
 
         # Otherwise it's only mosaics for one projection and we are done
         return result_files
@@ -2038,6 +2061,14 @@ def parse_args():
         help="Target EPSG code for annual mosaics [%(default)s]"
     )
     parser.add_argument(
+        '--createEPSG',
+        type=int,
+        action='store',
+        default=None,
+        help="EPSG code to create intermediate mosaics for [%(default)s]. This is done " \
+             "to do layzy parallelization."
+    )
+    parser.add_argument(
         '-g', '--gridCellSize',
         type=int,
         default=120,
@@ -2096,6 +2127,7 @@ def parse_args():
     ITSLiveAnnualMosaics.NC_ENGINE = args.engine
     ITSLiveAnnualMosaics.TRANSFORMATION_MATRIX_FILE = args.transformation_matrix_file
     ITSLiveAnnualMosaics.USE_EXISTING_FILES = args.use_existing_files
+    ITSLiveAnnualMosaics.CREATE_EPSG_ONLY = args.createEPSG
 
     epsg_codes = list(map(int, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
