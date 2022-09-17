@@ -2066,7 +2066,7 @@ def parse_args():
         action='store',
         default=None,
         help="EPSG code to create intermediate mosaics for [%(default)s]. This is done " \
-             "to do layzy parallelization."
+             "to do lazy parallelization."
     )
     parser.add_argument(
         '-g', '--gridCellSize',
