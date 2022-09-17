@@ -334,7 +334,7 @@ class ITSLiveAnnualMosaics:
                 copy_to_s3
             )
 
-            logging.info(f'Created mosaics files: {result_files[each_epsg]}')
+            logging.info(f'Created mosaics files: {result_files[ITSLiveAnnualMosaics.CREATE_EPSG_ONLY]}')
 
         else:
             # Create mosaics based on all EPSG composites
