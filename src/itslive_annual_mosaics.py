@@ -181,6 +181,9 @@ class ITSLiveAnnualMosaics:
     # If mosaics for only specific EPSG is requested to be generated
     CREATE_EPSG_ONLY = None
 
+    # If mosaics only for specific year requested to be merged
+    MERGE_YEAR_ONLY = None
+
     # Key into dictionary of generated mosaics files for the static mosaic (since
     # it does not have a year associated with it - just use its filename token)
     SUMMARY_KEY = '0000'
@@ -940,6 +943,11 @@ class ITSLiveAnnualMosaics:
             self.raw_ds = {}
             gc.collect()
 
+            # If requested to merge only one year, skip the rest of the years
+            if ITSLiveAnnualMosaics.MERGE_YEAR_ONLY and ITSLiveAnnualMosaics.MERGE_YEAR_ONLY != each_year:
+                logging.info(f'Skipping {each_year} as only merging for {ITSLiveAnnualMosaics.MERGE_YEAR_ONLY} is requested.')
+                continue
+
             # Populate raw data
             for mosaics_epsg, mosaics_dict in epsg_mosaics_files.items():
                 # Get mosaic file corresponding to '0000': must be present for each EPSG "sub_directory"
@@ -1180,7 +1188,7 @@ class ITSLiveAnnualMosaics:
                     if CompOutputFormat.SENSORS_LABELS in ds[each_var].attrs:
                         ds[each_var].attrs[CompOutputFormat.SENSORS_LABELS] = sensors_labels
 
-                data_list.append(each_ds.s3.ds[each_var])
+                data_list.append(each_ds.s3.ds[each_var].load())
 
                 if len(data_list) > 1:
                     # Concatenate once we have 2 arrays
@@ -1308,16 +1316,18 @@ class ITSLiveAnnualMosaics:
                         attrs=each_ds.s3.ds[each_var].attrs
                     )
 
-                data_list.append(each_ds.s3.ds[each_var])
+                data_list.append(each_ds.s3.ds[each_var].load())
 
                 if len(data_list) > 1:
                     # Concatenate once we have 2 arrays
+                    logging.info(f'Concatenating data for {len(data_list)} layers')
                     concatenated = xr.concat(data_list, _concat_dim_name, join="outer")
                     data_list = [concatenated]
 
                 gc.collect()
 
             # Take average of all overlapping cells
+            logging.info(f'Taking average for {each_var}')
             avg_overlap = concatenated.mean(_concat_dim_name, skipna=True)
 
             # Set data values in result dataset
@@ -2069,6 +2079,14 @@ def parse_args():
              "to do lazy parallelization."
     )
     parser.add_argument(
+        '--mergeYear',
+        type=str,
+        action='store',
+        default=None,
+        help="Year to merge intermediate mosaics for [%(default)s]. This is done " \
+             "to do lazy parallelization."
+    )
+    parser.add_argument(
         '-g', '--gridCellSize',
         type=int,
         default=120,
@@ -2128,6 +2146,7 @@ def parse_args():
     ITSLiveAnnualMosaics.TRANSFORMATION_MATRIX_FILE = args.transformation_matrix_file
     ITSLiveAnnualMosaics.USE_EXISTING_FILES = args.use_existing_files
     ITSLiveAnnualMosaics.CREATE_EPSG_ONLY = args.createEPSG
+    ITSLiveAnnualMosaics.MERGE_YEAR_ONLY = args.mergeYear
 
     epsg_codes = list(map(int, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
