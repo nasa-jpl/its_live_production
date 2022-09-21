@@ -12,6 +12,7 @@ import collections
 import copy
 import datetime
 import gc
+import geopandas as gpd
 import json
 import logging
 import numba as nb
@@ -28,17 +29,10 @@ import zarr
 
 # Local imports
 from itscube import ITSCube, CubeOutputFormat
-from itscube_types import Coords, DataVars, Output
+from itscube_types import Coords, DataVars, Output, ShapeFile
 
 # Intercept date used for a weighted linear fit
 CENTER_DATE = datetime.datetime(2019, 7, 2)
-
-# Map of EPSG to land ice mask file.
-# The SensorExcludeFilter should only be applied if landice_2km_inbuff == 0
-# and the 2nd LSQ S2 filter should only be applied where landice_2km_inbuff == 1
-LAND_ICE_MASK = {
-    3413: 's3://its-live-data/autorift_parameters/v001/NPS_0120m_landice_2km_inbuff.tif'
-}
 
 class CompDataVars:
     """
@@ -1625,6 +1619,9 @@ class ITSLiveComposite:
     # minimum difference in amplitude between LSQ fit results before removing S2 data
     LSQ_MIN_AMP_DIFF = 2
 
+    # Shape file to locate land-ice mask file that corresponds to the composite's EPSG code
+    SHAPE_FILE = None
+
     def __init__(self, cube_store: str, s3_bucket: str):
         """
         Initialize composites.
@@ -1641,53 +1638,62 @@ class ITSLiveComposite:
         self.land_ice_mask = None
 
         cube_projection = int(self.cube_ds.attrs[CubeOutputFormat.PROJECTION])
-        if cube_projection in LAND_ICE_MASK:
-            # Load the mask
-            mask_ds = rioxarray.open_rasterio(LAND_ICE_MASK[cube_projection])
 
-            # Zoom into cube polygon
-            mask_x = (mask_ds.x >= self.cube_ds.x.min()) & (mask_ds.x <= self.cube_ds.x.max())
-            mask_y = (mask_ds.y >= self.cube_ds.y.min()) & (mask_ds.y <= self.cube_ds.y.max())
-            mask = (mask_x & mask_y)
+        # Find corresponding to EPSG land ice mask file for the cube
+        found_row = ITSLiveComposite.SHAPE_FILE.loc[ITSLiveComposite.SHAPE_FILE[ShapeFile.EPSG] == cube_projection]
+        if len(found_row) != 1:
+            raise RuntimeError(f'Expected one entry for {cube_projection} in shapefile, got {len(found_row)} rows.')
 
-            if mask.sum().item() == 0:
-                # Mask does not overlap with the cube
-                logging.info(f'No overlap is detected with mask data {LAND_ICE_MASK[cube_projection]}')
+        land_ice_mask_file = found_row[ShapeFile.LANDICE_2KM].item()
 
-            else:
-                cropped_mask_ds = mask_ds.where(mask, drop=True)
+        land_ice_mask_file = land_ice_mask_file.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
+        land_ice_mask_file = land_ice_mask_file.replace(ITSCube.PATH_URL, '')
+        logging.info(f'Using land-ice mask file {land_ice_mask_file}')
 
-                # Allocate xr.DataArray to match cube dimentions
-                ice_land_mask = xr.DataArray(
-                    np.zeros((len(self.cube_ds.y), len(self.cube_ds.x))),
-                    coords = {
-                        Coords.X: self.cube_ds.x,
-                        Coords.Y: self.cube_ds.y
-                    },
-                    dims=[Coords.Y, Coords.X]
-                )
+        # Load the mask
+        mask_ds = rioxarray.open_rasterio(land_ice_mask_file)
 
-                 # Populate mask data into cube-size array
-                if cropped_mask_ds.ndim == 3:
-                    # If it's 3d data, it should have first dimension=1: just
-                    # one layer is expected
-                    mask_data_sizes = cropped_mask_ds.shape
-                    if mask_data_sizes[0] != 1:
-                        raise RuntimeError(f'Unexpected size for mask data from {LAND_ICE_MASK[cube_projection]} file: {mask_data_sizes}')
+        # Zoom into cube polygon
+        mask_x = (mask_ds.x >= self.cube_ds.x.min()) & (mask_ds.x <= self.cube_ds.x.max())
+        mask_y = (mask_ds.y >= self.cube_ds.y.min()) & (mask_ds.y <= self.cube_ds.y.max())
+        mask = (mask_x & mask_y)
 
-                    else:
-                        ice_land_mask.loc[dict(x=cropped_mask_ds.x, y=cropped_mask_ds.y)] = cropped_mask_ds[0]
-
-                else:
-                    ice_land_mask.loc[dict(x=ds.x, y=ds.y)] = cropped_mask_ds
-
-                # Store mask as numpy array since all calcuations are done using
-                # numpy arrays
-                self.land_ice_mask = ice_land_mask.values
-                logging.info(f'Got land ice mask for {int(np.sum(self.land_ice_mask))} cells of the datacube')
+        if mask.sum().item() == 0:
+            # Mask does not overlap with the cube
+            logging.info(f'No overlap is detected with mask data {land_ice_mask_file}')
 
         else:
-            logging.info(f'No land ice mask is provided.')
+            cropped_mask_ds = mask_ds.where(mask, drop=True)
+
+            # Allocate xr.DataArray to match cube dimentions
+            ice_land_mask = xr.DataArray(
+                np.zeros((len(self.cube_ds.y), len(self.cube_ds.x))),
+                coords = {
+                    Coords.X: self.cube_ds.x,
+                    Coords.Y: self.cube_ds.y
+                },
+                dims=[Coords.Y, Coords.X]
+            )
+
+             # Populate mask data into cube-size array
+            if cropped_mask_ds.ndim == 3:
+                # If it's 3d data, it should have first dimension=1: just
+                # one layer is expected
+                mask_data_sizes = cropped_mask_ds.shape
+                if mask_data_sizes[0] != 1:
+                    raise RuntimeError(f'Unexpected size for mask data from {land_ice_mask_file} file: {mask_data_sizes}')
+
+                else:
+                    ice_land_mask.loc[dict(x=cropped_mask_ds.x, y=cropped_mask_ds.y)] = cropped_mask_ds[0]
+
+            else:
+                ice_land_mask.loc[dict(x=ds.x, y=ds.y)] = cropped_mask_ds
+
+            # Store mask as numpy array since all calcuations are done using
+            # numpy arrays
+            self.land_ice_mask = ice_land_mask.values
+            land_ice_coverage = int(np.sum(self.land_ice_mask))/(len(self.cube_ds.x)*len(self.cube_ds.y))*100
+            logging.info(f'Got land ice mask for {np.round(land_ice_coverage, 2)}% cells of the datacube')
 
         # If reading NetCDF data cube
         # cube_ds = xr.open_dataset(cube_store, decode_timedelta=False)
@@ -2890,7 +2896,7 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.COUNT0],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.COUNT0],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.NOTE: f'{CompDataVars.COUNT0} often does not equal the sum of annual counts ({CompDataVars.COUNT}) as a single image pair can contribute to the least squares fit for multiple years',
+                DataVars.NOTE: f'{CompDataVars.COUNT0} may not equal the sum of annual counts, as a single image pair can contribute to the least squares fit for multiple years',
                 DataVars.UNITS: DataVars.COUNT_UNITS
             }
         )
@@ -2943,7 +2949,7 @@ class ITSLiveComposite:
         # variable (according to xarray support, _FillValue is used for floating point
         # datatypes only)
 
-        # Settings for vrailable of "uint16" data type
+        # Settings for variables of "uint16" data type
         for each in [
             CompDataVars.VX_ERROR,
             CompDataVars.VY_ERROR,
@@ -2968,9 +2974,9 @@ class ITSLiveComposite:
                 Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE
             })
 
-            logging.info(f'{each} attrs: {ds[each].attrs}')
+            # logging.info(f'{each} attrs: {ds[each].attrs}')
 
-        # Settings for vrailable of "uint8" data type
+        # Settings for variables of "uint8" data type
         for each in [
             CompDataVars.OUTLIER_FRAC,
             CompDataVars.SENSOR_INCLUDE
@@ -3179,6 +3185,13 @@ if __name__ == '__main__':
         default='',
         help="S3 bucket to store cube composite in Zarr format to [%(default)s]."
     )
+    parser.add_argument(
+        '-s', '--shapeFile',
+        type=str,
+        default='s3://its-live-data/autorift_parameters/v001/autorift_landice_0120m.shp',
+        help="Shapefile that stores land-ice mask per each of the EPSG codes [%(default)s]."
+    )
+
     args = parser.parse_args()
 
     logging.info(f"Command-line arguments: {sys.argv}")
@@ -3186,6 +3199,11 @@ if __name__ == '__main__':
 
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
+
+    # Read shape file in (with land-ice mask information): make sure it's S3 URL
+    shape_file = args.shapeFile.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
+    shape_file = shape_file.replace(ITSCube.PATH_URL, '')
+    ITSLiveComposite.SHAPE_FILE = gpd.read_file(shape_file)
 
     if len(args.targetBucket):
         ITSLiveComposite.S3 = os.path.join(args.targetBucket, args.outputStore)
