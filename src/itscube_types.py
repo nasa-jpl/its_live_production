@@ -334,6 +334,12 @@ class BatchVars:
     # HTTP URL for the datacube/composite/mosaics full path in S3 bucket
     HTTP_PREFIX = 'http://its-live-data.s3.amazonaws.com'
 
+class ShapeFile:
+    """
+    Variables names specific to the ITS_LIVE shapefiles.
+    """
+    EPSG = 'epsg'
+    LANDICE_2KM = 'landice_2km'
 
 class CubeJson:
     """
