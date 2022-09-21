@@ -21,6 +21,7 @@ channels:
 dependencies:
   - python==3.9.6
   - dask==2.30.0
+  - geopandas==0.9.*
   - pandas
   - defaults::numpy
   - numpy
