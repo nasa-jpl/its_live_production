@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 # Local modules
 import itslive_utils
 from grid import Bounds, Grid
-from itscube_types import Coords, DataVars, FileExtension
+from itscube_types import Coords, DataVars, FileExtension, Output
 import zarr_to_netcdf
 
 # Set up logging
@@ -1090,11 +1090,8 @@ class ITSCube:
         # use the same coordinates as for any cube's data variables.
         # ATTN: Can't use None as data to create xr.DataArray - won't be able
         # to set dtype='short' in encoding for writing to the file.
-        data_values = np.empty((len(self.grid_y), len(self.grid_x)))
-        data_values[:, :] = np.nan
-
         return xr.DataArray(
-            data=data_values,
+            data=np.full((len(self.grid_y), len(self.grid_x)), np.nan),
             coords=[self.grid_y, self.grid_x],
             dims=[Coords.Y, Coords.X]
         )
@@ -1407,6 +1404,50 @@ class ITSCube:
         # for writing to the file store.
         return return_vars
 
+    def process_m_attributes(self, var_name: str, mid_date_coord):
+        """
+        Helper method to clean up attributes for M1[12]-related data variables.
+        """
+        # Process attributes
+        # If attribute is propagated as cube's data var attribute, delete it.
+        _name_sep = '_'
+
+        # Need to create new DR_TO_VR_FACTOR data variable
+        attr_name = f'{var_name}{_name_sep}{DataVars.DR_TO_VR_FACTOR}'
+
+        attr_data = [ITSCube.get_data_var_attr(ds, url, var_name, attr_name, DataVars.MISSING_BYTE)
+                     for ds, url in zip(self.ds, self.urls)]
+
+        self.layers[attr_name] = xr.DataArray(
+            data=attr_data,
+            coords=[mid_date_coord],
+            dims=[Coords.MID_DATE],
+            attrs={
+                DataVars.STD_NAME: attr_name,
+                DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.DR_TO_VR_FACTOR],
+                DataVars.UNITS: DataVars.M_PER_YEAR_PIXEL
+            }
+        )
+
+        # Remove attributes from the "parent" variable
+        if DataVars.DR_TO_VR_FACTOR in self.layers[var_name].attrs:
+            del self.layers[var_name].attrs[DataVars.DR_TO_VR_FACTOR]
+
+        if DataVars.DR_TO_VR_FACTOR_DESCRIPTION in self.layers[var_name].attrs:
+            del self.layers[var_name].attrs[DataVars.DR_TO_VR_FACTOR_DESCRIPTION]
+
+        # Remove scale_factor and offset that come with original M11 and M12 data
+        # if any
+        if Output.SCALE_FACTOR in self.layers[var_name].encoding:
+            del self.layers[var_name].encoding[Output.SCALE_FACTOR]
+
+        if Output.ADD_OFFSET in self.layers[var_name].encoding:
+            del self.layers[var_name].encoding[Output.ADD_OFFSET]
+
+        # Return name of new data variable - to be included into "encoding" settings
+        # for writing to the file store.
+        return attr_name
+
     def set_grid_mapping_attr(self, var_name: str, ds_grid_mapping_value: str):
         """
         Check on existence of "grid_mapping" attribute for the variable, set it
@@ -1641,6 +1682,22 @@ class ITSCube:
             self.ds = [ds.drop_vars(each_var) if each_var in ds else ds for ds in self.ds]
             gc.collect()
 
+        new_vars_zero_missing_value = []
+        # Process 'M1[12]' data variables of radar format, if any, and their attributes
+        for each_var in [DataVars.M11, DataVars.M12]:
+            self.layers[each_var] = xr.concat([self.get_data_var(ds, each_var) for ds in self.ds], mid_date_coord)
+            self.layers[each_var].attrs[DataVars.STD_NAME] = DataVars.NAME[each_var]
+            self.layers[each_var].attrs[DataVars.DESCRIPTION_ATTR] = DataVars.DESCRIPTION[each_var]
+            self.layers[each_var].attrs[DataVars.UNITS] = DataVars.PIXEL_PER_M_YEAR
+            new_v_vars.append(each_var)
+            new_vars_zero_missing_value.append(self.process_m_attributes(each_var, mid_date_coord))
+
+            self.set_grid_mapping_attr(each_var, ds_grid_mapping_value)
+
+            # Drop data variable as we don't need it anymore - free up memory
+            self.ds = [ds.drop_vars(each_var) if each_var in ds else ds for ds in self.ds]
+            gc.collect()
+
         # Process chip_size_height: dtype=ushort
         # Optical legacy granules might not have chip_size_height set, use
         # chip_size_width instead
@@ -1745,7 +1802,7 @@ class ITSCube:
                          DataVars.CHIP_SIZE_WIDTH]:
                 encoding_settings[each] = {
                     DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-                    'dtype': DataVars.TYPE[each]
+                    Output.DTYPE_ATTR: DataVars.TYPE[each]
                 }
 
             for each in [
@@ -1753,10 +1810,14 @@ class ITSCube:
                 DataVars.STABLE_COUNT_SLOW,
                 DataVars.STABLE_COUNT_MASK
                 ]:
-                encoding_settings.setdefault(each, {})['dtype'] = DataVars.TYPE[each]
+                encoding_settings.setdefault(each, {})[Output.DTYPE_ATTR] = DataVars.TYPE[each]
 
             for each in new_v_vars:
                 encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE}
+                encoding_settings[each].update(compression)
+
+            for each in new_vars_zero_missing_value:
+                encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE}
                 encoding_settings[each].update(compression)
 
             # Explicitly set dtype to 'short' for v* data variables
@@ -1766,7 +1827,7 @@ class ITSCube:
                          DataVars.VA,
                          DataVars.VR,
                          DataVars.V_ERROR]:
-                encoding_settings[each]['dtype'] = 'short'
+                encoding_settings[each][Output.DTYPE_ATTR] = 'short'
 
             # Explicitly desable _FillValue for some variables
             for each in [Coords.MID_DATE,
@@ -1809,7 +1870,9 @@ class ITSCube:
                          DataVars.VA,
                          DataVars.VR,
                          DataVars.VX,
-                         DataVars.VY]:
+                         DataVars.VY,
+                         DataVars.M11,
+                         DataVars.M12]:
                 encoding_settings.setdefault(each, {})['chunks'] = chunking_settings_3d
 
             # Does not work:
@@ -2048,7 +2111,9 @@ if __name__ == '__main__':
         '-r', '--removeExistingCube',
         action='store_true',
         default=False,
-        help='Flag to remove existing datacube in S3 bucket, default is to update existing datacube.'
+        help='Flag to remove existing datacube in S3 bucket, default is to update existing datacube. ' \
+             'This flag is useful when we need to re-create the cube from scratch, though beware of AWS limit of push requests ' \
+             'when multiple datacubes are deleted at the same time.'
     )
     parser.add_argument(
         '-n', '--numberGranules',
