@@ -151,6 +151,9 @@ class ITSCube:
     TIME_CHUNK_VALUE = 20000
     X_Y_CHUNK_VALUE = 10
 
+    # Chunking to apply to 1d data variables when writing datacube to the Zarr store
+    TIME_CHUNK_VALUE_1D = 200000
+
     # Landsat8 filename prefixes to use when we need to remove duplicate
     # reprocessed granules for Landsat8
     LANDSAT8_PREFIX = tuple(['LC08', 'LO08'])
@@ -1076,7 +1079,7 @@ class ITSCube:
 
         return found_urls
 
-    def get_data_var(self, ds: xr.Dataset, var_name: str):
+    def get_data_var(self, ds: xr.Dataset, var_name: str, data_dtype: str='short', data_fill_value = DataVars.MISSING_VALUE):
         """
         Return xr.DataArray that corresponds to the data variable if it exists
         in the 'ds' dataset, or empty xr.DataArray if it is not present in the 'ds'.
@@ -1084,6 +1087,10 @@ class ITSCube:
         """
 
         if var_name in ds:
+            if data_dtype and ds[var_name].dtype != np.dtype(data_dtype):
+                # Return as requested type
+                return ds[var_name].astype(data_dtype)
+
             return ds[var_name]
 
         # Create empty array as it is not provided in the granule,
@@ -1091,7 +1098,7 @@ class ITSCube:
         # ATTN: Can't use None as data to create xr.DataArray - won't be able
         # to set dtype='short' in encoding for writing to the file.
         return xr.DataArray(
-            data=np.full((len(self.grid_y), len(self.grid_x)), np.nan),
+            data=np.full((len(self.grid_y), len(self.grid_x)), data_fill_value, dtype=np.dtype(data_dtype)),
             coords=[self.grid_y, self.grid_x],
             dims=[Coords.Y, Coords.X]
         )
@@ -1102,10 +1109,12 @@ class ITSCube:
         ds_url: str,
         var_name: str,
         attr_name: str,
-        missing_value: int = None,
-        to_date=False):
+        missing_value = None,
+        to_date = False,
+        data_dtype = np.float32
+    ):
         """
-        Return a list of attributes for the data variable in data set if it exists,
+        Return attribute for the data variable in data set if it exists,
         or missing_value if it is not present.
         If missing_value is set to None, than specified attribute is expected
         to exist for the data variable "var_name" and exception is raised if
@@ -1133,6 +1142,11 @@ class ITSCube:
 
                 except ValueError as exc:
                     raise RuntimeError(f"Error converting {value} to date format '%Y%m%d': {exc} for {var_name}.{attr_name} in {ds_url}")
+
+            else:
+                # Convert value to expected datatype
+                if data_dtype:
+                    value = data_dtype(value)
 
             # print(f"Return value for {var_name}.{attr_name}: {value}")
             return value
@@ -1339,7 +1353,7 @@ class ITSCube:
                each_attr not in self.layers and \
                each_attr in self.ds[0][var_name].attrs:
                 self.layers[each_attr] = xr.DataArray(
-                    data=[ITSCube.get_data_var_attr(ds, url, var_name, each_attr)
+                    data=[ITSCube.get_data_var_attr(ds, url, var_name, each_attr, data_dtype=np.int32)
                           for ds, url in zip(self.ds, self.urls)],
                     coords=[mid_date_coord],
                     dims=[Coords.MID_DATE],
@@ -1749,9 +1763,18 @@ class ITSCube:
         for each in DataVars.ImgPairInfo.ALL:
             # Add new variables that correspond to attributes of 'img_pair_info'
             # (only selected ones)
+            each_dtype = None
+            if each in DataVars.ImgPairInfo.ALL_DTYPE:
+                each_dtype = DataVars.ImgPairInfo.ALL_DTYPE[each]
+
             self.layers[each] = xr.DataArray(
                 data=[ITSCube.get_data_var_attr(
-                    ds, url, DataVars.ImgPairInfo.NAME, each, to_date=DataVars.ImgPairInfo.CONVERT_TO_DATE[each]
+                    ds,
+                    url,
+                    DataVars.ImgPairInfo.NAME,
+                    each,
+                    to_date=DataVars.ImgPairInfo.CONVERT_TO_DATE[each],
+                    data_dtype=each_dtype
                 ) for ds, url in zip(self.ds, self.urls)],
                 coords=[mid_date_coord],
                 dims=[Coords.MID_DATE],
@@ -1794,58 +1817,95 @@ class ITSCube:
         start_time = timeit.default_timer()
         # Write to the Zarr store
         if is_first_write:
-            # ATTN: Must set '_FillValue' for each data variable that has
-            #       its missing_value attribute set
             encoding_settings = {}
-            for each in [DataVars.INTERP_MASK,
-                         DataVars.CHIP_SIZE_HEIGHT,
-                         DataVars.CHIP_SIZE_WIDTH]:
+
+            # ATTN: Set _FillValue for data variables of floating point data type.
+            #       Must set 'missing_value' for data variables on int data type,
+            #       otherwise xarray just ignores provided dtype if _FillValue is
+            #       provided and assumes floating point type.
+            for each in [
+                DataVars.ImgPairInfo.DATE_DT,
+                DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE
+            ]:
                 encoding_settings[each] = {
-                    DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
-                    Output.DTYPE_ATTR: DataVars.TYPE[each]
+                    Output.DTYPE_ATTR: np.float32
                 }
 
             for each in [
+                DataVars.INTERP_MASK,
+                DataVars.CHIP_SIZE_HEIGHT,
+                DataVars.CHIP_SIZE_WIDTH,
                 DataVars.FLAG_STABLE_SHIFT,
                 DataVars.STABLE_COUNT_SLOW,
                 DataVars.STABLE_COUNT_MASK
-                ]:
-                encoding_settings.setdefault(each, {})[Output.DTYPE_ATTR] = DataVars.TYPE[each]
+            ]:
+                encoding_settings[each] = {
+                    Output.DTYPE_ATTR: DataVars.INT_TYPE[each]
+                }
 
+                if each in DataVars.INT_MISSING_VALUE:
+                    encoding_settings[each][Output.MISSING_VALUE_ATTR] = DataVars.INT_MISSING_VALUE[each]
+
+            # new_v_vars: ['v', 'v_error', 'vx', 'vx_error', 'vx_error_mask',
+            # 'vx_error_modeled', 'vx_error_slow', 'vx_stable_shift',
+            # 'vx_stable_shift_mask', 'vx_stable_shift_slow',
+            # 'vy', 'vy_error', 'vy_error_mask', 'vy_error_modeled', 'vy_error_slow',
+            # 'vy_stable_shift', 'vy_stable_shift_mask', 'vy_stable_shift_slow',
+            # 'va', 'va_error', 'va_error_mask', 'va_error_modeled', 'va_error_slow',
+            # 'va_stable_shift', 'va_stable_shift_mask', 'va_stable_shift_slow',
+            # 'vr', 'vr_error', 'vr_error_mask', 'vr_error_modeled', 'vr_error_slow',
+            # 'vr_stable_shift', 'vr_stable_shift_mask', 'vr_stable_shift_slow', 'M11', 'M12']
             for each in new_v_vars:
-                encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE}
+                # Default to floating point data type and _FillValue attribute for encoding
+                missing_value = DataVars.MISSING_VALUE
+                missing_value_attr = Output.FILL_VALUE_ATTR
+
+                dtype_value = np.float32
+
+                if each in DataVars.INT_TYPE:
+                    missing_value_attr = Output.MISSING_VALUE_ATTR
+
+                    if each in DataVars.INT_MISSING_VALUE:
+                        missing_value = DataVars.INT_MISSING_VALUE[each]
+
+                    if each in DataVars.INT_TYPE:
+                        dtype_value = DataVars.INT_TYPE[each]
+
+                encoding_settings[each] = {
+                    missing_value_attr: missing_value,
+                    Output.DTYPE_ATTR: dtype_value
+                }
+
                 encoding_settings[each].update(compression)
 
+            # new_vars_zero_missing_value: ['M11_dr_to_vr_factor', 'M12_dr_to_vr_factor']
             for each in new_vars_zero_missing_value:
-                encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE}
+                encoding_settings[each] = {
+                    Output.DTYPE_ATTR: np.float32,
+                    Output.FILL_VALUE_ATTR: DataVars.MISSING_BYTE
+                }
                 encoding_settings[each].update(compression)
 
-            # Explicitly set dtype to 'short' for v* data variables
-            for each in [DataVars.V,
-                         DataVars.VX,
-                         DataVars.VY,
-                         DataVars.VA,
-                         DataVars.VR,
-                         DataVars.V_ERROR]:
-                encoding_settings[each][Output.DTYPE_ATTR] = 'short'
-
-            # Explicitly desable _FillValue for some variables
-            for each in [Coords.MID_DATE,
-                         DataVars.STABLE_COUNT_SLOW,
-                         DataVars.STABLE_COUNT_MASK,
-                         DataVars.AUTORIFT_SOFTWARE_VERSION,
-                         DataVars.ImgPairInfo.DATE_DT,
-                         DataVars.ImgPairInfo.DATE_CENTER,
-                         DataVars.ImgPairInfo.SATELLITE_IMG1,
-                         DataVars.ImgPairInfo.SATELLITE_IMG2,
-                         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
-                         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
-                         DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE,
-                         DataVars.ImgPairInfo.MISSION_IMG1,
-                         DataVars.ImgPairInfo.MISSION_IMG2,
-                         DataVars.ImgPairInfo.SENSOR_IMG1,
-                         DataVars.ImgPairInfo.SENSOR_IMG2]:
-                encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
+            # Explicitly desable _FillValue for some variables: can be set for floating
+            # point data variables only.
+            # xarray is broken if _FillValue=None is provided along with "chunks"
+            # encoding attribute: don't do it.
+            # for each in [Coords.MID_DATE,
+            #              DataVars.STABLE_COUNT_SLOW,
+            #              DataVars.STABLE_COUNT_MASK,
+            #              DataVars.AUTORIFT_SOFTWARE_VERSION,
+            #              DataVars.ImgPairInfo.DATE_DT,
+            #              DataVars.ImgPairInfo.DATE_CENTER,
+            #              DataVars.ImgPairInfo.SATELLITE_IMG1,
+            #              DataVars.ImgPairInfo.SATELLITE_IMG2,
+            #              DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
+            #              DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
+            #              DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE,
+            #              DataVars.ImgPairInfo.MISSION_IMG1,
+            #              DataVars.ImgPairInfo.MISSION_IMG2,
+            #              DataVars.ImgPairInfo.SENSOR_IMG1,
+            #              DataVars.ImgPairInfo.SENSOR_IMG2]:
+            #     encoding_settings.setdefault(each, {}).update({Output.FILL_VALUE_ATTR: None})
 
             # Set units for all datetime objects
             for each in [DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
@@ -1873,50 +1933,66 @@ class ITSCube:
                          DataVars.VY,
                          DataVars.M11,
                          DataVars.M12]:
-                encoding_settings.setdefault(each, {})['chunks'] = chunking_settings_3d
+                encoding_settings.setdefault(each, {})[Output.CHUNKS_ATTR] = chunking_settings_3d
 
-            # Does not work:
-            # for each in [
-            #     DataVars.FLAG_STABLE_SHIFT,
-            #     DataVars.STABLE_COUNT_SLOW,
-            #     DataVars.STABLE_COUNT_MASK,
-            #     'vx_error',
-            #     'vx_error_mask',
-            #     'vx_error_modeled',
-            #     'vx_error_slow',
-            #     'vx_stable_shift',
-            #     'vx_stable_shift_slow',
-            #     'vx_stable_shift_mask',
-            #     'vy_error',
-            #     'vy_error_mask',
-            #     'vy_error_modeled',
-            #     'vy_error_slow',
-            #     'vy_stable_shift',
-            #     'vy_stable_shift_slow',
-            #     'vy_stable_shift_mask',
-            #     'va_error',
-            #     'va_error_mask',
-            #     'va_error_modeled',
-            #     'va_error_slow',
-            #     'va_stable_shift',
-            #     'va_stable_shift_slow',
-            #     'va_stable_shift_mask',
-            #     'vr_error_mask',
-            #     'vr_error_modeled',
-            #     'vr_error_slow',
-            #     'vr_stable_shift',
-            #     'vr_stable_shift_slow',
-            #     'vr_stable_shift_mask',
-            #     DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE,
-            #     DataVars.ImgPairInfo.SATELLITE_IMG1,
-            #     DataVars.ImgPairInfo.SATELLITE_IMG2,
-            #     DataVars.ImgPairInfo.MISSION_IMG1,
-            #     DataVars.ImgPairInfo.MISSION_IMG2,
-            #     DataVars.ImgPairInfo.SENSOR_IMG1,
-            #     DataVars.ImgPairInfo.SENSOR_IMG2,
-            #     DataVars.ImgPairInfo.DATE_DT
-            # ]:
-            #     encoding_settings.setdefault(each, {})['chunks'] = ((250))   #ITSCube.CHUNKS_SETTINGS_1D
+            chunking_settings_1d = min(self.max_number_of_layers, ITSCube.TIME_CHUNK_VALUE_1D)
+
+            for each in [
+                DataVars.FLAG_STABLE_SHIFT,
+                DataVars.STABLE_COUNT_SLOW,
+                DataVars.STABLE_COUNT_MASK,
+                'vx_error',
+                'vx_error_mask',
+                'vx_error_modeled',
+                'vx_error_slow',
+                'vx_stable_shift',
+                'vx_stable_shift_slow',
+                'vx_stable_shift_mask',
+                'vy_error',
+                'vy_error_mask',
+                'vy_error_modeled',
+                'vy_error_slow',
+                'vy_stable_shift',
+                'vy_stable_shift_slow',
+                'vy_stable_shift_mask',
+                'va_error',
+                'va_error_mask',
+                'va_error_modeled',
+                'va_error_slow',
+                'va_stable_shift',
+                'va_stable_shift_slow',
+                'va_stable_shift_mask',
+                'vr_error',
+                'vr_error_mask',
+                'vr_error_modeled',
+                'vr_error_slow',
+                'vr_stable_shift',
+                'vr_stable_shift_slow',
+                'vr_stable_shift_mask',
+                'M11_dr_to_vr_factor',
+                'M12_dr_to_vr_factor',
+                DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
+                DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
+                DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE,
+                DataVars.ImgPairInfo.SATELLITE_IMG1,
+                DataVars.ImgPairInfo.SATELLITE_IMG2,
+                DataVars.ImgPairInfo.MISSION_IMG1,
+                DataVars.ImgPairInfo.MISSION_IMG2,
+                DataVars.ImgPairInfo.SENSOR_IMG1,
+                DataVars.ImgPairInfo.SENSOR_IMG2,
+                DataVars.ImgPairInfo.DATE_CENTER,
+                DataVars.ImgPairInfo.DATE_DT
+            ]:
+                # Reset existing encoding settings if any for the data variable
+                self.layers[each].encoding = {}
+                encoding_settings.setdefault(each, {})[Output.CHUNKS_ATTR] = (chunking_settings_1d)
+
+                if Output.FILL_VALUE_ATTR in self.layers[each].attrs:
+                    del self.layers[each].attrs[Output.FILL_VALUE_ATTR]
+
+                # logging.info(f'Encoding for {each}: {encoding_settings[each]}')
+                # logging.info(f'each.attrs for {each}: {self.layers[each].attrs}')
+                # logging.info(f'each.encoding for {each}: {self.layers[each].encoding}')
 
             self.logger.info(f"Encoding writing to Zarr: {encoding_settings}")
             # self.logger.info(f"Data variables to Zarr:   {json.dumps(list(self.layers.keys()), indent=4)}")
