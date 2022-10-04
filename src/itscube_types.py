@@ -386,8 +386,17 @@ class ShapeFile:
     """
     Variables names specific to the ITS_LIVE shapefiles.
     """
-    EPSG = 'epsg'
+    EPSG        = 'epsg'
     LANDICE_2KM = 'landice_2km'
+    LANDICE     = 'landice'
+
+    Name = {
+        LANDICE: 'land ice mask'
+    }
+    Description = {
+        LANDICE: 'land ice mask, 1 = land-ice, 0 = non-land-ice'
+    }
+
 
 class CubeJson:
     """
