@@ -2,6 +2,8 @@
 Classes that define data variables and attributes for the ITS_LIVE data sets:
 datacubes, composites, and mosaics.
 """
+import numpy as np
+
 class Output:
     """
     Attributes specific to the output store format (Zarr or NetCDF)
@@ -14,6 +16,10 @@ class Output:
     MISSING_VALUE_ATTR = 'missing_value'
     CHUNKS_ATTR = 'chunks'
     CHUNKSIZES_ATTR = 'chunksizes'
+
+    # These encoding attributes are for M11 and M12 variables in radar granules
+    SCALE_FACTOR = 'scale_factor'
+    ADD_OFFSET = 'add_offset'
 
 class Coords:
     """
@@ -59,7 +65,6 @@ class DataVars:
     SKIP_PROJECTION = 'skipped_wrong_projection'
 
     # Attributes that appear for multiple data variables
-    FILL_VALUE_ATTR            = '_FillValue'
     DESCRIPTION_ATTR           = 'description'  # v, vx, vy
     GRID_MAPPING               = 'grid_mapping' # v, vx, vy - store only one per cube
     GRID_MAPPING_NAME          = 'grid_mapping_name' # New format: attribute to store grid mapping
@@ -88,15 +93,24 @@ class DataVars:
     BINARY_UNITS      = 'binary'
     FRACTION_UNITS    = 'fraction'
     DAY_OF_YEAR_UNITS = 'day of year'
+    PIXEL_PER_M_YEAR  = 'pixel/(m/y)'
+    M_PER_YEAR_PIXEL  = 'm/(y*pixel)'
     NOTE              = 'note'
 
     # Original data variables and their attributes per ITS_LIVE granules.
     V       = 'v'
     V_ERROR = 'v_error'
-    VA      = 'va'
-    VR      = 'vr'
     VX      = 'vx'
     VY      = 'vy'
+
+    # Radar data variables to preserve in datacube
+    VA      = 'va'
+    VR      = 'vr'
+    M11     = 'M11'
+    M12     = 'M12'
+    # Attributes for M1* data
+    DR_TO_VR_FACTOR = 'dr_to_vr_factor'
+    DR_TO_VR_FACTOR_DESCRIPTION = 'dr_to_vr_factor_description'
 
     # Postfix to format velocity specific attributes, such as
     # vx_error, vx_error_mask, vx_error_modeled, vx_error_slow,
@@ -128,25 +142,51 @@ class DataVars:
 
     # Missing (FillValue) values for data variables
     MISSING_BYTE         = 0.0
-    MISSING_UBYTE        = 0.0
     MISSING_VALUE        = -32767
     MISSING_POS_VALUE    = 32767
     MISSING_UINT8_VALUE  = 255
 
+    # Standard name for variables to use
     NAME = {
-        INTERP_MASK: "interpolated_value_mask",
-        VA: "azimuth_velocity",
-        VR: "range_velocity",
-        V_ERROR: 'velocity_error',
+        INTERP_MASK: 'interpolated_value_mask',
+        VA:          'azimuth_velocity',
+        VR:          'range_velocity',
+        V_ERROR:     'velocity_error',
+        M11:         'conversion_matrix_element_11',
+        M12:         'conversion_matrix_element_12',
     }
 
-    TYPE = {
-        INTERP_MASK: 'ubyte',
-        CHIP_SIZE_HEIGHT:  'ushort',
-        CHIP_SIZE_WIDTH:   'ushort',
-        FLAG_STABLE_SHIFT: 'long',
-        STABLE_COUNT_SLOW: 'long',
-        STABLE_COUNT_MASK: 'long'
+    # Map of variables with integer data type
+    INT_TYPE = {
+        INTERP_MASK:       np.ubyte,
+        CHIP_SIZE_HEIGHT:  np.uint16,
+        CHIP_SIZE_WIDTH:   np.uint16,
+        FLAG_STABLE_SHIFT: np.uint8,
+        STABLE_COUNT_SLOW: np.uint16,
+        STABLE_COUNT_MASK: np.uint16,
+        V:        np.int16,
+        VX:       np.int16,
+        VY:       np.int16,
+        V_ERROR:  np.int16,
+        VA:       np.int16,
+        VR:       np.int16,
+        M11:      np.int16,
+        M12:      np.int16
+    }
+
+    # Missing value for data variables of integer data type
+    INT_MISSING_VALUE = {
+        INTERP_MASK:      MISSING_BYTE,
+        CHIP_SIZE_HEIGHT: MISSING_BYTE,
+        CHIP_SIZE_WIDTH:  MISSING_BYTE,
+        V:                MISSING_VALUE,
+        VX:               MISSING_VALUE,
+        VY:               MISSING_VALUE,
+        V_ERROR:          MISSING_VALUE,
+        VA:               MISSING_VALUE,
+        VR:               MISSING_VALUE,
+        M11:              MISSING_VALUE,
+        M12:              MISSING_VALUE
     }
 
     # Description strings for all data variables and some
@@ -171,6 +211,9 @@ class DataVars:
         # picked up from the granules).
         VA: "velocity in radar azimuth direction",
         VR: "velocity in radar range direction",
+        M11: "conversion matrix element (1st row, 1st column) that can be multiplied with vx to give range pixel displacement dr (see Eq. A18 in https://www.mdpi.com/2072-4292/13/4/749)",
+        M12: "conversion matrix element (1st row, 2nd column) that can be multiplied with vy to give range pixel displacement dr (see Eq. A18 in https://www.mdpi.com/2072-4292/13/4/749)",
+        DR_TO_VR_FACTOR: "multiplicative factor that converts slant range pixel displacement dr to slant range velocity vr",
         V_ERROR: "velocity magnitude error",
         INTERP_MASK: "light interpolation mask",
         CHIP_SIZE_COORDS: \
@@ -241,6 +284,11 @@ class DataVars:
             DATE_DT,
             ROI_VALID_PERCENTAGE
         ]
+
+        ALL_DTYPE = {
+            DATE_DT: np.float32,
+            ROI_VALID_PERCENTAGE: np.float32
+        }
 
         # Description strings for data variables.
         DESCRIPTION = {
