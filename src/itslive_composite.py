@@ -2144,164 +2144,176 @@ class ITSLiveComposite:
 
         if self.sensor_filter.excludeS2FromLSQ:
             # The 2nd LSQ S2 filter should only be applied where land_ice_2km_inbuff == 1
+            run_lsq_fit = True
+
             if self.land_ice_mask is not None:
-                # Apply mask if it's available for the cube
+                # Apply mask if it's available for the cube:
+                # Alex: The SensorExcludeFilter should only be applied if landice_2km_inbuff == 0 and
+                #       the 2nd LSQ S2 filter should only be applied where landice_2km_inbuff == 1
                 mask = (self.land_ice_mask[start_y:stop_y, start_x:stop_x] == 1)
-                vx[~mask] = np.nan
-                vy[~mask] = np.nan
-                logging.info(f'Applying 2nd LSQ fit to {np.sum(mask)} out of {ITSLiveComposite.Chunk.y_len * ITSLiveComposite.Chunk.x_len} points.')
 
-            # Need to compare to LSQ fit excluding all S2 data: to see if
-            # S2 contains "faulty" data
-            mission_index = self.sensors_groups.index(SensorExcludeFilter.REF_SENSOR)
-            logging.info(f'Excluding "{SensorExcludeFilter.REF_SENSOR.mission}" (index={mission_index}) from vx and vy')
+                if np.sum(mask) == 0:
+                    # There are no cells to apply 2nd LSQ fit to
+                    run_lsq_fit = False
+                    logging.info(f'Skipping 2nd LSQ fit due to zero points of (landice == 1)')
 
-            # Find which layers correspond to the sensor group
-            mask = (self.sensor_filter.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
-            # logging.info(f'DEBUG: total number of valid S2 points: {np.sum(~np.isnan(vx[:, :, mask]))}')
+                else:
+                    vx[~mask] = np.nan
+                    vy[~mask] = np.nan
+                    logging.info(f'Applying 2nd LSQ fit to {np.sum(mask)} out of {ITSLiveComposite.Chunk.y_len * ITSLiveComposite.Chunk.x_len} points.')
 
-            # Filter current block's variables
-            vx[:, :, mask] = np.nan
-            vy[:, :, mask] = np.nan
-            logging.info(f'Excluding {np.sum(mask)} S2 points')
+            if run_lsq_fit:
+                # Need to compare to LSQ fit excluding all S2 data: to see if
+                # S2 contains "faulty" data
+                mission_index = self.sensors_groups.index(SensorExcludeFilter.REF_SENSOR)
+                logging.info(f'Excluding "{SensorExcludeFilter.REF_SENSOR.mission}" (index={mission_index}) from vx and vy')
 
-            # logging.info(f'DEBUG: Excluded S2 {self.sensors[mask]}')
-            # logging.info(f'DEBUG: left total valid vx points: {np.sum(~np.isnan(vx))}')
+                # Find which layers correspond to the sensor group
+                mask = (self.sensor_filter.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
+                # logging.info(f'DEBUG: total number of valid S2 points: {np.sum(~np.isnan(vx[:, :, mask]))}')
 
-            # %% Least-squares fits to detemine amplitude, phase and annual means
-            logging.info(f'Find vx annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
-            start_time = timeit.default_timer()
+                # Filter current block's variables
+                vx[:, :, mask] = np.nan
+                vy[:, :, mask] = np.nan
+                logging.info(f'Excluding {np.sum(mask)} S2 points')
 
-            # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
-            # Transform vx data to make time series continuous in memory: [y, x, t]
-            ITSLiveComposite.cubelsqfit2(
-                vx,
-                self.vx_error,
-                self.excludeS2_amplitude.vx,
-                self.excludeS2_phase.vx,
-                self.excludeS2_mean.vx,
-                self.excludeS2_error.vx,
-                self.excludeS2_sigma.vx,
-                self.excludeS2_count.vx,
-                self.excludeS2_count_image_pairs.vx,
-                self.excludeS2_offset.vx,
-                self.excludeS2_slope.vx,
-                self.excludeS2_std_error.vx
-            )
-            logging.info(f'Finished vx LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
+                # logging.info(f'DEBUG: Excluded S2 {self.sensors[mask]}')
+                # logging.info(f'DEBUG: left total valid vx points: {np.sum(~np.isnan(vx))}')
 
-            logging.info(f'Find vy annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
-            start_time = timeit.default_timer()
+                # %% Least-squares fits to detemine amplitude, phase and annual means
+                logging.info(f'Find vx annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
+                start_time = timeit.default_timer()
 
-            # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
-            ITSLiveComposite.cubelsqfit2(
-                vy,
-                self.vy_error,
-                self.excludeS2_amplitude.vy,
-                self.excludeS2_phase.vy,
-                self.excludeS2_mean.vy,
-                self.excludeS2_error.vy,
-                self.excludeS2_sigma.vy,
-                self.excludeS2_count.vy,
-                self.excludeS2_count_image_pairs.vy,
-                self.excludeS2_offset.vy,
-                self.excludeS2_slope.vy,
-                self.excludeS2_std_error.vy
-            )
-            logging.info(f'Finished vy LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
+                # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
+                # Transform vx data to make time series continuous in memory: [y, x, t]
+                ITSLiveComposite.cubelsqfit2(
+                    vx,
+                    self.vx_error,
+                    self.excludeS2_amplitude.vx,
+                    self.excludeS2_phase.vx,
+                    self.excludeS2_mean.vx,
+                    self.excludeS2_error.vx,
+                    self.excludeS2_sigma.vx,
+                    self.excludeS2_count.vx,
+                    self.excludeS2_count_image_pairs.vx,
+                    self.excludeS2_offset.vx,
+                    self.excludeS2_slope.vx,
+                    self.excludeS2_std_error.vx
+                )
+                logging.info(f'Finished vx LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
 
-            logging.info(f'Find climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data...')
-            start_time = timeit.default_timer()
+                logging.info(f'Find vy annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
+                start_time = timeit.default_timer()
 
-            self.excludeS2_offset.v[start_y:stop_y, start_x:stop_x], \
-            self.excludeS2_slope.v[start_y:stop_y, start_x:stop_x], \
-            self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x], \
-            self.excludeS2_sigma.v[start_y:stop_y, start_x:stop_x], \
-            self.excludeS2_phase.v[start_y:stop_y, start_x:stop_x], \
-            self.excludeS2_std_error.v[start_y:stop_y, start_x:stop_x] = \
-            climatology_magnitude(
-                self.excludeS2_offset.vx[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_offset.vy[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_slope.vx[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_slope.vy[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_amplitude.vy[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_sigma.vx[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_sigma.vy[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_phase.vx[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_phase.vy[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_std_error.vx[start_y:stop_y, start_x:stop_x],
-                self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x],
-                ITSLiveComposite.V_LIMIT
-            )
-            logging.info(f'Finished climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
+                # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
+                ITSLiveComposite.cubelsqfit2(
+                    vy,
+                    self.vy_error,
+                    self.excludeS2_amplitude.vy,
+                    self.excludeS2_phase.vy,
+                    self.excludeS2_mean.vy,
+                    self.excludeS2_error.vy,
+                    self.excludeS2_sigma.vy,
+                    self.excludeS2_count.vy,
+                    self.excludeS2_count_image_pairs.vy,
+                    self.excludeS2_offset.vy,
+                    self.excludeS2_slope.vy,
+                    self.excludeS2_std_error.vy
+                )
+                logging.info(f'Finished vy LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
 
-            # Check if there are any values that satisfy:
-            # if (amp_all) > (S1+L8_amp) * 2 and (amp_all) - (S1+L8_amp) > 5)
-            # then use lsqfit_annual output from S1+L8 and add S2 to the excluded sensors mask
-            amp_mask = (
-                self.amplitude.v[start_y:stop_y, start_x:stop_x] >
-                (self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x] * ITSLiveComposite.LSQ_AMP_SCALE)
-            ) & (
-                (self.amplitude.v[start_y:stop_y, start_x:stop_x] - self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x]) > ITSLiveComposite.LSQ_MIN_AMP_DIFF
-            )
+                logging.info(f'Find climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data...')
+                start_time = timeit.default_timer()
 
-            if np.sum(amp_mask) > 0:
-                # Use results from LSQ fit when excluding S2 for the spacial points
-                # where (amp_all) > (S1+L8_amp) * 2
-                logging.info(f'Using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data: {np.sum(amp_mask)} spacial points')
+                self.excludeS2_offset.v[start_y:stop_y, start_x:stop_x], \
+                self.excludeS2_slope.v[start_y:stop_y, start_x:stop_x], \
+                self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x], \
+                self.excludeS2_sigma.v[start_y:stop_y, start_x:stop_x], \
+                self.excludeS2_phase.v[start_y:stop_y, start_x:stop_x], \
+                self.excludeS2_std_error.v[start_y:stop_y, start_x:stop_x] = \
+                climatology_magnitude(
+                    self.excludeS2_offset.vx[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_offset.vy[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_slope.vx[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_slope.vy[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_amplitude.vy[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_sigma.vx[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_sigma.vy[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_phase.vx[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_phase.vy[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_std_error.vx[start_y:stop_y, start_x:stop_x],
+                    self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x],
+                    ITSLiveComposite.V_LIMIT
+                )
+                logging.info(f'Finished climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
 
-                # Re-compute the mask for valid count
-                count_mask = ~np.isnan(vx)
-                count0_vx = count_mask.sum(axis=2)
+                # Check if there are any values that satisfy:
+                # if (amp_all) > (S1+L8_amp) * 2 and (amp_all) - (S1+L8_amp) > 5)
+                # then use lsqfit_annual output from S1+L8 and add S2 to the excluded sensors mask
+                amp_mask = (
+                    self.amplitude.v[start_y:stop_y, start_x:stop_x] >
+                    (self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x] * ITSLiveComposite.LSQ_AMP_SCALE)
+                ) & (
+                    (self.amplitude.v[start_y:stop_y, start_x:stop_x] - self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x]) > ITSLiveComposite.LSQ_MIN_AMP_DIFF
+                )
 
-                # Set output data to
-                self.amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.amplitude.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.amplitude.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                if np.sum(amp_mask) > 0:
+                    # Use results from LSQ fit when excluding S2 for the spacial points
+                    # where (amp_all) > (S1+L8_amp) * 2
+                    logging.info(f'Using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data: {np.sum(amp_mask)} spacial points')
 
-                self.phase.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_phase.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.phase.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_phase.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.phase.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_phase.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                    # Re-compute the mask for valid count
+                    count_mask = ~np.isnan(vx)
+                    count0_vx = count_mask.sum(axis=2)
 
-                self.mean.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_mean.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.mean.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_mean.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.mean.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_mean.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                    # Set output data to
+                    self.amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.amplitude.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.amplitude.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
-                self.error.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_error.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.error.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_error.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.error.v[start_y:stop_y, start_x:stop_x] = self.excludeS2_error.v[start_y:stop_y, start_x:stop_x]
+                    self.phase.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_phase.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.phase.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_phase.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.phase.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_phase.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
-                self.sigma.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_sigma.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.sigma.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_sigma.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.sigma.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_sigma.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.mean.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_mean.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.mean.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_mean.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.mean.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_mean.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
-                self.count.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.count.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.count.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.error.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_error.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.error.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_error.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.error.v[start_y:stop_y, start_x:stop_x] = self.excludeS2_error.v[start_y:stop_y, start_x:stop_x]
 
-                self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                # Don't really use vx and v components of count_image_pairs, just to be complete:
-                self.count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.sigma.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_sigma.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.sigma.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_sigma.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.sigma.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_sigma.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
-                self.offset.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.offset.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.offset.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.count.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.count.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.count.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
-                self.slope.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_slope.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.slope.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_slope.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.slope.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_slope.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    # Don't really use vx and v components of count_image_pairs, just to be complete:
+                    self.count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
-                self.std_error.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_std_error.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.std_error.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                self.std_error.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_std_error.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.offset.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.offset.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.offset.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
-                # Update self.sensor_include[start_y:stop_y, start_x:stop_x, i] to exclude S2 data
-                self.sensor_include[start_y:stop_y, start_x:stop_x, mission_index][amp_mask] = 0
+                    self.slope.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_slope.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.slope.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_slope.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.slope.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_slope.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
-                # Re-set max_dt to NaNs
-                self.max_dt[start_y:stop_y, start_x:stop_x, mission_index][amp_mask] = np.nan
+                    self.std_error.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_std_error.vx[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.std_error.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x][amp_mask]
+                    self.std_error.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_std_error.v[start_y:stop_y, start_x:stop_x][amp_mask]
+
+                    # Update self.sensor_include[start_y:stop_y, start_x:stop_x, i] to exclude S2 data
+                    self.sensor_include[start_y:stop_y, start_x:stop_x, mission_index][amp_mask] = 0
+
+                    # Re-set max_dt to NaNs
+                    self.max_dt[start_y:stop_y, start_x:stop_x, mission_index][amp_mask] = np.nan
 
         # Outlier fraction is based on vx data (count for vx and v are identical to vx's count)
         self.outlier_fraction[start_y:stop_y, start_x:stop_x] = 1 - (self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x] / count0_vx)
@@ -2462,12 +2474,12 @@ class ITSLiveComposite:
         self.count.v = CompositeVariable.to_int_type(
             self.count.v,
             np.uint32,
-            DataVars.MISSING_UBYTE
+            DataVars.MISSING_BYTE
         )
         self.count_image_pairs.vx = CompositeVariable.to_int_type(
             self.count_image_pairs.vx,
             np.uint32,
-            DataVars.MISSING_UBYTE
+            DataVars.MISSING_BYTE
         )
 
         ds[DataVars.V] = xr.DataArray(
@@ -2917,7 +2929,7 @@ class ITSLiveComposite:
         encoding_settings.setdefault(CompDataVars.TIME, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
         for each in [CompDataVars.TIME, CompDataVars.SENSORS, Coords.X, Coords.Y]:
-            encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
+            encoding_settings.setdefault(each, {}).update({Output.FILL_VALUE_ATTR: None})
 
         encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({Output.DTYPE_ATTR: 'str'})
 
@@ -2937,7 +2949,7 @@ class ITSLiveComposite:
             CompDataVars.SLOPE_V
         ]:
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
                 Output.DTYPE_ATTR: np.float32,
                 Output.COMPRESSOR_ATTR: compressor
             })
