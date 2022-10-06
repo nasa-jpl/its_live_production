@@ -61,6 +61,7 @@ from itscube_types import \
     CompOutput, \
     BatchVars, \
     CubeJson, \
+    ShapeFile, \
     FilenamePrefix, \
     annual_mosaics_filename_nc, \
     composite_filename_zarr, \
@@ -69,7 +70,6 @@ from reproject_mosaics import main as reproject_main
 from reproject_mosaics import ESRICode, ESRICode_Proj4
 
 from itslive_composite import CENTER_DATE
-
 
 # Set up logging
 logging.basicConfig(
@@ -193,6 +193,7 @@ class ITSLiveAnnualMosaics:
 
     # Data variables for summary mosaics
     SUMMARY_VARS = [
+        ShapeFile.LANDICE,
         CompDataVars.COUNT0,
         CompDataVars.SLOPE_V,
         CompDataVars.SLOPE_VX,
@@ -219,6 +220,7 @@ class ITSLiveAnnualMosaics:
 
     # Data variables for annual mosaics
     ANNUAL_VARS = [
+        ShapeFile.LANDICE,
         CompDataVars.COUNT,
         DataVars.VX,
         DataVars.VY,
@@ -1201,6 +1203,12 @@ class ITSLiveAnnualMosaics:
             # Take average of all overlapping cells
             avg_overlap = concatenated.mean(_concat_dim_name, skipna=True)
 
+            if each_var == ShapeFile.LANDICE:
+                # Need to keep the mask as binary data
+                avg_overlap_attrs = copy.deepcopy(avg_overlap.attrs)
+                avg_overlap = xr.where(avg_overlap > 0, 1, 0)
+                avg_overlap.attrs = avg_overlap_attrs
+
             # Set data values in result dataset
             avg_overlap_dims = dict(x=avg_overlap.x.values, y=avg_overlap.y.values)
             if ndim == 3:
@@ -1330,6 +1338,12 @@ class ITSLiveAnnualMosaics:
             # Take average of all overlapping cells
             logging.info(f'Taking average for {each_var}')
             avg_overlap = concatenated.mean(_concat_dim_name, skipna=True)
+
+            if each_var == ShapeFile.LANDICE:
+                # Need to keep the mask as binary data
+                avg_overlap_attrs = copy.deepcopy(avg_overlap.attrs)
+                avg_overlap = xr.where(avg_overlap > 0, 1, 0)
+                avg_overlap.attrs = avg_overlap_attrs
 
             # Set data values in result dataset
             avg_overlap_dims = dict(x=avg_overlap.x.values, y=avg_overlap.y.values)
