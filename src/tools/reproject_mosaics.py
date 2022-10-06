@@ -20,11 +20,11 @@ import numpy as np
 import os
 from osgeo import osr, gdalnumeric, gdal
 from tqdm import tqdm
+import timeit
 import xarray as xr
 
 from grid import Grid, Bounds
-from itscube_types import Coords, DataVars, Output
-from itslive_composite import CompDataVars
+from itscube_types import Coords, DataVars, Output, CompDataVars
 
 # GDAL: enable exceptions and register all drivers
 gdal.UseExceptions()
@@ -1148,7 +1148,7 @@ class MosaicsReproject:
             verbose_mask = np.isfinite(_v_error)
             logging.info(f"reproject_velocity: Original {v_error_var}: min={np.nanmin(_v_error[verbose_mask])} max={np.nanmax(_v_error[verbose_mask])}")
 
-        for y in tqdm(range(num_y), ascii=True, desc=f"Re-projecting {vx_var}, {vy_var}, {vx_error_var}, {vy_error_var}..."):
+        for y in tqdm(range(num_y), ascii=True, desc=f"Re-projecting {vx_var}, {vy_var}, {vx_error_var}, {vy_error_var} using Y dimension..."):
             for x in range(num_x):
                 # There is no transformation matrix available for the point -->
                 # keep it as NODATA
@@ -1876,15 +1876,18 @@ class MosaicsReproject:
 
         # Compute X unit vector based on xy0_points, xy_points
         # in output projection
+        start_time = timeit.default_timer()
         xunit_v = np.zeros((num_xy0_points, 3))
 
         logging.info(f'Creating X unit vectors...')
 
         # Compute unit vector for each cell of the output grid
+
         for index in range(num_xy0_points):
             xunit_v[index] = np.array(xy_points[index]) - np.array(xy0_points[index])
             # xunit_v[index] /= np.linalg.norm(xunit_v[index])
             xunit_v[index] /= self.x_size
+        logging.info(f'Computed xunit (took {timeit.default_timer() - start_time} seconds)')
 
         logging.info(f'Creating Y unit vectors...')
 
@@ -1893,6 +1896,7 @@ class MosaicsReproject:
         ij_unit[:, 1] += self.y_size
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit.tolist())
 
+        start_time = timeit.default_timer()
         yunit_v = np.zeros((num_xy0_points, 3))
 
         # Compute Y unit vector based on xy0_points, xy_points
@@ -1901,6 +1905,8 @@ class MosaicsReproject:
             yunit_v[index] = np.array(xy_points[index]) - np.array(xy0_points[index])
             # yunit_v[index] /= np.linalg.norm(yunit_v[index])
             yunit_v[index] /= np.abs(self.y_size)
+
+        logging.info(f'Computed yunit (took {timeit.default_timer() - start_time} seconds)')
 
         # Compute transformation matrix per cell
         self.transformation_matrix = np.full((num_xy0_points), DataVars.MISSING_VALUE, dtype=object)
