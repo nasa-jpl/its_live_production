@@ -55,15 +55,16 @@ import itslive_utils
 from itscube_types import \
     Coords, \
     DataVars, \
+    CompDataVars, \
     Output, \
+    CubeOutput, \
+    CompOutput, \
     BatchVars, \
     CubeJson, \
     FilenamePrefix, \
     annual_mosaics_filename_nc, \
     composite_filename_zarr, \
     summary_mosaics_filename_nc
-from itscube import CubeOutputFormat
-from itslive_composite import CompDataVars, CompOutputFormat
 from reproject_mosaics import main as reproject_main
 from reproject_mosaics import ESRICode, ESRICode_Proj4
 
@@ -90,10 +91,10 @@ class MosaicsOutputFormat:
     # Mapping of mosaics and composites attributes: some of composites attributes
     # will appear with names specific to mosaic.
     ATTR_MAP = {
-        CubeOutputFormat.DATE_CREATED: COMPOSITES_CREATED,
-        CubeOutputFormat.DATE_UPDATED: COMPOSITES_UPDATED,
-        CubeOutputFormat.S3:           COMPOSITES_S3,
-        CubeOutputFormat.URL:          COMPOSITES_URL
+        CubeOutput.DATE_CREATED: COMPOSITES_CREATED,
+        CubeOutput.DATE_UPDATED: COMPOSITES_UPDATED,
+        CubeOutput.S3:           COMPOSITES_S3,
+        CubeOutput.URL:          COMPOSITES_URL
     }
 
     # This is to fix the case when composites attributes were collected using
@@ -104,16 +105,16 @@ class MosaicsOutputFormat:
     YEAR = 'year'
 
     ALL_ATTR = [
-        CompOutputFormat.COMPOSITES_SOFTWARE_VERSION,
-        CubeOutputFormat.DATACUBE_SOFTWARE_VERSION,
+        CompOutput.COMPOSITES_SOFTWARE_VERSION,
+        CubeOutput.DATACUBE_SOFTWARE_VERSION,
         COMPOSITES_CREATED,
         COMPOSITES_UPDATED,
-        CompOutputFormat.DATACUBE_CREATED,
-        CompOutputFormat.DATACUBE_S3,
-        CompOutputFormat.DATACUBE_UPDATED,
-        CompOutputFormat.DATACUBE_URL,
-        CubeOutputFormat.GEO_POLYGON,
-        CubeOutputFormat.PROJ_POLYGON,
+        CompOutput.DATACUBE_CREATED,
+        CompOutput.DATACUBE_S3,
+        CompOutput.DATACUBE_UPDATED,
+        CompOutput.DATACUBE_URL,
+        CubeOutput.GEO_POLYGON,
+        CubeOutput.PROJ_POLYGON,
         COMPOSITES_S3,
         COMPOSITES_URL
     ]
@@ -229,18 +230,18 @@ class ITSLiveAnnualMosaics:
 
     # Attributes that need to propagate from composites to mosaics
     ALL_ATTR = [
-        CompOutputFormat.COMPOSITES_SOFTWARE_VERSION,
-        CubeOutputFormat.DATACUBE_SOFTWARE_VERSION,
-        CubeOutputFormat.DATE_CREATED,
-        CubeOutputFormat.DATE_UPDATED,
-        CompOutputFormat.DATACUBE_CREATED,
-        CompOutputFormat.DATACUBE_S3,
-        CompOutputFormat.DATACUBE_UPDATED,
-        CompOutputFormat.DATACUBE_URL,
-        CubeOutputFormat.GEO_POLYGON,
-        CubeOutputFormat.PROJ_POLYGON,
-        CubeOutputFormat.S3,
-        CubeOutputFormat.URL
+        CompOutput.COMPOSITES_SOFTWARE_VERSION,
+        CubeOutput.DATACUBE_SOFTWARE_VERSION,
+        CubeOutput.DATE_CREATED,
+        CubeOutput.DATE_UPDATED,
+        CompOutput.DATACUBE_CREATED,
+        CompOutput.DATACUBE_S3,
+        CompOutput.DATACUBE_UPDATED,
+        CompOutput.DATACUBE_URL,
+        CubeOutput.GEO_POLYGON,
+        CubeOutput.PROJ_POLYGON,
+        CubeOutput.S3,
+        CubeOutput.URL
     ]
 
     def __init__(self, epsg: int, is_dry_run: bool):
@@ -761,7 +762,7 @@ class ITSLiveAnnualMosaics:
                 mosaic_attrs = json.load(fh)
 
             # Re-project proj_polygon of original attribute file to target_epsg
-            polygons = mosaic_attrs[CubeOutputFormat.PROJ_POLYGON]
+            polygons = mosaic_attrs[CubeOutput.PROJ_POLYGON]
 
             input_projection = osr.SpatialReference()
             input_projection.ImportFromEPSG(mosaics_epsg)
@@ -781,7 +782,7 @@ class ITSLiveAnnualMosaics:
             for each in polygons:
                 target_polygons.append([list(coord) for coord in source_to_target_transfer.TransformPoints(each)])
 
-            mosaic_attrs[CubeOutputFormat.PROJ_POLYGON] = target_polygons
+            mosaic_attrs[CubeOutput.PROJ_POLYGON] = target_polygons
 
             # Save re-projected attributes to file
             with open(reproject_attrs_filename, 'w') as fh:
@@ -1039,23 +1040,23 @@ class ITSLiveAnnualMosaics:
                 )
             },
             attrs = {
-                CubeOutputFormat.AUTHOR: CubeOutputFormat.Values.AUTHOR,
-                CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE],
-                CubeOutputFormat.INSTITUTION: CubeOutputFormat.Values.INSTITUTION,
+                CubeOutput.AUTHOR: CubeOutput.Values.AUTHOR,
+                CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE],
+                CubeOutput.INSTITUTION: CubeOutput.Values.INSTITUTION,
                 MosaicsOutputFormat.REGION: ITSLiveAnnualMosaics.REGION
             }
         )
 
-        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT]
+        ds.attrs[CubeOutput.GDAL_AREA_OR_POINT] = first_ds.attrs[CubeOutput.GDAL_AREA_OR_POINT]
         ds.attrs[MosaicsOutputFormat.MOSAICS_SOFTWARE_VERSION] = ITSLiveAnnualMosaics.VERSION
-        ds.attrs[CubeOutputFormat.PROJECTION] = self.epsg
-        ds.attrs[CubeOutputFormat.TITLE] = MosaicsOutputFormat.STATIC_TITLE
-        ds.attrs[CubeOutputFormat.DATE_CREATED] = self.date_created
+        ds.attrs[CubeOutput.PROJECTION] = self.epsg
+        ds.attrs[CubeOutput.TITLE] = MosaicsOutputFormat.STATIC_TITLE
+        ds.attrs[CubeOutput.DATE_CREATED] = self.date_created
 
         # Create sensors_labels = "Band 1: S1A_S1B; Band 2: S2A_S2B; Band 3: L8_L9";
         sensors_labels = [f'Band {index+1}: {self.sensor_coords[index]}' for index in range(len(self.sensor_coords))]
         sensors_labels = f'{"; ".join(sensors_labels)}'
-        ds.attrs[CompOutputFormat.SENSORS_LABELS] = sensors_labels
+        ds.attrs[CompOutput.SENSORS_LABELS] = sensors_labels
 
         ds[DataVars.MAPPING] = self.mapping
 
@@ -1117,7 +1118,7 @@ class ITSLiveAnnualMosaics:
             # EPSG mosaics, iterate through each list of polygons and unite them
             value = each_value
 
-            if key in [CubeOutputFormat.GEO_POLYGON, CubeOutputFormat.PROJ_POLYGON]:
+            if key in [CubeOutput.GEO_POLYGON, CubeOutput.PROJ_POLYGON]:
                 # Collect polygons:
                 polygons = [geometry.Polygon(each_polygon) for each_polygon in each_value]
                 # for each_mosaics_value in value:
@@ -1138,12 +1139,12 @@ class ITSLiveAnnualMosaics:
         lat = [round(each_lat, 2) for each_lat in lat]
         lon = [round(each_lon, 2) for each_lon in lon]
 
-        ds.attrs[CubeOutputFormat.LATITUDE] = lat
-        ds.attrs[CubeOutputFormat.LONGITUDE] = lon
+        ds.attrs[CubeOutput.LATITUDE] = lat
+        ds.attrs[CubeOutput.LONGITUDE] = lon
 
         # Save attributes for the use by annual mosaics
-        self.attrs[CubeOutputFormat.LATITUDE] = lat
-        self.attrs[CubeOutputFormat.LONGITUDE] = lon
+        self.attrs[CubeOutput.LATITUDE] = lat
+        self.attrs[CubeOutput.LONGITUDE] = lon
 
         _concat_dim_name  = 'new_dim'
 
@@ -1185,8 +1186,8 @@ class ITSLiveAnnualMosaics:
                     )
 
                     # Reset sensor_labels if present in data
-                    if CompOutputFormat.SENSORS_LABELS in ds[each_var].attrs:
-                        ds[each_var].attrs[CompOutputFormat.SENSORS_LABELS] = sensors_labels
+                    if CompOutput.SENSORS_LABELS in ds[each_var].attrs:
+                        ds[each_var].attrs[CompOutput.SENSORS_LABELS] = sensors_labels
 
                 data_list.append(each_ds.s3.ds[each_var].load())
 
@@ -1213,8 +1214,8 @@ class ITSLiveAnnualMosaics:
         logging.info(f'Merged all data.')
 
         if copy_to_s3:
-            ds.attrs[CubeOutputFormat.S3] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
-            ds.attrs[CubeOutputFormat.URL] = ds.attrs[CubeOutputFormat.S3].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
+            ds.attrs[CubeOutput.S3] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
+            ds.attrs[CubeOutput.URL] = ds.attrs[CubeOutput.S3].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
 
         else:
             # Append local path to the filename to store mosaics to
@@ -1269,25 +1270,25 @@ class ITSLiveAnnualMosaics:
                 )
             },
             attrs = {
-                CubeOutputFormat.AUTHOR: CubeOutputFormat.Values.AUTHOR,
-                CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE],
-                CubeOutputFormat.INSTITUTION: CubeOutputFormat.Values.INSTITUTION,
+                CubeOutput.AUTHOR: CubeOutput.Values.AUTHOR,
+                CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE],
+                CubeOutput.INSTITUTION: CubeOutput.Values.INSTITUTION,
                 MosaicsOutputFormat.REGION: ITSLiveAnnualMosaics.REGION,
                 MosaicsOutputFormat.YEAR: mosaic_date.strftime('%d-%b-%Y')
             }
         )
 
-        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT]
+        ds.attrs[CubeOutput.GDAL_AREA_OR_POINT] = first_ds.attrs[CubeOutput.GDAL_AREA_OR_POINT]
         ds.attrs[MosaicsOutputFormat.MOSAICS_SOFTWARE_VERSION] = ITSLiveAnnualMosaics.VERSION
-        ds.attrs[CubeOutputFormat.PROJECTION] = self.epsg
-        ds.attrs[CubeOutputFormat.TITLE] = MosaicsOutputFormat.ANNUAL_TITLE
-        ds.attrs[CubeOutputFormat.DATE_CREATED] = self.date_created
+        ds.attrs[CubeOutput.PROJECTION] = self.epsg
+        ds.attrs[CubeOutput.TITLE] = MosaicsOutputFormat.ANNUAL_TITLE
+        ds.attrs[CubeOutput.DATE_CREATED] = self.date_created
 
         ds[DataVars.MAPPING] = self.mapping
 
         # Re-use attributes as set by static mosaics
-        ds.attrs[CubeOutputFormat.LATITUDE] = json.dumps(self.attrs[CubeOutputFormat.LATITUDE])
-        ds.attrs[CubeOutputFormat.LONGITUDE] = json.dumps(self.attrs[CubeOutputFormat.LONGITUDE])
+        ds.attrs[CubeOutput.LATITUDE] = json.dumps(self.attrs[CubeOutput.LATITUDE])
+        ds.attrs[CubeOutput.LONGITUDE] = json.dumps(self.attrs[CubeOutput.LONGITUDE])
 
         two_coords = [self.y_coords, self.x_coords]
         two_dims = [Coords.Y, Coords.X]
@@ -1396,25 +1397,25 @@ class ITSLiveAnnualMosaics:
                 )
             },
             attrs = {
-                CubeOutputFormat.AUTHOR: CubeOutputFormat.Values.AUTHOR,
-                CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE],
-                CubeOutputFormat.INSTITUTION: CubeOutputFormat.Values.INSTITUTION,
+                CubeOutput.AUTHOR: CubeOutput.Values.AUTHOR,
+                CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE],
+                CubeOutput.INSTITUTION: CubeOutput.Values.INSTITUTION,
                 MosaicsOutputFormat.REGION: ITSLiveAnnualMosaics.REGION,
                 MosaicsOutputFormat.YEAR: year_date.strftime('%d-%b-%Y')
             }
         )
 
-        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = CubeOutputFormat.Values.AREA
+        ds.attrs[CubeOutput.GDAL_AREA_OR_POINT] = CubeOutput.Values.AREA
         ds.attrs[MosaicsOutputFormat.MOSAICS_SOFTWARE_VERSION] = ITSLiveAnnualMosaics.VERSION
-        ds.attrs[CubeOutputFormat.PROJECTION] = str(ds_projection)
-        ds.attrs[CubeOutputFormat.TITLE] = MosaicsOutputFormat.ANNUAL_TITLE
-        ds.attrs[CubeOutputFormat.DATE_CREATED] = self.date_created
+        ds.attrs[CubeOutput.PROJECTION] = str(ds_projection)
+        ds.attrs[CubeOutput.TITLE] = MosaicsOutputFormat.ANNUAL_TITLE
+        ds.attrs[CubeOutput.DATE_CREATED] = self.date_created
 
         # Cumulative attributes are already collected by generation of summary mosaic,
         # so longitude and latitude of center points are already computed for the
         # region.
-        ds.attrs[CubeOutputFormat.LATITUDE] = json.dumps(self.attrs[CubeOutputFormat.LATITUDE])
-        ds.attrs[CubeOutputFormat.LONGITUDE] = json.dumps(self.attrs[CubeOutputFormat.LONGITUDE])
+        ds.attrs[CubeOutput.LATITUDE] = json.dumps(self.attrs[CubeOutput.LATITUDE])
+        ds.attrs[CubeOutput.LONGITUDE] = json.dumps(self.attrs[CubeOutput.LONGITUDE])
 
         ds[DataVars.MAPPING] = self.mapping
 
@@ -1594,23 +1595,23 @@ class ITSLiveAnnualMosaics:
                 )
             },
             attrs = {
-                CubeOutputFormat.AUTHOR: CubeOutputFormat.Values.AUTHOR,
-                CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE],
-                CubeOutputFormat.INSTITUTION: CubeOutputFormat.Values.INSTITUTION,
+                CubeOutput.AUTHOR: CubeOutput.Values.AUTHOR,
+                CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE: first_ds.attrs[CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE],
+                CubeOutput.INSTITUTION: CubeOutput.Values.INSTITUTION,
                 MosaicsOutputFormat.REGION: ITSLiveAnnualMosaics.REGION
             }
         )
 
-        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = first_ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT]
+        ds.attrs[CubeOutput.GDAL_AREA_OR_POINT] = first_ds.attrs[CubeOutput.GDAL_AREA_OR_POINT]
         ds.attrs[MosaicsOutputFormat.MOSAICS_SOFTWARE_VERSION] = ITSLiveAnnualMosaics.VERSION
-        ds.attrs[CubeOutputFormat.PROJECTION] = ds_projection
-        ds.attrs[CubeOutputFormat.TITLE] = MosaicsOutputFormat.STATIC_TITLE
-        ds.attrs[CubeOutputFormat.DATE_CREATED] = self.date_created
+        ds.attrs[CubeOutput.PROJECTION] = ds_projection
+        ds.attrs[CubeOutput.TITLE] = MosaicsOutputFormat.STATIC_TITLE
+        ds.attrs[CubeOutput.DATE_CREATED] = self.date_created
 
         # Create sensors_labels = "Band 1: S1A_S1B; Band 2: S2A_S2B; Band 3: L8_L9";
         sensors_labels = [f'Band {index+1}: {self.sensor_coords[index]}' for index in range(len(self.sensor_coords))]
         sensors_labels = f'{"; ".join(sensors_labels)}'
-        ds.attrs[CompOutputFormat.SENSORS_LABELS] = sensors_labels
+        ds.attrs[CompOutput.SENSORS_LABELS] = sensors_labels
 
         ds[DataVars.MAPPING] = self.mapping
 
@@ -1630,7 +1631,7 @@ class ITSLiveAnnualMosaics:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.MAX_DT],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.MAX_DT],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                CompOutputFormat.SENSORS_LABELS: sensors_labels,
+                CompOutput.SENSORS_LABELS: sensors_labels,
                 DataVars.UNITS: DataVars.ImgPairInfo.UNITS[DataVars.ImgPairInfo.DATE_DT]
             }
         )
@@ -1643,7 +1644,7 @@ class ITSLiveAnnualMosaics:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSOR_INCLUDE],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                CompOutputFormat.SENSORS_LABELS: sensors_labels,
+                CompOutput.SENSORS_LABELS: sensors_labels,
                 DataVars.UNITS: DataVars.BINARY_UNITS
             }
         )
@@ -1721,7 +1722,7 @@ class ITSLiveAnnualMosaics:
 
             value = each_value
 
-            if each_key in [CubeOutputFormat.GEO_POLYGON, CubeOutputFormat.PROJ_POLYGON]:
+            if each_key in [CubeOutput.GEO_POLYGON, CubeOutput.PROJ_POLYGON]:
                 # Join polygons
                 polygons = [geometry.Polygon(json.loads(each_polygon)) for each_polygon in each_value]
 
@@ -1746,12 +1747,12 @@ class ITSLiveAnnualMosaics:
         lat = [round(each_lat, 2) for each_lat in lat]
         lon = [round(each_lon, 2) for each_lon in lon]
 
-        ds.attrs[CubeOutputFormat.LATITUDE] = json.dumps(lat)
-        ds.attrs[CubeOutputFormat.LONGITUDE] = json.dumps(lon)
+        ds.attrs[CubeOutput.LATITUDE] = json.dumps(lat)
+        ds.attrs[CubeOutput.LONGITUDE] = json.dumps(lon)
 
         # Save attributes for the use by annual mosaics
-        self.attrs[CubeOutputFormat.LATITUDE] = lat
-        self.attrs[CubeOutputFormat.LONGITUDE] = lon
+        self.attrs[CubeOutput.LATITUDE] = lat
+        self.attrs[CubeOutput.LONGITUDE] = lon
 
         if copy_to_s3:
             ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
@@ -1799,7 +1800,7 @@ class ITSLiveAnnualMosaics:
             # datatype to be consistent with other data products
             values.append([list(each) for each in each_obj.exterior.coords])
 
-            if key == CubeOutputFormat.GEO_POLYGON:
+            if key == CubeOutput.GEO_POLYGON:
                 # Collect numeric coordinates to calculate center lon/lat for each polygon
                 geo_polygon.append(list(each_obj.exterior.coords))
 

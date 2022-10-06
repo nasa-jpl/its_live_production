@@ -21,6 +21,52 @@ class Output:
     SCALE_FACTOR = 'scale_factor'
     ADD_OFFSET = 'add_offset'
 
+class CubeOutput:
+    """
+    Class to represent attributes and their values for xr.Dataset that represents
+    a datacube.
+    """
+    # Attributes
+    GDAL_AREA_OR_POINT = 'GDAL_AREA_OR_POINT'
+    PROJ_POLYGON = 'proj_polygon'
+    GEO_POLYGON = 'geo_polygon'
+    DATACUBE_SOFTWARE_VERSION = 'datacube_software_version'
+    DATE_CREATED = 'date_created'
+    DATE_UPDATED = 'date_updated'
+    INSTITUTION = 'institution'
+    PROJECTION = 'projection'
+    LATITUDE = 'latitude'
+    LONGITUDE = 'longitude'
+    S3 = 's3'
+    URL = 'url'
+    TITLE = 'title'
+    AUTHOR = 'author'
+
+    class Values:
+        """
+        Attribute values.
+        """
+        AREA = 'Area'
+        INSTITUTION = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
+        TITLE = 'ITS_LIVE datacube of image pair velocities'
+        AUTHOR =  'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)'
+
+class CompOutput:
+    """
+    Class to represent attributes for the output format of the composites data.
+    """
+    COMPOSITES_SOFTWARE_VERSION = 'composites_software_version'
+    DATACUBE_AUTORIFT_PARAMETER_FILE = 'datacube_autoRIFT_parameter_file'
+    SENSORS_LABELS = 'sensors_labels'
+
+    DATACUBE_CREATED = 'datacube_created'
+    DATACUBE_UPDATED = 'datacube_updated'
+    DATACUBE_S3 = 'datacube_s3'
+    DATACUBE_URL = 'datacube_url'
+
+    class Values:
+        TITLE = 'ITS_LIVE annual composites of image pair velocities'
+
 class Coords:
     """
     Coordinates for the data cube.
@@ -343,6 +389,109 @@ class DataVars:
             # ACQUISITION_DATE_IMG2: DATE_UNITS,
             # DATE_CENTER: DATE_UNITS
         }
+
+class CompDataVars:
+    """
+    Data variables and their descriptions to write annual composites to Zarr or
+    NetCDF output store.
+    """
+    TIME = 'time'
+    SENSORS = 'sensor'
+
+    VX_ERROR = 'vx_error'
+    VY_ERROR = 'vy_error'
+    V_ERROR = 'v_error'
+    VX_AMP_ERROR = 'vx_amp_error'
+    VY_AMP_ERROR = 'vy_amp_error'
+    V_AMP_ERROR = 'v_amp_error'
+    VX_AMP = 'vx_amp'
+    VY_AMP = 'vy_amp'
+    V_AMP = 'v_amp'
+    VX_PHASE = 'vx_phase'
+    VY_PHASE = 'vy_phase'
+    V_PHASE = 'v_phase'
+    COUNT = 'count'
+    MAX_DT = 'dt_max'
+    OUTLIER_FRAC = 'outlier_percent'
+    SENSOR_INCLUDE = 'sensor_flag'
+    VX0 = 'vx0'
+    VY0 = 'vy0'
+    V0  = 'v0'
+    COUNT0 = 'count0'
+    VX0_ERROR = 'vx0_error'
+    VY0_ERROR = 'vy0_error'
+    V0_ERROR  = 'v0_error'
+    SLOPE_VX  = 'dvx_dt'
+    SLOPE_VY  = 'dvy_dt'
+    SLOPE_V   = 'dv_dt'
+
+    STD_NAME = {
+        DataVars.VX: 'x_velocity',
+        DataVars.VY: 'y_velocity',
+        DataVars.V:  'velocity',
+        VX_ERROR: 'x_velocity_error',
+        VY_ERROR: 'y_velocity_error',
+        V_ERROR:  'velocity_error',
+        VX_AMP_ERROR: 'vx_amplitude_error',
+        VY_AMP_ERROR: 'vy_amplitude_error',
+        V_AMP_ERROR:  'v_amplitude_error',
+        VX_AMP: 'vx_amplitude',
+        VY_AMP: 'vy_amplitude',
+        V_AMP:  'v_amplitude',
+        VX_PHASE: 'vx_phase',
+        VY_PHASE: 'vy_phase',
+        V_PHASE:  'v_phase',
+        SENSORS: 'sensors',
+        TIME: 'time',
+        COUNT: 'count',
+        MAX_DT: 'dt_maximum',
+        SENSOR_INCLUDE: 'sensor_flag',
+        OUTLIER_FRAC: 'outlier_percent',
+        VX0: 'climatological_x_velocity',
+        VY0: 'climatological_y_velocity',
+        V0: 'climatological_velocity',
+        COUNT0: 'count0',
+        VX0_ERROR: 'vx0_velocity_error',
+        VY0_ERROR: 'vy0_velocity_error',
+        V0_ERROR: 'v0_velocity_error',
+        SLOPE_VX: 'dvx_dt',
+        SLOPE_VY: 'dvy_dt',
+        SLOPE_V:  'dv_dt'
+    }
+
+    DESCRIPTION = {
+        DataVars.VX:    'mean annual velocity of sinusoidal fit to vx',
+        DataVars.VY:    'mean annual velocity of sinusoidal fit to vy',
+        DataVars.V:     'mean annual velocity of sinusoidal fit to v',
+        TIME:           'time',
+        VX_ERROR:       'error weighted error for vx',
+        VY_ERROR:       'error weighted error for vy',
+        V_ERROR:        'error weighted error for v',
+        VX_AMP_ERROR:   'error for vx_amp',
+        VY_AMP_ERROR:   'error for vy_amp',
+        V_AMP_ERROR:    'error for v_amp',
+        VX_AMP:         'climatological mean seasonal amplitude of sinusoidal fit to vx',
+        VY_AMP:         'climatological mean seasonal amplitude in sinusoidal fit in vy',
+        V_AMP:          'climatological mean seasonal amplitude of sinusoidal fit to v',
+        VX_PHASE:       'day of maximum velocity of sinusoidal fit to vx',
+        VY_PHASE:       'day of maximum velocity of sinusoidal fit to vy',
+        V_PHASE:        'day of maximum velocity of sinusoidal fit to v',
+        COUNT:          'number of image pairs used in error weighted least squares fit',
+        MAX_DT:         'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
+        SENSOR_INCLUDE: 'flag = 1 if sensor group (see sensor variable) is included, flag = 0 if sensor group is excluded',
+        OUTLIER_FRAC:   'percentage of data identified as outliers and excluded from error weighted least squares fit',
+        SENSORS:        'combinations of unique sensors and missions that are grouped together for date_dt filtering',
+        VX0:            'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        VY0:            'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        V0:             'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        COUNT0:         'number of image pairs used for climatological means',
+        VX0_ERROR:      'error for vx0',
+        VY0_ERROR:      'error for vy0',
+        V0_ERROR:       'error for v0',
+        SLOPE_VX:       'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
+        SLOPE_VY:       'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
+        SLOPE_V:        'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
+    }
 
 class BatchVars:
     """

@@ -28,129 +28,11 @@ import xarray as xr
 import zarr
 
 # Local imports
-from itscube import ITSCube, CubeOutputFormat
-from itscube_types import Coords, DataVars, Output, ShapeFile
+from itscube import ITSCube
+from itscube_types import Coords, DataVars, Output, CubeOutput, ShapeFile, CompDataVars, CompOutput
 
 # Intercept date used for a weighted linear fit
 CENTER_DATE = datetime.datetime(2019, 7, 2)
-
-class CompDataVars:
-    """
-    Data variables and their descriptions to write to Zarr or NetCDF output store.
-    """
-    TIME = 'time'
-    SENSORS = 'sensor'
-
-    VX_ERROR = 'vx_error'
-    VY_ERROR = 'vy_error'
-    V_ERROR = 'v_error'
-    VX_AMP_ERROR = 'vx_amp_error'
-    VY_AMP_ERROR = 'vy_amp_error'
-    V_AMP_ERROR = 'v_amp_error'
-    VX_AMP = 'vx_amp'
-    VY_AMP = 'vy_amp'
-    V_AMP = 'v_amp'
-    VX_PHASE = 'vx_phase'
-    VY_PHASE = 'vy_phase'
-    V_PHASE = 'v_phase'
-    COUNT = 'count'
-    MAX_DT = 'dt_max'
-    OUTLIER_FRAC = 'outlier_percent'
-    SENSOR_INCLUDE = 'sensor_flag'
-    VX0 = 'vx0'
-    VY0 = 'vy0'
-    V0  = 'v0'
-    COUNT0 = 'count0'
-    VX0_ERROR = 'vx0_error'
-    VY0_ERROR = 'vy0_error'
-    V0_ERROR  = 'v0_error'
-    SLOPE_VX  = 'dvx_dt'
-    SLOPE_VY  = 'dvy_dt'
-    SLOPE_V   = 'dv_dt'
-
-    STD_NAME = {
-        DataVars.VX: 'x_velocity',
-        DataVars.VY: 'y_velocity',
-        DataVars.V:  'velocity',
-        VX_ERROR: 'x_velocity_error',
-        VY_ERROR: 'y_velocity_error',
-        V_ERROR:  'velocity_error',
-        VX_AMP_ERROR: 'vx_amplitude_error',
-        VY_AMP_ERROR: 'vy_amplitude_error',
-        V_AMP_ERROR:  'v_amplitude_error',
-        VX_AMP: 'vx_amplitude',
-        VY_AMP: 'vy_amplitude',
-        V_AMP:  'v_amplitude',
-        VX_PHASE: 'vx_phase',
-        VY_PHASE: 'vy_phase',
-        V_PHASE:  'v_phase',
-        SENSORS: 'sensors',
-        TIME: 'time',
-        COUNT: 'count',
-        MAX_DT: 'dt_maximum',
-        SENSOR_INCLUDE: 'sensor_flag',
-        OUTLIER_FRAC: 'outlier_percent',
-        VX0: 'climatological_x_velocity',
-        VY0: 'climatological_y_velocity',
-        V0: 'climatological_velocity',
-        COUNT0: 'count0',
-        VX0_ERROR: 'vx0_velocity_error',
-        VY0_ERROR: 'vy0_velocity_error',
-        V0_ERROR: 'v0_velocity_error',
-        SLOPE_VX: 'dvx_dt',
-        SLOPE_VY: 'dvy_dt',
-        SLOPE_V:  'dv_dt'
-    }
-
-    DESCRIPTION = {
-        DataVars.VX:    'mean annual velocity of sinusoidal fit to vx',
-        DataVars.VY:    'mean annual velocity of sinusoidal fit to vy',
-        DataVars.V:     'mean annual velocity of sinusoidal fit to v',
-        TIME:           'time',
-        VX_ERROR:       'error weighted error for vx',
-        VY_ERROR:       'error weighted error for vy',
-        V_ERROR:        'error weighted error for v',
-        VX_AMP_ERROR:   'error for vx_amp',
-        VY_AMP_ERROR:   'error for vy_amp',
-        V_AMP_ERROR:    'error for v_amp',
-        VX_AMP:         'climatological mean seasonal amplitude of sinusoidal fit to vx',
-        VY_AMP:         'climatological mean seasonal amplitude in sinusoidal fit in vy',
-        V_AMP:          'climatological mean seasonal amplitude of sinusoidal fit to v',
-        VX_PHASE:       'day of maximum velocity of sinusoidal fit to vx',
-        VY_PHASE:       'day of maximum velocity of sinusoidal fit to vy',
-        V_PHASE:        'day of maximum velocity of sinusoidal fit to v',
-        COUNT:          'number of image pairs used in error weighted least squares fit',
-        MAX_DT:         'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
-        SENSOR_INCLUDE: 'flag = 1 if sensor group (see sensor variable) is included, flag = 0 if sensor group is excluded',
-        OUTLIER_FRAC:   'percentage of data identified as outliers and excluded from error weighted least squares fit',
-        SENSORS:        'combinations of unique sensors and missions that are grouped together for date_dt filtering',
-        VX0:            'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        VY0:            'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        V0:             'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        COUNT0:         'number of image pairs used for climatological means',
-        VX0_ERROR:      'error for vx0',
-        VY0_ERROR:      'error for vy0',
-        V0_ERROR:       'error for v0',
-        SLOPE_VX:       'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
-        SLOPE_VY:       'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
-        SLOPE_V:        'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
-    }
-
-class CompOutputFormat:
-    """
-    Class to represent attributes for the output format of the data.
-    """
-    COMPOSITES_SOFTWARE_VERSION = 'composites_software_version'
-    DATACUBE_AUTORIFT_PARAMETER_FILE = 'datacube_autoRIFT_parameter_file'
-    SENSORS_LABELS = 'sensors_labels'
-
-    DATACUBE_CREATED = 'datacube_created'
-    DATACUBE_UPDATED = 'datacube_updated'
-    DATACUBE_S3 = 'datacube_s3'
-    DATACUBE_URL = 'datacube_url'
-
-    class Values:
-        TITLE = 'ITS_LIVE annual composites of image pair velocities'
 
 # Set up logging
 logging.basicConfig(
@@ -1634,7 +1516,7 @@ class ITSLiveComposite:
             read_skipped_granules_flag
         )
 
-        cube_projection = int(self.cube_ds.attrs[CubeOutputFormat.PROJECTION])
+        cube_projection = int(self.cube_ds.attrs[CubeOutput.PROJECTION])
 
         # Find corresponding to EPSG land ice mask file for the cube
         found_row = ITSLiveComposite.SHAPE_FILE.loc[ITSLiveComposite.SHAPE_FILE[ShapeFile.EPSG] == cube_projection]
@@ -1652,7 +1534,7 @@ class ITSLiveComposite:
 
         if ShapeFile.LANDICE in self.cube_ds:
             self.land_ice_mask_composite = self.cube_ds[ShapeFile.LANDICE].values
-            self.land_ice_mask_filename = self.cube_ds[ShapeFile.LANDICE].attrs[CubeOutputFormat.URL]
+            self.land_ice_mask_filename = self.cube_ds[ShapeFile.LANDICE].attrs[CubeOutput.URL]
 
         else:
             self.land_ice_mask_composite, self.land_ice_mask_composite_url = ITSLiveComposite.read_landice(
@@ -2450,40 +2332,40 @@ class ITSLiveComposite:
                 )
             },
             attrs = {
-                CubeOutputFormat.AUTHOR: CubeOutputFormat.Values.AUTHOR
+                CubeOutput.AUTHOR: CubeOutput.Values.AUTHOR
             }
         )
 
-        ds.attrs[CompOutputFormat.COMPOSITES_SOFTWARE_VERSION] = ITSLiveComposite.VERSION
-        ds.attrs[CubeOutputFormat.DATE_CREATED] = self.date_created
-        ds.attrs[CubeOutputFormat.DATE_UPDATED] = self.date_updated
+        ds.attrs[CompOutput.COMPOSITES_SOFTWARE_VERSION] = ITSLiveComposite.VERSION
+        ds.attrs[CubeOutput.DATE_CREATED] = self.date_created
+        ds.attrs[CubeOutput.DATE_UPDATED] = self.date_updated
 
         # To support old format datacubes for testing
         # TODO: remove check for existence once done testing with old cubes (to compare to Matlab)
-        if CubeOutputFormat.S3 in self.cube_ds.attrs:
-            ds.attrs[CompOutputFormat.DATACUBE_S3] = self.cube_ds.attrs[CubeOutputFormat.S3]
-            ds.attrs[CompOutputFormat.DATACUBE_URL] = self.cube_ds.attrs[CubeOutputFormat.URL]
+        if CubeOutput.S3 in self.cube_ds.attrs:
+            ds.attrs[CompOutput.DATACUBE_S3] = self.cube_ds.attrs[CubeOutput.S3]
+            ds.attrs[CompOutput.DATACUBE_URL] = self.cube_ds.attrs[CubeOutput.URL]
 
-        ds.attrs[CompOutputFormat.DATACUBE_CREATED] = self.cube_ds.attrs[CubeOutputFormat.DATE_CREATED]
-        ds.attrs[CompOutputFormat.DATACUBE_UPDATED] = self.cube_ds.attrs[CubeOutputFormat.DATE_UPDATED]
-        ds.attrs[CubeOutputFormat.DATACUBE_SOFTWARE_VERSION] = self.cube_ds.attrs[CubeOutputFormat.DATACUBE_SOFTWARE_VERSION]
-        ds.attrs[CompOutputFormat.DATACUBE_AUTORIFT_PARAMETER_FILE] = self.cube_ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE]
+        ds.attrs[CompOutput.DATACUBE_CREATED] = self.cube_ds.attrs[CubeOutput.DATE_CREATED]
+        ds.attrs[CompOutput.DATACUBE_UPDATED] = self.cube_ds.attrs[CubeOutput.DATE_UPDATED]
+        ds.attrs[CubeOutput.DATACUBE_SOFTWARE_VERSION] = self.cube_ds.attrs[CubeOutput.DATACUBE_SOFTWARE_VERSION]
+        ds.attrs[CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE] = self.cube_ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE]
 
-        ds.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = CubeOutputFormat.Values.AREA
+        ds.attrs[CubeOutput.GDAL_AREA_OR_POINT] = CubeOutput.Values.AREA
 
         # To support old format datacubes for testing
         # TODO: remove once done testing with old cubes (to compare to Matlab)
-        if CubeOutputFormat.GEO_POLYGON in self.cube_ds.attrs:
-            ds.attrs[CubeOutputFormat.GEO_POLYGON]  = self.cube_ds.attrs[CubeOutputFormat.GEO_POLYGON]
-            ds.attrs[CubeOutputFormat.PROJ_POLYGON] = self.cube_ds.attrs[CubeOutputFormat.PROJ_POLYGON]
+        if CubeOutput.GEO_POLYGON in self.cube_ds.attrs:
+            ds.attrs[CubeOutput.GEO_POLYGON]  = self.cube_ds.attrs[CubeOutput.GEO_POLYGON]
+            ds.attrs[CubeOutput.PROJ_POLYGON] = self.cube_ds.attrs[CubeOutput.PROJ_POLYGON]
 
-        ds.attrs[CubeOutputFormat.INSTITUTION] = CubeOutputFormat.Values.INSTITUTION
-        ds.attrs[CubeOutputFormat.LATITUDE]  = self.cube_ds.attrs[CubeOutputFormat.LATITUDE]
-        ds.attrs[CubeOutputFormat.LONGITUDE] = self.cube_ds.attrs[CubeOutputFormat.LONGITUDE]
-        ds.attrs[CubeOutputFormat.PROJECTION] = self.cube_ds.attrs[CubeOutputFormat.PROJECTION]
-        ds.attrs[CubeOutputFormat.S3] = ITSLiveComposite.S3
-        ds.attrs[CubeOutputFormat.URL] = ITSLiveComposite.URL
-        ds.attrs[CubeOutputFormat.TITLE] = CubeOutputFormat.Values.TITLE
+        ds.attrs[CubeOutput.INSTITUTION] = CubeOutput.Values.INSTITUTION
+        ds.attrs[CubeOutput.LATITUDE]  = self.cube_ds.attrs[CubeOutput.LATITUDE]
+        ds.attrs[CubeOutput.LONGITUDE] = self.cube_ds.attrs[CubeOutput.LONGITUDE]
+        ds.attrs[CubeOutput.PROJECTION] = self.cube_ds.attrs[CubeOutput.PROJECTION]
+        ds.attrs[CubeOutput.S3] = ITSLiveComposite.S3
+        ds.attrs[CubeOutput.URL] = ITSLiveComposite.URL
+        ds.attrs[CubeOutput.TITLE] = CubeOutput.Values.TITLE
 
         # Add data as variables
         ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
@@ -2506,7 +2388,7 @@ class ITSLiveComposite:
                     DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
                     DataVars.GRID_MAPPING: DataVars.MAPPING,
                     DataVars.UNITS: DataVars.BINARY_UNITS,
-                    CubeOutputFormat.URL: self.land_ice_mask_composite_url
+                    CubeOutput.URL: self.land_ice_mask_composite_url
                 }
             )
             self.land_ice_mask_composite = None
@@ -2777,7 +2659,7 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.MAX_DT],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.MAX_DT],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                CompOutputFormat.SENSORS_LABELS: sensors_labels_attr,
+                CompOutput.SENSORS_LABELS: sensors_labels_attr,
                 DataVars.UNITS: DataVars.ImgPairInfo.UNITS[DataVars.ImgPairInfo.DATE_DT]
             }
         )
@@ -2799,7 +2681,7 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSOR_INCLUDE],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                CompOutputFormat.SENSORS_LABELS: sensors_labels_attr,
+                CompOutput.SENSORS_LABELS: sensors_labels_attr,
                 DataVars.UNITS: DataVars.BINARY_UNITS
             }
         )

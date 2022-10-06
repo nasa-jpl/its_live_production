@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 # Local modules
 import itslive_utils
 from grid import Bounds, Grid
-from itscube_types import Coords, DataVars, FileExtension, Output
+from itscube_types import Coords, DataVars, FileExtension, Output, CubeOutput
 import zarr_to_netcdf
 
 # Set up logging
@@ -56,36 +56,6 @@ Y_ATTRS = {
     DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
     DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
 }
-
-class CubeOutputFormat:
-    """
-    Class to represent attributes and their values for xr.Dataset that represents
-    a datacube.
-    """
-    # Attributes
-    GDAL_AREA_OR_POINT = 'GDAL_AREA_OR_POINT'
-    PROJ_POLYGON = 'proj_polygon'
-    GEO_POLYGON = 'geo_polygon'
-    DATACUBE_SOFTWARE_VERSION = 'datacube_software_version'
-    DATE_CREATED = 'date_created'
-    DATE_UPDATED = 'date_updated'
-    INSTITUTION = 'institution'
-    PROJECTION = 'projection'
-    LATITUDE = 'latitude'
-    LONGITUDE = 'longitude'
-    S3 = 's3'
-    URL = 'url'
-    TITLE = 'title'
-    AUTHOR = 'author'
-
-    class Values:
-        """
-        Attribute values.
-        """
-        AREA = 'Area'
-        INSTITUTION = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
-        TITLE = 'ITS_LIVE datacube of image pair velocities'
-        AUTHOR =  'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)'
 
 class ITSCube:
     """
@@ -1541,7 +1511,7 @@ class ITSCube:
                 )
             },
             attrs = {
-                CubeOutputFormat.AUTHOR: CubeOutputFormat.Values.AUTHOR
+                CubeOutput.AUTHOR: CubeOutput.Values.AUTHOR
             }
         )
 
@@ -1561,17 +1531,17 @@ class ITSCube:
         if self.autoRIFTParamFile != self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE]:
             raise RuntimeError(f"Inconsistent values for '{DataVars.AUTORIFT_PARAMETER_FILE}' are detected: {self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE]} for current {len(self.ds)} layers vs. previously detected {self.autoRIFTParamFile}")
 
-        self.layers.attrs[CubeOutputFormat.DATACUBE_SOFTWARE_VERSION] = ITSCube.Version
-        self.layers.attrs[CubeOutputFormat.DATE_CREATED] = self.date_created
-        self.layers.attrs[CubeOutputFormat.DATE_UPDATED] = self.date_updated if self.date_updated is not None else self.date_created
-        self.layers.attrs[CubeOutputFormat.GDAL_AREA_OR_POINT] = CubeOutputFormat.Values.AREA
-        self.layers.attrs[CubeOutputFormat.GEO_POLYGON]  = json.dumps(self.polygon_coords)
-        self.layers.attrs[CubeOutputFormat.INSTITUTION] = CubeOutputFormat.Values.INSTITUTION
-        self.layers.attrs[CubeOutputFormat.LATITUDE]  = round(self.center_lon_lat[1], 2)
-        self.layers.attrs[CubeOutputFormat.LONGITUDE] = round(self.center_lon_lat[0], 2)
-        self.layers.attrs[CubeOutputFormat.PROJ_POLYGON] = json.dumps(self.polygon)
-        self.layers.attrs[CubeOutputFormat.PROJECTION] = str(self.projection)
-        self.layers.attrs[CubeOutputFormat.S3] = ITSCube.S3
+        self.layers.attrs[CubeOutput.DATACUBE_SOFTWARE_VERSION] = ITSCube.Version
+        self.layers.attrs[CubeOutput.DATE_CREATED] = self.date_created
+        self.layers.attrs[CubeOutput.DATE_UPDATED] = self.date_updated if self.date_updated is not None else self.date_created
+        self.layers.attrs[CubeOutput.GDAL_AREA_OR_POINT] = CubeOutput.Values.AREA
+        self.layers.attrs[CubeOutput.GEO_POLYGON]  = json.dumps(self.polygon_coords)
+        self.layers.attrs[CubeOutput.INSTITUTION] = CubeOutput.Values.INSTITUTION
+        self.layers.attrs[CubeOutput.LATITUDE]  = round(self.center_lon_lat[1], 2)
+        self.layers.attrs[CubeOutput.LONGITUDE] = round(self.center_lon_lat[0], 2)
+        self.layers.attrs[CubeOutput.PROJ_POLYGON] = json.dumps(self.polygon)
+        self.layers.attrs[CubeOutput.PROJECTION] = str(self.projection)
+        self.layers.attrs[CubeOutput.S3] = ITSCube.S3
 
         # Store path to the file with skipped granules (the ones that didn't
         # qualify to make it into the datacube)
@@ -1598,8 +1568,8 @@ class ITSCube:
             if len(unique_values) > 1:
                 raise RuntimeError(f"Multiple values for '{var_name}' are detected for current {len(self.ds)} layers: {unique_values}")
 
-        self.layers.attrs[CubeOutputFormat.TITLE] = CubeOutputFormat.Values.TITLE
-        self.layers.attrs[CubeOutputFormat.URL] = ITSCube.URL
+        self.layers.attrs[CubeOutput.TITLE] = CubeOutput.Values.TITLE
+        self.layers.attrs[CubeOutput.URL] = ITSCube.URL
 
         # Set attributes for 'url' data variable
         self.layers[DataVars.URL].attrs[DataVars.STD_NAME] = DataVars.URL
