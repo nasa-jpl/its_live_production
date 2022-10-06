@@ -866,7 +866,7 @@ class MosaicsReproject:
 
         # Disable FillValue for coordinates
         for each in [Coords.X, Coords.Y]:
-            encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: None}
+            encoding_settings[each] = {Output.FILL_VALUE_ATTR: None}
 
         float_vars = [
             DataVars.V,
@@ -893,14 +893,14 @@ class MosaicsReproject:
         # Explicitly set dtype for some variables
         for each in float_vars:
             encoding_settings[each] = {
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
                 Output.DTYPE_ATTR: np.float32,
                 Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             }
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
 
-            if DataVars.FILL_VALUE_ATTR in ds[each].attrs:
-                del ds[each].attrs[DataVars.FILL_VALUE_ATTR]
+            if Output.FILL_VALUE_ATTR in ds[each].attrs:
+                del ds[each].attrs[Output.FILL_VALUE_ATTR]
 
         # Explicitly set dtype and missing_value for some variables
         for each in int_vars:
@@ -911,22 +911,22 @@ class MosaicsReproject:
             }
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
 
-            if DataVars.FILL_VALUE_ATTR in ds[each].attrs:
-                del ds[each].attrs[DataVars.FILL_VALUE_ATTR]
+            if Output.FILL_VALUE_ATTR in ds[each].attrs:
+                del ds[each].attrs[Output.FILL_VALUE_ATTR]
 
             if Output.MISSING_VALUE_ATTR in ds[each].attrs:
                 del ds[each].attrs[Output.MISSING_VALUE_ATTR]
 
         # Set encoding for 'count' data variable
         encoding_settings[CompDataVars.COUNT] = {
-            DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+            Output.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
             Output.DTYPE_ATTR: np.uint32,
             Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
         }
         encoding_settings[CompDataVars.COUNT].update(MosaicsReproject.COMPRESSION)
 
-        if DataVars.FILL_VALUE_ATTR in ds[CompDataVars.COUNT].attrs:
-            del ds[CompDataVars.COUNT].attrs[DataVars.FILL_VALUE_ATTR]
+        if Output.FILL_VALUE_ATTR in ds[CompDataVars.COUNT].attrs:
+            del ds[CompDataVars.COUNT].attrs[Output.FILL_VALUE_ATTR]
 
         if Output.MISSING_VALUE_ATTR in ds[each].attrs:
             del ds[each].attrs[Output.MISSING_VALUE_ATTR]
@@ -949,7 +949,7 @@ class MosaicsReproject:
 
         # Disable FillValue for coordinates
         for each in [Coords.X, Coords.Y, CompDataVars.SENSORS]:
-            encoding_settings[each] = {DataVars.FILL_VALUE_ATTR: None}
+            encoding_settings[each] = {Output.FILL_VALUE_ATTR: None}
 
         two_dim_chunks_settings = (ds.y.size, ds.x.size)
         three_dim_chunks_settings = (1, ds.y.size, ds.x.size)
@@ -987,14 +987,14 @@ class MosaicsReproject:
                 _chunks = three_dim_chunks_settings
 
             encoding_settings[each] = {
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
                 Output.DTYPE_ATTR: np.float32,
                 Output.CHUNKSIZES_ATTR: _chunks
             }
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
 
-            if DataVars.FILL_VALUE_ATTR in ds[each].attrs:
-                del ds[each].attrs[DataVars.FILL_VALUE_ATTR]
+            if Output.FILL_VALUE_ATTR in ds[each].attrs:
+                del ds[each].attrs[Output.FILL_VALUE_ATTR]
 
 
         for each in int_vars:
@@ -1004,14 +1004,14 @@ class MosaicsReproject:
                 _chunks = three_dim_chunks_settings
 
             encoding_settings[each] = {
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
                 Output.DTYPE_ATTR: np.uint16,
                 Output.CHUNKSIZES_ATTR: _chunks
             }
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
 
-            if DataVars.FILL_VALUE_ATTR in ds[each].attrs:
-                del ds[each].attrs[DataVars.FILL_VALUE_ATTR]
+            if Output.FILL_VALUE_ATTR in ds[each].attrs:
+                del ds[each].attrs[Output.FILL_VALUE_ATTR]
 
             if Output.MISSING_VALUE_ATTR in ds[each].attrs:
                 del ds[each].attrs[Output.MISSING_VALUE_ATTR]
@@ -1036,22 +1036,22 @@ class MosaicsReproject:
             })
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
 
-            if DataVars.FILL_VALUE_ATTR in ds[each].attrs:
-                del ds[each].attrs[DataVars.FILL_VALUE_ATTR]
+            if Output.FILL_VALUE_ATTR in ds[each].attrs:
+                del ds[each].attrs[Output.FILL_VALUE_ATTR]
 
             if Output.MISSING_VALUE_ATTR in ds[each].attrs:
                 del ds[each].attrs[Output.MISSING_VALUE_ATTR]
 
         # Set encoding for 'count0' data variable
         encoding_settings[CompDataVars.COUNT0] = {
-            DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+            Output.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
             Output.DTYPE_ATTR: np.uint32,
             Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
         }
         encoding_settings[CompDataVars.COUNT0].update(MosaicsReproject.COMPRESSION)
 
-        if DataVars.FILL_VALUE_ATTR in ds[CompDataVars.COUNT0].attrs:
-            del ds[CompDataVars.COUNT0].attrs[DataVars.FILL_VALUE_ATTR]
+        if Output.FILL_VALUE_ATTR in ds[CompDataVars.COUNT0].attrs:
+            del ds[CompDataVars.COUNT0].attrs[Output.FILL_VALUE_ATTR]
 
         if Output.MISSING_VALUE_ATTR in ds[CompDataVars.COUNT0].attrs:
             del ds[CompDataVars.COUNT0].attrs[Output.MISSING_VALUE_ATTR]
