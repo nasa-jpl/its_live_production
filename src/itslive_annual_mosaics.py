@@ -1503,7 +1503,7 @@ class ITSLiveAnnualMosaics:
         # Set encoding
         encoding_settings = {}
         for each in [Coords.X, Coords.Y]:
-            encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
+            encoding_settings.setdefault(each, {}).update({Output.FILL_VALUE_ATTR: None})
 
         # Settings for "float" data types
         for each in [
@@ -1512,7 +1512,7 @@ class ITSLiveAnnualMosaics:
             DataVars.V
             ]:
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
                 Output.DTYPE_ATTR: np.float32,
                 Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             })
@@ -1525,7 +1525,7 @@ class ITSLiveAnnualMosaics:
             CompDataVars.V_ERROR
             ]:
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
                 Output.DTYPE_ATTR: np.uint16,
                 Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             })
@@ -1533,7 +1533,7 @@ class ITSLiveAnnualMosaics:
 
         for each in [CompDataVars.COUNT]:
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
                 Output.DTYPE_ATTR: np.uint32,
                 Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             })
@@ -1837,7 +1837,7 @@ class ITSLiveAnnualMosaics:
         # Set encoding
         encoding_settings = {}
         for each in [Coords.X, Coords.Y, CompDataVars.SENSORS]:
-            encoding_settings.setdefault(each, {}).update({DataVars.FILL_VALUE_ATTR: None})
+            encoding_settings.setdefault(each, {}).update({Output.FILL_VALUE_ATTR: None})
 
         # Set dtype for "sensor" dimension to S1 so QGIS can at least see the dimension indices.
         # QGIS does not display even indices if dtype==str.
@@ -1864,7 +1864,7 @@ class ITSLiveAnnualMosaics:
                 _chunks = three_dim_chunks_settings
 
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
                 Output.DTYPE_ATTR: np.float32,
                 Output.CHUNKSIZES_ATTR: _chunks
             })
@@ -1891,7 +1891,7 @@ class ITSLiveAnnualMosaics:
                 _chunks = three_dim_chunks_settings
 
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
                 Output.DTYPE_ATTR: np.uint32,
                 Output.CHUNKSIZES_ATTR: _chunks
             })
@@ -1907,7 +1907,7 @@ class ITSLiveAnnualMosaics:
             CompDataVars.COUNT0
         ]:
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
                 Output.DTYPE_ATTR: np.uint32,
                 Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             })
@@ -1923,7 +1923,7 @@ class ITSLiveAnnualMosaics:
                 _chunks = three_dim_chunks_settings
 
             encoding_settings.setdefault(each, {}).update({
-                DataVars.FILL_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                Output.FILL_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
                 Output.DTYPE_ATTR: np.uint8,
                 Output.CHUNKSIZES_ATTR: _chunks
             })
