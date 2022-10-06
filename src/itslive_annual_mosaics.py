@@ -1442,12 +1442,23 @@ class ITSLiveAnnualMosaics:
                 for each_var in ITSLiveAnnualMosaics.ANNUAL_VARS:
                     if each_var not in ds:
                         # Create data variable in output dataset
-                        ds[each_var] = each_ds.s3.ds[each_var][year_index].load()
+                        if each_var == ShapeFile.LANDICE:
+                            # Variable does not have year dimension
+                            ds[each_var] = each_ds.s3.ds[each_var].load()
+
+                        else:
+                            ds[each_var] = each_ds.s3.ds[each_var][year_index].load()
+
                         ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
 
                     else:
                         # Update data variable in output dataset
-                        ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var][year_index].load()
+                        if each_var == ShapeFile.LANDICE:
+                            # Variable does not have year dimension
+                            ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var].load()
+
+                        else:
+                            ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var][year_index].load()
 
             else:
                 logging.warning(f'{each_file} does not have data for {year_date.year} year, skipping.')
