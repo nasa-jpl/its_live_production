@@ -29,7 +29,15 @@ import zarr
 
 # Local imports
 from itscube import ITSCube
-from itscube_types import Coords, DataVars, Output, CubeOutput, ShapeFile, CompDataVars, CompOutput
+from itscube_types import \
+    Coords, \
+    DataVars, \
+    Output, \
+    CubeOutput, \
+    ShapeFile, \
+    CompDataVars, \
+    CompOutput, \
+    to_int_type
 
 # Intercept date used for a weighted linear fit
 CENTER_DATE = datetime.datetime(2019, 7, 2)
@@ -1015,36 +1023,13 @@ class CompositeVariable:
         self.vx = self.vx.transpose(dims)
         self.vy = self.vy.transpose(dims)
 
-    @staticmethod
-    def to_int_type(data, data_type = np.uint16, fill_value=DataVars.MISSING_POS_VALUE):
-        """
-        Convert data to requested integer datatype. Replace NaNs with
-        corresponding to the datatype _FillValue:
-        -32767 for int16/32
-        32767 for uint16/32
-
-        Inputs:
-        =======
-        data: Data to convert to new datatype to.
-        data_type: numpy data type to convert data to. Default is np.uint16.
-        fill_value: value to replace NaN's with before conversion to integer type.
-        """
-        # Replace NaN's with zero's as it will store garbage for NaN's
-        _mask = np.isnan(data)
-        data[_mask] = fill_value
-
-        # Round to nearest int value
-        int_data = np.rint(data).astype(data_type)
-
-        return int_data
-
     def to_uint16(self):
         """
         Convert data to uint16 datatype to store to output file.
         """
-        self.v = CompositeVariable.to_int_type(self.v)
-        self.vx = CompositeVariable.to_int_type(self.vx)
-        self.vy = CompositeVariable.to_int_type(self.vy)
+        self.v = to_int_type(self.v)
+        self.vx = to_int_type(self.vx)
+        self.vy = to_int_type(self.vy)
 
 # Currently processed datacube chunk
 Chunk = collections.namedtuple("Chunk", ['start_x', 'stop_x', 'x_len', 'start_y', 'stop_y', 'y_len'])
@@ -2407,12 +2392,12 @@ class ITSLiveComposite:
 
         # Only these components are used in output, no need to convert the rest
         # of components
-        self.count.v = CompositeVariable.to_int_type(
+        self.count.v = to_int_type(
             self.count.v,
             np.uint32,
             DataVars.MISSING_BYTE
         )
-        self.count_image_pairs.vx = CompositeVariable.to_int_type(
+        self.count_image_pairs.vx = to_int_type(
             self.count_image_pairs.vx,
             np.uint32,
             DataVars.MISSING_BYTE
@@ -2649,7 +2634,7 @@ class ITSLiveComposite:
         var_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
 
         self.max_dt = self.max_dt.transpose(CompositeVariable.CONT_IN_X)
-        self.max_dt = CompositeVariable.to_int_type(self.max_dt)
+        self.max_dt = to_int_type(self.max_dt)
 
         ds[CompDataVars.MAX_DT] = xr.DataArray(
             data=self.max_dt,
@@ -2667,7 +2652,7 @@ class ITSLiveComposite:
         gc.collect()
 
         self.sensor_include = self.sensor_include.transpose(CompositeVariable.CONT_IN_X)
-        self.sensor_include = CompositeVariable.to_int_type(
+        self.sensor_include = to_int_type(
             self.sensor_include,
             np.uint8,
             DataVars.MISSING_UINT8_VALUE
@@ -2690,7 +2675,7 @@ class ITSLiveComposite:
 
         # Convert to percent and use uint8 datatype
         self.outlier_fraction *= 100
-        self.outlier_fraction = CompositeVariable.to_int_type(
+        self.outlier_fraction = to_int_type(
             self.outlier_fraction,
             np.uint8,
             DataVars.MISSING_UINT8_VALUE

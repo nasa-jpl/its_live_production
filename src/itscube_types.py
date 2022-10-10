@@ -624,3 +624,25 @@ def summary_mosaics_filename_nc(grid_size: str, region: str, version: str):
     ITS_LIVE_velocity_120m_ALA_2013_v02.nc
     """
     return f"{FilenamePrefix.Mosaics}_{grid_size}m_{region}_0000_{version}.nc"
+
+def to_int_type(data, data_type = np.uint16, fill_value=DataVars.MISSING_POS_VALUE):
+    """
+    Convert data to requested integer datatype. Replace NaNs with
+    corresponding to the datatype missing_value:
+    -32767 for int16/32
+    32767 for uint16/32
+
+    Inputs:
+    =======
+    data: Data to convert to new datatype to.
+    data_type: numpy data type to convert data to. Default is np.uint16.
+    fill_value: value to replace NaN's with before conversion to integer type.
+    """
+    # Replace NaN's with zero's as it will store garbage for NaN's
+    _mask = np.isnan(data)
+    data[_mask] = fill_value
+
+    # Round to nearest int value
+    int_data = np.rint(data).astype(data_type)
+
+    return int_data
