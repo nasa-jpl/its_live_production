@@ -1310,7 +1310,7 @@ class ITSLiveAnnualMosaics:
 
             for each_token, new_token in zip(
                 [CompDataVars.V0, CompDataVars.VX0, CompDataVars.VY0],
-                [CompDataVars.V, CompDataVars.VX, CompDataVars.VY]
+                [DataVars.V, DataVars.VX, DataVars.VY]
             ):
                 ds[ds_var].attrs[DataVars.DESCRIPTION_ATTR] = ds[ds_var].attrs[DataVars.DESCRIPTION_ATTR].replace(each_token, new_token)
 
