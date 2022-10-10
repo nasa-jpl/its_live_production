@@ -1221,12 +1221,23 @@ class ITSLiveAnnualMosaics:
             # Step through all datasets and concatenate data in new dimension
             # to be able to compute the average - xr.merge() does not support
             # function to apply on merging
+            # Flag if variable should be skipped from merging as it's not
+            # present in the very first dataset (kludgy: have to check if any of the
+            # datasets are missing the variable, then skip it)
+            # This is just a work around for some mosaics having the landice and
+            # some not having it
+            skip_var = False
             for each_file, each_ds in self.raw_ds.items():
                 if each_var not in each_ds.s3.ds:
                     logging.info(f'WARNING: skipping missing {each_var} from {each_file}')
+                    skip_var = True
                     continue
 
                 logging.info(f'Merging {each_var} from {each_file}')
+
+                # Skip the variable if it's not present in first dataset
+                if skip_var:
+                    continue
 
                 if each_var not in ds:
                     # Read shape of the data in dataset, and set dimensions
@@ -1396,6 +1407,10 @@ class ITSLiveAnnualMosaics:
             # Concatenated dataset
             concatenated = None
 
+            # This is just a work around for some mosaics having the landice and
+            # some not having it
+            skip_var = False
+
             # Step through all datasets and concatenate data in new dimension
             # to be able to compute the average - xr.merge() does not support
             # function to apply on merging
@@ -1404,6 +1419,10 @@ class ITSLiveAnnualMosaics:
 
                 if each_var not in each_ds.s3.ds:
                     logging.info(f'WARNING: skipping missing {each_var} from {each_file}')
+                    skip_var = True
+                    continue
+
+                if skip_var:
                     continue
 
                 if each_var not in ds:
@@ -2035,15 +2054,14 @@ class ITSLiveAnnualMosaics:
         logging.info(f'DS encoding: {encoding_settings}')
 
         # Write locally
-        ds.to_netcdf(f'{filename}', engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
+        ds.to_netcdf(filename, engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
 
         attrs_filename = ITSLiveAnnualMosaics.filename_nc_to_json(filename)
 
         # Write attributes to local JSON file
+        logging.info(f'Writing attributes to {attrs_filename}')
         with open(attrs_filename, 'w') as fh:
             json.dump(mosaics_attrs, fh, indent=3)
-
-        ds.to_netcdf(f'{filename}', engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
 
         if copy_to_s3:
             ITSLiveAnnualMosaics.copy_to_s3_bucket(filename, target_file)
