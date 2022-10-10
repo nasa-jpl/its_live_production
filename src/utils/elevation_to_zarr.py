@@ -5,6 +5,9 @@ Usage:
 python elevation_to_zarr.py -o ZarrStoreName -i NetCDFFileName
 
 Convert NetCDF elevation to Zarr format file.
+
+itslive/src/elevationData/ANT_G1920V01_GroundedIceHeight.zarr
+itslive/src/elevationData/ANT_G1920V01_GroundedIceHeight.nc
 """
 
 import argparse
@@ -28,9 +31,9 @@ compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
 compression = {"compressor": compressor}
 
 ENCODING = {
-    'dh':           {'_FillValue': -32767.0, 'dtype': np.short},
-    'h':            {'_FillValue': -32767.0, 'dtype': np.short},
-    'rmse':         {'_FillValue': -32767.0, 'dtype': np.short},
+    'dh':           {'_FillValue': -32767.0, 'dtype': np.float32},
+    'h':            {'_FillValue': -32767.0, 'dtype': np.float32},
+    'rmse':         {'_FillValue': -32767.0, 'dtype': np.float32},
     'quality_flag': {'_FillValue': 0, 'dtype': 'ubyte'},
     'basin':        {'_FillValue': 0, 'dtype': 'ubyte'},
     'time':         {'_FillValue': None, 'units': 'days since 1950-01-01'},
@@ -47,23 +50,22 @@ def main(input_file: str, output_file: str):
     """
     start_time = timeit.default_timer()
 
-    encoding_settings = ENCODING
     with xr.open_dataset(input_file, chunks=CHUNKS, engine='h5netcdf') as ds:
         ds_sizes = ds.sizes
         logging.info(f'Opened input {input_file}: {ds_sizes}')
 
         # Update compression for each of the vars:
         for each in ['dh', 'h', 'rmse', 'quality_flag', 'basin']:
-            encoding_settings[each].update(compression)
+            ENCODING[each].update(compression)
 
         # Set chunking for 3d vars
         chunks = (ds_sizes['time'], 10, 10)
         for each in ['dh', 'rmse', 'quality_flag']:
-            encoding_settings[each]['chunks'] = chunks
+            ENCODING[each]['chunks'] = chunks
 
         chunks = (10, 10)
         for each in ['h', 'basin']:
-            encoding_settings[each]['chunks'] = chunks
+            ENCODING[each]['chunks'] = chunks
 
         logging.info(f"Saving dataset to {output_file}...")
         start_time = timeit.default_timer()
@@ -78,7 +80,7 @@ def main(input_file: str, output_file: str):
     # Don't decode time delta's as it does some internal conversion based on
     # provided units
     time_delta = timeit.default_timer() - start_time
-    logging.info(f" NetCDF {input_file} (took {time_delta} seconds)")
+    logging.info(f"Convert NetCDF {input_file} to Zarr: took {time_delta} seconds")
 
 if __name__ == '__main__':
     warnings.filterwarnings('ignore')
