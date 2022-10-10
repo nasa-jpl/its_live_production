@@ -1222,7 +1222,7 @@ class ITSLiveAnnualMosaics:
             # to be able to compute the average - xr.merge() does not support
             # function to apply on merging
             for each_file, each_ds in self.raw_ds.items():
-                if each_var not in each_ds:
+                if each_var not in each_ds.s3.ds:
                     logging.info(f'WARNING: skipping missing {each_var} from {each_file}')
                     continue
 
@@ -1305,7 +1305,7 @@ class ITSLiveAnnualMosaics:
 
             gc.collect()
 
-        logging.info(f'Merged all data.')
+        logging.info(f'Merged all data: {list(ds.keys())}')
 
         if copy_to_s3:
             ds.attrs[CubeOutput.S3] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
@@ -1402,7 +1402,7 @@ class ITSLiveAnnualMosaics:
             for each_file, each_ds in self.raw_ds.items():
                 logging.info(f'Merging {each_var} from {each_file}')
 
-                if each_var not in each_ds:
+                if each_var not in each_ds.s3.ds:
                     logging.info(f'WARNING: skipping missing {each_var} from {each_file}')
                     continue
 
@@ -1457,7 +1457,7 @@ class ITSLiveAnnualMosaics:
 
             gc.collect()
 
-        logging.info(f'Merged all data.')
+        logging.info(f'Merged all data: {list(ds.keys())}')
 
         if copy_to_s3:
             ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
