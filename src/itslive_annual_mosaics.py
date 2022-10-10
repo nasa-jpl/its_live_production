@@ -128,9 +128,13 @@ def repr_composite(composites):
     """
     composites_repr = {}
     for each_file, each_ds in composites.items():
+        # To avoid json exception:
+        # "TypeError: Object of type float32 is not JSON serializable"
+        # convert each of the values to float explicitly  as json has troubles
+        # supporting numpy data types
         composites_repr[each_file] = {
-            'x': [np.min(each_ds.x), np.max(each_ds.x)],
-            'y': [np.max(each_ds.y), np.min(each_ds.y)]
+            'x': [float(np.min(each_ds.x)), float(np.max(each_ds.x))],
+            'y': [float(np.max(each_ds.y)), float(np.min(each_ds.y))]
         }
 
     return composites_repr
@@ -922,10 +926,12 @@ class ITSLiveAnnualMosaics:
         mosaics_info = repr_composite(self.raw_ds)
         epsg_range_filename = f'{ITSLiveAnnualMosaics.REGION}_{self.epsg}{ITSLiveAnnualMosaics.COMPOSITES_RANGES_FILE}'
         logging.info(f'Writing collected X/Y info to {epsg_range_filename}...')
+        logging.info(json.dumps(mosaics_info))
+
         with open(epsg_range_filename, 'w') as fh:
             json.dump(mosaics_info, fh, indent=4)
 
-        logging.info(json.dumps(mosaics_info))
+        logging.info(f'Got mosaics summary: {mosaics_info}')
 
         # Set mapping data variable for the target mosaics
         first_ds = self.set_mapping(x_cell, y_cell)
@@ -1163,6 +1169,9 @@ class ITSLiveAnnualMosaics:
             _dims = two_dims
             _dims_len = two_dims_len
 
+            # Remove zeros from data variables names
+            ds_var = each_var.replace('0', '')
+
             # Step through all datasets and concatenate data in new dimension
             # to be able to compute the average - xr.merge() does not support
             # function to apply on merging
@@ -1180,7 +1189,8 @@ class ITSLiveAnnualMosaics:
                         _dims = three_dims
                         _dims_len = three_dims_len
 
-                    ds[each_var] = xr.DataArray(
+
+                    ds[ds_var] = xr.DataArray(
                         data=np.full(_dims_len, np.nan),
                         coords=_coords,
                         dims=_dims,
@@ -1188,8 +1198,8 @@ class ITSLiveAnnualMosaics:
                     )
 
                     # Reset sensor_labels if present in data
-                    if CompOutput.SENSORS_LABELS in ds[each_var].attrs:
-                        ds[each_var].attrs[CompOutput.SENSORS_LABELS] = sensors_labels
+                    if CompOutput.SENSORS_LABELS in ds[ds_var].attrs:
+                        ds[ds_var].attrs[CompOutput.SENSORS_LABELS] = sensors_labels
 
                 data_list.append(each_ds.s3.ds[each_var].load())
 
@@ -1215,7 +1225,18 @@ class ITSLiveAnnualMosaics:
                 avg_overlap_dims = dict(x=avg_overlap.x.values, y=avg_overlap.y.values, sensor=avg_overlap.sensor.values)
 
             # Set values for the output dataset
-            ds[each_var].loc[avg_overlap_dims] = avg_overlap
+            # Remove zeros from data variables, their standard_names and descriptions:
+            # only vx0, vy0, v0 strings should be replaced by corresponding vx, vy, v
+            ds[ds_var].loc[avg_overlap_dims] = avg_overlap
+
+            # Replace zeros in attributes
+            ds[ds_var].attrs[DataVars.STD_NAME] = ds[ds_var].attrs[DataVars.STD_NAME].replace('0', '')
+
+            for each_token, new_token in zip(
+                [CompDataVars.V0, CompDataVars.VX0, CompDataVars.VY0],
+                [CompDataVars.V, CompDataVars.VX, CompDataVars.VY]
+            ):
+                ds[ds_var].attrs[DataVars.DESCRIPTION_ATTR] = ds[ds_var].attrs[DataVars.DESCRIPTION_ATTR].replace(each_token, new_token)
 
             gc.collect()
 
@@ -1708,6 +1729,8 @@ class ITSLiveAnnualMosaics:
                     # Update data variable in result dataset
                     ds[each_var].loc[_coords] = each_ds.s3.ds[each_var].load()
 
+                gc.collect()
+
             # For debugging only to speed up the runtime
             # index += 1
 
@@ -1727,6 +1750,7 @@ class ITSLiveAnnualMosaics:
             # For debugging only to speed up the runtime
             # if index == 1:
             #     break
+        gc.collect()
 
         # Set center point's longitude and latitude for each polygon (if more than one) of the mosaic
         lon = []
@@ -1830,7 +1854,6 @@ class ITSLiveAnnualMosaics:
                 geo_polygon.append(list(each_obj.exterior.coords))
 
         return (values, geo_polygon)
-
 
     @staticmethod
     def summary_mosaic_to_netcdf(ds: xr.Dataset, mosaics_attrs: dict, s3_bucket: str, bucket_dir: str, filename: str, copy_to_s3: bool):
