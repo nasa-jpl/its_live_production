@@ -1292,13 +1292,13 @@ class ITSLiveAnnualMosaics:
 
             # Convert data variable to output integer datatype if required
             if each_var in MosaicsOutputFormat.UINT16_TYPES:
-                avr_overlap = to_int_type(avr_overlap)
+                avg_overlap = to_int_type(avg_overlap)
 
             elif each_var in MosaicsOutputFormat.UINT32_TYPES:
-                avr_overlap = to_int_type(avr_overlap, np.uint32, DataVars.MISSING_BYTE)
+                avg_overlap = to_int_type(avg_overlap, np.uint32, DataVars.MISSING_BYTE)
 
             elif each_var in MosaicsOutputFormat.UINT8_TYPES:
-                avr_overlap = to_int_type(avr_overlap, np.uint8, DataVars.MISSING_UINT8_VALUE)
+                avg_overlap = to_int_type(avg_overlap, np.uint8, DataVars.MISSING_UINT8_VALUE)
 
             # Set values for the output dataset
             # Remove zeros from data variables, their standard_names and descriptions:
@@ -1463,13 +1463,13 @@ class ITSLiveAnnualMosaics:
 
             # Convert data variable to output integer datatype if required
             if each_var in MosaicsOutputFormat.UINT16_TYPES:
-                avr_overlap = to_int_type(avr_overlap)
+                avg_overlap = to_int_type(avg_overlap)
 
             elif each_var in MosaicsOutputFormat.UINT32_TYPES:
-                avr_overlap = to_int_type(avr_overlap, np.uint32, DataVars.MISSING_BYTE)
+                avg_overlap = to_int_type(avg_overlap, np.uint32, DataVars.MISSING_BYTE)
 
             elif each_var in MosaicsOutputFormat.UINT8_TYPES:
-                avr_overlap = to_int_type(avr_overlap, np.uint8, DataVars.MISSING_UINT8_VALUE)
+                avg_overlap = to_int_type(avg_overlap, np.uint8, DataVars.MISSING_UINT8_VALUE)
 
             # Set values for the output dataset
             ds[each_var].loc[avg_overlap_dims] = avg_overlap
