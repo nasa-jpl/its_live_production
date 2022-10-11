@@ -24,7 +24,8 @@ import timeit
 import xarray as xr
 
 from grid import Grid, Bounds
-from itscube_types import Coords, DataVars, Output, CompDataVars
+from itscube_types import Coords, DataVars, Output, CompDataVars, to_int_type, ShapeFile
+
 
 # GDAL: enable exceptions and register all drivers
 gdal.UseExceptions()
@@ -385,29 +386,6 @@ class MosaicsReproject:
         half_y_cell = self.y_size/2.0
         reproject_ds[DataVars.MAPPING].attrs['GeoTransform'] = f"{self.x0_grid[0] - half_x_cell} {self.x_size} 0 {self.y0_grid[0] - half_y_cell} 0 {self.y_size}"
 
-    @staticmethod
-    def to_int_type(data, data_type = np.uint16, fill_value=DataVars.MISSING_POS_VALUE):
-        """
-        Convert data to requested integer datatype. Replace NaNs with
-        corresponding to the datatype _FillValue:
-        -32767 for int16/32
-        32767 for uint16/32
-
-        Inputs:
-        =======
-        data: Data to convert to new datatype to.
-        data_type: numpy data type to convert data to. Default is np.uint16.
-        fill_value: value to replace NaN's with before conversion to integer type.
-        """
-        # Replace NaN's with zero's as it will store garbage for NaN's
-        _mask = np.isnan(data)
-        data[_mask] = fill_value
-
-        # Round to nearest int value
-        int_data = np.rint(data).astype(data_type)
-
-        return int_data
-
     def reproject_static_mosaic(self, output_file: str):
         """
         Reproject static mosaic to new projection.
@@ -456,7 +434,7 @@ class MosaicsReproject:
 
         # Convert v0 error variables to uint16 type
         reproject_ds[CompDataVars.V0_ERROR] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(v0_error),
+            data=to_int_type(v0_error),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.V0_ERROR].attrs
         )
@@ -465,7 +443,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.VX0_ERROR] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vx0_error),
+            data=to_int_type(vx0_error),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.VX0_ERROR].attrs
         )
@@ -474,7 +452,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.VY0_ERROR] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vy0_error),
+            data=to_int_type(vy0_error),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.VY0_ERROR].attrs
         )
@@ -542,7 +520,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.VX_AMP] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vx_amp),
+            data=to_int_type(vx_amp),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.VX_AMP].attrs
         )
@@ -550,7 +528,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.VY_AMP] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vy_amp),
+            data=to_int_type(vy_amp),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.VY_AMP].attrs
         )
@@ -558,7 +536,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.V_AMP] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(v_amp),
+            data=to_int_type(v_amp),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.V_AMP].attrs
         )
@@ -566,7 +544,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.VX_AMP_ERROR] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vx_amp_error),
+            data=to_int_type(vx_amp_error),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.VX_AMP_ERROR].attrs
         )
@@ -574,7 +552,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.VY_AMP_ERROR] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vy_amp_error),
+            data=to_int_type(vy_amp_error),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.VY_AMP_ERROR].attrs
         )
@@ -582,7 +560,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.V_AMP_ERROR] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(v_amp_error),
+            data=to_int_type(v_amp_error),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.V_AMP_ERROR].attrs
         )
@@ -590,7 +568,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.VX_PHASE] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vx_phase),
+            data=to_int_type(vx_phase),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.VX_PHASE].attrs
         )
@@ -598,7 +576,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.VY_PHASE] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vy_phase),
+            data=to_int_type(vy_phase),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.VY_PHASE].attrs
         )
@@ -606,7 +584,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.V_PHASE] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(v_phase),
+            data=to_int_type(v_phase),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.V_PHASE].attrs
         )
@@ -616,7 +594,7 @@ class MosaicsReproject:
         # Warp "count0" variable
         warp_data = self.warp_var(CompDataVars.COUNT0, self.warp_options_uint32)
         reproject_ds[CompDataVars.COUNT0] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(warp_data, np.uint32, DataVars.MISSING_BYTE),
+            data=to_int_type(warp_data, np.uint32, DataVars.MISSING_BYTE),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.COUNT0].attrs
         )
@@ -644,9 +622,22 @@ class MosaicsReproject:
             logging.info(f"Warped {CompDataVars.MAX_DT}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
 
         reproject_ds[CompDataVars.MAX_DT] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(warp_data),
+            data=to_int_type(warp_data),
             coords=ds_coords,
             attrs=self.ds[CompDataVars.MAX_DT].attrs
+        )
+        warp_data = None
+        gc.collect()
+
+        # Warp "landice" variable
+        warp_data = self.warp_var(ShapeFile.LANDICE, self.warp_options_uint8)
+        # TODO? # Make sure the mask is of 0/1 values
+        # warp_data_mask = (warp_data > 0)
+        # warp_data[warp_data_mask] = 1
+        reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
+            data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+            coords=ds_coords_2d,
+            attrs=self.ds[ShapeFile.LANDICE].attrs
         )
         warp_data = None
         gc.collect()
@@ -654,7 +645,7 @@ class MosaicsReproject:
         # Warp "outlier_frac" variable: per each sensor dimension
         warp_data = self.warp_var(CompDataVars.OUTLIER_FRAC, self.warp_options_uint8)
         reproject_ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+            data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.OUTLIER_FRAC].attrs
         )
@@ -675,7 +666,7 @@ class MosaicsReproject:
                 warp_data = warp_data.reshape((1, _y_dim, _x_dim))
 
             reproject_ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
-                data=MosaicsReproject.to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
                 coords=ds_coords,
                 attrs=self.ds[CompDataVars.SENSOR_INCLUDE].attrs
             )
@@ -761,7 +752,7 @@ class MosaicsReproject:
         gc.collect()
 
         reproject_ds[CompDataVars.V_ERROR] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(v_error),
+            data=to_int_type(v_error),
             coords=ds_coords,
             attrs=self.ds[CompDataVars.V_ERROR].attrs
         )
@@ -771,7 +762,7 @@ class MosaicsReproject:
 
         # Add vx_error to dataset
         reproject_ds[CompDataVars.VX_ERROR] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vx_error),
+            data=to_int_type(vx_error),
             coords=ds_coords,
             attrs=self.ds[CompDataVars.VX_ERROR].attrs
         )
@@ -781,12 +772,25 @@ class MosaicsReproject:
 
         # Add vy_error to dataset
         reproject_ds[CompDataVars.VY_ERROR] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(vy_error),
+            data=to_int_type(vy_error),
             coords=ds_coords,
             attrs=self.ds[CompDataVars.VY_ERROR].attrs
         )
 
         vy_error = None
+        gc.collect()
+
+        # Warp "landice" variable
+        warp_data = self.warp_var(ShapeFile.LANDICE, self.warp_options_uint8)
+        # TODO? # Make sure the mask is of 0/1 values
+        # warp_data_mask = (warp_data > 0)
+        # warp_data[warp_data_mask] = 1
+        reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
+            data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+            coords=ds_coords,
+            attrs=self.ds[ShapeFile.LANDICE].attrs
+        )
+        warp_data = None
         gc.collect()
 
         if MosaicsReproject.COMPUTE_DEBUG_VARS:
@@ -846,7 +850,7 @@ class MosaicsReproject:
         # Warp "count" variable
         warp_data = self.warp_var(CompDataVars.COUNT, self.warp_options_uint32)
         reproject_ds[CompDataVars.COUNT] = xr.DataArray(
-            data=MosaicsReproject.to_int_type(warp_data, np.uint32, DataVars.MISSING_BYTE),
+            data=to_int_type(warp_data, np.uint32, DataVars.MISSING_BYTE),
             coords=ds_coords,
             attrs=self.ds[CompDataVars.COUNT].attrs
         )
@@ -905,7 +909,7 @@ class MosaicsReproject:
         # Explicitly set dtype and missing_value for some variables
         for each in int_vars:
             encoding_settings[each] = {
-                Output.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
                 Output.DTYPE_ATTR: np.uint16,
                 Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             }
@@ -917,9 +921,29 @@ class MosaicsReproject:
             if Output.MISSING_VALUE_ATTR in ds[each].attrs:
                 del ds[each].attrs[Output.MISSING_VALUE_ATTR]
 
+        # Settings for variable of "uint8" data type
+        for each in [
+            ShapeFile.LANDICE
+        ]:
+            # if each not in ds:
+            #     continue
+            #
+            encoding_settings.setdefault(each, {}).update({
+                Output.DTYPE_ATTR: np.uint8,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
+            })
+            encoding_settings[each].update(MosaicsReproject.COMPRESSION)
+
+            if Output.FILL_VALUE_ATTR in ds[each].attrs:
+                del ds[each].attrs[Output.FILL_VALUE_ATTR]
+
+            if Output.MISSING_VALUE_ATTR in ds[each].attrs:
+                del ds[each].attrs[Output.MISSING_VALUE_ATTR]
+
         # Set encoding for 'count' data variable
         encoding_settings[CompDataVars.COUNT] = {
-            Output.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+            Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
             Output.DTYPE_ATTR: np.uint32,
             Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
         }
@@ -1004,7 +1028,7 @@ class MosaicsReproject:
                 _chunks = three_dim_chunks_settings
 
             encoding_settings[each] = {
-                Output.FILL_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
                 Output.DTYPE_ATTR: np.uint16,
                 Output.CHUNKSIZES_ATTR: _chunks
             }
@@ -1019,7 +1043,8 @@ class MosaicsReproject:
         # Settings for variable of "uint8" data type
         for each in [
             CompDataVars.OUTLIER_FRAC,
-            CompDataVars.SENSOR_INCLUDE
+            CompDataVars.SENSOR_INCLUDE,
+            ShapeFile.LANDICE
         ]:
             if each not in ds:
                 continue
@@ -1031,7 +1056,7 @@ class MosaicsReproject:
 
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
-                Output.FILL_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
                 Output.CHUNKSIZES_ATTR: _chunks
             })
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
@@ -1044,7 +1069,7 @@ class MosaicsReproject:
 
         # Set encoding for 'count0' data variable
         encoding_settings[CompDataVars.COUNT0] = {
-            Output.FILL_VALUE_ATTR: DataVars.MISSING_BYTE,
+            Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
             Output.DTYPE_ATTR: np.uint32,
             Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
         }
@@ -1877,12 +1902,11 @@ class MosaicsReproject:
         # Compute X unit vector based on xy0_points, xy_points
         # in output projection
         start_time = timeit.default_timer()
-        xunit_v = np.zeros((num_xy0_points, 3))
-
         logging.info(f'Creating X unit vectors...')
 
-        # Compute unit vector for each cell of the output grid
+        xunit_v = np.zeros((num_xy0_points, 3))
 
+        # Compute unit vector for each cell of the output grid
         for index in range(num_xy0_points):
             xunit_v[index] = np.array(xy_points[index]) - np.array(xy0_points[index])
             # xunit_v[index] /= np.linalg.norm(xunit_v[index])
