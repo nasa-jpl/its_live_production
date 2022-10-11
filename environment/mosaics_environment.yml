@@ -44,4 +44,5 @@ dependencies:
   - pip:
     - geojson
     - awscliv2
+    - rioxarray
     # - taichi
