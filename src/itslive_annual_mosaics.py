@@ -158,7 +158,7 @@ class MosaicsOutputFormat:
     ]
     UINT32_TYPES = [
         CompDataVars.COUNT0,
-        CompDataVars.COUNT0
+        CompDataVars.COUNT
     ]
 
     UINT8_TYPES = [
