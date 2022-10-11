@@ -1292,13 +1292,28 @@ class ITSLiveAnnualMosaics:
 
             # Convert data variable to output integer datatype if required
             if each_var in MosaicsOutputFormat.UINT16_TYPES:
-                avg_overlap = to_int_type(avg_overlap)
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
 
             elif each_var in MosaicsOutputFormat.UINT32_TYPES:
-                avg_overlap = to_int_type(avg_overlap, np.uint32, DataVars.MISSING_BYTE)
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values, np.uint32, DataVars.MISSING_BYTE),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
 
             elif each_var in MosaicsOutputFormat.UINT8_TYPES:
-                avg_overlap = to_int_type(avg_overlap, np.uint8, DataVars.MISSING_UINT8_VALUE)
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
 
             # Set values for the output dataset
             # Remove zeros from data variables, their standard_names and descriptions:
@@ -1462,14 +1477,30 @@ class ITSLiveAnnualMosaics:
             avg_overlap_dims = dict(x=avg_overlap.x.values, y=avg_overlap.y.values)
 
             # Convert data variable to output integer datatype if required
+            # Convert data variable to output integer datatype if required
             if each_var in MosaicsOutputFormat.UINT16_TYPES:
-                avg_overlap = to_int_type(avg_overlap)
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
 
             elif each_var in MosaicsOutputFormat.UINT32_TYPES:
-                avg_overlap = to_int_type(avg_overlap, np.uint32, DataVars.MISSING_BYTE)
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values, np.uint32, DataVars.MISSING_BYTE),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
 
             elif each_var in MosaicsOutputFormat.UINT8_TYPES:
-                avg_overlap = to_int_type(avg_overlap, np.uint8, DataVars.MISSING_UINT8_VALUE)
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
 
             # Set values for the output dataset
             ds[each_var].loc[avg_overlap_dims] = avg_overlap
