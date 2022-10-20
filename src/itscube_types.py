@@ -627,14 +627,16 @@ def summary_mosaics_filename_nc(grid_size: str, region: str, version: str):
 
 def to_int_type(data, data_type = np.uint16, fill_value=DataVars.MISSING_POS_VALUE):
     """
-    Convert data to requested integer datatype. Replace NaNs with
-    corresponding to the datatype missing_value:
+    Convert data to requested integer datatype. "fill_value" must correspond
+    to the "data_type" to replace NaNs with corresponding to the datatype missing_value:
     -32767 for int16/32
     32767 for uint16/32
+    etc.
 
     Inputs:
     =======
-    data: Data to convert to new datatype to.
+    data: Data to convert to new datatype to. It can be of numpy.ndarray or
+          xarray.DataArray data type.
     data_type: numpy data type to convert data to. Default is np.uint16.
     fill_value: value to replace NaN's with before conversion to integer type.
     """
