@@ -2363,6 +2363,11 @@ class ITSLiveComposite:
         twodim_var_dims = [Coords.Y, Coords.X]
 
         if self.land_ice_mask_composite is not None:
+            self.land_ice_mask_composite = to_int_type(
+                self.land_ice_mask_composite,
+                np.uint8,
+                DataVars.MISSING_UINT8_VALUE
+            )
             # Land ice mask exists for the composite
             ds[ShapeFile.LANDICE] = xr.DataArray(
                 data=self.land_ice_mask_composite,
@@ -2912,7 +2917,8 @@ class ITSLiveComposite:
         # Settings for variables of "uint8" data type
         for each in [
             CompDataVars.OUTLIER_FRAC,
-            CompDataVars.SENSOR_INCLUDE
+            CompDataVars.SENSOR_INCLUDE,
+            ShapeFile.LANDICE
         ]:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
@@ -2972,7 +2978,8 @@ class ITSLiveComposite:
             CompDataVars.V0_ERROR,
             CompDataVars.SLOPE_VX,
             CompDataVars.SLOPE_VY,
-            CompDataVars.SLOPE_V
+            CompDataVars.SLOPE_V,
+            ShapeFile.LANDICE
             ]:
             encoding_settings[each].update({
                 Output.CHUNKS_ATTR: chunks_settings
