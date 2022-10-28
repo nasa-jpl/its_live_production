@@ -130,6 +130,11 @@ class DataVars:
     STABLE_SHIFT_SLOW             = 'stable_shift_slow' # New format
     STABLE_SHIFT_MASK             = 'stable_shift_mask' # New format
 
+    # These data variables names are created at runtime: based on "stable_shift"
+    # attribute of vx and vy variables
+    VX_STABLE_SHIFT = 'vx_stable_shift'
+    VY_STABLE_SHIFT = 'vy_stable_shift'
+
     STD_NAME          = 'standard_name'
     UNITS             = 'units'
     M_Y_UNITS         = 'm/y'
@@ -279,7 +284,6 @@ class DataVars:
         SKIPPED_GRANULES: "skipped granules during datacube construction"
     }
 
-
     class ImgPairInfo:
         """
         Class to represent attributes of the "img_pair_info" data variable,
@@ -332,8 +336,14 @@ class DataVars:
         ]
 
         ALL_DTYPE = {
-            DATE_DT: np.float32,
-            ROI_VALID_PERCENTAGE: np.float32
+            DATE_DT:              np.float32,
+            ROI_VALID_PERCENTAGE: np.float32,
+            MISSION_IMG1:   str,
+            MISSION_IMG2:   str,
+            SATELLITE_IMG1: str,
+            SATELLITE_IMG2: str,
+            SENSOR_IMG1:    str,
+            SENSOR_IMG2:    str
         }
 
         # Description strings for data variables.
@@ -538,12 +548,15 @@ class ShapeFile:
     EPSG        = 'epsg'
     LANDICE_2KM = 'landice_2km'
     LANDICE     = 'landice'
+    FLOATINGICE = 'floatingice'
 
     Name = {
-        LANDICE: 'land ice mask'
+        LANDICE: 'land ice mask',
+        FLOATINGICE: 'floating ice mask',
     }
     Description = {
-        LANDICE: 'land ice mask, 1 = land-ice, 0 = non-land-ice'
+        LANDICE: 'land ice mask, 1 = land-ice, 0 = non-land-ice',
+        FLOATINGICE: 'floating ice mask, 1 = floating-ice, 0 = non-floating-ice',
     }
 
 
