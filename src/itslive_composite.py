@@ -3155,12 +3155,18 @@ class ITSLiveComposite:
             # logging.info(f'{each} attrs: {ds[each].attrs}')
 
         # Settings for variables of "uint8" data type
-        for each in [
+        uint8_vars = [
             CompDataVars.OUTLIER_FRAC,
-            CompDataVars.SENSOR_INCLUDE,
-            ShapeFile.LANDICE,
-            ShapeFile.FLOATINGICE
-        ]:
+            CompDataVars.SENSOR_INCLUDE
+        ]
+
+        if ShapeFile.LANDICE in ds:
+            uint8_vars.append(ShapeFile.LANDICE)
+
+        if ShapeFile.FLOATINGICE in ds:
+            uint8_vars.append(ShapeFile.FLOATINGICE)
+
+        for each in uint8_vars:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
                 Output.COMPRESSOR_ATTR: compressor,
