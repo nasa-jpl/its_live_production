@@ -12,14 +12,12 @@ import collections
 import copy
 import datetime
 import gc
-import geopandas as gpd
 import json
 import logging
 import numba as nb
-import numpy  as np
+import numpy as np
 import os
 import pandas as pd
-import rioxarray
 import s3fs
 from scipy import ndimage
 import timeit
@@ -739,8 +737,12 @@ def annual_magnitude(
     uv_x = vx_fit/v_fit # unit flow vector
     uv_y = vy_fit/v_fit
 
-    v_fit_err = np.abs(vx_fit_err) * np.abs(uv_x) # flow acceleration in direction of unit flow vector, take absolute values
-    v_fit_err += np.abs(vy_fit_err) * np.abs(uv_y)
+    # Compute v_fit_error like autoRIFT does:
+    # V_error = np.sqrt((vx_error * VX / V)**2 + (vy_error * VY / V)**2)
+    v_fit_err = (vx_fit_err * vx_fit)**2
+    v_fit_err += (vy_fit_err * vy_fit)**2
+    v_fit_err = np.sqrt(v_fit_err)
+    v_fit_err /= np.abs(v_fit)
 
     v_fit_count = np.ceil((vx_fit_count + vy_fit_count) / 2)
 
@@ -1740,7 +1742,7 @@ class ITSLiveComposite:
     # minimum difference in amplitude between LSQ fit results before removing S2 data
     LSQ_MIN_AMP_DIFF = 2
 
-    # Shape file to locate land-ice mask file that corresponds to the composite's EPSG code
+    # Shape file to locate ice masks files that correspond to the composite's EPSG code
     SHAPE_FILE = None
 
     def __init__(self, cube_store: str, s3_bucket: str):
@@ -1763,10 +1765,10 @@ class ITSLiveComposite:
             raise RuntimeError(f'Expected one entry for {cube_projection} in shapefile, got {len(found_row)} rows.')
 
         # Read land ice mask to be used for processing
-        self.land_ice_mask, _ = ITSLiveComposite.read_ice_mask(found_row, ShapeFile.LANDICE_2KM, self.cube_ds.x, self.cube_ds.y)
+        self.land_ice_mask, _ = ITSCube.read_ice_mask(found_row, ShapeFile.LANDICE_2KM, self.cube_ds.x, self.cube_ds.y)
 
         # This is land ice coverage for the datacube
-        # If landice and floating ice masks areprovided by the datacube, just use them.
+        # If landice and floating ice masks are provided by the datacube, just use them.
         # Otherwise, to support datacubes without ice masks, read them in and store
         # within composite.
         self.land_ice_mask_composite = None
@@ -1777,7 +1779,7 @@ class ITSLiveComposite:
             self.land_ice_mask_composite_url = self.cube_ds[ShapeFile.LANDICE].attrs[CubeOutput.URL]
 
         else:
-            self.land_ice_mask_composite, self.land_ice_mask_composite_url = ITSLiveComposite.read_ice_mask(
+            self.land_ice_mask_composite, self.land_ice_mask_composite_url = ITSCube.read_ice_mask(
                 found_row, ShapeFile.LANDICE, self.cube_ds.x, self.cube_ds.y
             )
 
@@ -1790,7 +1792,7 @@ class ITSLiveComposite:
             self.floating_ice_mask_composite_url = self.cube_ds[ShapeFile.FLOATINGICE].attrs[CubeOutput.URL]
 
         else:
-            self.floating_ice_mask_composite, self.floating_ice_mask_composite_url = ITSLiveComposite.read_ice_mask(
+            self.floating_ice_mask_composite, self.floating_ice_mask_composite_url = ITSCube.read_ice_mask(
                 found_row, ShapeFile.FLOATINGICE, self.cube_ds.x, self.cube_ds.y
             )
 
@@ -1965,78 +1967,6 @@ class ITSLiveComposite:
 
         # TODO: take care of self.date_updated when support for composites updates
         # is implemented
-
-    @staticmethod
-    def read_ice_mask(shapefile_row, column_name, grid_x, grid_y):
-        """
-        Read ice mask as stored in "column_name" field of the shapefile's row.
-
-        Inputs:
-        =======
-        found_row: Row from the shape file that corresponds to the datacube's EPSG code
-        column_name: Name of the shape file column that represents the land ice mask.
-        grid_x: X coordinates of the datacube grid.
-        grid_y: Y coordinates of the datacube grid.
-
-        Returns: A tuple of:
-                 * None if there is no overlap between land ice mask and datacube polygon,
-                 or land ice mask for the same grid as datacube polygon.
-                 * URL to the mask file as provided in the shapefile.
-        """
-        ice_mask_file = shapefile_row[column_name].item()
-
-        ice_mask_file = ice_mask_file.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
-        ice_mask_file = ice_mask_file.replace(ITSCube.PATH_URL, '')
-        logging.info(f'Using {column_name} mask file {ice_mask_file}')
-
-        # Load the mask
-        mask_ds = rioxarray.open_rasterio(ice_mask_file)
-
-        # Zoom into cube polygon
-        mask_x = (mask_ds.x >= grid_x.min()) & (mask_ds.x <= grid_x.max())
-        mask_y = (mask_ds.y >= grid_y.min()) & (mask_ds.y <= grid_y.max())
-        mask = (mask_x & mask_y)
-
-        ice = None
-
-        if mask.sum().item() == 0:
-            # Mask does not overlap with the cube
-            logging.info(f'No overlap is detected with mask data {ice_mask_file}')
-
-        else:
-            cropped_mask_ds = mask_ds.where(mask, drop=True)
-
-            # Allocate xr.DataArray to match cube dimentions
-            ice_mask = xr.DataArray(
-                np.zeros((len(grid_y), len(grid_x))),
-                coords = {
-                    Coords.X: grid_x,
-                    Coords.Y: grid_y
-                },
-                dims=[Coords.Y, Coords.X]
-            )
-
-             # Populate mask data into cube-size array
-            if cropped_mask_ds.ndim == 3:
-                # If it's 3d data, it should have first dimension=1: just
-                # one layer is expected
-                mask_data_sizes = cropped_mask_ds.shape
-                if mask_data_sizes[0] != 1:
-                    raise RuntimeError(f'Unexpected size for mask data from {ice_mask_file} file: {mask_data_sizes}')
-
-                else:
-                    ice_mask.loc[dict(x=cropped_mask_ds.x, y=cropped_mask_ds.y)] = cropped_mask_ds[0]
-
-            else:
-                ice_mask.loc[dict(x=ds.x, y=ds.y)] = cropped_mask_ds
-
-            # Store mask as numpy array since all calcuations are done using
-            # numpy arrays
-            ice = ice_mask.values
-            land_ice_coverage = int(np.sum(ice))/(len(grid_x)*len(grid_y))*100
-            logging.info(f'Got {column_name} mask for {np.round(land_ice_coverage, 2)}% cells of the datacube')
-
-            return (ice, shapefile_row[column_name].item())
 
     def create(self, output_store: str, s3_bucket: str):
         """
@@ -3441,7 +3371,7 @@ if __name__ == '__main__':
         '-s', '--shapeFile',
         type=str,
         default='s3://its-live-data/autorift_parameters/v001/autorift_landice_0120m.shp',
-        help="Shapefile that stores land-ice mask per each of the EPSG codes [%(default)s]."
+        help="Shapefile that stores ice masks per each of the EPSG codes [%(default)s]."
     )
 
     args = parser.parse_args()
@@ -3452,10 +3382,8 @@ if __name__ == '__main__':
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
 
-    # Read shape file in (with land-ice mask information): make sure it's S3 URL
-    shape_file = args.shapeFile.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
-    shape_file = shape_file.replace(ITSCube.PATH_URL, '')
-    ITSLiveComposite.SHAPE_FILE = gpd.read_file(shape_file)
+    # Read shape file with ice masks information in
+    ITSLiveComposite.SHAPE_FILE = ITSCube.read_shapefile(args.shapeFile)
 
     if len(args.targetBucket):
         ITSLiveComposite.S3 = os.path.join(args.targetBucket, args.outputStore)
