@@ -82,6 +82,9 @@ class ITSCube:
     # if URL is of the 'http://its-live-data.s3.amazonaws.com/velocity_image_pair/landsat/v00.0/32628/file.nc' format,
     # S3 bucket location of the file is 's3://its-live-data/velocity_image_pair/landsat/v00.0/32628/file.nc'
     PATH_URL = ".s3.amazonaws.com"
+    # For testing Malaspina cube with latest updates to granules - using file of granules
+    # to use instead of queueing searchAPI
+    # PATH_URL = '.s3.us-west-2.amazonaws.com'
 
     # URL path to the target datacube
     URL = ''
@@ -1226,7 +1229,10 @@ class ITSCube:
             #
             lat = int(np.abs(ds.img_pair_info.latitude))
             lon = int(np.abs(ds.img_pair_info.longitude))
-            mid_date += timedelta(microseconds=int(f'{lat:02d}{lon:03d}'))
+            # Lon/lat can be non-unique for some of the granules with the same
+            # 'date_center', so use acquisition_date_img1 instead: YYMMDD
+            # Example: acquisition_date_img1 = "20141121T13:31:15";
+            mid_date += timedelta(microseconds=int(ds.img_pair_info.attrs[attr_name_1][2:8]))
 
             # Define which points are within target polygon.
             mask_lon = (ds.x >= self.grid_x_min) & (ds.x <= self.grid_x_max)
