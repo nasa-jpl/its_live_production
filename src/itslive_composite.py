@@ -1611,6 +1611,12 @@ class StableShiftFilter:
         """
         Exclude granules, if any are detected by the filter, from the data.
 
+        ATTN: We had to introduce this method because of the
+        "pandas.errors.InvalidIndexError: Reindexing only valid with uniquely valued Index objects"
+        exception we are getting if calling
+        xr.Dataset.drop_isel()
+        for the datacube with layers with duplicates of "mid_date" values.
+
         Inputs:
         =======
         data: Data to exclude granules from.
@@ -1672,7 +1678,8 @@ class ITSLiveComposite:
         CompDataVars.VX_ERROR,
         CompDataVars.VY_ERROR,
         DataVars.ImgPairInfo.DATE_DT,
-        Coords.MID_DATE,
+        DataVars.ImgPairInfo.DATE_CENTER,
+        # Coords.MID_DATE,
         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
         DataVars.FLAG_STABLE_SHIFT,
@@ -1822,6 +1829,8 @@ class ITSLiveComposite:
         # self.cube_sizes = reduced_cube_ds.sizes
         logging.info(f'Datacube sizes after StableShiftFilter: {self.cube_sizes}')
 
+        ITSLiveComposite.MID_DATE_LEN = self.cube_sizes[Coords.MID_DATE]
+
         # Need to keep original datacube dimensions to revert stable_shift, if any.
         # Then remove any granules for these data variables if any are identified
         # by the StableShiftFilter.
@@ -1890,8 +1899,6 @@ class ITSLiveComposite:
         # Day separation between images (sorted per cube.sortby() call above)
         ITSLiveComposite.DATE_DT = self.stable_shift_filter.exclude(cube_ds[DataVars.ImgPairInfo.DATE_DT].values)
 
-        ITSLiveComposite.MID_DATE_LEN = self.cube_sizes[Coords.MID_DATE]
-
         # These data members will be set for each block of data being currently
         # processed ---> have to change the logic if want to parallelize blocks
         x_len = self.cube_sizes[Coords.X]
@@ -1916,7 +1923,11 @@ class ITSLiveComposite:
 
         # Sensor data for the cube's layers
         self.sensors = self.stable_shift_filter.exclude(cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values)
-        self.mid_date = self.stable_shift_filter.exclude(cube_ds[Coords.MID_DATE].values)
+
+        # Use true "date_center" value for processing since "mid_date" has been
+        # adjusted by milliseconds to guarantee uniqueness of the values so we
+        # can manipulate the whole xr.Dataset based on "mid_date" dimension
+        self.date_center = self.stable_shift_filter.exclude(cube_ds[DataVars.ImgPairInfo.DATE_CENTER].values)
 
         # Identify sensors groups (L89, S1, S2, etc.) within datacube.
         self.sensors_groups = SensorExcludeFilter.identify_sensor_groups(self.sensors)
@@ -2180,7 +2191,7 @@ class ITSLiveComposite:
             ITSLiveComposite.DATE_DT,
             vx,
             vy,
-            self.mid_date,
+            self.date_center,
             land_ice_mask
         )
         logging.info(f'Finished sensor exclude filter ({timeit.default_timer() - start_time} seconds)')
