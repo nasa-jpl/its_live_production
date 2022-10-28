@@ -9,6 +9,7 @@ from dateutil.parser import parse
 from datetime import datetime, timedelta
 from functools import reduce
 import gc
+import geopandas as gpd
 import glob
 import json
 import logging
@@ -25,6 +26,7 @@ import dask
 from dask.diagnostics import ProgressBar
 import numpy  as np
 import pandas as pd
+import rioxarray
 import s3fs
 import subprocess
 from tqdm import tqdm
@@ -34,7 +36,14 @@ from urllib.parse import urlparse
 # Local modules
 import itslive_utils
 from grid import Bounds, Grid
-from itscube_types import Coords, DataVars, FileExtension, Output, CubeOutput
+from itscube_types import \
+    Coords, \
+    DataVars, \
+    FileExtension, \
+    Output, \
+    CubeOutput, \
+    ShapeFile, \
+    to_int_type
 import zarr_to_netcdf
 
 # Set up logging
@@ -139,6 +148,9 @@ class ITSCube:
     # JSON file.
     USE_GRANULES = None
 
+    # Shape file to locate ice masks files that correspond to the composite's EPSG code
+    SHAPE_FILE = None
+
     def __init__(self, polygon: tuple, projection: str):
         """
         Initialize object.
@@ -237,6 +249,21 @@ class ITSCube:
 
         # Number of layers for cube generation based on the searchAPI query return
         self.max_number_of_layers = 0
+
+        # Find corresponding to EPSG land ice mask file for the cube
+        found_row = ITSCube.SHAPE_FILE.loc[ITSCube.SHAPE_FILE[ShapeFile.EPSG] == int(projection)]
+        if len(found_row) != 1:
+            raise RuntimeError(f'Expected one entry for {projection} in shapefile, got {len(found_row)} rows.')
+
+        # Land ice mask for the cube
+        self.land_ice_mask, self.land_ice_mask_url = ITSCube.read_ice_mask(
+            found_row, ShapeFile.LANDICE, self.grid_x, self.grid_y
+        )
+
+        # Floating ice coverage for the datacube
+        self.floating_ice_mask, self.floating_ice_mask_url = ITSCube.read_ice_mask(
+            found_row, ShapeFile.FLOATINGICE, self.grid_x, self.grid_y
+        )
 
     def clear_vars(self):
         """
@@ -1668,6 +1695,53 @@ class ITSCube:
             new_geo_transform_str = f"{self.grid_x[0] - self.half_x_cell} {self.x_cell} 0 {self.grid_y[0] - self.half_y_cell} 0 {self.y_cell}"
             self.layers[DataVars.MAPPING].attrs['GeoTransform'] = new_geo_transform_str
 
+            twodim_var_coords = [self.grid_y, self.grid_x]
+            twodim_var_dims = [Coords.Y, Coords.X]
+
+            # Create ice masks data variables if they exist
+            if self.land_ice_mask is not None:
+                self.land_ice_mask = to_int_type(
+                    self.land_ice_mask,
+                    np.uint8,
+                    DataVars.MISSING_UINT8_VALUE
+                )
+                self.layers[ShapeFile.LANDICE] = xr.DataArray(
+                    data=self.land_ice_mask,
+                    coords=twodim_var_coords,
+                    dims=twodim_var_dims,
+                    attrs={
+                        DataVars.STD_NAME: ShapeFile.Name[ShapeFile.LANDICE],
+                        DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
+                        DataVars.GRID_MAPPING: DataVars.MAPPING,
+                        DataVars.UNITS: DataVars.BINARY_UNITS,
+                        CubeOutput.URL: self.land_ice_mask_url
+                    }
+                )
+                # self.land_ice_mask = None
+                # gc.collect()
+
+            if self.floating_ice_mask is not None:
+                self.floating_ice_mask = to_int_type(
+                    self.floating_ice_mask,
+                    np.uint8,
+                    DataVars.MISSING_UINT8_VALUE
+                )
+                # Land ice mask exists for the composite
+                self.layers[ShapeFile.FLOATINGICE] = xr.DataArray(
+                    data=self.floating_ice_mask,
+                    coords=twodim_var_coords,
+                    dims=twodim_var_dims,
+                    attrs={
+                        DataVars.STD_NAME: ShapeFile.Name[ShapeFile.FLOATINGICE],
+                        DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.FLOATINGICE],
+                        DataVars.GRID_MAPPING: DataVars.MAPPING,
+                        DataVars.UNITS: DataVars.BINARY_UNITS,
+                        CubeOutput.URL: self.floating_ice_mask_url
+                    }
+                )
+                # self.floating_ice_mask = None
+                # gc.collect()
+
         # ATTN: Assign one data variable at a time to avoid running out of memory.
         #       Delete each variable after it has been processed to free up the
         #       memory.
@@ -1872,6 +1946,21 @@ class ITSCube:
                 encoding_settings[each] = {
                     Output.DTYPE_ATTR: np.float32
                 }
+
+            # Settings for variables of "uint8" data type if any variables exist
+            ice_mask_vars = []
+            if ShapeFile.LANDICE in self.layers:
+                ice_mask_vars.append(ShapeFile.LANDICE)
+
+            if ShapeFile.FLOATINGICE in self.layers:
+                ice_mask_vars.append(ShapeFile.FLOATINGICE)
+
+            for each in ice_mask_vars:
+                encoding_settings.setdefault(each, {}).update({
+                    Output.DTYPE_ATTR: np.uint8,
+                    Output.COMPRESSOR_ATTR: compressor,
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE
+                })
 
             for each in [
                 DataVars.INTERP_MASK,
@@ -2212,6 +2301,95 @@ class ITSCube:
             if command_return.returncode != 0:
                 raise RuntimeError(f"Failed to remove original {json_s3_path}: {command_return.stdout}")
 
+    @staticmethod
+    def read_shapefile(shapefile: str):
+        """
+        Read shape file in with ice mask information required for processing.
+
+        Inputs:
+        =======
+        shapefile: URL to the shapefile.
+
+        Returns:
+        ========
+        Object representing the shapefile.
+        """
+        # Make sure it's S3 URL that is provided
+        shape_file = shapefile.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
+        shape_file = shape_file.replace(ITSCube.PATH_URL, '')
+        return gpd.read_file(shape_file)
+
+    @staticmethod
+    def read_ice_mask(shapefile_row, column_name, grid_x, grid_y):
+        """
+        Read ice mask as stored in "column_name" field of the shapefile's row.
+
+        Inputs:
+        =======
+        found_row: Row from the shape file that corresponds to the datacube's EPSG code
+        column_name: Name of the shape file column that represents the land ice mask.
+        grid_x: X coordinates of the datacube grid.
+        grid_y: Y coordinates of the datacube grid.
+
+        Returns: A tuple of:
+                 * None if there is no overlap between land ice mask and datacube polygon,
+                 or land ice mask for the same grid as datacube polygon.
+                 * URL to the mask file as provided in the shapefile.
+        """
+        ice_mask_file = shapefile_row[column_name].item()
+
+        ice_mask_file = ice_mask_file.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
+        ice_mask_file = ice_mask_file.replace(ITSCube.PATH_URL, '')
+        logging.info(f'Using {column_name} mask file {ice_mask_file}')
+
+        # Load the mask
+        mask_ds = rioxarray.open_rasterio(ice_mask_file)
+
+        # Zoom into cube polygon
+        mask_x = (mask_ds.x >= grid_x.min()) & (mask_ds.x <= grid_x.max())
+        mask_y = (mask_ds.y >= grid_y.min()) & (mask_ds.y <= grid_y.max())
+        mask = (mask_x & mask_y)
+
+        ice = None
+
+        if mask.sum().item() == 0:
+            # Mask does not overlap with the cube
+            logging.info(f'No overlap is detected with {column_name} mask data {ice_mask_file}')
+
+        else:
+            cropped_mask_ds = mask_ds.where(mask, drop=True)
+
+            # Allocate xr.DataArray to match cube dimentions
+            ice_mask = xr.DataArray(
+                np.zeros((len(grid_y), len(grid_x))),
+                coords = {
+                    Coords.X: grid_x,
+                    Coords.Y: grid_y
+                },
+                dims=[Coords.Y, Coords.X]
+            )
+
+             # Populate mask data into cube-size array
+            if cropped_mask_ds.ndim == 3:
+                # If it's 3d data, it should have first dimension=1: just
+                # one layer is expected
+                mask_data_sizes = cropped_mask_ds.shape
+                if mask_data_sizes[0] != 1:
+                    raise RuntimeError(f'Unexpected size for mask data from {ice_mask_file} file: {mask_data_sizes}')
+
+                else:
+                    ice_mask.loc[dict(x=cropped_mask_ds.x, y=cropped_mask_ds.y)] = cropped_mask_ds[0]
+
+            else:
+                ice_mask.loc[dict(x=ds.x, y=ds.y)] = cropped_mask_ds
+
+            # Store mask as numpy array since all calcuations are done using
+            # numpy arrays
+            ice = ice_mask.values
+            land_ice_coverage = int(np.sum(ice))/(len(grid_x)*len(grid_y))*100
+            logging.info(f'Got {column_name} mask for {np.round(land_ice_coverage, 2)}% cells of the datacube')
+
+            return (ice, shapefile_row[column_name].item())
 
 if __name__ == '__main__':
     import argparse
@@ -2315,6 +2493,12 @@ if __name__ == '__main__':
         default=False,
         help='Disable datetime validation for created datacube. This is to identify corrupted Zarr stores at the time of creation.'
     )
+    parser.add_argument(
+        '-s', '--shapeFile',
+        type=str,
+        default='s3://its-live-data/autorift_parameters/v001/autorift_landice_0120m.shp',
+        help="Shapefile that stores ice masks per each of the EPSG codes [%(default)s]."
+    )
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
     group = parser.add_mutually_exclusive_group()
@@ -2333,6 +2517,9 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
+
+    # Read shape file with ice masks information in
+    ITSCube.SHAPE_FILE = ITSCube.read_shapefile(args.shapeFile)
 
     # Enforce .zarr file extension for the datacube store
     if not args.outputStore.endswith(FileExtension.ZARR):
