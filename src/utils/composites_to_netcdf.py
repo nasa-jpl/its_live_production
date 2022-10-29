@@ -51,6 +51,8 @@ ENCODING = {
     'count0':                    {'_FillValue': 0, 'dtype': np.uint32, "zlib": True, "complevel": 2, "shuffle": True},
     'outlier_percent':           {'_FillValue': 255, 'dtype': np.uint8, "zlib": True, "complevel": 2, "shuffle": True},
     'sensor_flag':               {'_FillValue': 255, 'dtype': np.uint8, "zlib": True, "complevel": 2, "shuffle": True},
+    'landice':                   {'_FillValue': 255, 'dtype': np.uint8, "zlib": True, "complevel": 2, "shuffle": True},
+    'floatingice':               {'_FillValue': 255, 'dtype': np.uint8, "zlib": True, "complevel": 2, "shuffle": True},
     'time':                      {'_FillValue': None, 'units': 'days since 1970-01-01'},
     'sensor':                    {'_FillValue': None, 'dtype': 'S1'},
     'x':                         {'_FillValue': None},
