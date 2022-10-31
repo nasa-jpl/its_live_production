@@ -1976,7 +1976,6 @@ class ITSLiveComposite:
         # x_index: 331
         # y_index: 796
         x_start = 0
-        # x_start = 500
         x_num_to_process = self.cube_sizes[Coords.X]
 
         # For debugging only
@@ -1988,6 +1987,7 @@ class ITSLiveComposite:
 
         # datacubes/v02/N60W040/ITS_LIVE_vel_EPSG3413_G0120_X-150000_Y-2250000.zarr
         # x_start = 216    # large diff in vx0 for S2 excluded in LSQ fit
+        # x_start = 500
 
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
@@ -2580,49 +2580,47 @@ class ITSLiveComposite:
         twodim_var_coords = [self.cube_ds.y.values, self.cube_ds.x.values]
         twodim_var_dims = [Coords.Y, Coords.X]
 
-        if self.land_ice_mask_composite is not None:
-            self.land_ice_mask_composite = to_int_type(
-                self.land_ice_mask_composite,
-                np.uint8,
-                DataVars.MISSING_UINT8_VALUE
-            )
-            # Land ice mask exists for the composite
-            ds[ShapeFile.LANDICE] = xr.DataArray(
-                data=self.land_ice_mask_composite,
-                coords=twodim_var_coords,
-                dims=twodim_var_dims,
-                attrs={
-                    DataVars.STD_NAME: ShapeFile.Name[ShapeFile.LANDICE],
-                    DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
-                    DataVars.GRID_MAPPING: DataVars.MAPPING,
-                    DataVars.UNITS: DataVars.BINARY_UNITS,
-                    CubeOutput.URL: self.land_ice_mask_composite_url
-                }
-            )
-            self.land_ice_mask_composite = None
-            gc.collect()
+        self.land_ice_mask_composite = to_int_type(
+            self.land_ice_mask_composite,
+            np.uint8,
+            DataVars.MISSING_UINT8_VALUE
+        )
+        # Land ice mask exists for the composite
+        ds[ShapeFile.LANDICE] = xr.DataArray(
+            data=self.land_ice_mask_composite,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: ShapeFile.Name[ShapeFile.LANDICE],
+                DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.BINARY_UNITS,
+                CubeOutput.URL: self.land_ice_mask_composite_url
+            }
+        )
+        self.land_ice_mask_composite = None
+        gc.collect()
 
-        if self.floating_ice_mask_composite is not None:
-            self.floating_ice_mask_composite = to_int_type(
-                self.floating_ice_mask_composite,
-                np.uint8,
-                DataVars.MISSING_UINT8_VALUE
-            )
-            # Land ice mask exists for the composite
-            ds[ShapeFile.FLOATINGICE] = xr.DataArray(
-                data=self.floating_ice_mask_composite,
-                coords=twodim_var_coords,
-                dims=twodim_var_dims,
-                attrs={
-                    DataVars.STD_NAME: ShapeFile.Name[ShapeFile.FLOATINGICE],
-                    DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.FLOATINGICE],
-                    DataVars.GRID_MAPPING: DataVars.MAPPING,
-                    DataVars.UNITS: DataVars.BINARY_UNITS,
-                    CubeOutput.URL: self.floating_ice_mask_composite_url
-                }
-            )
-            self.floating_ice_mask_composite = None
-            gc.collect()
+        self.floating_ice_mask_composite = to_int_type(
+            self.floating_ice_mask_composite,
+            np.uint8,
+            DataVars.MISSING_UINT8_VALUE
+        )
+        # Land ice mask exists for the composite
+        ds[ShapeFile.FLOATINGICE] = xr.DataArray(
+            data=self.floating_ice_mask_composite,
+            coords=twodim_var_coords,
+            dims=twodim_var_dims,
+            attrs={
+                DataVars.STD_NAME: ShapeFile.Name[ShapeFile.FLOATINGICE],
+                DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.FLOATINGICE],
+                DataVars.GRID_MAPPING: DataVars.MAPPING,
+                DataVars.UNITS: DataVars.BINARY_UNITS,
+                CubeOutput.URL: self.floating_ice_mask_composite_url
+            }
+        )
+        self.floating_ice_mask_composite = None
+        gc.collect()
 
         self.mean.transpose()
         self.error.transpose()
@@ -3155,18 +3153,12 @@ class ITSLiveComposite:
             # logging.info(f'{each} attrs: {ds[each].attrs}')
 
         # Settings for variables of "uint8" data type
-        uint8_vars = [
+        for each in [
             CompDataVars.OUTLIER_FRAC,
-            CompDataVars.SENSOR_INCLUDE
-        ]
-
-        if ShapeFile.LANDICE in ds:
-            uint8_vars.append(ShapeFile.LANDICE)
-
-        if ShapeFile.FLOATINGICE in ds:
-            uint8_vars.append(ShapeFile.FLOATINGICE)
-
-        for each in uint8_vars:
+            CompDataVars.SENSOR_INCLUDE,
+            ShapeFile.LANDICE,
+            ShapeFile.FLOATINGICE
+        ]:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
                 Output.COMPRESSOR_ATTR: compressor,
