@@ -1699,48 +1699,46 @@ class ITSCube:
             twodim_var_dims = [Coords.Y, Coords.X]
 
             # Create ice masks data variables if they exist
-            if self.land_ice_mask is not None:
-                self.land_ice_mask = to_int_type(
-                    self.land_ice_mask,
-                    np.uint8,
-                    DataVars.MISSING_UINT8_VALUE
-                )
-                self.layers[ShapeFile.LANDICE] = xr.DataArray(
-                    data=self.land_ice_mask,
-                    coords=twodim_var_coords,
-                    dims=twodim_var_dims,
-                    attrs={
-                        DataVars.STD_NAME: ShapeFile.Name[ShapeFile.LANDICE],
-                        DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
-                        DataVars.GRID_MAPPING: DataVars.MAPPING,
-                        DataVars.UNITS: DataVars.BINARY_UNITS,
-                        CubeOutput.URL: self.land_ice_mask_url
-                    }
-                )
-                # self.land_ice_mask = None
-                # gc.collect()
+            self.land_ice_mask = to_int_type(
+                self.land_ice_mask,
+                np.uint8,
+                DataVars.MISSING_UINT8_VALUE
+            )
+            self.layers[ShapeFile.LANDICE] = xr.DataArray(
+                data=self.land_ice_mask,
+                coords=twodim_var_coords,
+                dims=twodim_var_dims,
+                attrs={
+                    DataVars.STD_NAME: ShapeFile.Name[ShapeFile.LANDICE],
+                    DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
+                    DataVars.GRID_MAPPING: DataVars.MAPPING,
+                    DataVars.UNITS: DataVars.BINARY_UNITS,
+                    CubeOutput.URL: self.land_ice_mask_url
+                }
+            )
+            self.land_ice_mask = None
+            gc.collect()
 
-            if self.floating_ice_mask is not None:
-                self.floating_ice_mask = to_int_type(
-                    self.floating_ice_mask,
-                    np.uint8,
-                    DataVars.MISSING_UINT8_VALUE
-                )
-                # Land ice mask exists for the composite
-                self.layers[ShapeFile.FLOATINGICE] = xr.DataArray(
-                    data=self.floating_ice_mask,
-                    coords=twodim_var_coords,
-                    dims=twodim_var_dims,
-                    attrs={
-                        DataVars.STD_NAME: ShapeFile.Name[ShapeFile.FLOATINGICE],
-                        DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.FLOATINGICE],
-                        DataVars.GRID_MAPPING: DataVars.MAPPING,
-                        DataVars.UNITS: DataVars.BINARY_UNITS,
-                        CubeOutput.URL: self.floating_ice_mask_url
-                    }
-                )
-                # self.floating_ice_mask = None
-                # gc.collect()
+            self.floating_ice_mask = to_int_type(
+                self.floating_ice_mask,
+                np.uint8,
+                DataVars.MISSING_UINT8_VALUE
+            )
+            # Land ice mask exists for the composite
+            self.layers[ShapeFile.FLOATINGICE] = xr.DataArray(
+                data=self.floating_ice_mask,
+                coords=twodim_var_coords,
+                dims=twodim_var_dims,
+                attrs={
+                    DataVars.STD_NAME: ShapeFile.Name[ShapeFile.FLOATINGICE],
+                    DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.FLOATINGICE],
+                    DataVars.GRID_MAPPING: DataVars.MAPPING,
+                    DataVars.UNITS: DataVars.BINARY_UNITS,
+                    CubeOutput.URL: self.floating_ice_mask_url
+                }
+            )
+            self.floating_ice_mask = None
+            gc.collect()
 
         # ATTN: Assign one data variable at a time to avoid running out of memory.
         #       Delete each variable after it has been processed to free up the
@@ -1948,13 +1946,7 @@ class ITSCube:
                 }
 
             # Settings for variables of "uint8" data type if any variables exist
-            ice_mask_vars = []
-            if ShapeFile.LANDICE in self.layers:
-                ice_mask_vars.append(ShapeFile.LANDICE)
-
-            if ShapeFile.FLOATINGICE in self.layers:
-                ice_mask_vars.append(ShapeFile.FLOATINGICE)
-
+            ice_mask_vars = [ShapeFile.LANDICE, ShapeFile.FLOATINGICE]
             for each in ice_mask_vars:
                 encoding_settings.setdefault(each, {}).update({
                     Output.DTYPE_ATTR: np.uint8,
@@ -2350,7 +2342,17 @@ class ITSCube:
         mask_y = (mask_ds.y >= grid_y.min()) & (mask_ds.y <= grid_y.max())
         mask = (mask_x & mask_y)
 
-        ice = None
+        # Allocate xr.DataArray to match cube dimentions: will be empty if
+        # no overlap exists with the ice mask, or will be set to overlap with
+        # ice mask
+        ice_mask = xr.DataArray(
+            np.zeros((len(grid_y), len(grid_x))),
+            coords = {
+                Coords.X: grid_x,
+                Coords.Y: grid_y
+            },
+            dims=[Coords.Y, Coords.X]
+        )
 
         if mask.sum().item() == 0:
             # Mask does not overlap with the cube
@@ -2358,16 +2360,6 @@ class ITSCube:
 
         else:
             cropped_mask_ds = mask_ds.where(mask, drop=True)
-
-            # Allocate xr.DataArray to match cube dimentions
-            ice_mask = xr.DataArray(
-                np.zeros((len(grid_y), len(grid_x))),
-                coords = {
-                    Coords.X: grid_x,
-                    Coords.Y: grid_y
-                },
-                dims=[Coords.Y, Coords.X]
-            )
 
              # Populate mask data into cube-size array
             if cropped_mask_ds.ndim == 3:
@@ -2383,13 +2375,13 @@ class ITSCube:
             else:
                 ice_mask.loc[dict(x=ds.x, y=ds.y)] = cropped_mask_ds
 
-            # Store mask as numpy array since all calcuations are done using
-            # numpy arrays
-            ice = ice_mask.values
-            land_ice_coverage = int(np.sum(ice))/(len(grid_x)*len(grid_y))*100
-            logging.info(f'Got {column_name} mask for {np.round(land_ice_coverage, 2)}% cells of the datacube')
+        # Store mask as numpy array since all calcuations are done using
+        # numpy arrays
+        ice = ice_mask.values
+        land_ice_coverage = int(np.sum(ice))/(len(grid_x)*len(grid_y))*100
+        logging.info(f'Got {column_name} mask for {np.round(land_ice_coverage, 2)}% cells of the datacube')
 
-            return (ice, shapefile_row[column_name].item())
+        return (ice, shapefile_row[column_name].item())
 
 if __name__ == '__main__':
     import argparse
