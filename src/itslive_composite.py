@@ -1488,7 +1488,7 @@ class StableShiftFilter:
     """
     # Thresholds for stable_shift filter
     THRESHOLD = {
-        # MissionSensor.LANDSAT45.mission: 0.0,
+        MissionSensor.LANDSAT45.mission: np.inf,
         MissionSensor.LANDSAT89.mission: 61.6,
         MissionSensor.SENTINEL1.mission: 1.1,
         MissionSensor.SENTINEL2.mission: 28.5
@@ -1992,7 +1992,7 @@ class ITSLiveComposite:
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
         # ======================
-        # x_num_to_process = 100
+        # x_num_to_process = 120
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -2011,7 +2011,8 @@ class ITSLiveComposite:
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # For debugging only
             # ======================
-            # y_num_to_process = 100
+            # y_num_to_process = 120
+            # y_num_to_process = 360
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -2133,6 +2134,7 @@ class ITSLiveComposite:
         # Count all valid points before any filters are applied
         count_mask = ~np.isnan(vx)
         count0_vx = count_mask.sum(axis=2)
+        # logging.info(f'First LSQ fit: {count0_vx}')
 
         start_time = timeit.default_timer()
         logging.info(f'Project velocity to median flow unit vector...')
@@ -2388,6 +2390,7 @@ class ITSLiveComposite:
                     # Re-compute the mask for valid count
                     count_mask = ~np.isnan(vx)
                     count0_vx = count_mask.sum(axis=2)
+                    # logging.info(f'Second LSQ fit: {count0_vx}')
 
                     # Set output data to
                     self.amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask]
@@ -2439,6 +2442,7 @@ class ITSLiveComposite:
 
         # Outlier fraction is based on vx data (count for vx and v are identical to vx's count)
         self.outlier_fraction[start_y:stop_y, start_x:stop_x] = 1 - (self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x] / count0_vx)
+        logging.info(f'outlier_fraction: {self.outlier_fraction[start_y:stop_y, start_x:stop_x]}')
 
         logging.info(f'Find annual magnitude... ')
         start_time = timeit.default_timer()
