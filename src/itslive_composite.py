@@ -1489,6 +1489,7 @@ class StableShiftFilter:
     # Thresholds for stable_shift filter
     THRESHOLD = {
         MissionSensor.LANDSAT45.mission: np.inf,
+        MissionSensor.LANDSAT7.mission:  np.inf,
         MissionSensor.LANDSAT89.mission: 61.6,
         MissionSensor.SENTINEL1.mission: 1.1,
         MissionSensor.SENTINEL2.mission: 28.5
