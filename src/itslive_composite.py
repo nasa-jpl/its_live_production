@@ -37,6 +37,10 @@ from itscube_types import \
     CompOutput, \
     to_int_type
 
+# Flag to indicate that debug is on and LSQ fit parameters should be output to
+# the json files in an attempt to reprocude the problem.
+_enable_debug = False
+
 # Intercept date used for a weighted linear fit
 CENTER_DATE = datetime.datetime(2019, 7, 2)
 
@@ -331,9 +335,11 @@ def create_M(y1, start_year, stop_year, dyr):
 
 # Disable numba as its wrapper for lstsq does not support "rcond" input parameter for LSQ fit
 # @nb.jit(nopython=True)
-def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs):
+def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
+    """
+    LSQ fit iteration for a single spacial point of the datacube.
+    """
     _two_pi = np.pi * 2
-
     #
     # LSQ fit iteration
     #
@@ -344,8 +350,27 @@ def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs):
              (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi), axis=-1)
 
     # Add M: a different constant for each year (annual mean)
-    # logging.info(f'DEBUG: LSQ fit: D={D}')
+    if _enable_debug:
+        with open(f'{var_name}_D.json', 'w') as fh:
+            json.dump(D.tolist(), fh, indent=3)
+
     D = np.concatenate((D, M), axis=1)
+
+    if _enable_debug:
+        with open(f'{var_name}_DM.json', 'w') as fh:
+            json.dump(D.tolist(), fh, indent=3)
+
+        with open(f'{var_name}_start_year.json', 'w') as fh:
+            json.dump(start_year, fh, indent=3)
+
+        with open(f'{var_name}_stop_year.json', 'w') as fh:
+            json.dump(stop_year, fh, indent=3)
+
+        with open(f'{var_name}_w_d.json', 'w') as fh:
+            json.dump(w_d, fh, indent=3)
+
+        with open(f'{var_name}_d_obs.json', 'w') as fh:
+            json.dump(d_obs, fh, indent=3)
 
     # Make numpy happy: have all data 2D
     # w_d.reshape((len(w_d), 1))
@@ -502,6 +527,7 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
 # Don't compile the whole function with numba - runs a bit slower (why???)
 # @nb.jit(nopython=True)
 def itslive_lsqfit_annual(
+    var_name,
     v_input,
     v_err_input,
     start_dec_year,
@@ -577,6 +603,9 @@ def itslive_lsqfit_annual(
     y1 = y1[hasdata]
     M = M[:, hasdata]
 
+    if _enable_debug:
+        logging.info(f'DEBUG: dec_year: {dyr[:50]}')
+
     # logging.info(f'Finished building M and filter by M ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
     # logging.info(f"Start 1st iteration of LSQ")
@@ -593,7 +622,7 @@ def itslive_lsqfit_annual(
     for i in range(0, _mad_filter_iterations):
         # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
         runtime = timeit.default_timer()
-        p, d_model = itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs)
+        p, d_model = itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs)
         iter_runtime += (timeit.default_timer() - runtime)
 
         if i < last_iteration:
@@ -696,6 +725,16 @@ def itslive_lsqfit_annual(
 
     # logging.info(f'DEBUG: LSQ fit error: {error}')
     offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
+
+    if _enable_debug:
+        logging.info(f'y1: {y1}')
+        logging.info(f'mean: {mean[ind]}')
+        logging.info(f'error: {error[ind]}')
+        logging.info(f'count: {count[ind]}')
+        logging.info(f'count_image_pairs: {count_image_pairs}')
+        logging.info(f'offset: {offset}')
+        logging.info(f'slope: {slope}')
+        logging.info(f'se: {se}')
 
     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs])
 
@@ -1195,7 +1234,7 @@ class SensorExcludeFilter:
         sensors - Sensors for the timeseries.
         sensors_groups - List of identified sensor groups in timeseries.
         """
-        # Flag if filter should be applies to timeseries
+        # Flag if filter should be applied to timeseries
         self.apply = False
         self.binedges = None
 
@@ -1212,32 +1251,35 @@ class SensorExcludeFilter:
         # Identify if reference sensor group is present in timeseries
         if SensorExcludeFilter.REF_SENSOR in sensors_groups:
             logging.info(f'Reference sensor {SensorExcludeFilter.REF_SENSOR.mission} is present')
-            self.apply = True
 
             # Check if there is other than S2 data
             if len(sensors_groups) > 1:
                 self.excludeS2FromLSQ = True
+                self.apply = True
 
-            # Extract start and end dates that correspond to the sensor group
-            mask = (self.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
-            # for each in SensorExcludeFilter.REF_SENSOR.sensors:
-            #     # logging.info(f'DEBUG: Update mask with {each} as part of the sensor group')
-            #     mask |= (sensors == each)
+                # Extract start and end dates that correspond to the sensor group
+                mask = (self.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
+                # for each in SensorExcludeFilter.REF_SENSOR.sensors:
+                #     # logging.info(f'DEBUG: Update mask with {each} as part of the sensor group')
+                #     mask |= (sensors == each)
 
-            start_date = np.array(acquisition_start_time)[mask]
-            stop_date = np.array(acquisition_stop_time)[mask]
+                start_date = np.array(acquisition_start_time)[mask]
+                stop_date = np.array(acquisition_stop_time)[mask]
 
-            logging.info(f'Identified reference "{SensorExcludeFilter.REF_SENSOR.mission}" sensor group: start_date={start_date.min().date()} end_date={stop_date.max().date()}')
-            self.binedges = np.arange(
-                start_date.min().date(),
-                stop_date.max().date(),
-                np.timedelta64(73,'[D]'),  # 73 D is 1/5 of a year
-                dtype="datetime64[D]"
-            )
-            logging.info(f'Bin edges: {self.binedges}')
+                logging.info(f'Identified reference "{SensorExcludeFilter.REF_SENSOR.mission}" sensor group: start_date={start_date.min().date()} end_date={stop_date.max().date()}')
+                self.binedges = np.arange(
+                    start_date.min().date(),
+                    stop_date.max().date(),
+                    np.timedelta64(73,'[D]'),  # 73 D is 1/5 of a year
+                    dtype="datetime64[D]"
+                )
+                logging.info(f'Bin edges: {self.binedges}')
+
+            else:
+                logging.info(f'There is no other than {SensorExcludeFilter.REF_SENSOR.mission} data present, disable SensorExcludeFilter and 2nd LSQ fit.')
 
         else:
-            logging.info(f'Reference sensor {SensorExcludeFilter.REF_SENSOR.mission} is missing, disable SensorExclude filter.')
+            logging.info(f'Reference sensor {SensorExcludeFilter.REF_SENSOR.mission} is missing, disable SensorExcludeFilter and 2nd LSQ fit.')
 
     @staticmethod
     def map_sensor_to_group(sensors: list):
@@ -1410,11 +1452,11 @@ class SensorExcludeFilter:
         #     vbin = fill(NaN, (numsg,length(binedges)-1))
         # do this as a dict of dicts so we can use sensor name as index
         bindicts = {
-            sen: {
+            each_sensor: {
                 'vbin':      np.nan * np.ones((len(self.binedges)-1)),
                 'vstdbin':   np.nan * np.ones((len(self.binedges)-1)),
                 'vcountbin': np.zeros((len(self.binedges)-1), dtype='int32')
-            }  for sen in sensorgroups
+            }  for each_sensor in sensorgroups
         }
 
         #
@@ -1454,9 +1496,13 @@ class SensorExcludeFilter:
         if refsensor not in bindicts:
             return sensors_to_exclude
 
-        stats = {sen: {} for sen in sensorgroups}
+        stats = {each_sensor: {} for each_sensor in sensorgroups}
 
         for sen in sensorgroups:
+            # No need to check on reference sensor
+            if sen == refsensor:
+                continue
+
             covalid = (~np.isnan(bindicts[refsensor]['vbin'])) & (~np.isnan(bindicts[sen]['vbin']))
 
             if sum(covalid) > 3:
@@ -1473,8 +1519,16 @@ class SensorExcludeFilter:
 class StableShiftFilter:
     """
     Class to implement stable shift filter for the datacube data.
+    It excludes granules that don't pass the filter criteria.
 
-    Prototype code is:
+    The class is also responsible for excluding all but specific mission group
+    granules if such option is provided to the composite generation code. This
+    is to isolate granule exclusion to one place (one can't just drop a "mid_date"
+    dimension values for the whole cube xr.Dataset since originally created
+    cubes don't have unique values for the dimension - to be fixed for another
+    run of the datacube generation).
+
+    stable_shift filter prototype code is:
 
     if (max(abs(vx_stable_shift), abs(vy_stable_shif)) .* date_dt./365.25) > threshold
         if stable_shift_flag == 1
@@ -1497,6 +1551,9 @@ class StableShiftFilter:
 
     DEC_YEAR_LEN = 365.25
 
+    # If mission group is provided, then include granules for this group only.
+    KEEP_MISSION_GROUP = None
+
     def __init__(self, cube_sensors):
         """
         Initialize the filter.
@@ -1506,14 +1563,16 @@ class StableShiftFilter:
         cube_sensors: list of sensors in the datacube.
         """
         sensor_list = SensorExcludeFilter.map_sensor_to_group(cube_sensors)
+        sensor_shape = sensor_list.shape
+        logging.info(f'Total number of sensors in the cube: {sensor_shape}')
 
         # Mask of granules that need their vx and vy readjusted by
         # their corresponding stable_shift value
-        self.reverse_stable_shift_mask = np.zeros(sensor_list.shape, dtype=bool)
+        self.reverse_stable_shift_mask = np.zeros(sensor_shape, dtype=bool)
         self.num_reverse_stable_shift_mask = 0
 
         # Mask of granules that need to be included into composite computations
-        self.keep_granule_mask = np.ones(sensor_list.shape, dtype=bool)
+        self.keep_granule_mask = np.ones(sensor_shape, dtype=bool)
         self.num_exclude_granules = 0
 
         # stable_shift values that need to be applied to vx and vy: keep only the
@@ -1525,8 +1584,18 @@ class StableShiftFilter:
         # each image pair belongs to
         self.threshold = np.zeros(sensor_list.shape)
 
+        # Step through all mission groups present in the datacube
         for each_group in SensorExcludeFilter.identify_sensor_groups(cube_sensors):
             mask = (sensor_list == each_group.mission)
+
+            if StableShiftFilter.KEEP_MISSION_GROUP and \
+                each_group.mission != StableShiftFilter.KEEP_MISSION_GROUP.mission:
+                # Disable other than requested mission group
+                self.keep_granule_mask[mask] = False
+                self.num_exclude_granules += np.sum(mask)
+                logging.info(f'Need to exclude {np.sum(mask)} granules for {each_group.mission} group')
+
+            # Set threshold for all
             self.threshold[mask] = StableShiftFilter.THRESHOLD[each_group.mission]
 
         # Make sure all missions are encountered for when setting the threshold,
@@ -1535,7 +1604,7 @@ class StableShiftFilter:
         if np.any(zero_mask):
             # There are non populated missions in the dataset, raise an exception
             unique_values = set(sensor_list[zero_mask])
-            raise RuntimeError(f'Need to set stable_shift threshold for the sensors: {unique_values}')
+            raise RuntimeError(f'Need to set stable_shift threshold for {unique_values} sensors in StableShiftFilter.THRESHOLD.')
 
     def __call__(self, cube_ds: xr.Dataset):
         """
@@ -1570,7 +1639,7 @@ class StableShiftFilter:
             # granules, if any, as they all use the full dataset length for masking
 
             # Need to revert stable_shift adjustment if stable_shift == 2
-            _mask = (stable_shift == 2) & filter_mask
+            _mask = (stable_shift == 2) & filter_mask & self.keep_granule_mask
             if np.any(_mask):
                 # Add back corresponding stable_shift
                 self.reverse_stable_shift_mask[_mask] = True
@@ -1594,11 +1663,14 @@ class StableShiftFilter:
                 # ds[DataVars.VX].loc[dict(x=ds.x, y=ds.y, mid_date=ds.mid_date)] = vx
 
             # Exclude the granule if stable_shift == 1
-            _mask = (stable_shift == 1) & filter_mask
+            _mask = (stable_shift == 1) & filter_mask & self.keep_granule_mask
             if np.any(_mask):
                 self.keep_granule_mask[_mask] = False
-                self.num_exclude_granules = np.sum(_mask)
 
+                # If only specific mission group is used, then some of the granules
+                # might be set to be excluded already. Get the number of total excluded
+                # granules in the mask.
+                self.num_exclude_granules = np.sum(self.keep_granule_mask == False)
                 logging.info(f'StableShiftFilter: need to skip {self.num_exclude_granules} granules')
 
                 # DEBUG: pandas.errors.InvalidIndexError: Reindexing only valid with uniquely valued Index objects:
@@ -1648,8 +1720,8 @@ class StableShiftFilter:
         ========
         Updated vx and vy data or original data if no corrections are required.
         """
-        return_vx = vx
-        return_vy = vy
+        return_vx = vx.copy()
+        return_vy = vy.copy()
 
         if self.num_reverse_stable_shift_mask > 0:
             _, y_len, x_len = vx.shape
@@ -1682,7 +1754,6 @@ class ITSLiveComposite:
         CompDataVars.VY_ERROR,
         DataVars.ImgPairInfo.DATE_DT,
         DataVars.ImgPairInfo.DATE_CENTER,
-        # Coords.MID_DATE,
         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
         DataVars.FLAG_STABLE_SHIFT,
@@ -1692,6 +1763,7 @@ class ITSLiveComposite:
         DataVars.ImgPairInfo.MISSION_IMG1
         # DataVars.URL
     ]
+
     # S3 store location for the Zarr composite
     S3 = ''
     # URL location of the Zarr composite
@@ -1990,10 +2062,18 @@ class ITSLiveComposite:
         # x_start = 216    # large diff in vx0 for S2 excluded in LSQ fit
         # x_start = 500
 
+        if _enable_debug:
+            # To debug new Malaspina cube: v0 spurious values
+            # python ./itslive_composite.py -i  Malaspina_succeeded_ITS_LIVE_vel_EPSG3413_G0120_X-3250000_Y250000.zarr -b s3://its-live-data/test_datacubes -o test_malaspina_v0_large.zarr
+            # x index=639
+            # y index=298
+            x_start = 639
+            x_num_to_process = 1
+
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
         # ======================
-        # x_num_to_process = 120
+        # x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -2009,11 +2089,17 @@ class ITSLiveComposite:
             # y_start = 432  # bad point
             # y_start = 216    # large diff in vx0 for S2 excluded in LSQ fit
 
+            if _enable_debug:
+                # To debug new Malaspina cube: v0 spurious values
+                # x index=639
+                # y index=298
+                y_start = 298
+                y_num_to_process = 1
+
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # For debugging only
             # ======================
-            # y_num_to_process = 120
-            # y_num_to_process = 360
+            # y_num_to_process = 100
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -2135,7 +2221,10 @@ class ITSLiveComposite:
         # Count all valid points before any filters are applied
         count_mask = ~np.isnan(vx)
         count0_vx = count_mask.sum(axis=2)
-        # logging.info(f'First LSQ fit: {count0_vx}')
+        logging.info(f'First LSQ fit count based on vx: {count0_vx}')
+
+        count_mask_vy = ~np.isnan(vy)
+        logging.info(f'FYI: First LSQ fit count based on vy: {count_mask_vy.sum(axis=2)}')
 
         start_time = timeit.default_timer()
         logging.info(f'Project velocity to median flow unit vector...')
@@ -2205,6 +2294,7 @@ class ITSLiveComposite:
         # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
         # Transform vx data to make time series continuous in memory: [y, x, t]
         ITSLiveComposite.cubelsqfit2(
+            'vx',
             vx,
             self.vx_error,
             self.amplitude.vx,
@@ -2225,6 +2315,7 @@ class ITSLiveComposite:
 
         # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
         ITSLiveComposite.cubelsqfit2(
+            'vy',
             vy,
             self.vy_error,
             self.amplitude.vy,
@@ -2271,6 +2362,11 @@ class ITSLiveComposite:
             # The 2nd LSQ S2 filter should only be applied where land_ice_2km_inbuff == 1
             run_lsq_fit = True
 
+            # Copy of vx data to use for the granule count in case 2nd LSQ fit's
+            # data is used: can't use vx as cells within land_ice_mask will be
+            # excluded from computations below
+            copy_vx = vx.copy()
+
             if self.land_ice_mask is not None:
                 # Apply mask if it's available for the cube:
                 # Alex: The SensorExcludeFilter should only be applied if landice_2km_inbuff == 0 and
@@ -2300,6 +2396,7 @@ class ITSLiveComposite:
                 # Filter current block's variables
                 vx[:, :, mask] = np.nan
                 vy[:, :, mask] = np.nan
+                copy_vx[:, :, mask] = np.nan
                 logging.info(f'Excluding {np.sum(mask)} S2 points')
 
                 # logging.info(f'DEBUG: Excluded S2 {self.sensors[mask]}')
@@ -2312,6 +2409,7 @@ class ITSLiveComposite:
                 # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
                 # Transform vx data to make time series continuous in memory: [y, x, t]
                 ITSLiveComposite.cubelsqfit2(
+                    'vx_exclS2',
                     vx,
                     self.vx_error,
                     self.excludeS2_amplitude.vx,
@@ -2332,6 +2430,7 @@ class ITSLiveComposite:
 
                 # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
                 ITSLiveComposite.cubelsqfit2(
+                    'vy_exclS2',
                     vy,
                     self.vy_error,
                     self.excludeS2_amplitude.vy,
@@ -2388,12 +2487,19 @@ class ITSLiveComposite:
                     # where (amp_all) > (S1+L8_amp) * 2
                     logging.info(f'Using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data: {np.sum(amp_mask)} spacial points')
 
-                    # Re-compute the mask for valid count
-                    count_mask = ~np.isnan(vx)
+                    # Re-compute the mask for valid count which now excludes S2 data
+                    count_mask = ~np.isnan(copy_vx)
                     count0_vx = count_mask.sum(axis=2)
-                    # logging.info(f'Second LSQ fit: {count0_vx}')
+                    logging.info(f'Second LSQ fit count based on copy_vx: {count0_vx}')
 
-                    # Set output data to
+                    count_mask = ~np.isnan(vx)
+                    logging.info(f'FYI: Second LSQ fit count based on vx: {count_mask.sum(axis=2)}')
+
+                    count_mask = ~np.isnan(vy)
+                    logging.info(f'FYI: Second LSQ fit count based on vy: {count_mask.sum(axis=2)}')
+
+
+                    # Set output data to results of 2nd LSQ fit
                     self.amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask]
                     self.amplitude.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vy[start_y:stop_y, start_x:stop_x][amp_mask]
                     self.amplitude.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x][amp_mask]
@@ -2418,10 +2524,16 @@ class ITSLiveComposite:
                     self.count.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.vy[start_y:stop_y, start_x:stop_x][amp_mask]
                     self.count.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
+                    if _enable_debug:
+                        logging.info(f'count_image_pairs.vx before: {self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask]}')
                     self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                    # Don't really use vx and v components of count_image_pairs, just to be complete:
+                    if _enable_debug:
+                        logging.info(f'count_image_pairs.vx after: {self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask]}')
+
+                    # Don't really use vy and v components of count_image_pairs, just to be complete:
                     self.count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask]
-                    self.count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask]
+                    # This is not even computed, so no need to update anything
+                    # self.count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
                     self.offset.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.vx[start_y:stop_y, start_x:stop_x][amp_mask]
                     self.offset.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_offset.vy[start_y:stop_y, start_x:stop_x][amp_mask]
@@ -2441,9 +2553,27 @@ class ITSLiveComposite:
                     # Re-set max_dt to NaNs
                     self.max_dt[start_y:stop_y, start_x:stop_x, mission_index][amp_mask] = np.nan
 
-        # Outlier fraction is based on vx data (count for vx and v are identical to vx's count)
-        self.outlier_fraction[start_y:stop_y, start_x:stop_x] = 1 - (self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x] / count0_vx)
+                else:
+                    logging.info(f'Not using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data')
+
+        # Some of the cells will have total granule count = 0, exclude these from
+        # the assignment
+        nonzero_count_mask = ~(count0_vx == 0)
+
+        self.outlier_fraction[start_y:stop_y, start_x:stop_x][nonzero_count_mask] = 1 - (self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][nonzero_count_mask] / count0_vx[nonzero_count_mask])
+        logging.info(f'count_image_pairs: {self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x]}')
         logging.info(f'outlier_fraction: {self.outlier_fraction[start_y:stop_y, start_x:stop_x]}')
+
+        continue_outlier_debug = False
+        if continue_outlier_debug:
+            # Outlier fraction is based on vx data (count for vx and v are identical to vx's count)
+            logging.info(f'count_image_pairs for vx: {self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x]}')
+            logging.info(f'count_image_pairs for vy: {self.count_image_pairs.vy[start_y:stop_y, start_x:stop_x]}')
+
+            # Sanity check: all reported fractions should be positive
+            positive_outlier_mask = (self.outlier_fraction[start_y:stop_y, start_x:stop_x] < 0.0)
+            if np.sum(positive_outlier_mask) > 0:
+                raise RuntimeError(f'Negative outlier fraction is detected: {self.outlier_fraction[start_y:stop_y, start_x:stop_x][positive_outlier_mask]}')
 
         logging.info(f'Find annual magnitude... ')
         start_time = timeit.default_timer()
@@ -2923,11 +3053,15 @@ class ITSLiveComposite:
 
         # Convert to percent and use uint8 datatype
         self.outlier_fraction *= 100
+
+        # logging.info(f'DEBUG: convert to int outlier_fraction*100: {self.outlier_fraction}')
+
         self.outlier_fraction = to_int_type(
             self.outlier_fraction,
             np.uint8,
             DataVars.MISSING_UINT8_VALUE
         )
+        # logging.info(f'DEBUG: write to Zarr outlier_fraction: {self.outlier_fraction}')
 
         ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
             data=self.outlier_fraction,
@@ -3235,6 +3369,7 @@ class ITSLiveComposite:
 
     @staticmethod
     def cubelsqfit2(
+        var_name,
         v,
         v_err_data,
         amplitude,
@@ -3291,6 +3426,7 @@ class ITSLiveComposite:
 
                 results_valid, init_runtime1, init_runtime2, init_runtime3, lsq_runtime, results = \
                 itslive_lsqfit_annual(
+                    var_name,
                     v[j, i, :],
                     v_err[j, i, :],
                     ITSLiveComposite.START_DECIMAL_YEAR,
@@ -3376,6 +3512,12 @@ if __name__ == '__main__':
         default='s3://its-live-data/autorift_parameters/v001/autorift_landice_0120m.shp',
         help="Shapefile that stores ice masks per each of the EPSG codes [%(default)s]."
     )
+    parser.add_argument(
+        '-m', '--missionGroup',
+        type=str,
+        default=None,
+        help=f"Mission group to create composites for [%(default)s]. One of {list(MissionSensor.ALL_GROUPS.keys())}."
+    )
 
     args = parser.parse_args()
 
@@ -3387,6 +3529,10 @@ if __name__ == '__main__':
 
     # Read shape file with ice masks information in
     ITSLiveComposite.SHAPE_FILE = ITSCube.read_shapefile(args.shapeFile)
+
+    if args.missionGroup:
+        # Mission group is provided
+        StableShiftFilter.KEEP_MISSION_GROUP = MissionSensor.ALL_GROUPS[args.missionGroup]
 
     if len(args.targetBucket):
         ITSLiveComposite.S3 = os.path.join(args.targetBucket, args.outputStore)
