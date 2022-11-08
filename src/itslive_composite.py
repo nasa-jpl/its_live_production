@@ -571,6 +571,7 @@ def itslive_lsqfit_annual(
     results_valid, start_year, stop_year, v, v_err, dyr, totalnum, M = init_lsq_fit1(
         v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input
     )
+
     # Capture runtimes of specific processing steps
     init_runtime1 = timeit.default_timer() - init_runtime
     init_runtime2 = 0
@@ -2062,13 +2063,12 @@ class ITSLiveComposite:
         # x_start = 216    # large diff in vx0 for S2 excluded in LSQ fit
         # x_start = 500
 
-        if _enable_debug:
-            # To debug new Malaspina cube: v0 spurious values
-            # python ./itslive_composite.py -i  Malaspina_succeeded_ITS_LIVE_vel_EPSG3413_G0120_X-3250000_Y250000.zarr -b s3://its-live-data/test_datacubes -o test_malaspina_v0_large.zarr
-            # x index=639
-            # y index=298
-            x_start = 639
-            x_num_to_process = 1
+        # To debug new Malaspina cube: v0 spurious values
+        # python ./itslive_composite.py -i  Malaspina_succeeded_ITS_LIVE_vel_EPSG3413_G0120_X-3250000_Y250000.zarr -b s3://its-live-data/test_datacubes -o test_malaspina_v0_large.zarr
+        # x index=639
+        # y index=298
+        # x_start = 639
+        # x_num_to_process = 1
 
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
@@ -2089,17 +2089,16 @@ class ITSLiveComposite:
             # y_start = 432  # bad point
             # y_start = 216    # large diff in vx0 for S2 excluded in LSQ fit
 
-            if _enable_debug:
-                # To debug new Malaspina cube: v0 spurious values
-                # x index=639
-                # y index=298
-                y_start = 298
-                y_num_to_process = 1
+            # # To debug new Malaspina cube: v0 spurious values
+            # # x index=639
+            # # y index=298
+            # y_start = 298
+            # y_num_to_process = 1
 
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # For debugging only
             # ======================
-            # y_num_to_process = 100
+            # y_num_to_process = 200
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -2221,10 +2220,12 @@ class ITSLiveComposite:
         # Count all valid points before any filters are applied
         count_mask = ~np.isnan(vx)
         count0_vx = count_mask.sum(axis=2)
-        logging.info(f'First LSQ fit count based on vx: {count0_vx}')
 
-        count_mask_vy = ~np.isnan(vy)
-        logging.info(f'FYI: First LSQ fit count based on vy: {count_mask_vy.sum(axis=2)}')
+        copy_vx = None
+        if self.sensor_filter.excludeS2FromLSQ:
+            # Need to save original vx values before any filters are applied
+            # if second LSQ fit iteration will be invoked
+            copy_vx = vx.copy()
 
         start_time = timeit.default_timer()
         logging.info(f'Project velocity to median flow unit vector...')
@@ -2362,11 +2363,6 @@ class ITSLiveComposite:
             # The 2nd LSQ S2 filter should only be applied where land_ice_2km_inbuff == 1
             run_lsq_fit = True
 
-            # Copy of vx data to use for the granule count in case 2nd LSQ fit's
-            # data is used: can't use vx as cells within land_ice_mask will be
-            # excluded from computations below
-            copy_vx = vx.copy()
-
             if self.land_ice_mask is not None:
                 # Apply mask if it's available for the cube:
                 # Alex: The SensorExcludeFilter should only be applied if landice_2km_inbuff == 0 and
@@ -2393,9 +2389,11 @@ class ITSLiveComposite:
                 mask = (self.sensor_filter.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
                 # logging.info(f'DEBUG: total number of valid S2 points: {np.sum(~np.isnan(vx[:, :, mask]))}')
 
-                # Filter current block's variables
+                # Exclude S2 data from current block's variables
                 vx[:, :, mask] = np.nan
                 vy[:, :, mask] = np.nan
+
+                # Exclude S2 granules from total number of granules
                 copy_vx[:, :, mask] = np.nan
                 logging.info(f'Excluding {np.sum(mask)} S2 points')
 
@@ -2488,16 +2486,9 @@ class ITSLiveComposite:
                     logging.info(f'Using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data: {np.sum(amp_mask)} spacial points')
 
                     # Re-compute the mask for valid count which now excludes S2 data
-                    count_mask = ~np.isnan(copy_vx)
-                    count0_vx = count_mask.sum(axis=2)
-                    logging.info(f'Second LSQ fit count based on copy_vx: {count0_vx}')
-
-                    count_mask = ~np.isnan(vx)
-                    logging.info(f'FYI: Second LSQ fit count based on vx: {count_mask.sum(axis=2)}')
-
-                    count_mask = ~np.isnan(vy)
-                    logging.info(f'FYI: Second LSQ fit count based on vy: {count_mask.sum(axis=2)}')
-
+                    # count_mask = ~np.isnan(copy_vx)
+                    # count0_vx = count_mask.sum(axis=2)
+                    # logging.info(f'Second LSQ fit count based on copy_vx: {count0_vx}')
 
                     # Set output data to results of 2nd LSQ fit
                     self.amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x][amp_mask]
@@ -2524,12 +2515,7 @@ class ITSLiveComposite:
                     self.count.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.vy[start_y:stop_y, start_x:stop_x][amp_mask]
                     self.count.v[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count.v[start_y:stop_y, start_x:stop_x][amp_mask]
 
-                    if _enable_debug:
-                        logging.info(f'count_image_pairs.vx before: {self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask]}')
                     self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask]
-                    if _enable_debug:
-                        logging.info(f'count_image_pairs.vx after: {self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][amp_mask]}')
-
                     # Don't really use vy and v components of count_image_pairs, just to be complete:
                     self.count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask] = self.excludeS2_count_image_pairs.vy[start_y:stop_y, start_x:stop_x][amp_mask]
                     # This is not even computed, so no need to update anything
@@ -2553,6 +2539,11 @@ class ITSLiveComposite:
                     # Re-set max_dt to NaNs
                     self.max_dt[start_y:stop_y, start_x:stop_x, mission_index][amp_mask] = np.nan
 
+                    # Update total granule count only for the cells that are
+                    # updated by the 2nd LSQ fit calculations
+                    count_mask = ~np.isnan(copy_vx)
+                    count0_vx[amp_mask] = count_mask.sum(axis=2)[amp_mask]
+
                 else:
                     logging.info(f'Not using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data')
 
@@ -2561,19 +2552,11 @@ class ITSLiveComposite:
         nonzero_count_mask = ~(count0_vx == 0)
 
         self.outlier_fraction[start_y:stop_y, start_x:stop_x][nonzero_count_mask] = 1 - (self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x][nonzero_count_mask] / count0_vx[nonzero_count_mask])
-        logging.info(f'count_image_pairs: {self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x]}')
-        logging.info(f'outlier_fraction: {self.outlier_fraction[start_y:stop_y, start_x:stop_x]}')
 
-        continue_outlier_debug = False
-        if continue_outlier_debug:
-            # Outlier fraction is based on vx data (count for vx and v are identical to vx's count)
-            logging.info(f'count_image_pairs for vx: {self.count_image_pairs.vx[start_y:stop_y, start_x:stop_x]}')
-            logging.info(f'count_image_pairs for vy: {self.count_image_pairs.vy[start_y:stop_y, start_x:stop_x]}')
-
-            # Sanity check: all reported fractions should be positive
-            positive_outlier_mask = (self.outlier_fraction[start_y:stop_y, start_x:stop_x] < 0.0)
-            if np.sum(positive_outlier_mask) > 0:
-                raise RuntimeError(f'Negative outlier fraction is detected: {self.outlier_fraction[start_y:stop_y, start_x:stop_x][positive_outlier_mask]}')
+        # Sanity check: all reported fractions should be positive
+        positive_outlier_mask = (self.outlier_fraction[start_y:stop_y, start_x:stop_x] < 0.0)
+        if np.sum(positive_outlier_mask) > 0:
+            raise RuntimeError(f'Negative outlier fraction is detected: {self.outlier_fraction[start_y:stop_y, start_x:stop_x][positive_outlier_mask]} for indices={np.where(self.outlier_fraction[start_y:stop_y, start_x:stop_x] < 0.0)}')
 
         logging.info(f'Find annual magnitude... ')
         start_time = timeit.default_timer()
@@ -3403,6 +3386,8 @@ class ITSLiveComposite:
         v_err = v_err_data
         if v_err_data.ndim != v.ndim:
             # Expand vector to 3-d array
+            logging.info(f'Expand v_error from {v_err_data.ndim} to {v.ndim} dimensions...')
+
             reshape_v_err = v_err_data.reshape((1,1,v_err_data.size))
             # v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
             v_err = np.broadcast_to(reshape_v_err, (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, v_err_data.size))
@@ -3418,7 +3403,6 @@ class ITSLiveComposite:
                 mask = ~np.isnan(v[j, i, :])
                 if mask.sum() < _num_valid_points:
                     # Skip the point, return no outliers
-                    # logging.info(f'DEBUG: Not enough valid points for [{global_j}, {global_i}]')
                     continue
 
                 global_i = i + ITSLiveComposite.Chunk.start_x
