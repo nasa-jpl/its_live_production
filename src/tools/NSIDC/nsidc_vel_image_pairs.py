@@ -827,9 +827,6 @@ def fix_mapping_attrs(mapping, epsgcode: int):
         return f'No extra mapping attributes need to be set for {epsgcode}'
 
     if epsgcode in required_attrs:
-        attrs[Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN] = 0.9996
-        attrs[Mapping.LATITUDE_OF_PROJECTION_ORIGIN] = 0.0
-
         for each_attr, each_value in required_attrs[epsgcode].items():
             attrs[each_attr] = each_value
 
