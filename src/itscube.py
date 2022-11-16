@@ -91,6 +91,8 @@ class ITSCube:
     # if URL is of the 'http://its-live-data.s3.amazonaws.com/velocity_image_pair/landsat/v00.0/32628/file.nc' format,
     # S3 bucket location of the file is 's3://its-live-data/velocity_image_pair/landsat/v00.0/32628/file.nc'
     PATH_URL = ".s3.amazonaws.com"
+    SHAPE_PATH_URL = '.s3.amazonaws.com'
+
     # For testing Malaspina cube with latest updates to granules - using file of granules
     # to use instead of queueing searchAPI
     # PATH_URL = '.s3.us-west-2.amazonaws.com'
@@ -136,6 +138,16 @@ class ITSCube:
 
     # Chunking to apply to 1d data variables when writing datacube to the Zarr store
     TIME_CHUNK_VALUE_1D = 200000
+
+    # ATTN: Character arrays size must be explicitely set before first write:
+    # to avoid truncation of the data if first ever written block of data
+    # has less than other blocks data in length.
+
+    # Maximum length for the sensor value across all used missions
+    MAX_SENSOR_LEN = 2
+
+    # Maximum length of the granule URL
+    MAX_GRANULE_URL_LEN = 1024
 
     # Landsat8 filename prefixes to use when we need to remove duplicate
     # reprocessed granules for Landsat8
@@ -315,6 +327,11 @@ class ITSCube:
             if num_granules:
                 # found_urls = [each['url'] for each in ITSCube.USE_GRANULES][:num_granules]
                 found_urls = ITSCube.USE_GRANULES[:num_granules]
+
+                # # Pick S1 or S2 granules to test
+                # sentinel_granules = [each for each in ITSCube.USE_GRANULES if os.path.basename(each)[0] == 'S']
+                # found_urls.extend(sentinel_granules[:num_granules])
+
                 self.logger.info(f"Examining only first {len(found_urls)} out of {len(ITSCube.USE_GRANULES)} provided granules")
 
             self.max_number_of_layers = len(found_urls)
@@ -2037,6 +2054,24 @@ class ITSCube:
                          Coords.MID_DATE]:
                 encoding_settings.setdefault(each, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
+            # Set array size to accomodate maximum length of the sensor
+            for each in [DataVars.ImgPairInfo.SATELLITE_IMG1,
+                         DataVars.ImgPairInfo.SATELLITE_IMG2]:
+                max_sensor_len = max(map(len, self.layers[each].values))
+                if max_sensor_len > ITSCube.MAX_SENSOR_LEN:
+                    raise RuntimeError(f'"{each}" will be truncated to the current length limit: {ITSCube.MAX_SENSOR_LEN}: {max_sensor_len} length is detected. ' \
+                         'Please update ITSCube.MAX_SENSOR_LEN value.')
+
+                encoding_settings.setdefault(each, {}).update({Output.DTYPE_ATTR: f'U{ITSCube.MAX_SENSOR_LEN}'})
+
+            # Check for the length limit of the granule_url's
+            max_url_len = max(map(len, self.layers[DataVars.URL].values))
+            if max_url_len > ITSCube.MAX_GRANULE_URL_LEN:
+                raise RuntimeError(f'"{each}" will be truncated to the current length limit: {ITSCube.MAX_GRANULE_URL_LEN}: {max_url_len} length is detected.' \
+                    'Please update ITSCube.MAX_GRANULE_URL_LEN value.')
+
+            encoding_settings.setdefault(DataVars.URL, {}).update({Output.DTYPE_ATTR: f'U{ITSCube.MAX_GRANULE_URL_LEN}'})
+
             # Determine optimal chunking for the cube
             chunking_settings_3d = (
                 min(self.max_number_of_layers, ITSCube.TIME_CHUNK_VALUE),
@@ -2308,7 +2343,7 @@ class ITSCube:
         """
         # Make sure it's S3 URL that is provided
         shape_file = shapefile.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
-        shape_file = shape_file.replace(ITSCube.PATH_URL, '')
+        shape_file = shape_file.replace(ITSCube.SHAPE_PATH_URL, '')
         return gpd.read_file(shape_file)
 
     @staticmethod
@@ -2331,7 +2366,7 @@ class ITSCube:
         ice_mask_file = shapefile_row[column_name].item()
 
         ice_mask_file = ice_mask_file.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
-        ice_mask_file = ice_mask_file.replace(ITSCube.PATH_URL, '')
+        ice_mask_file = ice_mask_file.replace(ITSCube.SHAPE_PATH_URL, '')
         logging.info(f'Using {column_name} mask file {ice_mask_file}')
 
         # Load the mask
@@ -2491,6 +2526,12 @@ if __name__ == '__main__':
         default='s3://its-live-data/autorift_parameters/v001/autorift_landice_0120m.shp',
         help="Shapefile that stores ice masks per each of the EPSG codes [%(default)s]."
     )
+    parser.add_argument(
+        '-p', '--pathURLToken',
+        type=str,
+        default= ".s3.amazonaws.com",
+        help="Path URL token for each of the input granules to remove for S3 access [%(default)s]."
+    )
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
     group = parser.add_mutually_exclusive_group()
@@ -2520,6 +2561,7 @@ if __name__ == '__main__':
     ITSCube.NUM_THREADS = args.threads
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
+    ITSCube.PATH_URL = args.pathURLToken
 
     if args.useGranulesFile:
         # Check for this option first as another mutually exclusive option has a default value
