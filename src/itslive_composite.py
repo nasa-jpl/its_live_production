@@ -354,6 +354,9 @@ def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
         with open(f'{var_name}_D.json', 'w') as fh:
             json.dump(D.tolist(), fh, indent=3)
 
+        with open(f'{var_name}_M.json', 'w') as fh:
+            json.dump(M.tolist(), fh, indent=3)
+
     D = np.concatenate((D, M), axis=1)
 
     if _enable_debug:
@@ -361,16 +364,16 @@ def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
             json.dump(D.tolist(), fh, indent=3)
 
         with open(f'{var_name}_start_year.json', 'w') as fh:
-            json.dump(start_year, fh, indent=3)
+            json.dump(start_year.tolist(), fh, indent=3)
 
         with open(f'{var_name}_stop_year.json', 'w') as fh:
-            json.dump(stop_year, fh, indent=3)
+            json.dump(stop_year.tolist(), fh, indent=3)
 
         with open(f'{var_name}_w_d.json', 'w') as fh:
-            json.dump(w_d, fh, indent=3)
+            json.dump(w_d.tolist(), fh, indent=3)
 
         with open(f'{var_name}_d_obs.json', 'w') as fh:
-            json.dump(d_obs, fh, indent=3)
+            json.dump(d_obs.tolist(), fh, indent=3)
 
     # Make numpy happy: have all data 2D
     # w_d.reshape((len(w_d), 1))
@@ -471,10 +474,22 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
     # Remove outliers based on MAD filter for v, subtract from v to get residual
     v_residual = np.abs(v_input - v_median)
 
+    if _enable_debug:
+        logging.info(f'v_median[:50]: {v_median[:50]}')
+        logging.info(f'v_input[:50]: {v_input[:50]}')
+        logging.info(f'v_residual[:50]: {v_residual[:50]}')
+
     # Take median of residual, multiply median of residual * 1.4826 = sigma
     v_sigma = np.median(v_residual)*mad_std_ratio
 
     non_outlier_mask  = ~(v_residual > (2.0 * mad_thresh * v_sigma))
+
+    if _enable_debug:
+        logging.info(f'non_outlier_mask.size={non_outlier_mask.shape} vs. num of valid points={np.sum(non_outlier_mask)}')
+        logging.info(f'non_outlier_mask[:50]: {non_outlier_mask[:50]}')
+
+        logging.info(f'start_dec_year[:50]: {start_dec_year[:50]}')
+        logging.info(f'stop_dec_year[:50]: {stop_dec_year[:50]}')
 
     # If less than _num_valid_points don't do the fit: not enough observations
     results_valid = (np.sum(non_outlier_mask) >= _num_valid_points)
@@ -605,7 +620,10 @@ def itslive_lsqfit_annual(
     M = M[:, hasdata]
 
     if _enable_debug:
-        logging.info(f'DEBUG: dec_year: {dyr[:50]}')
+        with open(f'{var_name}_dec_year.json', 'w') as fh:
+            json.dump(dyr.tolist(), fh, indent=3)
+
+        logging.info(f'DEBUG: dyr[:50]: {dyr[:50]}')
 
     # logging.info(f'Finished building M and filter by M ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
@@ -728,6 +746,7 @@ def itslive_lsqfit_annual(
     offset, slope, se = weighted_linear_fit(y1, mean[ind], error[ind])
 
     if _enable_debug:
+        logging.info(f'ind: {ind}')
         logging.info(f'y1: {y1}')
         logging.info(f'mean: {mean[ind]}')
         logging.info(f'error: {error[ind]}')
@@ -1092,12 +1111,14 @@ class MissionSensor:
     # If datacube contains only numeric sensor values (Landsat8 or Landsat9),
     # sensor values are of type float, otherwise sensor values are of string type
     # ---> support both
-    LANDSAT45 = MSTuple('L45', ['4.', '5.', '4.0', '5.0', 4.0, 5.0], 'L4_L5')
-    LANDSAT89 = MSTuple('L89', ['8.', '9.', '8.0', '9.0', 8.0, 9.0], 'L8_L9')
-    LANDSAT7  = MSTuple('L7', ['7.', '7.0', 7.0], 'L7')
+    LANDSAT45 = MSTuple('L45', ['4.', '5.', '4.0', '5.0', 4.0, 5.0, '4', '5'], 'L4_L5')
+    LANDSAT89 = MSTuple('L89', ['8.', '9.', '8.0', '9.0', 8.0, 9.0, '8', '9'], 'L8_L9')
+    LANDSAT7  = MSTuple('L7', ['7.', '7.0', 7.0, '7'], 'L7')
 
-    SENTINEL1 = MSTuple('S1', ['1A', '1B'], 'S1A_S1B')
-    SENTINEL2 = MSTuple('S2', ['2A', '2B'], 'S2A_S2B')
+    # ATTN: '1' and '2' are added as a workaround for the stripped satellite_img[12] values
+    # when Zarr writes first chunk of the datacube with less than 2 character sensor values
+    SENTINEL1 = MSTuple('S1', ['1A', '1B', '1'], 'S1A_S1B')
+    SENTINEL2 = MSTuple('S2', ['2A', '2B', '2'], 'S2A_S2B')
 
     # TODO: update with new missions groups as their granules are added
     # to the datacubes
@@ -1207,7 +1228,7 @@ class SensorExcludeFilter:
     # Reference sensor group to compare other sensor groups to.
     # ATTN: this variable serves two purposes and has opposite meaning for two
     # filters it's used in:
-    # 1. The first exclude filter (implemented by this SensorExcludeFilter class)
+    # 1. The first exclude filter (implemented by this SensorExcludeFilter cl   ass)
     # is designed to remove L8 and S1 (and possibly other mission) data over
     # very narrow glaciers where S2 outperforms.
     # 2. The second filter (second step in LSQ fit applied to all but S2 data)
@@ -2092,13 +2113,14 @@ class ITSLiveComposite:
             # # To debug new Malaspina cube: v0 spurious values
             # # x index=639
             # # y index=298
-            # y_start = 298
+            # y_start = 298  # huge value
+            # y_start = 299  # good value
             # y_num_to_process = 1
 
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # For debugging only
             # ======================
-            # y_num_to_process = 200
+            # y_num_to_process = 100
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
