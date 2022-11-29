@@ -246,7 +246,7 @@ def main():
     parser.add_argument('-p', '--password', help='Password for https://urs.earthdata.nasa.gov login')
     parser.add_argument('-o', '--output-job-file', type=str, default='processed_jobs.json', help='File of processed job IDs [%(default)s]')
     parser.add_argument('-e', '--exclude-job-file', type=Path, default=None, help='JSON list of HyP3 Job IDs (previously processed) to exclude from the transfer [%(default)s]')
-    parser.add_argument('-a', '--autoRIFT', default='https://hyp3-autorift.asf.alaska.edu', help='autoRIFT deployment to connect to [%(default)s]')
+    parser.add_argument('-a', '--autoRIFT', default='https://hyp3-its-live.asf.alaska.edu', help='autoRIFT deployment to connect to [%(default)s]')
     parser.add_argument(
         '--enableDebug',
         action='store_true',
