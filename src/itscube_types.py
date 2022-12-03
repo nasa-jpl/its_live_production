@@ -140,8 +140,8 @@ class DataVars:
     # Per Yang: generally yes, though for vxp and vyp it was calculated again
     # but the number should not change quite a bit. so it should be okay to
     # use a single value for all variables
-    STABLE_COUNT_SLOW          = 'stable_count_slow' # New format
-    STABLE_COUNT_MASK          = 'stable_count_mask' # New format
+    STABLE_COUNT_SLOW          = 'stable_count_slow'
+    STABLE_COUNT_MASK          = 'stable_count_stationary'
 
     # Attributes for vx, vy, vr, va
     # FLAG_STABLE_SHIFT             = 'flag_stable_shift' # Old granule format: In Radar and updated Optical formats
