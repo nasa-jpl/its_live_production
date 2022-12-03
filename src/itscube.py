@@ -396,8 +396,6 @@ class ITSCube:
         LC08_L1GT_007011_20130819_20200912_02_T2_X_LC08_L1GT_007011_20140806_20200911_02_T2_G0120V02_P044.nc
         LC08_L1TP_013010_20130330_20200913_02_T1_X_LE07_L1TP_012010_20130627_20200907_02_T1_G0120V02_P003.nc
         """
-
-
         # Need to remove duplicate granules for the middle date: some granules
         # have newer processing date, keep those.
         keep_urls = {}
@@ -437,8 +435,12 @@ class ITSCube:
 
                 for found_url in keep_urls[granule_id]:
                     # Check already found URLs for processing time
-                    found_proc_1, found_proc_2, _ = \
+                    found_proc_1, found_proc_2, found_granule_id = \
                         ITSCube.get_tokens_from_filename(found_url)
+
+                    # IDs must match
+                    if granule_id != found_granule_id:
+                        raise RuntimeError(f'Mismatching IDs for each_url={each_url}: {granule_id} vs. found_url={found_url}: {found_granule_id}')
 
                     # If both granules have identical processing time,
                     # keep them both - granules might be in different projections,
@@ -596,18 +598,20 @@ class ITSCube:
 
         url_proc_date_1 = datetime.strptime(url_tokens[4], ITSCube.DATE_FORMAT)
 
-        # Remove processing date from the first image name
-        id = files[0].replace(url_tokens[4], '')
+        # Remove processing date from the first image name: don't replace date
+        # token with an empty string as acquisition and processing dates can be
+        # the same
+        id_tokens = url_tokens[:4]
+        id_tokens.extend(url_tokens[5:])
 
         url_tokens = os.path.basename(files[1]).split(ITSCube.IMAGE_TOKEN)
         url_proc_date_2 = datetime.strptime(url_tokens[4], ITSCube.DATE_FORMAT)
 
-        # Remove processing date from the second image name
-        id += ITSCube.SPLIT_IMAGES_TOKEN
-        id += files[1].replace(url_tokens[4], '')
+        # Remove processing date and _Pxxx.nc from the second image name
+        id_tokens.extend(url_tokens[:4])
+        id_tokens.extend(url_tokens[5:8])
 
-        # Get rid of file extension and percent valid pixels: _Pxxx.nc
-        id = id[:-8]
+        id = ITSCube.IMAGE_TOKEN.join(id_tokens)
 
         return url_proc_date_1, url_proc_date_2, id
 
