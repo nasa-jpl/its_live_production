@@ -4,6 +4,25 @@ datacubes, composites, and mosaics.
 """
 import numpy as np
 
+
+class ShapeFile:
+    """
+    Variables names specific to the ITS_LIVE shapefiles.
+    """
+    EPSG        = 'epsg'
+    LANDICE_2KM = 'landice_2km'
+    LANDICE     = 'landice'
+    FLOATINGICE = 'floatingice'
+
+    Name = {
+        LANDICE: 'land ice mask',
+        FLOATINGICE: 'floating ice mask',
+    }
+    Description = {
+        LANDICE: 'land ice mask, 1 = land-ice, 0 = non-land-ice',
+        FLOATINGICE: 'floating ice mask, 1 = floating-ice, 0 = non-floating-ice',
+    }
+
 class Output:
     """
     Attributes specific to the output store format (Zarr or NetCDF)
@@ -41,6 +60,7 @@ class CubeOutput:
     URL = 'url'
     TITLE = 'title'
     AUTHOR = 'author'
+    CONVENTIONS = 'Conventions'
 
     class Values:
         """
@@ -50,6 +70,7 @@ class CubeOutput:
         INSTITUTION = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
         TITLE = 'ITS_LIVE datacube of image pair velocities'
         AUTHOR =  'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)'
+        CONVENTIONS = 'CF-1.8'
 
 class CompOutput:
     """
@@ -127,8 +148,8 @@ class DataVars:
     FLAG_STABLE_SHIFT             = 'stable_shift_flag' # In Radar and updated Optical formats
     FLAG_STABLE_SHIFT_DESCRIPTION = 'stable_shift_flag_description'
     STABLE_SHIFT                  = 'stable_shift'
-    STABLE_SHIFT_SLOW             = 'stable_shift_slow' # New format
-    STABLE_SHIFT_MASK             = 'stable_shift_mask' # New format
+    STABLE_SHIFT_SLOW             = 'stable_shift_slow'
+    STABLE_SHIFT_MASK             = 'stable_shift_stationary'
 
     # These data variables names are created at runtime: based on "stable_shift"
     # attribute of vx and vy variables
@@ -136,17 +157,18 @@ class DataVars:
     VY_STABLE_SHIFT = 'vy_stable_shift'
 
     STD_NAME          = 'standard_name'
+    NOTE              = 'note'
+
     UNITS             = 'units'
-    M_Y_UNITS         = 'm/y'
-    M_Y2_UNITS        = 'm/y^2'
+    M_Y_UNITS         = 'meter/year'
+    M_Y2_UNITS        = 'meter/year^2'
     M_UNITS           = 'm'
     COUNT_UNITS       = 'count'
     BINARY_UNITS      = 'binary'
     FRACTION_UNITS    = 'fraction'
     DAY_OF_YEAR_UNITS = 'day of year'
-    PIXEL_PER_M_YEAR  = 'pixel/(m/y)'
-    M_PER_YEAR_PIXEL  = 'm/(y*pixel)'
-    NOTE              = 'note'
+    PIXEL_PER_M_YEAR  = 'pixel/(meter/year)'
+    M_PER_YEAR_PIXEL  = 'meter/(year*pixel)'
 
     # Original data variables and their attributes per ITS_LIVE granules.
     V       = 'v'
@@ -169,7 +191,7 @@ class DataVars:
     # vx_error_slow_description
     ERROR_DESCRIPTION = 'description'
     ERROR             = 'error'
-    ERROR_MASK        = 'error_mask'
+    ERROR_MASK        = 'error_stationary'
     ERROR_MODELED     = 'error_modeled'
     ERROR_SLOW        = 'error_slow'
 
@@ -400,6 +422,24 @@ class DataVars:
             # DATE_CENTER: DATE_UNITS
         }
 
+class BinaryFlag:
+    """
+    Class to store output format attributes and their values for the binary masking.
+    """
+    # Standard attributes for the output format
+    VALUES_ATTR   = 'flag_values'
+    MEANINGS_ATTR = 'flag_meanings'
+
+    # Binary mask values
+    VALUES = np.array([0, 1], dtype=np.uint8)
+
+    # Binary mask meanings
+    MEANINGS = {
+        DataVars.INTERP_MASK:  'measured interpolated',
+        ShapeFile.LANDICE:     'non-ice ice',
+        ShapeFile.FLOATINGICE: 'non-ice ice'
+    }
+
 class CompDataVars:
     """
     Data variables and their descriptions to write annual composites to Zarr or
@@ -436,8 +476,8 @@ class CompDataVars:
     SLOPE_V   = 'dv_dt'
 
     STD_NAME = {
-        DataVars.VX: 'x_velocity',
-        DataVars.VY: 'y_velocity',
+        DataVars.VX: 'land_ice_surface_x_velocity',
+        DataVars.VY: 'land_ice_surface_y_velocity',
         DataVars.V:  'velocity',
         VX_ERROR: 'x_velocity_error',
         VY_ERROR: 'y_velocity_error',
@@ -540,25 +580,6 @@ class BatchVars:
 
     # HTTP URL for the datacube/composite/mosaics full path in S3 bucket
     HTTP_PREFIX = 'http://its-live-data.s3.amazonaws.com'
-
-class ShapeFile:
-    """
-    Variables names specific to the ITS_LIVE shapefiles.
-    """
-    EPSG        = 'epsg'
-    LANDICE_2KM = 'landice_2km'
-    LANDICE     = 'landice'
-    FLOATINGICE = 'floatingice'
-
-    Name = {
-        LANDICE: 'land ice mask',
-        FLOATINGICE: 'floating ice mask',
-    }
-    Description = {
-        LANDICE: 'land ice mask, 1 = land-ice, 0 = non-land-ice',
-        FLOATINGICE: 'floating ice mask, 1 = floating-ice, 0 = non-floating-ice',
-    }
-
 
 class CubeJson:
     """
