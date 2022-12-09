@@ -141,7 +141,7 @@ class Encoding:
         'y':                {'_FillValue': None}
     }
 
-PS = collections.namedtuple("PM", ['platform', 'sensor'])
+PlatformSensor = collections.namedtuple("PM", ['platform', 'sensor'])
 
 class NSIDCMeta:
     """
@@ -179,10 +179,10 @@ class NSIDCMeta:
     L4 = 'LT04'
 
     ShortName = {
-        L8: PS('LANDSAT-8', 'OLI'),
-        L7: PS('LANDSAT-7', 'ETM+'),
-        L5: PS('LANDSAT-5', 'TM'),
-        L4: PS('LANDSAT-4', 'TM')
+        L8: PlatformSensor('LANDSAT-8', 'OLI'),
+        L7: PlatformSensor('LANDSAT-7', 'ETM+'),
+        L5: PlatformSensor('LANDSAT-5', 'TM'),
+        L4: PlatformSensor('LANDSAT-4', 'TM')
     }
 
     @staticmethod
