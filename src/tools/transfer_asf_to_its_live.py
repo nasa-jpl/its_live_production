@@ -186,11 +186,13 @@ class ASFTransfer:
         job = ASFTransfer.HYP3.get_job_by_id(job_id)
         msgs = [f'Processing {job}']
 
-        if job.running():
-            msgs.append(f'WARNING: Job is still running! Skipping {job}')
-            return msgs, job_id
+        # Copy data for jobs that have status=RUNNING - they are not running
+        # anymore according to Joe
+        # if job.running():
+        #     msgs.append(f'WARNING: Job is still running! Skipping {job}')
+        #     return msgs, job_id
 
-        if job.succeeded():
+        if job.running() or job.succeeded():
             # get center lat lon
             with fsspec.open(job.files[0]['url']) as f:
                 with xr.open_dataset(f) as ds:
