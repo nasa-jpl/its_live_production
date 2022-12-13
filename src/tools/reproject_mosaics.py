@@ -105,12 +105,6 @@ class MosaicsReproject:
     # Set to one year.
     TIME_DELTA = 1
 
-    V_ERROR_ATTRS = {
-        DataVars.STD_NAME:         DataVars.NAME[DataVars.V_ERROR],
-        DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.V_ERROR],
-        DataVars.UNITS:            DataVars.M_Y_UNITS
-    }
-
     # Have to provide error threshold for gdal.warp to avoid large values
     # being introduced by warping.
     WARP_ET = 1e-5
@@ -134,6 +128,8 @@ class MosaicsReproject:
     # Compression settings for storing data to NetCDF file
     COMPRESSION = {"zlib": True, "complevel": 2, "shuffle": True}
 
+    NC_ENGINE = 'h5netcdf'
+
     def __init__(self, data, output_projection: int):
         """
         Initialize object.
@@ -143,7 +139,7 @@ class MosaicsReproject:
         if isinstance(data, str):
             # Filename for the dataset is provided, read it in
             self.input_file = data
-            self.ds = xr.open_dataset(data)
+            self.ds = xr.open_dataset(data, engine=MosaicsReproject.NC_ENGINE, decode_timedelta=False)
             self.ds.load()
 
             logging.info(f'Grid in P_in: num_x={len(self.ds.x)} num_y={len(self.ds.y)}')
@@ -1019,7 +1015,6 @@ class MosaicsReproject:
 
             if Output.FILL_VALUE_ATTR in ds[each].attrs:
                 del ds[each].attrs[Output.FILL_VALUE_ATTR]
-
 
         for each in int_vars:
             _chunks = two_dim_chunks_settings
@@ -2095,6 +2090,10 @@ def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, 
     MosaicsReproject.VERBOSE = verbose_flag
     MosaicsReproject.COMPUTE_DEBUG_VARS = compute_debug_vars
     MosaicsReproject.TRANSFORMATION_MATRIX_FILE = matrix_file
+
+    logging.info(f'reproject_mosaics: verbose={MosaicsReproject.VERBOSE}, '
+                 f'compute_debug={MosaicsReproject.COMPUTE_DEBUG_VARS}, '
+                 f'matrix_file={MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
 
     reproject = MosaicsReproject(input_file, output_proj)
     reproject(output_file)
