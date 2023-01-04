@@ -62,7 +62,7 @@ from itscube_types import \
     summary_mosaics_filename_nc, \
     to_int_type
 
-from reproject_mosaics import main as reproject_main
+# from reproject_mosaics import main as reproject_main
 from reproject_mosaics import ESRICode, ESRICode_Proj4, MosaicsReproject
 
 from itslive_composite import CENTER_DATE
@@ -237,7 +237,6 @@ class ITSLiveAnnualMosaics:
 
     # Data variables for summary mosaics
     SUMMARY_VARS = [
-        # For DEBUGGING ONLY
         ShapeFile.LANDICE,
         ShapeFile.FLOATINGICE,
         CompDataVars.COUNT0,
@@ -266,7 +265,6 @@ class ITSLiveAnnualMosaics:
 
     # Data variables for annual mosaics
     ANNUAL_VARS = [
-        # For DEBUGGING ONLY
         ShapeFile.LANDICE,
         ShapeFile.FLOATINGICE,
         CompDataVars.COUNT,
@@ -594,6 +592,56 @@ class ITSLiveAnnualMosaics:
             with open(centers_filename, 'w') as fh:
                 json.dump(self.composites, fh, indent=4)
 
+    @staticmethod
+    def reproject (mosaics_file: str, reproject_mosaics_filename: str, epsg: int, reproject_matrix_filename: str):
+        """
+        Invoke reprojection code as subprocess - to allow for taichi import.
+        NOTE: Can't import numba and taichi into the same module as both use
+        JIT (Just-In-Time) compiler (compiles code at runtime).
+
+        To invoke:
+        reproject_main(mosaics_file, reproject_mosaics_filename, epsg, reproject_matrix_filename, verbose_flag=True)
+        """
+        logging.info(f"Reprojecting {mosaics_file} to {reproject_mosaics_filename}")
+
+        script_path = os.path.dirname(os.path.abspath( __file__ ))
+
+        # Use "subprocess" as can't import taichi with numba at the same time
+        # (both use JIT compilers causing a conflict at import and initialization)
+        command_line = [
+            "python", os.path.join(script_path, "tools", "reproject_mosaics_taichi.py"),
+            "-i", mosaics_file,
+            "-o", reproject_mosaics_filename,
+            "-p", str(epsg),
+            "-m", reproject_matrix_filename
+        ]
+        logging.info(' '.join(command_line))
+
+        command_return = None
+        env_copy = os.environ.copy()
+
+        command_return = subprocess.run(
+            command_line,
+            env=env_copy,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT
+        )
+
+        if command_return.returncode != 0:
+            for each_line in command_return.stdout.decode('utf-8').split('\n'):
+                logging.info(each_line)
+
+            # Report the whole stdout stream as one logging message
+            raise RuntimeError(f"Failed to reproject {mosaics_file} to {reproject_mosaics_filename} with returncode={command_return.returncode}")
+
+        logging.info(f'Re-project output: ')
+        for each_line in command_return.stdout.decode('utf-8').split('\n'):
+            logging.info(each_line)
+
+        if not os.path.exists(reproject_mosaics_filename):
+            raise RuntimeError(f'Failed to reproject {mosaics_file} to {reproject_mosaics_filename}')
+
     def make_mosaics(
         self,
         epsg_code: str,
@@ -767,8 +815,9 @@ class ITSLiveAnnualMosaics:
                 logging.info(f'Using existing {reproject_mosaics_filename}')
 
             else:
-                logging.info(f'Re-projecting {mosaics_file} to {self.epsg}: {reproject_mosaics_filename}')
-                reproject_main(mosaics_file, reproject_mosaics_filename, self.epsg, reproject_matrix_filename, verbose_flag=True)
+                # logging.info(f'Re-projecting {mosaics_file} to {self.epsg}: {reproject_mosaics_filename}')
+                # reproject_main(mosaics_file, reproject_mosaics_filename, self.epsg, reproject_matrix_filename, verbose_flag=True)
+                ITSLiveAnnualMosaics.reproject(mosaics_file, reproject_mosaics_filename, self.epsg, reproject_matrix_filename)
 
                 # Force garbage collection as it does not always kick in
                 gc.collect()
@@ -808,8 +857,9 @@ class ITSLiveAnnualMosaics:
                     logging.info(f'Using existing {reproject_mosaics_filename}')
                     continue
 
-                logging.info(f'Re-projecting {mosaics_file} to {self.epsg}')
-                reproject_main(mosaics_file, reproject_mosaics_filename, self.epsg, reproject_matrix_filename, verbose_flag=True)
+                # logging.info(f'Re-projecting {mosaics_file} to {self.epsg}')
+                # reproject_main(mosaics_file, reproject_mosaics_filename, self.epsg, reproject_matrix_filename, verbose_flag=True)
+                ITSLiveAnnualMosaics.reproject(mosaics_file, reproject_mosaics_filename, self.epsg, reproject_matrix_filename)
 
                 # Replace output file with re-projected file
                 output_files[year_token] = reproject_mosaics_filename
@@ -1657,6 +1707,11 @@ class ITSLiveAnnualMosaics:
                 year_index = each_ds.time.index(year_date.year)
 
                 for each_var in ITSLiveAnnualMosaics.ANNUAL_VARS:
+                    # TODO: if to support old composites
+                    # if each_var not in each_ds:
+                    #     logging.info(f'Skipping missing {each_var} from {each_file}')
+                    #     continue
+
                     if each_var not in ds:
                         # Create data variable in output dataset
                         if each_var == ShapeFile.LANDICE:
@@ -1931,6 +1986,11 @@ class ITSLiveAnnualMosaics:
                 if rename_zero_based_data_vars:
                     ds_var = each_var.replace('0', '')
 
+                # TODO: if to support old style composites
+                # if each_var not in each_ds:
+                #     logging.info(f'Skipping missing {each_var} from {each_file}')
+                #     continue
+
                 if each_var not in ds:
                     # Create data variable in result dataset
                     # This applies only to 2d variables as 3d variables need to
@@ -2148,9 +2208,6 @@ class ITSLiveAnnualMosaics:
                 encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
         for each in [Coords.X, Coords.Y]:
-            encoding_settings.setdefault(each, {}).update({
-                Output.DTYPE_ATTR: np.float32
-            })
             encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
         # Settings for "int" data types
