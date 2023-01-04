@@ -593,7 +593,7 @@ class ITSLiveAnnualMosaics:
                 json.dump(self.composites, fh, indent=4)
 
     @staticmethod
-    def reproject (mosaics_file: str, reproject_mosaics_filename: str, epsg: int, reproject_matrix_filename: str):
+    def reproject(mosaics_file: str, reproject_mosaics_filename: str, epsg: int, reproject_matrix_filename: str):
         """
         Invoke reprojection code as subprocess - to allow for taichi import.
         NOTE: Can't import numba and taichi into the same module as both use
@@ -604,7 +604,7 @@ class ITSLiveAnnualMosaics:
         """
         logging.info(f"Reprojecting {mosaics_file} to {reproject_mosaics_filename}")
 
-        script_path = os.path.dirname(os.path.abspath( __file__ ))
+        script_path = os.path.dirname(os.path.abspath(__file__))
 
         # Use "subprocess" as can't import taichi with numba at the same time
         # (both use JIT compilers causing a conflict at import and initialization)
@@ -635,7 +635,7 @@ class ITSLiveAnnualMosaics:
             # Report the whole stdout stream as one logging message
             raise RuntimeError(f"Failed to reproject {mosaics_file} to {reproject_mosaics_filename} with returncode={command_return.returncode}")
 
-        logging.info(f'Re-project output: ')
+        logging.info('Re-project output: ')
         for each_line in command_return.stdout.decode('utf-8').split('\n'):
             logging.info(each_line)
 
@@ -1374,8 +1374,8 @@ class ITSLiveAnnualMosaics:
                 # If there is only one mosaic contributing to the final dataset,
                 # no need to average the values
                 if len(data_list) == 0:
-                    raise RuntimeError(f'At least one mosaic should have contributed '
-                                       f'to the final dataset, none are found')
+                    raise RuntimeError('At least one mosaic should have contributed '
+                                       'to the final dataset, none are found')
 
                 logging.info(f'Using only one available mosaic for {each_var}')
                 avg_overlap = data_list[0]
@@ -1574,8 +1574,8 @@ class ITSLiveAnnualMosaics:
                 # If there is only one mosaic contributing to the final dataset,
                 # no need to average the values
                 if len(data_list) == 0:
-                    raise RuntimeError(f'At least one mosaic should have contributed '
-                                       f'to the final dataset, none are found')
+                    raise RuntimeError('At least one mosaic should have contributed '
+                                       'to the final dataset, none are found')
 
                 logging.info(f'Using only one available mosaic for {each_var}')
                 avg_overlap = data_list[0]
