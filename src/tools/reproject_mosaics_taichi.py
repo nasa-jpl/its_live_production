@@ -752,18 +752,36 @@ class MosaicsReproject:
         warp_data = None
         gc.collect()
 
-        # Warp "landice" variable
-        warp_data = self.warp_var(ShapeFile.LANDICE, self.warp_options_uint8)
-        # TODO? # Make sure the mask is of 0/1 values
-        # warp_data_mask = (warp_data > 0)
-        # warp_data[warp_data_mask] = 1
-        reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
-            data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
-            coords=ds_coords_2d,
-            attrs=self.ds[ShapeFile.LANDICE].attrs
-        )
-        warp_data = None
-        gc.collect()
+        # Warp "landice" variable (check for variable existence if older mosaics)
+        if ShapeFile.LANDICE in self.ds:
+            is_binary_data = True
+            warp_data = self.warp_var(
+                ShapeFile.LANDICE,
+                self.warp_options_uint8,
+                is_binary_data
+            )
+            reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
+                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                coords=ds_coords_2d,
+                attrs=self.ds[ShapeFile.LANDICE].attrs
+            )
+            warp_data = None
+            gc.collect()
+
+        if ShapeFile.FLOATINGICE in self.ds:
+            is_binary_data = True
+            warp_data = self.warp_var(
+                ShapeFile.FLOATINGICE,
+                self.warp_options_uint8,
+                is_binary_data
+            )
+            reproject_ds[ShapeFile.FLOATINGICE] = xr.DataArray(
+                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                coords=ds_coords_2d,
+                attrs=self.ds[ShapeFile.FLOATINGICE].attrs
+            )
+            warp_data = None
+            gc.collect()
 
         # Warp "outlier_frac" variable: per each sensor dimension
         warp_data = self.warp_var(CompDataVars.OUTLIER_FRAC, self.warp_options_uint8)
@@ -777,15 +795,20 @@ class MosaicsReproject:
 
         # Warp "sensor_flag" variable: per each sensor dimension
         if CompDataVars.SENSOR_INCLUDE in self.ds:
+            is_binary_data = True
             # This is workaround for missing variable in original mosaics code
             # so can test the code with originally generated small test sets
-            warp_data = self.warp_var(CompDataVars.SENSOR_INCLUDE, self.warp_options_uint8)
+            warp_data = self.warp_var(
+                CompDataVars.SENSOR_INCLUDE,
+                self.warp_options_uint8,
+                is_binary_data
+            )
 
             if warp_data.ndim == 2:
                 # If warped data is 2d array
                 _y_dim, _x_dim = warp_data.shape
 
-                # Convert to 3d array as MAX_DT is 3d data (has sensor dimension)
+                # Convert to 3d array as SENSOR_INCLUDE is 3d data (has sensor dimension)
                 warp_data = warp_data.reshape((1, _y_dim, _x_dim))
 
             reproject_ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
@@ -903,18 +926,37 @@ class MosaicsReproject:
         vy_error = None
         gc.collect()
 
-        # Warp "landice" variable
-        warp_data = self.warp_var(ShapeFile.LANDICE, self.warp_options_uint8)
-        # TODO? # Make sure the mask is of 0/1 values
-        # warp_data_mask = (warp_data > 0)
-        # warp_data[warp_data_mask] = 1
-        reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
-            data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
-            coords=ds_coords,
-            attrs=self.ds[ShapeFile.LANDICE].attrs
-        )
-        warp_data = None
-        gc.collect()
+        # Warp "landice" variable (check for variable existence in older mosaics)
+        if ShapeFile.LANDICE in self.ds:
+            is_binary_data = True
+            warp_data = self.warp_var(
+                ShapeFile.LANDICE,
+                self.warp_options_uint8,
+                is_binary_data
+            )
+            reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
+                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                coords=ds_coords,
+                attrs=self.ds[ShapeFile.LANDICE].attrs
+            )
+            warp_data = None
+            gc.collect()
+
+        # Warp "floatingice" variable (check for variable existence in older mosaics)
+        if ShapeFile.FLOATINGICE in self.ds:
+            is_binary_data = True
+            warp_data = self.warp_var(
+                ShapeFile.FLOATINGICE,
+                self.warp_options_uint8,
+                is_binary_data
+            )
+            reproject_ds[ShapeFile.FLOATINGICE] = xr.DataArray(
+                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                coords=ds_coords,
+                attrs=self.ds[ShapeFile.FLOATINGICE].attrs
+            )
+            warp_data = None
+            gc.collect()
 
         if MosaicsReproject.COMPUTE_DEBUG_VARS:
             # Add debug v_error to dataset just to compare to already computed v_error
@@ -1046,11 +1088,13 @@ class MosaicsReproject:
 
         # Settings for variable of "uint8" data type
         for each in [
-            ShapeFile.LANDICE
+            ShapeFile.LANDICE,
+            ShapeFile.FLOATINGICE
         ]:
-            # if each not in ds:
-            #     continue
-            #
+            # Support older mosaics which might not have these variables
+            if each not in ds:
+                continue
+
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
                 Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
@@ -1166,7 +1210,9 @@ class MosaicsReproject:
         for each in [
             CompDataVars.OUTLIER_FRAC,
             CompDataVars.SENSOR_INCLUDE,
-            ShapeFile.LANDICE
+            ShapeFile.LANDICE,
+            ShapeFile.FLOATINGICE,
+
         ]:
             if each not in ds:
                 continue
@@ -1208,11 +1254,23 @@ class MosaicsReproject:
         # write re-projected data to the file
         ds.to_netcdf(output_file, engine="h5netcdf", encoding=encoding_settings)
 
-    def warp_var(self, var: str, warp_options: gdal.WarpOptions):
+    def warp_var(self, var: str, warp_options: gdal.WarpOptions, is_binary_data: bool = False):
         """
         Warp variable into new projection.
+
+        Inputs:
+        =======
+        var: Name of the variable to warp
+        warp_options: gdal.WarpOptions object to use for warping
+        is_binary_data: Flag if the data is binary, and should enforce 0|1 values
+            for warped data.
         """
         np_ds = gdal.Warp('', f'NETCDF:"{self.input_file}":{var}', options=warp_options).ReadAsArray()
+
+        if is_binary_data:
+            # Make sure the mask is of 0/1 values
+            warp_data_mask = (np_ds > 0)
+            np_ds[warp_data_mask] = 1
 
         if MosaicsReproject.VERBOSE:
             verbose_mask = np.isfinite(np_ds)
