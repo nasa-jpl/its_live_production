@@ -2066,7 +2066,7 @@ class MosaicsReproject:
         xunit_v = TiUnitVector(num_xy0_points)
         # unit_vectors.compute_xunit(xy_points, xy0_points, self.x_size)
         # unit_vector.compute(xy_points, xy0_points, self.x_size)
-        xunit_v.compute(xy_points, xy0_points, self.x_size)
+        xunit_v.compute(xy_points, xy0_points, float(self.x_size))
 
         # xunit_v = unit_vector.vector.to_numpy()
         logging.info(f'Computed xunit (took {timeit.default_timer() - start_time} seconds)')
@@ -2090,7 +2090,7 @@ class MosaicsReproject:
         start_time = timeit.default_timer()
         yunit_v = TiUnitVector(num_xy0_points)
         # unit_vector.compute(xy_points, xy0_points, np.abs(self.y_size))
-        yunit_v.compute(xy_points, xy0_points, np.abs(self.y_size))
+        yunit_v.compute(xy_points, xy0_points, float(np.abs(self.y_size)))
         # yunit_v = unit_vector.vector.to_numpy()
         logging.info(f'Computed yunit (took {timeit.default_timer() - start_time} seconds)')
 
