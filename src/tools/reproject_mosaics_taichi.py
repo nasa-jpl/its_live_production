@@ -15,14 +15,12 @@ import taichi as ti
 ti.init(arch=ti.cpu)
 
 import argparse
-import copy
-from datetime import datetime
 import gc
 import logging
 import math
 import numpy as np
 import os
-from osgeo import osr, gdalnumeric, gdal
+from osgeo import osr, gdal
 from tqdm import tqdm
 import timeit
 import xarray as xr
@@ -103,23 +101,7 @@ class TiUnitVector:
     def __init__(self, n: int):
         # self.vector = ti.field(dtype=float, shape=(n, TiUnitVector.SIZE))
         self.data = ti.Vector.field(TiUnitVector.SIZE, dtype=float, shape=(n))
-
-    @ti.func
-    def iter(
-        self,
-        xy_0: float,
-        xy_1: float,
-        xy0_0: float,
-        xy0_1: float,
-        cell_size: float
-    ):
-        """
-        Compute one cell's unit vector.
-        """
-        return TiUnitVector.VECTOR([
-            (xy_0 - xy0_0)/cell_size,
-            (xy_1 - xy0_1)/cell_size
-        ])
+        self.dataLength = n
 
     @ti.kernel
     def compute(self, xy: ti.types.ndarray(), xy0: ti.types.ndarray(), cell_size: ti.f32):
@@ -134,15 +116,12 @@ class TiUnitVector:
             re-projection code generates 3d output).
         cell_size: Size of the grid cell (either X or Y dimension).
         """
-        for i in range(xy.shape[0]):
-            # Can't slice taichi arrays, have to pass values explicitely
-            # self.vector[i, 0], self.vector[i, 1] = self.iter(
-            #     xy[i, 0], xy[i, 1], xy0[i, 0], xy0[i, 1], cell_size
-            # self.data[i] = self.iter(
-            #     xy[i, 0], xy[i, 1], xy0[i, 0], xy0[i, 1], cell_size
-            # )
+        for i in range(self.dataLength):
+            # Can't slice taichi arrays, have to pass values of the array slice explicitely
+            # as separate values
             self.data[i][0] = (xy[i, 0] - xy0[i, 0])/cell_size
             self.data[i][1] = (xy[i, 1] - xy0[i, 1])/cell_size
+
 
 @ti.data_oriented
 class TiTransformMatrix:
@@ -217,6 +196,7 @@ class TiTransformMatrix:
                     [-yunit[1]/denom_value, xunit[1]/denom_value],
                     [yunit[0]/denom_value, -xunit[0]/denom_value]
                 ]
+
 
 class MosaicsReproject:
     """
@@ -383,7 +363,7 @@ class MosaicsReproject:
         adjusts them by rotation for new projection.
         """
         if not self.reproject:
-            logging.info(f'Nothing to do.')
+            logging.info('Nothing to do.')
 
         # Flag if v0 is present in the mosaic, which indicates it's static mosaic
         is_static_mosaic = (CompDataVars.V0 in self.ds)
@@ -455,7 +435,7 @@ class MosaicsReproject:
         # Add projection data variable
         proj_attrs = None
         if self.xy_epsg == 3031:
-            proj_attrs={
+            proj_attrs = {
                 DataVars.GRID_MAPPING_NAME: 'polar_stereographic',
                 'straight_vertical_longitude_from_pole': 0,
                 'latitude_of_projection_origin': -90.0,
@@ -470,7 +450,7 @@ class MosaicsReproject:
             }
 
         elif self.xy_epsg == 3413:
-            proj_attrs={
+            proj_attrs = {
                 DataVars.GRID_MAPPING_NAME: 'polar_stereographic',
                 'straight_vertical_longitude_from_pole': -45,
                 'latitude_of_projection_origin': 90.0,
@@ -485,7 +465,7 @@ class MosaicsReproject:
             }
 
         elif self.xy_epsg == 102027:
-            proj_attrs={
+            proj_attrs = {
                 DataVars.GRID_MAPPING_NAME: 'lambert_conformal_conic',
                 'CoordinateTransformType': 'Projection',
                 'standard_parallel': (15.0, 65.0),
@@ -500,7 +480,7 @@ class MosaicsReproject:
         else:
             zone, spacial_ref_value = self.spatial_ref_32x()
 
-            proj_attrs={
+            proj_attrs = {
                 DataVars.GRID_MAPPING_NAME: 'universal_transverse_mercator',
                 'utm_zone_number': zone,
                 'semi_major_axis': 6378137.0,
@@ -546,13 +526,13 @@ class MosaicsReproject:
         )
 
         # Create new granule in target projection
-        ds_coords=[
+        ds_coords = [
             (CompDataVars.SENSORS, self.sensors, self.ds.sensor.attrs),
             (Coords.Y, self.y0_grid, self.ds.y.attrs),
             (Coords.X, self.x0_grid, self.ds.x.attrs),
         ]
 
-        ds_coords_2d=[
+        ds_coords_2d = [
             (Coords.Y, self.y0_grid, self.ds.y.attrs),
             (Coords.X, self.x0_grid, self.ds.x.attrs)
         ]
@@ -853,7 +833,7 @@ class MosaicsReproject:
             v_error_verify[valid_mask] = (vx_error[valid_mask]*np.abs(vx[valid_mask]) + vy_error[valid_mask]*np.abs(vy[valid_mask]))/v[valid_mask]
 
         # Create new granule in target projection
-        ds_coords=[
+        ds_coords = [
             (Coords.Y, self.y0_grid, self.ds.y.attrs),
             (Coords.X, self.x0_grid, self.ds.x.attrs)
         ]
@@ -1101,7 +1081,7 @@ class MosaicsReproject:
         logging.info(f'Enconding for {output_file}: {encoding_settings}')
 
         # write re-projected data to the file
-        ds.to_netcdf(output_file, engine="h5netcdf", encoding = encoding_settings)
+        ds.to_netcdf(output_file, engine="h5netcdf", encoding=encoding_settings)
 
     @staticmethod
     def write_static_to_netCDF(ds, output_file: str):
@@ -1226,7 +1206,7 @@ class MosaicsReproject:
         logging.info(f'Enconding for {output_file}: {encoding_settings}')
 
         # write re-projected data to the file
-        ds.to_netcdf(output_file, engine="h5netcdf", encoding = encoding_settings)
+        ds.to_netcdf(output_file, engine="h5netcdf", encoding=encoding_settings)
 
     def warp_var(self, var: str, warp_options: gdal.WarpOptions):
         """
@@ -1240,7 +1220,8 @@ class MosaicsReproject:
 
         return np_ds
 
-    def reproject_velocity(self,
+    def reproject_velocity(
+        self,
         vx_var: str,
         vy_var: str,
         v_var: str,
@@ -1261,27 +1242,27 @@ class MosaicsReproject:
         """
         # Read X component of variable
         _vx = self.ds[vx_var].values
-        _vx[_vx==DataVars.MISSING_VALUE] = np.nan
+        _vx[_vx == DataVars.MISSING_VALUE] = np.nan
 
         # Read Y component of variable
         _vy = self.ds[vy_var].values
-        _vy[_vy==DataVars.MISSING_VALUE] = np.nan
+        _vy[_vy == DataVars.MISSING_VALUE] = np.nan
 
         # Read original velocity values
         _v = self.ds[v_var].values
-        _v[_v==DataVars.MISSING_VALUE] = np.nan
+        _v[_v == DataVars.MISSING_VALUE] = np.nan
 
         # Read original error values in
         _v_error = self.ds[v_error_var].values
-        _v_error[_v_error==DataVars.MISSING_POS_VALUE] = np.nan
+        _v_error[_v_error == DataVars.MISSING_POS_VALUE] = np.nan
 
         # Read X component of v_error
         _vx_error = self.ds[vx_error_var].values
-        _vx_error[_vx_error==DataVars.MISSING_POS_VALUE] = np.nan
+        _vx_error[_vx_error == DataVars.MISSING_POS_VALUE] = np.nan
 
         # Read Y component of the error
         _vy_error = self.ds[vy_error_var].values
-        _vy_error[_vy_error==DataVars.MISSING_POS_VALUE] = np.nan
+        _vy_error[_vy_error == DataVars.MISSING_POS_VALUE] = np.nan
 
         # Number of X and Y points in the output grid
         num_x = len(self.x0_grid)
@@ -1320,65 +1301,65 @@ class MosaicsReproject:
             ascii=True,
             desc=f"Re-projecting {vx_var}, {vy_var}, {vx_error_var}, {vy_error_var}..."
         ):
-                t_matrix = self.transformation_matrix[y, x]
+            t_matrix = self.transformation_matrix[y, x]
 
-                # Look up original cell in input ij-projection
-                i, j = self.original_ij_index[y, x]
+            # Look up original cell in input ij-projection
+            i, j = self.original_ij_index[y, x]
 
-                # Re-project velocity variables
-                dv = [_vx[j, i], _vy[j, i]]
+            # Re-project velocity variables
+            dv = [_vx[j, i], _vy[j, i]]
 
-                # Some points get NODATA for vx but valid vy and v.v.
+            # Some points get NODATA for vx but valid vy and v.v.
+            if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
+                # Apply transformation matrix to (vx, vy) values converted to pixel displacement
+                xy_v = np.matmul(t_matrix, dv)
+
+                vx[y, x] = xy_v[0]
+                vy[y, x] = xy_v[1]
+
+                # # Compute v: sqrt(vx^2 + vy^2)
+                v[y, x] = np.sqrt(xy_v[0]**2 + xy_v[1]**2)
+
+                # Look up original velocity value to compute the scale factor
+                # for v_error: scale_factor = v_old / v_new
+                v_ij_value = _v[j, i]
+
+                scale_factor = 1.0
+                if v_ij_value != 0:
+                    scale_factor = v[y, x]/v_ij_value
+
+                elif v[y, x] != 0:
+                    # Set re-projected v to zero - non-zero vx and vy values are
+                    # introduced by warping (we don't warp input values anymore though - still need it?)
+                    vx[y, x] = 0
+                    vy[y, x] = 0
+                    v[y, x] = 0
+
+                # if v_ij_value and (not np.any(np.isnan(_v_error[j, i]))):
+                if v_ij_value and (not math.isnan(_v_error[j, i])):
+                    # Apply scale factor to the error value
+                    v_error[y, x] = _v_error[j, i]*scale_factor
+
+                    # For debugging only:
+                    # Track large differences in v_error values in case they happen. If observed,
+                    # most likely need to reduce error threshold for the gdal.warp()
+                    # if np.abs(v_error[y, x] - _v_error[j, i]) > 100:
+                    #     logging.warning(f"Computed {v_error_var}={v_error[y, x]} vs. {v_error_var}_in={_v_error[j, i]}")
+                    #     logging.info(f"--->indices: i={i} j={j} vs. x={x} y={y}")
+                    #     logging.info(f"--->{v_var}: {v_var}_in={v_ij_value} {v_var}_out={v[y, x]}")
+                    #     logging.info(f"--->in:     {vx_var}={_vx[j, i]} {vy_var}={_vy[j, i]}")
+                    #     logging.info(f"--->out:    {vx_var}={vx[y, x]} {vy_var}={vy[y, x]}")
+                    #     logging.info(f"--->transf_matrix: {t_matrix}")
+
+                dv = [_vx_error[j, i], _vy_error[j, i]]
+
+                # If any of the values is NODATA, don't re-project, leave them as NODATA
+                # if not np.any(np.isnan(dv)):
                 if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
-                    # Apply transformation matrix to (vx, vy) values converted to pixel displacement
-                    xy_v = np.matmul(t_matrix, dv)
-
-                    vx[y, x] = xy_v[0]
-                    vy[y, x] = xy_v[1]
-
-                    # # Compute v: sqrt(vx^2 + vy^2)
-                    v[y, x] = np.sqrt(xy_v[0]**2 + xy_v[1]**2)
-
-                    # Look up original velocity value to compute the scale factor
-                    # for v_error: scale_factor = v_old / v_new
-                    v_ij_value = _v[j, i]
-
-                    scale_factor = 1.0
-                    if v_ij_value != 0:
-                        scale_factor = v[y, x]/v_ij_value
-
-                    elif v[y, x] != 0:
-                        # Set re-projected v to zero - non-zero vx and vy values are
-                        # introduced by warping (we don't warp input values anymore though - still need it?)
-                        vx[y, x] = 0
-                        vy[y, x] = 0
-                        v[y, x] = 0
-
-                    # if v_ij_value and (not np.any(np.isnan(_v_error[j, i]))):
-                    if v_ij_value and (not math.isnan(_v_error[j, i])):
-                        # Apply scale factor to the error value
-                        v_error[y, x] = _v_error[j, i]*scale_factor
-
-                        # For debugging only:
-                        # Track large differences in v_error values in case they happen. If observed,
-                        # most likely need to reduce error threshold for the gdal.warp()
-                        # if np.abs(v_error[y, x] - _v_error[j, i]) > 100:
-                        #     logging.warning(f"Computed {v_error_var}={v_error[y, x]} vs. {v_error_var}_in={_v_error[j, i]}")
-                        #     logging.info(f"--->indices: i={i} j={j} vs. x={x} y={y}")
-                        #     logging.info(f"--->{v_var}: {v_var}_in={v_ij_value} {v_var}_out={v[y, x]}")
-                        #     logging.info(f"--->in:     {vx_var}={_vx[j, i]} {vy_var}={_vy[j, i]}")
-                        #     logging.info(f"--->out:    {vx_var}={vx[y, x]} {vy_var}={vy[y, x]}")
-                        #     logging.info(f"--->transf_matrix: {t_matrix}")
-
-                    dv = [_vx_error[j, i], _vy_error[j, i]]
-
-                    # If any of the values is NODATA, don't re-project, leave them as NODATA
-                    # if not np.any(np.isnan(dv)):
-                    if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
-                        # vx_error and vy_error must be positive:
-                        # use absolute values of transformation matrix to avoid
-                        # negative re-projected vx_error and vy_error values
-                        vx_error[y, x], vy_error[y, x] = np.matmul(np.abs(t_matrix), dv)
+                    # vx_error and vy_error must be positive:
+                    # use absolute values of transformation matrix to avoid
+                    # negative re-projected vx_error and vy_error values
+                    vx_error[y, x], vy_error[y, x] = np.matmul(np.abs(t_matrix), dv)
 
         if MosaicsReproject.VERBOSE:
             verbose_mask = np.isfinite(vx)
@@ -1449,9 +1430,9 @@ class MosaicsReproject:
         v_phase = self.reproject_static_vars(vx0, vy0)
         """
         # Compute flow unit vector
-        v0 = np.sqrt(vx0**2 + vy0**2) # velocity magnitude
-        uv_x = vx0/v0 # unit flow vector in x direction
-        uv_y = vy0/v0 # unit flow vector in y direction
+        v0 = np.sqrt(vx0**2 + vy0**2)  # velocity magnitude
+        uv_x = vx0/v0  # unit flow vector in x direction
+        uv_y = vy0/v0  # unit flow vector in y direction
 
         # Read X component of dv_dt
         _dvx_dt = self.ds[CompDataVars.SLOPE_VX].values
@@ -1779,9 +1760,9 @@ class MosaicsReproject:
         theta = np.full_like(vx_phase_deg, np.nan)
         theta[valid_mask] = np.arctan2(vy0[valid_mask], vx0[valid_mask])
 
-        if np.any(theta<0):
+        if np.any(theta < 0):
             # logging.info(f'Got negative theta, converting to positive values')
-            mask = (theta<0)
+            mask = (theta < 0)
             theta[mask] += _two_pi
 
         sin_theta = np.sin(theta)
@@ -1868,12 +1849,12 @@ class MosaicsReproject:
         logging.info(f'Get distortion for {vx_var}')
         np_vx = self.ds[vx_var].values
 
-        np_vx[np_vx==DataVars.MISSING_VALUE] = np.nan
+        np_vx[np_vx == DataVars.MISSING_VALUE] = np.nan
         np_vx[~np.isnan(np_vx)] = 1.0
 
         # Warp y component
         np_vy = self.ds[vy_var].values
-        np_vy[np_vy==DataVars.MISSING_VALUE] = np.nan
+        np_vy[np_vy == DataVars.MISSING_VALUE] = np.nan
 
         np_vy[~np.isnan(np_vy)] = 0.0
 
@@ -1891,19 +1872,19 @@ class MosaicsReproject:
             ascii=True,
             desc=f"Re-projecting X unit {vx_var}, {vy_var}..."
         ):
-                # Get values corresponding to the cell in input projection
-                v_i, v_j = self.original_ij_index[y_index, x_index]
-                dv = [np_vx[v_j, v_i], np_vy[v_j, v_i]]
+            # Get values corresponding to the cell in input projection
+            v_i, v_j = self.original_ij_index[y_index, x_index]
+            dv = [np_vx[v_j, v_i], np_vy[v_j, v_i]]
 
-                # Some points get NODATA for vx but valid vy
-                if not np.any(np.isnan(dv)):  # some warped points get NODATA for vx but valid vy
-                    t_matrix = self.transformation_matrix[y_index, x_index]
+            # Some points get NODATA for vx but valid vy
+            if not np.any(np.isnan(dv)):  # some warped points get NODATA for vx but valid vy
+                t_matrix = self.transformation_matrix[y_index, x_index]
 
-                    # Apply transformation matrix to (vx, vy) values converted to pixel displacement
-                    xy_v = np.matmul(t_matrix, dv)
+                # Apply transformation matrix to (vx, vy) values converted to pixel displacement
+                xy_v = np.matmul(t_matrix, dv)
 
-                    vx[y_index, x_index] = xy_v[0]
-                    vy[y_index, x_index] = xy_v[1]
+                vx[y_index, x_index] = xy_v[0]
+                vy[y_index, x_index] = xy_v[1]
 
         masked_np = np.ma.masked_equal(vx, DataVars.MISSING_VALUE, copy=False)
         logging.info(f"Rotated {vx_var}:  min={np.nanmin(masked_np)} max={np.nanmax(masked_np)}")
@@ -1997,7 +1978,6 @@ class MosaicsReproject:
 
         # logging.info(f'Input points: {points_in}')
         points_out = ij_to_xy_transfer.TransformPoints(points_in)
-        logging.info(f'create_transformation_matrix: type(points_out)={type(points_out)}')
 
         bbox_out_x = Bounds([each[0] for each in points_out])
         bbox_out_y = Bounds([each[1] for each in points_out])
@@ -2031,8 +2011,8 @@ class MosaicsReproject:
 
             # Make sure matrix dimensions correspond to the target grid
             if self.transformation_matrix.shape != (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE):
-                raise RuntimeError(f'Unexpected shape of transformation matrix: {self.transformation_matrix.shape}' \
-                                    'vs. expected {(len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE)}')
+                raise RuntimeError(f'Unexpected shape of transformation matrix: {self.transformation_matrix.shape}'
+                                   f'vs. expected {(len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE)}')
 
             return
 
@@ -2042,7 +2022,7 @@ class MosaicsReproject:
         ij0_points = xy_to_ij_transfer.TransformPoints(xy0_points)
         xy0_points = np.array(xy0_points)
 
-        logging.info(f'Got list of points in original projection...')
+        logging.info('Got list of points in original projection...')
 
         # Calculate x unit vector: add unit length to ij0_points.x
         # TODO: possible optimization - just use already transformed points when
@@ -2052,14 +2032,14 @@ class MosaicsReproject:
         # xy_points = ij_to_xy_transfer.TransformPoints(ij_unit.tolist())
         ij_unit = [[each[0] + self.x_size, each[1]] for each in ij0_points]
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit)
-        # logging.info(f'Type of xy_points: {type(xy_points)}')
+        # logging.info(f'Type of xy_points: {type(xy_points)}') # list
         xy_points = np.array(xy_points)
 
         num_xy0_points = len(xy0_points)
 
         # Compute X unit vector based on xy0_points, xy_points
         # in output projection
-        logging.info(f'Creating X unit vectors...')
+        logging.info('Creating X unit vectors...')
         start_time = timeit.default_timer()
 
         # unit_vectors = TiUnitVectors(num_xy0_points)
@@ -2077,7 +2057,7 @@ class MosaicsReproject:
         #     # xunit_v[index] /= np.linalg.norm(xunit_v[index])
         #     xunit_v[index] /= self.x_size
 
-        logging.info(f'Creating Y unit vectors...')
+        logging.info('Creating Y unit vectors...')
         # Calculate Y unit vector: add unit length to ij0_points.y
         # ij_unit = np.array(ij0_points)
         # ij_unit[:, 1] += self.y_size
@@ -2121,7 +2101,7 @@ class MosaicsReproject:
         num_j = len(self.ds.y.values)
 
         # For each point on the output grid:
-        logging.info(f'Populating transformation matrix...')
+        logging.info('Populating transformation matrix...')
 
         # Convert list of points to numpy array
         np_ij_points = np.array(ij0_points)
@@ -2155,10 +2135,10 @@ class MosaicsReproject:
         # yunit_v = yunit_v.data.to_numpy()
 
         # Get indices of cells with valid original_ij_index
-        valid_indices, = np.where(invalid_mask == False)
+        valid_indices, = np.where(invalid_mask is False)
 
         # TODO: check if all cells are excluded from computations
-        logging.info(f'Creating transformation matrix...')
+        logging.info('Creating transformation matrix...')
         t1 = timeit.default_timer()
         transform_matrix.compute(xunit_v.data, yunit_v.data, valid_indices, self.original_ij_index, v_all_values)
         logging.info(f'Created transformation matrix, took {timeit.default_timer() - t1} seconds')
@@ -2215,7 +2195,7 @@ class MosaicsReproject:
 
         # TODO: Collect indices of cells with valid transformation matrix - to avoid look up
         # later during re-projection
-        logging.info(f'Getting valid cells indices for transformation matrix...')
+        logging.info('Getting valid cells indices for transformation matrix...')
         t1 = timeit.default_timer()
         self.valid_cell_indices_y, self.valid_cell_indices_x = np.where(self.transformation_matrix[:, :, 0, 0] != DataVars.MISSING_VALUE)
         logging.info(f'Got valid cells indices for transformation matrix, took {timeit.default_timer() - t1} seconds')
@@ -2230,11 +2210,10 @@ class MosaicsReproject:
             MosaicsReproject.TRANSFORMATION_MATRIX_FILE,
             transformation_matrix=self.transformation_matrix,
             original_ij_index=self.original_ij_index,
-            valid_cell_indices_x = self.valid_cell_indices_x,
-            valid_cell_indices_y = self.valid_cell_indices_y
+            valid_cell_indices_x=self.valid_cell_indices_x,
+            valid_cell_indices_y=self.valid_cell_indices_y
         )
         logging.info(f'Saved data to {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}, took {timeit.default_timer() - t1} seconds')
-
 
     def spatial_ref_32x(self):
         """
@@ -2281,7 +2260,8 @@ class MosaicsReproject:
 
         return list(zip(x_1.flatten(), y_1.flatten(), z_1.flatten()))
 
-def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, verbose_flag: bool, compute_debug_vars: bool=False):
+
+def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, verbose_flag: bool, compute_debug_vars: bool = False):
     """
     Main function of the module to be able to invoke the code from
     another Python module.
