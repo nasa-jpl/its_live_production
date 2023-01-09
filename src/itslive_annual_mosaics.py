@@ -1707,10 +1707,10 @@ class ITSLiveAnnualMosaics:
                 year_index = each_ds.time.index(year_date.year)
 
                 for each_var in ITSLiveAnnualMosaics.ANNUAL_VARS:
-                    # TODO: if to support old composites
-                    # if each_var not in each_ds:
-                    #     logging.info(f'Skipping missing {each_var} from {each_file}')
-                    #     continue
+                    # To support old composites
+                    if each_var not in each_ds.s3.ds:
+                        logging.info(f'Skipping missing {each_var} from {each_file}')
+                        continue
 
                     if each_var not in ds:
                         # Create data variable in output dataset
@@ -1980,16 +1980,16 @@ class ITSLiveAnnualMosaics:
             for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
                 # logging.info(f'Collecting {each_var} from {each_file}')
 
+                # To support old style composites
+                if each_var not in each_ds.s3.ds:
+                    logging.info(f'Skipping missing {each_var} from {each_file}')
+                    continue
+
                 # Remove zeros from data variables names if it's final mosaic file
                 # being generated
                 ds_var = each_var
                 if rename_zero_based_data_vars:
                     ds_var = each_var.replace('0', '')
-
-                # TODO: if to support old style composites
-                # if each_var not in each_ds:
-                #     logging.info(f'Skipping missing {each_var} from {each_file}')
-                #     continue
 
                 if each_var not in ds:
                     # Create data variable in result dataset
