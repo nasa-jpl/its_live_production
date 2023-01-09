@@ -1119,8 +1119,8 @@ class MosaicsReproject:
         if Output.FILL_VALUE_ATTR in ds[CompDataVars.COUNT].attrs:
             del ds[CompDataVars.COUNT].attrs[Output.FILL_VALUE_ATTR]
 
-        if Output.MISSING_VALUE_ATTR in ds[each].attrs:
-            del ds[each].attrs[Output.MISSING_VALUE_ATTR]
+        if Output.MISSING_VALUE_ATTR in ds[CompDataVars.COUNT].attrs:
+            del ds[CompDataVars.COUNT].attrs[Output.MISSING_VALUE_ATTR]
 
         logging.info(f'Enconding for {output_file}: {encoding_settings}')
 
@@ -2324,6 +2324,7 @@ def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, 
     Main function of the module to be able to invoke the code from
     another Python module.
     """
+    start_time = timeit.default_timer()
     MosaicsReproject.VERBOSE = verbose_flag
     MosaicsReproject.COMPUTE_DEBUG_VARS = compute_debug_vars
     MosaicsReproject.TRANSFORMATION_MATRIX_FILE = matrix_file
@@ -2335,7 +2336,7 @@ def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, 
     reproject = MosaicsReproject(input_file, output_proj)
     reproject(output_file)
 
-    logging.info(f'Done re-projection of {input_file}')
+    logging.info(f'Done re-projection of {input_file} (took {timeit.default_timer() - start_time} seconds)')
 
 
 if __name__ == '__main__':
