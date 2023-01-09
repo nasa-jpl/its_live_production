@@ -9,7 +9,6 @@ Jet Propulsion Laboratory, California Institute of Technology, Pasadena, Califor
 March 21, 2022
 """
 import collections
-import copy
 import datetime
 import gc
 import json
@@ -18,7 +17,6 @@ import numba as nb
 import numpy as np
 import os
 import pandas as pd
-import s3fs
 from scipy import ndimage
 import timeit
 from tqdm import tqdm
@@ -46,19 +44,27 @@ CENTER_DATE = datetime.datetime(2019, 7, 2)
 
 # Set up logging
 logging.basicConfig(
-    level = logging.INFO,
-    format = '%(asctime)s - %(levelname)s - %(message)s',
-    datefmt = '%Y-%m-%d %H:%M:%S'
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
+
 
 def decimal_year(dt):
     start_year = datetime.datetime(year=dt.year, month=1, day=1)
     year_part = dt - start_year
     year_length = (
-        datetime.datetime(year=dt.year, month=12, day=31, hour=23, minute=59, second=59) - \
-        start_year
+        datetime.datetime(
+            year=dt.year,
+            month=12,
+            day=31,
+            hour=23,
+            minute=59,
+            second=59
+        ) - start_year
     )
     return dt.year + year_part / year_length
+
 
 @nb.jit(nopython=True)
 def medianMadFunction(x):
@@ -73,6 +79,7 @@ def medianMadFunction(x):
         xmad = np.median(np.fabs(x - xmed))
 
     return [xmed, xmad]
+
 
 @nb.jit(nopython=True)
 def create_projected_velocity(x_in, y_in, dt):
@@ -108,7 +115,7 @@ def create_projected_velocity(x_in, y_in, dt):
     # Project vx and vy onto the median flow vector for dt <= 16;
     # if there is no data, then for dt <= 32, etc.
     ind = None
-    valid = ~x0_is_null # Number of valid points
+    valid = ~x0_is_null  # Number of valid points
 
     for each_dt in _dt_median_flow:
         ind = (dt <= each_dt) & valid
@@ -133,11 +140,12 @@ def create_projected_velocity(x_in, y_in, dt):
         x0_in = np.full_like(x_in, np.inf)
         return x0_in
 
-    uv_x = vx0/v0 # unit flow vector
+    uv_x = vx0/v0  # unit flow vector
     uv_y = vy0/v0
-    x0_in = x_in*uv_x + y_in*uv_y # projected flow vectors
+    x0_in = x_in*uv_x + y_in*uv_y  # projected flow vectors
 
     return x0_in
+
 
 @nb.jit(nopython=True)
 def cube_filter_iteration(vp, dt, mad_std_ratio):
@@ -240,17 +248,21 @@ def cube_filter_iteration(vp, dt, mad_std_ratio):
 
     return (maxdt, invalid)
 
-# numba does not like vp.shape for some reason
+
+# Can't compile with numba as exclude_sensor_groups are of Python object type
 # @nb.jit(nopython=True, parallel=True)
 def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_groups):
     """
-    Filter data cube by dt (date separation) between the images.
+    Filter data cube by dt (date separation) between the images for the sensor type.
 
     Input:
     ======
-    vp:          Velocity projected to median flow unit vector.
-    dt:          Day separation vector.
-    mad_std_ratio: Scalar relation between MAD and STD
+    vp:            Velocity projected to median flow unit vector.
+    dt:            Day separation vector.
+    mad_std_ratio: Scalar relation between MAD and STD.
+    current_sensor_group: Current sensor to filter by.
+    exclude_sensor_groups: List of sensors that should be excluded from the filter
+                           (per spatial cell).
 
     Return:
     =======
@@ -260,20 +272,18 @@ def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_grou
     """
     # Initialize output
     y_len, x_len, t_len = vp.shape
-    dims = (y_len, x_len)
+    dims = [y_len, x_len]
     maxdt = np.full(dims, np.nan)
     sensor_include = np.ones(dims)
 
     # dims = (y_len, x_len, np.sum(sensor_mask))
     invalid = np.zeros_like(vp, dtype=np.bool_)
 
-    # Loop through all spacial points
-    # for j_index in nb.prange(y_len):
-    #     for i_index in nb.prange(x_len):
+    # Loop through all spatial points
     for j_index in range(0, y_len):
         for i_index in range(0, x_len):
             # Check if filter should be skipped due to exclude_sensor_groups
-            if exclude_sensor_groups[j_index, i_index] and \
+            if len(exclude_sensor_groups[j_index, i_index]) and \
                current_sensor_group in exclude_sensor_groups[j_index, i_index]:
                 # logging.info(f'DEBUG: exclude_sensors: {exclude_sensor_groups[j_index, i_index]}')
                 # logging.info(f'j={j_index} i={i_index}: skipping {current_sensor_group} due to exclude_groups={exclude_sensor_groups[j_index, i_index]}')
@@ -291,6 +301,7 @@ def cube_filter(vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_grou
     # logging.info(f'DEBUG: Excluded sensors: {sensor_include}')
     return invalid, maxdt, sensor_include
 
+
 @nb.jit(nopython=True)
 def weighted_std(values, weights):
     """
@@ -302,6 +313,7 @@ def weighted_std(values, weights):
     variance = np.average((values-average)**2, weights=weights)
     return np.sqrt(variance)
 
+
 @nb.jit(nopython=True)
 def create_M(y1, start_year, stop_year, dyr):
     """
@@ -310,7 +322,8 @@ def create_M(y1, start_year, stop_year, dyr):
     M = np.zeros((len(dyr), len(y1)))
 
     # Loop through each year:
-    for k in range(len(y1)):
+    # for k in range(len(y1)):
+    for k in nb.prange(len(y1)):
         # Set all measurements that begin before the first day of the year and end after the last
         # day of the year to 1:
         y1_value = y1[k]
@@ -333,6 +346,7 @@ def create_M(y1, start_year, stop_year, dyr):
 
     return M
 
+
 # Disable numba as its wrapper for lstsq does not support "rcond" input parameter for LSQ fit
 # @nb.jit(nopython=True)
 def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
@@ -345,9 +359,11 @@ def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
     #
     # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
     # D = [(cos(2*pi*yr(:,1)) - cos(2*pi*yr(:,2)))./(2*pi).*(M>0) (sin(2*pi*yr(:,2)) - sin(2*pi*yr(:,1)))./(2*pi).*(M>0) M];
-    D = np.stack( \
-            ((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi, \
-             (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi), axis=-1)
+    D = np.stack(
+        ((np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi,
+         (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi),
+        axis=-1
+    )
 
     # Add M: a different constant for each year (annual mean)
     if _enable_debug:
@@ -386,6 +402,7 @@ def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
 
     return (p, d_model)
 
+
 @nb.jit(nopython=True)
 def itersect_years(all_years, select_years):
     """
@@ -393,8 +410,9 @@ def itersect_years(all_years, select_years):
     This is to replace built-in numpy.intersect1d() which does not work with
     numba.
     """
-    lookup_table = {v:i for i, v in enumerate(all_years)}
+    lookup_table = {v: i for i, v in enumerate(all_years)}
     return np.array([lookup_table[each] for each in select_years])
+
 
 @nb.jit(nopython=True)
 def init_lsq_fit1(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input):
@@ -428,7 +446,7 @@ def init_lsq_fit1(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, a
         return (results_valid, dy_out, dy_out, np.zeros_like(v_input), np.zeros_like(v_err_input), np.zeros_like(dec_dt), 0, np.zeros_like(M_input))
 
     start_year = start_dec_year[isf_mask]
-    stop_year  = stop_dec_year[isf_mask]
+    stop_year = stop_dec_year[isf_mask]
     # dt in decimal years
     dyr = dec_dt[isf_mask]
 
@@ -452,6 +470,7 @@ def init_lsq_fit1(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, a
     M_in = M_in[sort_indices]
 
     return (results_valid, start_year, stop_year, v_in, v_err_in, dyr, totalnum, M_in)
+
 
 @nb.jit(nopython=True)
 def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input, mad_thresh, mad_std_ratio):
@@ -482,7 +501,7 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
     # Take median of residual, multiply median of residual * 1.4826 = sigma
     v_sigma = np.median(v_residual)*mad_std_ratio
 
-    non_outlier_mask  = ~(v_residual > (2.0 * mad_thresh * v_sigma))
+    non_outlier_mask = ~(v_residual > (2.0 * mad_thresh * v_sigma))
 
     if _enable_debug:
         logging.info(f'non_outlier_mask.size={non_outlier_mask.shape} vs. num of valid points={np.sum(non_outlier_mask)}')
@@ -538,6 +557,7 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
     M_in = M_in[:, year_indices]
 
     return (results_valid, start_year, stop_year, v_in, v_err_in, dyr, w_v, w_d, d_obs, y1, M_in)
+
 
 # Don't compile the whole function with numba - runs a bit slower (why???)
 # @nb.jit(nopython=True)
@@ -708,7 +728,8 @@ def itslive_lsqfit_annual(
         ind = M[:, k] > 0
 
         # asg replaced call to wmean
-        A_err[k] = weighted_std(d_obs[ind]-d_model[ind], w_d[ind]) / ((w_d[ind]*dyr[ind]).sum() / w_d[ind].sum())
+        _w_d_ind = w_d[ind]
+        A_err[k] = weighted_std(d_obs[ind]-d_model[ind], _w_d_ind) / ((_w_d_ind*dyr[ind]).sum() / _w_d_ind.sum())
 
     # Compute climatology amplitude error based on annual values
     amp_error = np.sqrt((A_err**2).sum())/(Nyrs-1)
@@ -717,7 +738,7 @@ def itslive_lsqfit_annual(
     v_int = p[2:]
 
     # Number of equivalent image pairs per year: (1 image pair equivalent means a full year of data. It takes about 23 16-day image pairs to make 1 year equivalent image pair.)
-    N_int = (M>0).sum(axis=0)
+    N_int = (M > 0).sum(axis=0)
 
     # Number of image pairs used
     count_image_pairs = M.shape[0]
@@ -758,6 +779,7 @@ def itslive_lsqfit_annual(
 
     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs])
 
+
 @nb.jit(nopython=True)
 def annual_magnitude(
     vx_fit,
@@ -791,10 +813,7 @@ def annual_magnitude(
 
     """
     # solve for velocity magnitude
-    v_fit = np.sqrt(vx_fit**2 + vy_fit**2) # velocity magnitude
-
-    uv_x = vx_fit/v_fit # unit flow vector
-    uv_y = vy_fit/v_fit
+    v_fit = np.sqrt(vx_fit**2 + vy_fit**2)  # velocity magnitude
 
     # Compute v_fit_error like autoRIFT does:
     # V_error = np.sqrt((vx_error * VX / V)**2 + (vy_error * VY / V)**2)
@@ -806,6 +825,7 @@ def annual_magnitude(
     v_fit_count = np.ceil((vx_fit_count + vy_fit_count) / 2)
 
     return v_fit, v_fit_err, v_fit_count
+
 
 # No need for numba as all is done in Numpy internally
 # @nb.jit(nopython=True, parallel=True)
@@ -881,20 +901,21 @@ def climatology_magnitude(
 
     # solve for velocity magnitude and acceleration
     # [do this using vx and vy as to not bias the result due to the Rician distribution of v]
-    v = np.sqrt(vx0**2 + vy0**2) # velocity magnitude
+    v = np.sqrt(vx0**2 + vy0**2)  # velocity magnitude
 
     invalid_mask = (v >= v_limit)
     if np.sum(invalid_mask) > 0:
         # Since it's invalid v0, report all output as invalid
         v[invalid_mask] = np.nan
 
-    uv_x = vx0/v # unit flow vector in x direction
-    uv_y = vy0/v # unit flow vector in y direction
+    uv_x = vx0/v  # unit flow vector in x direction
+    uv_y = vy0/v  # unit flow vector in y direction
 
-    dv_dt = dvx_dt * uv_x # flow acceleration in direction of unit flow vector
+    dv_dt = dvx_dt * uv_x  # flow acceleration in direction of unit flow vector
     dv_dt += dvy_dt * uv_y
 
-    v_amp_err = np.abs(vx_amp_err) * np.abs(uv_x) # flow acceleration in direction of unit flow vector, take absolute values
+    # flow acceleration in direction of unit flow vector, take absolute values
+    v_amp_err = np.abs(vx_amp_err) * np.abs(uv_x)
     v_amp_err += np.abs(vy_amp_err) * np.abs(uv_y)
 
     v_se = np.full_like(vx_se, np.nan)
@@ -926,9 +947,9 @@ def climatology_magnitude(
     theta = np.full_like(vx_phase_rad, np.nan)
     theta[valid_mask] = np.arctan2(vy0[valid_mask], vx0[valid_mask])
 
-    if np.any(theta<0):
+    mask = (theta < 0)
+    if np.any(mask):
         # logging.info(f'Got negative theta, converting to positive values')
-        mask = (theta<0)
         theta[mask] += _two_pi
 
     # Find negative values
@@ -981,6 +1002,8 @@ def climatology_magnitude(
 
     return v, dv_dt, v_amp, v_amp_err, v_phase, v_se
 
+
+# @nb.jit(nopython=True): numba does not support datetime objects
 def weighted_linear_fit(t, v, v_err, datetime0=CENTER_DATE):
     """
     Returns the offset, slope, and error for a weighted linear fit to v with an intercept of datetime0.
@@ -1054,6 +1077,7 @@ def weighted_linear_fit(t, v, v_err, datetime0=CENTER_DATE):
 
     return offset, slope, error
 
+
 class CompositeVariable:
     """
     Class to hold values for v, vx and vy components of the variables.
@@ -1092,8 +1116,10 @@ class CompositeVariable:
         self.vx = to_int_type(self.vx)
         self.vy = to_int_type(self.vy)
 
+
 # Currently processed datacube chunk
 Chunk = collections.namedtuple("Chunk", ['start_x', 'stop_x', 'x_len', 'start_y', 'stop_y', 'y_len'])
+
 
 class MissionSensor:
     """
@@ -1113,7 +1139,7 @@ class MissionSensor:
     # ---> support both
     LANDSAT45 = MSTuple('L45', ['4.', '5.', '4.0', '5.0', 4.0, 5.0, '4', '5'], 'L4_L5')
     LANDSAT89 = MSTuple('L89', ['8.', '9.', '8.0', '9.0', 8.0, 9.0, '8', '9'], 'L8_L9')
-    LANDSAT7  = MSTuple('L7', ['7.', '7.0', 7.0, '7'], 'L7')
+    LANDSAT7 = MSTuple('L7', ['7.', '7.0', 7.0, '7'], 'L7')
 
     # ATTN: '1' and '2' are added as a workaround for the stripped satellite_img[12] values
     # when Zarr writes first chunk of the datacube with less than 2 character sensor values
@@ -1210,9 +1236,11 @@ class MissionSensor:
 
         return all_sensors
 
+
 # Initialize static data of the class
 MissionSensor.GROUPS = MissionSensor._groups()
 MissionSensor.GROUPS_MISSIONS = MissionSensor._groups_missions()
+
 
 class SensorExcludeFilter:
     """
@@ -1220,7 +1248,7 @@ class SensorExcludeFilter:
     on the timeseries for a single spacial point of the datacube.
     """
     # Min required values in bin for one sensorgroup to compute stats
-    MIN_COUNT=3
+    MIN_COUNT = 3
 
     # Longest dt to use for all sensor groups
     MAX_DT = 64
@@ -1292,7 +1320,7 @@ class SensorExcludeFilter:
                 self.binedges = np.arange(
                     start_date.min().date(),
                     stop_date.max().date(),
-                    np.timedelta64(73,'[D]'),  # 73 D is 1/5 of a year
+                    np.timedelta64(73, '[D]'),  # 73 D is 1/5 of a year
                     dtype="datetime64[D]"
                 )
                 logging.info(f'Bin edges: {self.binedges}')
@@ -1445,7 +1473,6 @@ class SensorExcludeFilter:
         vx = ds_vx[trimmed_index]
         vy = ds_vy[trimmed_index]
         sensor = self.sensors_str[trimmed_index]
-        dt = ds_date_dt[trimmed_index]
         mid_dates = ds_mid_date[trimmed_index]
 
         #
@@ -1475,10 +1502,10 @@ class SensorExcludeFilter:
         # do this as a dict of dicts so we can use sensor name as index
         bindicts = {
             each_sensor: {
-                'vbin':      np.nan * np.ones((len(self.binedges)-1)),
-                'vstdbin':   np.nan * np.ones((len(self.binedges)-1)),
+                'vbin': np.nan * np.ones((len(self.binedges)-1)),
+                'vstdbin': np.nan * np.ones((len(self.binedges)-1)),
                 'vcountbin': np.zeros((len(self.binedges)-1), dtype='int32')
-            }  for each_sensor in sensorgroups
+            } for each_sensor in sensorgroups
         }
 
         #
@@ -1494,7 +1521,7 @@ class SensorExcludeFilter:
         #         vbin[sg,:], vstdbin[sg,:], vcountbin[sg,:], bincenters = ItsLive.binstats(decyear[ind], vp; binedges)
         #     end
         for sen in sensorgroups:
-            ind = sen == sensor
+            ind = (sen == sensor)
             vx0 = np.mean(vx[ind])
             vy0 = np.mean(vy[ind])
             sen_mid_dates = mid_dates[ind]
@@ -1506,7 +1533,8 @@ class SensorExcludeFilter:
             # do the bin stats here rather than in a separate function - "return" values populate bindicts
             for bin_num, (be_lo, be_hi) in enumerate(zip(self.binedges[:-1], self.binedges[1:])):
                 bin_ind = (sen_mid_dates >= be_lo) & (sen_mid_dates < be_hi)
-                num_in_bin = np.sum(bin_ind).item() # these are still xarray DataArrays - .item() returns sigular value instead of array(value)
+                # these are still xarray DataArrays - .item() returns sigular value instead of array(value)
+                num_in_bin = np.sum(bin_ind).item()
 
                 if num_in_bin >= SensorExcludeFilter.MIN_COUNT:
                     bindicts[sen]['vcountbin'] = num_in_bin
@@ -1538,6 +1566,7 @@ class SensorExcludeFilter:
         # logging.info(f'DEBUG: SensorExclude: {stats}')
         return sensors_to_exclude
 
+
 class StableShiftFilter:
     """
     Class to implement stable shift filter for the datacube data.
@@ -1565,7 +1594,7 @@ class StableShiftFilter:
     # Thresholds for stable_shift filter
     THRESHOLD = {
         MissionSensor.LANDSAT45.mission: np.inf,
-        MissionSensor.LANDSAT7.mission:  np.inf,
+        MissionSensor.LANDSAT7.mission: np.inf,
         MissionSensor.LANDSAT89.mission: 61.6,
         MissionSensor.SENTINEL1.mission: 1.1,
         MissionSensor.SENTINEL2.mission: 28.5
@@ -1611,7 +1640,7 @@ class StableShiftFilter:
             mask = (sensor_list == each_group.mission)
 
             if StableShiftFilter.KEEP_MISSION_GROUP and \
-                each_group.mission != StableShiftFilter.KEEP_MISSION_GROUP.mission:
+                    each_group.mission != StableShiftFilter.KEEP_MISSION_GROUP.mission:
                 # Disable other than requested mission group
                 self.keep_granule_mask[mask] = False
                 self.num_exclude_granules += np.sum(mask)
@@ -1692,7 +1721,7 @@ class StableShiftFilter:
                 # If only specific mission group is used, then some of the granules
                 # might be set to be excluded already. Get the number of total excluded
                 # granules in the mask.
-                self.num_exclude_granules = np.sum(self.keep_granule_mask == False)
+                self.num_exclude_granules = np.sum(self.keep_granule_mask is False)
                 logging.info(f'StableShiftFilter: need to skip {self.num_exclude_granules} granules')
 
                 # DEBUG: pandas.errors.InvalidIndexError: Reindexing only valid with uniquely valued Index objects:
@@ -1762,6 +1791,7 @@ class StableShiftFilter:
 
         return (return_vx, return_vy)
 
+
 class ITSLiveComposite:
     """
     CLass to build annual composites for ITS_LIVE datacubes.
@@ -1783,7 +1813,7 @@ class ITSLiveComposite:
         DataVars.VY_STABLE_SHIFT,
         DataVars.ImgPairInfo.SATELLITE_IMG1,
         DataVars.ImgPairInfo.MISSION_IMG1
-        # DataVars.URL
+        # DataVars.URL  # for debugging only
     ]
 
     # S3 store location for the Zarr composite
@@ -1813,7 +1843,7 @@ class ITSLiveComposite:
     DATE_DT = None
 
     START_DECIMAL_YEAR = None
-    STOP_DECIMAL_YEAR  = None
+    STOP_DECIMAL_YEAR = None
     DECIMAL_DT = None
     M = None
 
@@ -1895,7 +1925,7 @@ class ITSLiveComposite:
         # cube_ds = xr.open_dataset(cube_store, decode_timedelta=False)
 
         # Read in only specific data variables
-        logging.info(f"Read only variables of interest from datacube...")
+        logging.info("Read only variables of interest from datacube...")
         # Need to sort data by dt to be able to filter with np.searchsorted()
         # (relies on date_dt vector being sorted)
         # self.data = cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
@@ -1907,7 +1937,7 @@ class ITSLiveComposite:
         # Apply StableShiftFilter: revert stable_shift offset and/or exclude some granules
         # Create valid granule mask and "need to adjust vx/vy" mask based on
         # the stable_shift filter
-        logging.info(f'Initialize stable_shift filter...')
+        logging.info('Initialize stable_shift filter...')
         start_time = timeit.default_timer()
         self.stable_shift_filter = StableShiftFilter(
             cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
@@ -1943,7 +1973,7 @@ class ITSLiveComposite:
 
         # Add systematic error based on level of co-registration
         # Load Dask arrays before being able to modify their values
-        logging.info(f"Add systematic error based on level of co-registration...")
+        logging.info("Add systematic error based on level of co-registration...")
         self.vx_error = self.stable_shift_filter.exclude(cube_ds.vx_error.astype(np.float32).values)
         self.vy_error = self.stable_shift_filter.exclude(cube_ds.vy_error.astype(np.float32).values)
 
@@ -2191,7 +2221,7 @@ class ITSLiveComposite:
         # ----- FILTER DATA -----
         # Filter data based on locations where means of various dts are
         # statistically different and mad deviations from a running meadian
-        logging.info(f'Filter data based on dt binned medians...')
+        logging.info('Filter data based on dt binned medians...')
 
         # Initialize variables
         dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, ITSLiveComposite.MID_DATE_LEN)
@@ -2222,7 +2252,7 @@ class ITSLiveComposite:
         vy.flat = np.transpose(vy_org, ITSLiveComposite.CONT_TIME_ORDER)
 
         # Call filter to exclude sensors if any
-        logging.info(f'Sensor exclude filter...')
+        logging.info('Sensor exclude filter...')
         start_time = timeit.default_timer()
         land_ice_mask = None if self.land_ice_mask is None else self.land_ice_mask[start_y:stop_y, start_x:stop_x]
 
@@ -2250,7 +2280,7 @@ class ITSLiveComposite:
             copy_vx = vx.copy()
 
         start_time = timeit.default_timer()
-        logging.info(f'Project velocity to median flow unit vector...')
+        logging.info('Project velocity to median flow unit vector...')
         # Project velocity to median flow unit vector using only valid sensors
         vp = ITSLiveComposite.project_v_to_median_flow(
             vx,
@@ -2268,8 +2298,8 @@ class ITSLiveComposite:
 
         # Apply dt filter: step through all sensors groups
         for i, sensor_group in enumerate(self.sensors_groups):
-            logging.info(f'Filtering dt for sensors of "{sensor_group.mission}" ({i+1} out ' \
-                f'of {len(self.sensors_groups)} sensor groups)')
+            logging.info(f'Filtering dt for sensors of "{sensor_group.mission}" ({i+1} out '
+                         f'of {len(self.sensors_groups)} sensor groups)')
 
             # Find which layers correspond to the sensor group
             mask = (self.sensor_filter.sensors_str == sensor_group.mission)
@@ -2279,18 +2309,19 @@ class ITSLiveComposite:
             start_time = timeit.default_timer()
 
             v_invalid[:, :, mask], \
-            self.max_dt[start_y:stop_y, start_x:stop_x, i], \
-            self.sensor_include[start_y:stop_y, start_x:stop_x, i] = cube_filter(
-                vp[..., mask],
-                ITSLiveComposite.DATE_DT[mask],
-                ITSLiveComposite.MAD_STD_RATIO,
-                sensor_group.mission,
-                exclude_sensors
-            )
+                self.max_dt[start_y:stop_y, start_x:stop_x, i], \
+                self.sensor_include[start_y:stop_y, start_x:stop_x, i] = \
+                cube_filter(
+                    vp[..., mask],
+                    ITSLiveComposite.DATE_DT[mask],
+                    ITSLiveComposite.MAD_STD_RATIO,
+                    sensor_group.mission,
+                    exclude_sensors
+                )
             logging.info(f'Done with dt filter for projected v (took {timeit.default_timer() - start_time} seconds)')
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
-        logging.info(f'Compute invalid mask...')
+        logging.info('Compute invalid mask...')
         start_time = timeit.default_timer()
 
         invalid = v_invalid | (np.hypot(vx, vy) > ITSLiveComposite.V_LIMIT)
@@ -2311,7 +2342,7 @@ class ITSLiveComposite:
         logging.info(f'Finished filtering with invalid mask ({timeit.default_timer() - start_time} seconds)')
 
         # %% Least-squares fits to detemine amplitude, phase and annual means
-        logging.info(f'Find vx annual means using LSQ fit... ')
+        logging.info('Find vx annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
         # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
@@ -2333,7 +2364,7 @@ class ITSLiveComposite:
         )
         logging.info(f'Finished vx LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
-        logging.info(f'Find vy annual means using LSQ fit... ')
+        logging.info('Find vy annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
         # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
@@ -2354,30 +2385,30 @@ class ITSLiveComposite:
         )
         logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
-        logging.info(f'Find climatology magnitude...')
+        logging.info('Find climatology magnitude...')
         start_time = timeit.default_timer()
 
         self.offset.v[start_y:stop_y, start_x:stop_x], \
-        self.slope.v[start_y:stop_y, start_x:stop_x], \
-        self.amplitude.v[start_y:stop_y, start_x:stop_x], \
-        self.sigma.v[start_y:stop_y, start_x:stop_x], \
-        self.phase.v[start_y:stop_y, start_x:stop_x], \
-        self.std_error.v[start_y:stop_y, start_x:stop_x] = \
-        climatology_magnitude(
-            self.offset.vx[start_y:stop_y, start_x:stop_x],
-            self.offset.vy[start_y:stop_y, start_x:stop_x],
-            self.slope.vx[start_y:stop_y, start_x:stop_x],
-            self.slope.vy[start_y:stop_y, start_x:stop_x],
-            self.amplitude.vx[start_y:stop_y, start_x:stop_x],
-            self.amplitude.vy[start_y:stop_y, start_x:stop_x],
-            self.sigma.vx[start_y:stop_y, start_x:stop_x],
-            self.sigma.vy[start_y:stop_y, start_x:stop_x],
-            self.phase.vx[start_y:stop_y, start_x:stop_x],
-            self.phase.vy[start_y:stop_y, start_x:stop_x],
-            self.std_error.vx[start_y:stop_y, start_x:stop_x],
-            self.std_error.vy[start_y:stop_y, start_x:stop_x],
-            ITSLiveComposite.V_LIMIT
-        )
+            self.slope.v[start_y:stop_y, start_x:stop_x], \
+            self.amplitude.v[start_y:stop_y, start_x:stop_x], \
+            self.sigma.v[start_y:stop_y, start_x:stop_x], \
+            self.phase.v[start_y:stop_y, start_x:stop_x], \
+            self.std_error.v[start_y:stop_y, start_x:stop_x] = \
+            climatology_magnitude(
+                self.offset.vx[start_y:stop_y, start_x:stop_x],
+                self.offset.vy[start_y:stop_y, start_x:stop_x],
+                self.slope.vx[start_y:stop_y, start_x:stop_x],
+                self.slope.vy[start_y:stop_y, start_x:stop_x],
+                self.amplitude.vx[start_y:stop_y, start_x:stop_x],
+                self.amplitude.vy[start_y:stop_y, start_x:stop_x],
+                self.sigma.vx[start_y:stop_y, start_x:stop_x],
+                self.sigma.vy[start_y:stop_y, start_x:stop_x],
+                self.phase.vx[start_y:stop_y, start_x:stop_x],
+                self.phase.vy[start_y:stop_y, start_x:stop_x],
+                self.std_error.vx[start_y:stop_y, start_x:stop_x],
+                self.std_error.vy[start_y:stop_y, start_x:stop_x],
+                ITSLiveComposite.V_LIMIT
+            )
 
         logging.info(f'Finished climatology magnitude (took {timeit.default_timer() - start_time} seconds)')
 
@@ -2394,7 +2425,7 @@ class ITSLiveComposite:
                 if np.sum(mask) == 0:
                     # There are no cells to apply 2nd LSQ fit to
                     run_lsq_fit = False
-                    logging.info(f'Skipping 2nd LSQ fit due to zero points of (landice == 1)')
+                    logging.info('Skipping 2nd LSQ fit due to zero points of (landice == 1)')
 
                 else:
                     vx[~mask] = np.nan
@@ -2470,26 +2501,26 @@ class ITSLiveComposite:
                 start_time = timeit.default_timer()
 
                 self.excludeS2_offset.v[start_y:stop_y, start_x:stop_x], \
-                self.excludeS2_slope.v[start_y:stop_y, start_x:stop_x], \
-                self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x], \
-                self.excludeS2_sigma.v[start_y:stop_y, start_x:stop_x], \
-                self.excludeS2_phase.v[start_y:stop_y, start_x:stop_x], \
-                self.excludeS2_std_error.v[start_y:stop_y, start_x:stop_x] = \
-                climatology_magnitude(
-                    self.excludeS2_offset.vx[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_offset.vy[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_slope.vx[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_slope.vy[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_amplitude.vy[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_sigma.vx[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_sigma.vy[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_phase.vx[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_phase.vy[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_std_error.vx[start_y:stop_y, start_x:stop_x],
-                    self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x],
-                    ITSLiveComposite.V_LIMIT
-                )
+                    self.excludeS2_slope.v[start_y:stop_y, start_x:stop_x], \
+                    self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x], \
+                    self.excludeS2_sigma.v[start_y:stop_y, start_x:stop_x], \
+                    self.excludeS2_phase.v[start_y:stop_y, start_x:stop_x], \
+                    self.excludeS2_std_error.v[start_y:stop_y, start_x:stop_x] = \
+                    climatology_magnitude(
+                        self.excludeS2_offset.vx[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_offset.vy[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_slope.vx[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_slope.vy[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_amplitude.vx[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_amplitude.vy[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_sigma.vx[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_sigma.vy[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_phase.vx[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_phase.vy[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_std_error.vx[start_y:stop_y, start_x:stop_x],
+                        self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x],
+                        ITSLiveComposite.V_LIMIT
+                    )
                 logging.info(f'Finished climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
 
                 # Check if there are any values that satisfy:
@@ -2580,19 +2611,20 @@ class ITSLiveComposite:
         if np.sum(positive_outlier_mask) > 0:
             raise RuntimeError(f'Negative outlier fraction is detected: {self.outlier_fraction[start_y:stop_y, start_x:stop_x][positive_outlier_mask]} for indices={np.where(self.outlier_fraction[start_y:stop_y, start_x:stop_x] < 0.0)}')
 
-        logging.info(f'Find annual magnitude... ')
+        logging.info('Find annual magnitude... ')
         start_time = timeit.default_timer()
 
         self.mean.v[start_y:stop_y, start_x:stop_x, :], \
-        self.error.v[start_y:stop_y, start_x:stop_x, :], \
-        self.count.v[start_y:stop_y, start_x:stop_x, :] = annual_magnitude(
-            self.mean.vx[start_y:stop_y, start_x:stop_x, :],
-            self.mean.vy[start_y:stop_y, start_x:stop_x, :],
-            self.error.vx[start_y:stop_y, start_x:stop_x, :],
-            self.error.vy[start_y:stop_y, start_x:stop_x, :],
-            self.count.vx[start_y:stop_y, start_x:stop_x, :],
-            self.count.vy[start_y:stop_y, start_x:stop_x, :],
-        )
+            self.error.v[start_y:stop_y, start_x:stop_x, :], \
+            self.count.v[start_y:stop_y, start_x:stop_x, :] = \
+            annual_magnitude(
+                self.mean.vx[start_y:stop_y, start_x:stop_x, :],
+                self.mean.vy[start_y:stop_y, start_x:stop_x, :],
+                self.error.vx[start_y:stop_y, start_x:stop_x, :],
+                self.error.vy[start_y:stop_y, start_x:stop_x, :],
+                self.count.vx[start_y:stop_y, start_x:stop_x, :],
+                self.count.vy[start_y:stop_y, start_x:stop_x, :],
+            )
         logging.info(f'Finished annual magnitude (took {timeit.default_timer() - start_time} seconds)')
 
         # Nan out invalid values
@@ -2638,7 +2670,7 @@ class ITSLiveComposite:
         sensors_labels_attr = f'{", ".join(sensors_labels_attr)}'
 
         ds = xr.Dataset(
-            coords = {
+            coords={
                 Coords.X: (
                     Coords.X,
                     self.cube_ds.x.values,
@@ -2674,7 +2706,7 @@ class ITSLiveComposite:
                     }
                 )
             },
-            attrs = {
+            attrs={
                 CubeOutput.AUTHOR: CubeOutput.Values.AUTHOR
             }
         )
@@ -2699,11 +2731,11 @@ class ITSLiveComposite:
         # To support old format datacubes for testing
         # TODO: remove once done testing with old cubes (to compare to Matlab)
         if CubeOutput.GEO_POLYGON in self.cube_ds.attrs:
-            ds.attrs[CubeOutput.GEO_POLYGON]  = self.cube_ds.attrs[CubeOutput.GEO_POLYGON]
+            ds.attrs[CubeOutput.GEO_POLYGON] = self.cube_ds.attrs[CubeOutput.GEO_POLYGON]
             ds.attrs[CubeOutput.PROJ_POLYGON] = self.cube_ds.attrs[CubeOutput.PROJ_POLYGON]
 
         ds.attrs[CubeOutput.INSTITUTION] = CubeOutput.Values.INSTITUTION
-        ds.attrs[CubeOutput.LATITUDE]  = self.cube_ds.attrs[CubeOutput.LATITUDE]
+        ds.attrs[CubeOutput.LATITUDE] = self.cube_ds.attrs[CubeOutput.LATITUDE]
         ds.attrs[CubeOutput.LONGITUDE] = self.cube_ds.attrs[CubeOutput.LONGITUDE]
         ds.attrs[CubeOutput.PROJECTION] = self.cube_ds.attrs[CubeOutput.PROJECTION]
         ds.attrs[CubeOutput.S3] = ITSLiveComposite.S3
@@ -3364,7 +3396,7 @@ class ITSLiveComposite:
             CompDataVars.SLOPE_V,
             ShapeFile.LANDICE,
             ShapeFile.FLOATINGICE
-            ]:
+        ]:
             encoding_settings[each].update({
                 Output.CHUNKS_ATTR: chunks_settings
             })
@@ -3398,11 +3430,6 @@ class ITSLiveComposite:
         # Minimum number of non-NAN values in the data to proceed with LSQ fit
         _num_valid_points = 5
 
-        # Initialize output
-        start_time = timeit.default_timer()
-        # dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len)
-        # outlier_frac = np.full(dims, np.nan)
-
         # This is only done for generic parfor "slicing" may not be needed when
         # recoded
         v_err = v_err_data
@@ -3410,9 +3437,12 @@ class ITSLiveComposite:
             # Expand vector to 3-d array
             logging.info(f'Expand v_error from {v_err_data.ndim} to {v.ndim} dimensions...')
 
-            reshape_v_err = v_err_data.reshape((1,1,v_err_data.size))
+            reshape_v_err = v_err_data.reshape((1, 1, v_err_data.size))
             # v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
-            v_err = np.broadcast_to(reshape_v_err, (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, v_err_data.size))
+            v_err = np.broadcast_to(
+                reshape_v_err,
+                (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, v_err_data.size)
+            )
 
         init_time1 = 0
         init_time2 = 0
@@ -3431,20 +3461,20 @@ class ITSLiveComposite:
                 global_j = j + ITSLiveComposite.Chunk.start_y
 
                 results_valid, init_runtime1, init_runtime2, init_runtime3, lsq_runtime, results = \
-                itslive_lsqfit_annual(
-                    var_name,
-                    v[j, i, :],
-                    v_err[j, i, :],
-                    ITSLiveComposite.START_DECIMAL_YEAR,
-                    ITSLiveComposite.STOP_DECIMAL_YEAR,
-                    ITSLiveComposite.DECIMAL_DT,
-                    ITSLiveComposite.YEARS,
-                    ITSLiveComposite.M,
-                    ITSLiveComposite.MAD_STD_RATIO,
-                    mean[global_j, global_i, :],
-                    error[global_j, global_i, :],
-                    count[global_j, global_i, :]
-                )
+                    itslive_lsqfit_annual(
+                        var_name,
+                        v[j, i, :],
+                        v_err[j, i, :],
+                        ITSLiveComposite.START_DECIMAL_YEAR,
+                        ITSLiveComposite.STOP_DECIMAL_YEAR,
+                        ITSLiveComposite.DECIMAL_DT,
+                        ITSLiveComposite.YEARS,
+                        ITSLiveComposite.M,
+                        ITSLiveComposite.MAD_STD_RATIO,
+                        mean[global_j, global_i, :],
+                        error[global_j, global_i, :],
+                        count[global_j, global_i, :]
+                    )
 
                 init_time1 += init_runtime1
                 init_time2 += init_runtime2
@@ -3455,18 +3485,20 @@ class ITSLiveComposite:
                     # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
                     continue
 
+                # Unpack results into corresponding data variables
                 amplitude[global_j, global_i], \
-                sigma[global_j, global_i], \
-                phase[global_j, global_i], \
-                offset[global_j, global_i], \
-                slope[global_j, global_i], \
-                se[global_j, global_i], \
-                count_image_pairs[global_j, global_i] = results
+                    sigma[global_j, global_i], \
+                    phase[global_j, global_i], \
+                    offset[global_j, global_i], \
+                    slope[global_j, global_i], \
+                    se[global_j, global_i], \
+                    count_image_pairs[global_j, global_i] = results
 
                 # logging.info(f'DEBUG: Offset [{global_j}, {global_i}]: {offset[global_j, global_i]}')
 
         logging.info(f'Init_time1: {init_time1} sec, Init_time2: {init_time2} sec, Init_time3: {init_time3} sec, lsq_time: {lsq_time} seconds')
         return
+
 
 if __name__ == '__main__':
     import argparse
@@ -3474,6 +3506,7 @@ if __name__ == '__main__':
     import shutil
     import subprocess
     import sys
+    import time
     from urllib.parse import urlparse
 
     warnings.filterwarnings('ignore')
@@ -3485,7 +3518,7 @@ if __name__ == '__main__':
         '-c', '--chunkSize',
         type=int,
         default=100,
-        help='Number of X and Y coordinates to process in parallel with Dask. ' \
+        help='Number of X and Y coordinates to process in parallel with Dask. '
              'This should be multiples of the size of chunking used within the cube to optimize data reads [%(default)d].'
     )
     parser.add_argument(

@@ -7,13 +7,11 @@ Authors: Masha Liukis, Alex Gardner, Mark Fahnestock
 import copy
 from dateutil.parser import parse
 from datetime import datetime, timedelta
-from functools import reduce
 import gc
 import geopandas as gpd
 import glob
 import json
 import logging
-from operator import concat
 import os
 from pathlib import Path
 import psutil
@@ -24,7 +22,7 @@ import zarr
 import dask
 # from dask.distributed import Client, performance_report
 from dask.diagnostics import ProgressBar
-import numpy  as np
+import numpy as np
 import pandas as pd
 import rioxarray
 import s3fs
@@ -49,9 +47,9 @@ import zarr_to_netcdf
 
 # Set up logging
 logging.basicConfig(
-    level = logging.INFO,
-    format = '%(asctime)s - %(levelname)s - %(message)s',
-    datefmt = '%Y-%m-%d %H:%M:%S'
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
 # Coordinates attributes for the output store
@@ -67,6 +65,7 @@ Y_ATTRS = {
     DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
     DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
 }
+
 
 class ITSCube:
     """
@@ -365,8 +364,8 @@ class ITSCube:
         self.logger.info(f"Number of found by API granules: {total_num} (took {time_delta} seconds)")
 
         if len(found_urls) == 0:
-            self.logger.info(f"No granules are found for the search API parameters: {params}, " \
-                              "skipping datacube generation or update")
+            self.logger.info(f"No granules are found for the search API parameters: {params}, "
+                             "skipping datacube generation or update")
             return found_urls
 
         self.max_number_of_layers = len(found_urls)
@@ -408,7 +407,7 @@ class ITSCube:
         landsat89_granules = [
             each for each in found_urls
             if os.path.basename(each).split(ITSCube.SPLIT_IMAGES_TOKEN)[0].startswith(ITSCube.LANDSAT89_PREFIX) or
-               os.path.basename(each).split(ITSCube.SPLIT_IMAGES_TOKEN)[1].startswith(ITSCube.LANDSAT89_PREFIX)
+            os.path.basename(each).split(ITSCube.SPLIT_IMAGES_TOKEN)[1].startswith(ITSCube.LANDSAT89_PREFIX)
         ]
 
         if len(landsat89_granules) == 0:
@@ -550,8 +549,8 @@ class ITSCube:
         # due to double middle date in "new" found_urls granules
         # (self.skipped_granules[DataVars.SKIP_DUPLICATE] is set by self.request_granules())
         cube_layers_to_delete = list(set(self.skipped_granules[DataVars.SKIP_DUPLICATE]).intersection(cube_granules))
-        self.logger.info(f"{len(cube_layers_to_delete)} " \
-                          f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
+        self.logger.info(f"{len(cube_layers_to_delete)} "
+                         f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
 
         # Remove known duplicate middle date granules from found_urls:
         # if cube's skipped granules don't appear in found_urls.skipped_granules
@@ -569,7 +568,7 @@ class ITSCube:
 
         # Check if any of the skipped granules are in the cube
         cube_layers_to_delete.extend(list(set(cube_granules).intersection(skipped_landsat_granules)))
-        self.logger.info(f"After (cube_granules+found_urls): total of {len(cube_layers_to_delete)} " \
+        self.logger.info(f"After (cube_granules+found_urls): total of {len(cube_layers_to_delete)} "
                          f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
 
         # Merge two lists of skipped granules (for existing cube, new list
@@ -676,7 +675,7 @@ class ITSCube:
         return cube_exists
 
     @staticmethod
-    def init_input_store(input_dir: str, s3_bucket: str, read_skipped_granules: bool=True):
+    def init_input_store(input_dir: str, s3_bucket: str, read_skipped_granules: bool = True):
         """
         Read datacube from provided store. The method detects if S3 bucket
         store or local Zarr archive is provided, and reads xarray.Dataset from
@@ -771,11 +770,6 @@ class ITSCube:
         if len(found_urls) == 0:
             return found_urls
 
-        # Check if any of the existing cube layers are excluded, mark them to be
-        # deleted
-        layers_to_delete = []
-
-
         # Remove already processed granules
         found_urls, cube_layers_to_delete = self.exclude_processed_granules(found_urls, cube_ds, skipped_granules)
         num_cube_layers = len(cube_ds.mid_date.values)
@@ -784,6 +778,7 @@ class ITSCube:
             self.logger.info("No granules to update with, exiting.")
             return found_urls
 
+        # Clean up the open store for the dataset
         cube_store_in = None
         cube_ds = None
         gc.collect()
@@ -867,7 +862,7 @@ class ITSCube:
                 shutil.rmtree(tmp_output_dir)
 
                 ds_from_zarr = None
-                dropped_ds   = None
+                dropped_ds = None
                 gc.collect()
 
         start = 0
@@ -1147,7 +1142,7 @@ class ITSCube:
 
         return found_urls
 
-    def get_data_var(self, ds: xr.Dataset, var_name: str, data_dtype: str='short', data_fill_value = DataVars.MISSING_VALUE):
+    def get_data_var(self, ds: xr.Dataset, var_name: str, data_dtype: str = 'short', data_fill_value: int = DataVars.MISSING_VALUE):
         """
         Return xr.DataArray that corresponds to the data variable if it exists
         in the 'ds' dataset, or empty xr.DataArray if it is not present in the 'ds'.
@@ -1177,9 +1172,9 @@ class ITSCube:
         ds_url: str,
         var_name: str,
         attr_name: str,
-        missing_value = None,
-        to_date = False,
-        data_dtype = np.float32
+        missing_value=None,
+        to_date=False,
+        data_dtype=np.float32
     ):
         """
         Return attribute for the data variable in data set if it exists,
@@ -1216,7 +1211,7 @@ class ITSCube:
                     if len(tokens) == 3:
                         # Handle malformed datetime in Sentinel 2 granules:
                         # img_pair_info.acquisition_date_img1 = "20190215T205541T00:00:00"
-                        value = tokens[0] + 'T' + tokens[1][0:2] + ':' + tokens[1][2:4]+ ':' + tokens[1][4:6]
+                        value = tokens[0] + 'T' + tokens[1][0:2] + ':' + tokens[1][2:4] + ':' + tokens[1][4:6]
                         value = datetime.strptime(value, '%Y%m%dT%H:%M:%S')
 
                     elif len(value) >= 8:
@@ -1304,11 +1299,12 @@ class ITSCube:
             # for the cube with mid_date dimension which contains non-unique values).
             # Add the token as microseconds for the middle date: AAOOO
             #
-            lat = int(np.abs(ds.img_pair_info.latitude))
-            lon = int(np.abs(ds.img_pair_info.longitude))
+            # lat = int(np.abs(ds.img_pair_info.latitude))
+            # lon = int(np.abs(ds.img_pair_info.longitude))
             # Lon/lat can be non-unique for some of the granules with the same
-            # 'date_center', so use acquisition_date_img1 instead: YYMMDD
-            # Example: acquisition_date_img1 = "20141121T13:31:15";
+            # 'date_center', so use acquisition_date_img1 values instead: YYMMDD
+            # Example: for acquisition_date_img1 = "20141121T13:31:15" will use
+            # "141121" as microseconds
             mid_date += timedelta(microseconds=int(ds.img_pair_info.attrs[attr_name_1][2:8]))
 
             # Define which points are within target polygon.
@@ -1444,7 +1440,8 @@ class ITSCube:
         # capture it only once if it exists
         for each_attr, each_attr_units in zip(
             [DataVars.FLAG_STABLE_SHIFT, DataVars.STABLE_COUNT_MASK, DataVars.STABLE_COUNT_SLOW],
-            [None, DataVars.COUNT_UNITS, DataVars.COUNT_UNITS]):
+            [None, DataVars.COUNT_UNITS, DataVars.COUNT_UNITS]
+        ):
             if var_name in self.ds[0] and \
                each_attr not in self.layers and \
                each_attr in self.ds[0][var_name].attrs:
@@ -1593,7 +1590,7 @@ class ITSCube:
         self.layers[var_name].attrs[DataVars.GRID_MAPPING] = ds_grid_mapping_value
 
     @staticmethod
-    def show_memory_usage(msg: str=''):
+    def show_memory_usage(msg: str = ''):
         """
         Display current memory usage.
         """
@@ -1632,8 +1629,8 @@ class ITSCube:
         mid_date_coord = pd.Index(self.dates, name=Coords.MID_DATE)
 
         self.layers = xr.Dataset(
-            data_vars = {DataVars.URL: ([Coords.MID_DATE], self.urls)},
-            coords = {
+            data_vars={DataVars.URL: ([Coords.MID_DATE], self.urls)},
+            coords={
                 Coords.MID_DATE: (
                     Coords.MID_DATE,
                     self.dates,
@@ -1659,7 +1656,7 @@ class ITSCube:
                     }
                 )
             },
-            attrs = {
+            attrs={
                 CubeOutput.AUTHOR: CubeOutput.Values.AUTHOR
             }
         )
@@ -1685,9 +1682,9 @@ class ITSCube:
         self.layers.attrs[CubeOutput.DATE_CREATED] = self.date_created
         self.layers.attrs[CubeOutput.DATE_UPDATED] = self.date_updated if self.date_updated is not None else self.date_created
         self.layers.attrs[CubeOutput.GDAL_AREA_OR_POINT] = CubeOutput.Values.AREA
-        self.layers.attrs[CubeOutput.GEO_POLYGON]  = json.dumps(self.polygon_coords)
+        self.layers.attrs[CubeOutput.GEO_POLYGON] = json.dumps(self.polygon_coords)
         self.layers.attrs[CubeOutput.INSTITUTION] = CubeOutput.Values.INSTITUTION
-        self.layers.attrs[CubeOutput.LATITUDE]  = round(self.center_lon_lat[1], 2)
+        self.layers.attrs[CubeOutput.LATITUDE] = round(self.center_lon_lat[1], 2)
         self.layers.attrs[CubeOutput.LONGITUDE] = round(self.center_lon_lat[0], 2)
         self.layers.attrs[CubeOutput.PROJ_POLYGON] = json.dumps(self.polygon)
         self.layers.attrs[CubeOutput.PROJECTION] = str(self.projection)
@@ -1883,11 +1880,12 @@ class ITSCube:
         # Optical legacy granules might not have chip_size_height set, use
         # chip_size_width instead
         self.layers[DataVars.CHIP_SIZE_HEIGHT] = xr.concat([
-               ds.chip_size_height if
-                  np.ma.masked_equal(ds.chip_size_height.values, ITSCube.CHIP_SIZE_HEIGHT_NO_VALUE).count() != 0 else
-               ds.chip_size_width for ds in self.ds
+                ds.chip_size_height if
+                np.ma.masked_equal(ds.chip_size_height.values, ITSCube.CHIP_SIZE_HEIGHT_NO_VALUE).count() != 0 else
+                ds.chip_size_width for ds in self.ds
             ],
-            mid_date_coord)
+            mid_date_coord
+        )
         self.layers[DataVars.CHIP_SIZE_HEIGHT].attrs[DataVars.CHIP_SIZE_COORDS] = \
             DataVars.DESCRIPTION[DataVars.CHIP_SIZE_COORDS]
         self.layers[DataVars.CHIP_SIZE_HEIGHT].attrs[DataVars.DESCRIPTION_ATTR] = \
@@ -1955,7 +1953,6 @@ class ITSCube:
             if each in DataVars.ImgPairInfo.UNITS:
                 # Units attribute exists for the variable
                 self.layers[each].attrs[DataVars.UNITS] = DataVars.ImgPairInfo.UNITS[each]
-
 
         # Add new variable that corresponds to autoRIFT_software_version
         self.layers[DataVars.AUTORIFT_SOFTWARE_VERSION] = xr.DataArray(
@@ -2096,15 +2093,20 @@ class ITSCube:
                          DataVars.ImgPairInfo.SATELLITE_IMG2]:
                 max_sensor_len = max(map(len, self.layers[each].values))
                 if max_sensor_len > ITSCube.MAX_SENSOR_LEN:
-                    raise RuntimeError(f'"{each}" will be truncated to the current length limit: {ITSCube.MAX_SENSOR_LEN}: {max_sensor_len} length is detected. ' \
-                         'Please update ITSCube.MAX_SENSOR_LEN value.')
+                    raise RuntimeError(
+                        f'"{each}" will be truncated to the current length limit: '
+                        f'{ITSCube.MAX_SENSOR_LEN}: {max_sensor_len} length is detected. '
+                        'Please update ITSCube.MAX_SENSOR_LEN value.'
+                    )
 
                 encoding_settings.setdefault(each, {}).update({Output.DTYPE_ATTR: f'U{ITSCube.MAX_SENSOR_LEN}'})
 
             # Check for the length limit of the granule_url's
             max_url_len = max(map(len, self.layers[DataVars.URL].values))
             if max_url_len > ITSCube.MAX_GRANULE_URL_LEN:
-                raise RuntimeError(f'"{each}" will be truncated to the current length limit: {ITSCube.MAX_GRANULE_URL_LEN}: {max_url_len} length is detected.' \
+                raise RuntimeError(
+                    f'"{each}" will be truncated to the current length limit: '
+                    '{ITSCube.MAX_GRANULE_URL_LEN}: {max_url_len} length is detected.'
                     'Please update ITSCube.MAX_GRANULE_URL_LEN value.')
 
             encoding_settings.setdefault(DataVars.URL, {}).update({Output.DTYPE_ATTR: f'U{ITSCube.MAX_GRANULE_URL_LEN}'})
@@ -2419,7 +2421,7 @@ class ITSCube:
         # ice mask
         ice_mask = xr.DataArray(
             np.zeros((len(grid_y), len(grid_x))),
-            coords = {
+            coords={
                 Coords.X: grid_x,
                 Coords.Y: grid_y
             },
@@ -2433,7 +2435,7 @@ class ITSCube:
         else:
             cropped_mask_ds = mask_ds.where(mask, drop=True)
 
-             # Populate mask data into cube-size array
+            # Populate mask data into cube-size array
             if cropped_mask_ds.ndim == 3:
                 # If it's 3d data, it should have first dimension=1: just
                 # one layer is expected
@@ -2455,6 +2457,7 @@ class ITSCube:
 
         return (ice, shapefile_row[column_name].item())
 
+
 if __name__ == '__main__':
     import argparse
     import warnings
@@ -2468,23 +2471,24 @@ if __name__ == '__main__':
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         '-t', '--threads',
-        type=int, default=8,
-        help='number of Dask workers to use for parallel processing [%(default)d].'
+        type=int,
+        default=8,
+        help='Number of Dask workers to use for parallel processing [%(default)d].'
     )
     parser.add_argument(
         '-r', '--removeExistingCube',
         action='store_true',
         default=False,
-        help='Flag to remove existing datacube in S3 bucket, default is to update existing datacube. ' \
-             'This flag is useful when we need to re-create the cube from scratch, though beware of AWS limit of push requests ' \
+        help='Flag to remove existing datacube in S3 bucket, default is to update existing datacube. '
+             'This flag is useful when we need to re-create the cube from scratch, though beware of AWS limit of push requests '
              'when multiple datacubes are deleted at the same time.'
     )
     parser.add_argument(
         '-n', '--numberGranules',
         type=int,
         default=None,
-        help="number of ITS_LIVE granules to consider for the cube (due to runtime limitations). "
-             " If none is provided, process all found granules."
+        help='Number of ITS_LIVE granules to consider for the cube (due to runtime limitations). '
+             'If none is provided, process all found granules.'
     )
     # parser.add_argument(
     #     '-l', '--localPath',
@@ -2496,37 +2500,37 @@ if __name__ == '__main__':
         '-o', '--outputStore',
         type=str,
         default="cubedata.zarr",
-        help="Zarr output directory to write cube data to [%(default)s]."
+        help='Zarr output directory to write cube data to [%(default)s].'
     )
     parser.add_argument(
         '-b', '--outputBucket',
         type=str,
         default='',
-        help="S3 bucket to copy Zarr format of the datacube to (for example, s3://its-live-data) [%(default)s]."
+        help='S3 bucket to copy Zarr format of the datacube to (for example, s3://its-live-data) [%(default)s].'
     )
     parser.add_argument(
         '-c', '--chunks',
         type=int,
         default=250,
-        help="Number of granules to write at a time [%(default)d]."
+        help='Number of granules to write at a time [%(default)d].'
     )
     parser.add_argument(
         '--targetProjection',
         type=str,
         required=True,
-        help="UTM target projection."
+        help='UTM target projection.'
     )
     parser.add_argument(
         '--dimSize',
         type=float,
         default=100000,
-        help="Cube dimension in meters [%(default)d]."
+        help='Cube dimension in meters [%(default)d].'
     )
     parser.add_argument(
         '-g', '--gridCellSize',
         type=int,
         default=120,
-        help="Grid cell size of input ITS_LIVE granules [%(default)d]."
+        help='Grid cell size of input ITS_LIVE granules [%(default)d].'
     )
     parser.add_argument(
         '--fivePointsPerPolygonSide',
@@ -2537,7 +2541,7 @@ if __name__ == '__main__':
         '--useGranulesFile',
         type=Path,
         default=None,
-        help="Json file that stores a list of ITS_LIVE image velocity granules to build datacube from [%(default)s]."
+        help='Json file that stores a list of ITS_LIVE image velocity granules to build datacube from [%(default)s].'
     )
     parser.add_argument(
         '--searchAPIStartDate',
@@ -2549,7 +2553,7 @@ if __name__ == '__main__':
         '--searchAPIStopDate',
         type=str,
         default=None,
-        help='Stop date in YYYY-MM-DD format to pass to search API query to get velocity pair granules'
+        help='Stop date in YYYY-MM-DD format to pass to search API query to get velocity pair granules. Use "now" if not provided.'
     )
     parser.add_argument(
         '--disableCubeValidation',
@@ -2561,13 +2565,13 @@ if __name__ == '__main__':
         '-s', '--shapeFile',
         type=str,
         default='s3://its-live-data/autorift_parameters/v001/autorift_landice_0120m.shp',
-        help="Shapefile that stores ice masks per each of the EPSG codes [%(default)s]."
+        help='Shapefile that stores ice masks per each of the EPSG codes [%(default)s].'
     )
     parser.add_argument(
         '-p', '--pathURLToken',
         type=str,
-        default= ".s3.amazonaws.com",
-        help="Path URL token for each of the input granules to remove for S3 access [%(default)s]."
+        default='.s3.amazonaws.com',
+        help='Path URL token for each of the input granules to remove for S3 access [%(default)s].'
     )
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
@@ -2576,14 +2580,14 @@ if __name__ == '__main__':
         '--centroid',
         type=str,
         action='store',
-        help="JSON 2-element list for centroid point (x, y) of the datacube in target EPSG code projection. "
-        "Polygon vertices are calculated based on the centroid and cube dimension arguments."
+        help='JSON 2-element list for centroid point (x, y) of the datacube in target EPSG code projection. '
+             'Polygon vertices are calculated based on the centroid and cube dimension arguments.'
     )
     group.add_argument(
         '--polygon',
         type=str,
         action='store',
-        help="JSON list of polygon points ((x1, y1), (x2, y2),... (x1, y1)) to define datacube in target EPSG code projection."
+        help='JSON list of polygon points ((x1, y1), (x2, y2),... (x1, y1)) to define datacube in target EPSG code projection.'
     )
 
     args = parser.parse_args()
@@ -2603,7 +2607,7 @@ if __name__ == '__main__':
     if args.useGranulesFile:
         # Check for this option first as another mutually exclusive option has a default value
         ITSCube.USE_GRANULES = json.loads(args.useGranulesFile.read_text())
-        logging.info(f"Using {len(ITSCube.USE_GRANULES)} granules as provided in {args.useGranulesFile.name} file")
+        logging.info(f'Using {len(ITSCube.USE_GRANULES)} granules as provided in {args.useGranulesFile.name} file')
 
     if len(args.outputBucket):
         # S3 bucket is provided, format S3 path to the target datacube
@@ -2619,7 +2623,6 @@ if __name__ == '__main__':
     else:
         ITSCube.S3 = ''
         ITSCube.URL = ''
-
 
     # Set local file path for skipped granules info
     ITSCube.SKIPPED_GRANULES_FILE = args.outputStore.replace(FileExtension.ZARR, FileExtension.JSON)
@@ -2644,7 +2647,8 @@ if __name__ == '__main__':
             (c_x + off, c_y + off),
             (c_x + off, c_y - off),
             (c_x - off, c_y - off),
-            (c_x - off, c_y + off))
+            (c_x - off, c_y + off)
+        )
     else:
         # Polygon for the cube definition is provided
         polygon = json.loads(args.polygon)
@@ -2657,19 +2661,19 @@ if __name__ == '__main__':
     cube = ITSCube(polygon, projection)
 
     # Record used package versions
-    cube.logger.info(f"Command: {sys.argv}")
-    cube.logger.info(f"Command args: {args}")
-    cube.logger.info(f"{xr.show_versions()}")
-    cube.logger.info(f"s3fs: {s3fs.__version__}")
+    cube.logger.info(f'Command: {sys.argv}')
+    cube.logger.info(f'Command args: {args}')
+    cube.logger.info(f'{xr.show_versions()}')
+    cube.logger.info(f's3fs: {s3fs.__version__}')
 
     # Parameters for the search granule API
     end_date = datetime.now().strftime('%Y-%m-%d') if args.searchAPIStopDate is None else args.searchAPIStopDate
     API_params = {
-        'start'               : args.searchAPIStartDate,
-        'end'                 : end_date,
+        'start': args.searchAPIStartDate,
+        'end': end_date,
         'percent_valid_pixels': 1
     }
-    cube.logger.info("ITS_LIVE API parameters: %s" %API_params)
+    cube.logger.info(f'ITS_LIVE API parameters: {API_params}')
 
     cube.create_or_update(API_params, args.outputStore, args.outputBucket, args.numberGranules)
 
@@ -2766,7 +2770,7 @@ if __name__ == '__main__':
                         num_retries += 1
                         # If failed due to AWS SlowDown error, retry
                         if num_retries != ITSCube.NUM_AWS_COPY_RETRIES and \
-                           AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
+                                ITSCube.AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
                             # Sleep if it's not a last attempt to copy
                             time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
 
@@ -2778,7 +2782,7 @@ if __name__ == '__main__':
                         file_is_copied = True
 
                 if not file_is_copied:
-                    raise RuntimeError(f"Failed to copy {each_input} to {args.outputBucket} with command.returncode={command_return.returncode}")
+                    raise RuntimeError(f'Failed to copy {each_input} to {args.outputBucket} with command.returncode={command_return.returncode}')
 
                 elif not args.disableCubeValidation:
                     if each_validate_flag:
@@ -2791,7 +2795,7 @@ if __name__ == '__main__':
         # This is to eliminate out of disk space failures when the same EC2 instance is
         # being re-used by muliple Batch jobs.
         if len(args.outputBucket) and os.path.exists(args.outputStore):
-            logging.info(f"Removing local copy of {args.outputStore}")
+            logging.info(f'Removing local copy of {args.outputStore}')
             shutil.rmtree(args.outputStore)
 
         # Remove locally skipped granules info file.
@@ -2799,10 +2803,10 @@ if __name__ == '__main__':
         # being re-used by muliple Batch jobs.
         if len(args.outputBucket) and len(ITSCube.SKIPPED_GRANULES_FILE) and \
            os.path.exists(ITSCube.SKIPPED_GRANULES_FILE):
-            logging.info(f"Removing local copy of {ITSCube.SKIPPED_GRANULES_FILE}")
+            logging.info(f'Removing local copy of {ITSCube.SKIPPED_GRANULES_FILE}')
             os.unlink(ITSCube.SKIPPED_GRANULES_FILE)
 
     # Write cube data to the NetCDF file
     # cube.to_netcdf('test_v_cube.nc')
 
-    logging.info(f"Done.")
+    logging.info('Done.')
