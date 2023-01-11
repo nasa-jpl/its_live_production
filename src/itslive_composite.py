@@ -28,6 +28,7 @@ from itscube import ITSCube
 from itscube_types import \
     Coords, \
     DataVars, \
+    BinaryFlag, \
     Output, \
     CubeOutput, \
     ShapeFile, \
@@ -2737,7 +2738,8 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: ShapeFile.Name[ShapeFile.LANDICE],
                 DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.BINARY_UNITS,
+                BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[ShapeFile.LANDICE],
                 CubeOutput.URL: self.land_ice_mask_composite_url
             }
         )
@@ -2758,7 +2760,8 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: ShapeFile.Name[ShapeFile.FLOATINGICE],
                 DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.FLOATINGICE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.BINARY_UNITS,
+                BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[ShapeFile.FLOATINGICE],
                 CubeOutput.URL: self.floating_ice_mask_composite_url
             }
         )
