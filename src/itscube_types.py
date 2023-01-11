@@ -611,6 +611,29 @@ class FilenamePrefix:
     Composites = 'ITS_LIVE_velocity'
     Mosaics    = 'ITS_LIVE_velocity'
 
+# Define attributes for coordinates of composites and annual mosaics
+# ATTN: this is done to set coordinates attributes of the xr.Dataset before
+# saving it to the file - adding some data variables to the xr.Dataaset wipes
+# out coordinates attributes (xarray bug?)
+TIME_ATTRS = {
+    DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.TIME],
+    DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.TIME]
+}
+SENSORS_ATTRS = {
+    DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSORS],
+    DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
+}
+X_ATTRS = {
+    DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
+    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X],
+    DataVars.UNITS: DataVars.M_UNITS
+}
+Y_ATTRS = {
+    DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
+    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y],
+    DataVars.UNITS: DataVars.M_UNITS
+}
+
 def datacube_filename_zarr(epsg_format: str, grid_size: int, mid_x: int, mid_y: int):
     """
     Format filename for the datacube:

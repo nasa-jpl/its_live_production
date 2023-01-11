@@ -60,7 +60,8 @@ from itscube_types import \
     annual_mosaics_filename_nc, \
     composite_filename_zarr, \
     summary_mosaics_filename_nc, \
-    to_int_type
+    to_int_type, \
+    SENSORS_ATTRS
 
 # from reproject_mosaics import main as reproject_main
 from reproject_mosaics import ESRICode, ESRICode_Proj4, MosaicsReproject
@@ -595,12 +596,16 @@ class ITSLiveAnnualMosaics:
     @staticmethod
     def reproject(mosaics_file: str, reproject_mosaics_filename: str, epsg: int, reproject_matrix_filename: str):
         """
-        Invoke reprojection code as subprocess - to allow for taichi import.
+        Invoke reprojection code as subprocess - to allow for taichi import by
+        re-projection code.
         NOTE: Can't import numba and taichi into the same module as both use
-        JIT (Just-In-Time) compiler (compiles code at runtime).
+        JIT (Just-In-Time) compiler (compiles code at runtime the very first it's called).
 
         To invoke:
-        reproject_main(mosaics_file, reproject_mosaics_filename, epsg, reproject_matrix_filename, verbose_flag=True)
+        reproject_mosaics_taichi.py -i mosaics_file
+                                    -o reproject_mosaics_filename
+                                    -p epsg
+                                    -m reproject_matrix_filename
         """
         logging.info(f"Reprojecting {mosaics_file} to {reproject_mosaics_filename}")
 
@@ -1163,20 +1168,17 @@ class ITSLiveAnnualMosaics:
                 Coords.X: (
                     Coords.X,
                     self.x_coords,
-                    first_ds.x.attrs
+                    first_ds[Coords.X].attrs
                 ),
                 Coords.Y: (
                     Coords.Y,
                     self.y_coords,
-                    first_ds.y.attrs
+                    first_ds[Coords.Y].attrs
                 ),
                 CompDataVars.SENSORS: (
                     CompDataVars.SENSORS,
                     self.sensor_coords,
-                    {
-                        DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSORS],
-                        DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
-                    }
+                    SENSORS_ATTRS
                 )
             },
             attrs={
@@ -1432,6 +1434,14 @@ class ITSLiveAnnualMosaics:
             ds.attrs[CubeOutput.S3] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
             ds.attrs[CubeOutput.URL] = ds.attrs[CubeOutput.S3].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
 
+        # ATTN: Set attributes for the Dataset coordinates as the very last step:
+        # when adding data variables that don't have the same attributes for the
+        # coordinates, originally set Dataset coordinates attributes will be wiped out
+        # (xarray bug?)
+        ds[Coords.X].attrs = first_ds[Coords.X].attrs
+        ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
+        ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
+        
         # Convert dataset to Dask dataset not to run out of memory while writing to the file
         ds = ds.chunk(chunks={'x': ITSLiveAnnualMosaics.CHUNK_SIZE, 'y': ITSLiveAnnualMosaics.CHUNK_SIZE})
 
@@ -1472,12 +1482,12 @@ class ITSLiveAnnualMosaics:
                 Coords.X: (
                     Coords.X,
                     self.x_coords,
-                    first_ds.x.attrs
+                    first_ds[Coords.X].attrs
                 ),
                 Coords.Y: (
                     Coords.Y,
                     self.y_coords,
-                    first_ds.y.attrs
+                    first_ds[Coords.Y].attrs
                 )
             },
             attrs={
@@ -1626,6 +1636,13 @@ class ITSLiveAnnualMosaics:
             ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
             ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
 
+        # ATTN: Set attributes for the Dataset coordinates as the very last step:
+        # when adding data variables that don't have the same attributes for the
+        # coordinates, originally set Dataset coordinates attributes will be wiped out
+        # (xarray bug?)
+        ds[Coords.X].attrs = first_ds[Coords.X].attrs
+        ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
+
         # Write mosaic to NetCDF format file
         ITSLiveAnnualMosaics.annual_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename, copy_to_s3)
 
@@ -1669,12 +1686,12 @@ class ITSLiveAnnualMosaics:
                 Coords.X: (
                     Coords.X,
                     self.x_coords,
-                    first_ds.x.attrs
+                    first_ds[Coords.X].attrs
                 ),
                 Coords.Y: (
                     Coords.Y,
                     self.y_coords,
-                    first_ds.y.attrs
+                    first_ds[Coords.Y].attrs
                 )
             },
             attrs={
@@ -1738,6 +1755,13 @@ class ITSLiveAnnualMosaics:
         if copy_to_s3:
             ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
             ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
+
+        # ATTN: Set attributes for the Dataset coordinates as the very last step:
+        # when adding data variables that don't have the same attributes for the
+        # coordinates, originally set Dataset coordinates attributes will be wiped out
+        # (xarray bug?)
+        ds[Coords.X].attrs = first_ds[Coords.X].attrs
+        ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
 
         # Write mosaic to NetCDF format file
         ITSLiveAnnualMosaics.annual_mosaic_to_netcdf(ds, s3_bucket, mosaics_dir, mosaics_filename, copy_to_s3)
@@ -1895,20 +1919,17 @@ class ITSLiveAnnualMosaics:
                 Coords.X: (
                     Coords.X,
                     self.x_coords,
-                    first_ds.x.attrs
+                    first_ds[Coords.X].attrs
                 ),
                 Coords.Y: (
                     Coords.Y,
                     self.y_coords,
-                    first_ds.y.attrs
+                    first_ds[Coords.Y].attrs
                 ),
                 CompDataVars.SENSORS: (
                     CompDataVars.SENSORS,
                     self.sensor_coords,
-                    {
-                        DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSORS],
-                        DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
-                    }
+                    SENSORS_ATTRS
                 )
             },
             attrs={
@@ -2094,6 +2115,14 @@ class ITSLiveAnnualMosaics:
             ds.attrs['s3'] = os.path.join(s3_bucket, mosaics_dir, mosaics_filename)
             ds.attrs['url'] = ds.attrs['s3'].replace(BatchVars.AWS_PREFIX, BatchVars.HTTP_PREFIX)
 
+        # ATTN: Set attributes for the Dataset coordinates as the very last step:
+        # when adding data variables that don't have the same attributes for the
+        # coordinates, originally set Dataset coordinates attributes will be wiped out
+        # (xarray bug?)
+        ds[Coords.X].attrs = first_ds[Coords.X].attrs
+        ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
+        ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
+
         # Convert dataset to Dask dataset not to run out of memory while writing to the file
         ds = ds.chunk(chunks={'x': ITSLiveAnnualMosaics.CHUNK_SIZE, 'y': ITSLiveAnnualMosaics.CHUNK_SIZE})
 
@@ -2207,8 +2236,8 @@ class ITSLiveAnnualMosaics:
                 })
                 encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
-        for each in [Coords.X, Coords.Y]:
-            encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+        # for each in [Coords.X, Coords.Y]:
+        #     encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
         # Settings for "int" data types
         for each in MosaicsOutputFormat.UINT16_TYPES:

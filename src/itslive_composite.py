@@ -33,7 +33,11 @@ from itscube_types import \
     ShapeFile, \
     CompDataVars, \
     CompOutput, \
-    to_int_type
+    to_int_type, \
+    TIME_ATTRS, \
+    SENSORS_ATTRS, \
+    X_ATTRS, \
+    Y_ATTRS
 
 # Flag to indicate that debug is on and LSQ fit parameters should be output to
 # the json files in an attempt to reprocude the problem.
@@ -2640,25 +2644,6 @@ class ITSLiveComposite:
         """
         logging.info(f'Writing composites to {output_store}')
 
-        TIME_ATTRS = {
-            DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.TIME],
-            DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.TIME]
-        }
-        SENSORS_ATTRS = {
-            DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSORS],
-            DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
-        }
-        X_ATTRS = {
-            DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
-            DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X],
-            DataVars.UNITS: DataVars.M_UNITS
-        }
-        Y_ATTRS = {
-            DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
-            DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y],
-            DataVars.UNITS: DataVars.M_UNITS
-        }
-
         # Convert years to datetime objects to represent the center of calendar year
         ITSLiveComposite.YEARS = [datetime.datetime(each, CENTER_DATE.month, CENTER_DATE.day) for each in ITSLiveComposite.YEARS]
         logging.info(f"Converted years to datetime objs: {ITSLiveComposite.YEARS}")
@@ -2674,36 +2659,22 @@ class ITSLiveComposite:
                 Coords.X: (
                     Coords.X,
                     self.cube_ds.x.values,
-                    {
-                        DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
-                        DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X],
-                        DataVars.UNITS: DataVars.M_UNITS
-                    }
+                    X_ATTRS
                 ),
                 Coords.Y: (
                     Coords.Y,
                     self.cube_ds.y.values,
-                    {
-                        DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
-                        DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y],
-                        DataVars.UNITS: DataVars.M_UNITS
-                    }
+                    Y_ATTRS
                 ),
                 CompDataVars.TIME: (
                     CompDataVars.TIME,
                     ITSLiveComposite.YEARS,
-                    {
-                        DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.TIME],
-                        DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.TIME]
-                    }
+                    TIME_ATTRS
                 ),
                 CompDataVars.SENSORS: (
                     CompDataVars.SENSORS,
                     sensors_labels,
-                    {
-                        DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSORS],
-                        DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
-                    }
+                    SENSORS_ATTRS
                 )
             },
             attrs={
@@ -3257,7 +3228,7 @@ class ITSLiveComposite:
 
         # ATTN: Set attributes for the Dataset coordinates as the very last step:
         # when adding data variables that don't have the same attributes for the
-        # coordinates, originally set Dataset coordinates will be wiped out
+        # coordinates, originally set Dataset coordinates attributes will be wiped out
         # (xarray bug?)
         ds[Coords.X].attrs = X_ATTRS
         ds[Coords.Y].attrs = Y_ATTRS
