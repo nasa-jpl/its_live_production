@@ -3082,7 +3082,7 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.OUTLIER_FRAC],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.OUTLIER_FRAC],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.FRACTION_UNITS
+                DataVars.UNITS: DataVars.PERCENT_UNITS
             }
         )
         self.outlier_fraction = None

@@ -165,7 +165,7 @@ class DataVars:
     M_UNITS           = 'm'
     COUNT_UNITS       = 'count'
     BINARY_UNITS      = 'binary'
-    FRACTION_UNITS    = 'fraction'
+    PERCENT_UNITS    = 'percent'
     DAY_OF_YEAR_UNITS = 'day of year'
     PIXEL_PER_M_YEAR  = 'pixel/(meter/year)'
     M_PER_YEAR_PIXEL  = 'meter/(year*pixel)'
