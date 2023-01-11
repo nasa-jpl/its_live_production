@@ -9,6 +9,8 @@ import sys
 
 from grid import Bounds
 
+# BASE_URL = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
 
 def transform_coord(proj1, proj2, lon, lat):
     """Transform coordinates from proj1 to proj2 (EPSG num)."""
@@ -19,10 +21,8 @@ def transform_coord(proj1, proj2, lon, lat):
     return pyproj.transform(proj1, proj2, lon, lat)
 
 def get_granule_urls(params):
-    # base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
-    base_url = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
     # Allow for longer query time from searchAPI: 10 minutes
-    resp = requests.get(base_url, params=params, verify=False, timeout=500)
+    resp = requests.get(BASE_URL, params=params, verify=False, timeout=500)
     return resp.json()
 
 def get_granule_urls_streamed(params, total_retries = 1):
@@ -31,11 +31,9 @@ def get_granule_urls_streamed(params, total_retries = 1):
     """
     token = ']['
     num_seconds = 30
-    # base_url = 'https://nsidc.org/apps/itslive-search/velocities/urls'
-    base_url = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
 
     # Format request URL:
-    url = f'{base_url}?'
+    url = f'{BASE_URL}?'
     for each_key, each_value in params.items():
         url += f'{each_key}={each_value}&'
 
