@@ -1971,19 +1971,22 @@ class MosaicsReproject:
                        (y_index_all >= num_j) | (y_index_all < 0)
 
         no_value_counter = np.sum(invalid_mask)
-        logging.info(f'No value counter = {no_value_counter} after setting original ij indices')
+        logging.info(f'No value counter = {no_value_counter} (out of {num_xy0_points} total) after setting original ij indices')
 
         # Set original indices for each valid point
         self.original_ij_index[~invalid_mask] = np.vectorize(lambda x, y: [int(x), int(y)], otypes='O')(x_index_all[~invalid_mask], y_index_all[~invalid_mask])
 
         v_all_values = self.ds[v_var].values
 
-        for each_index in tqdm(range(num_xy0_points), ascii=True, desc="Creating transformation matrix..."):
-            # Find corresponding point in source P_in projection
-            if np.isscalar(self.original_ij_index[each_index]):
-                # There is no corresponding cell in input projection
-                continue
+        # Get indices of cells with valid original_ij_index
+        valid_indices, = np.where(invalid_mask == False)
 
+        # Populate transformation matrix only for the cells with valid indices in
+        # original projection
+        for each_i in tqdm(range(len(valid_indices)), ascii=True, desc="Creating transformation matrix..."):
+            each_index = valid_indices[each_i]
+
+            # Find corresponding point in source P_in projection
             x_index, y_index = self.original_ij_index[each_index]
 
             # Check if velocity=NODATA_VALUE for original point -->
