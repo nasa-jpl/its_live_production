@@ -1441,7 +1441,7 @@ class ITSLiveAnnualMosaics:
         ds[Coords.X].attrs = first_ds[Coords.X].attrs
         ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
         ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
-        
+
         # Convert dataset to Dask dataset not to run out of memory while writing to the file
         ds = ds.chunk(chunks={'x': ITSLiveAnnualMosaics.CHUNK_SIZE, 'y': ITSLiveAnnualMosaics.CHUNK_SIZE})
 
@@ -1983,7 +1983,8 @@ class ITSLiveAnnualMosaics:
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 CompOutput.SENSORS_LABELS: sensors_labels,
-                DataVars.UNITS: DataVars.BINARY_UNITS
+                BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[CompDataVars.SENSOR_INCLUDE]
             }
         )
 
