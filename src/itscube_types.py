@@ -9,9 +9,9 @@ class ShapeFile:
     """
     Variables names specific to the ITS_LIVE shapefiles.
     """
-    EPSG        = 'epsg'
+    EPSG = 'epsg'
     LANDICE_2KM = 'landice_2km'
-    LANDICE     = 'landice'
+    LANDICE = 'landice'
     FLOATINGICE = 'floatingice'
 
     Name = {
@@ -23,11 +23,12 @@ class ShapeFile:
         FLOATINGICE: 'floating ice mask, 1 = floating-ice, 0 = non-floating-ice',
     }
 
+
 class Output:
     """
     Attributes specific to the output store format (Zarr or NetCDF)
     """
-    DTYPE_ATTR      = 'dtype'
+    DTYPE_ATTR = 'dtype'
     COMPRESSOR_ATTR = 'compressor'
     # For the floating point types in Zarr format, any datatype in NetCDF format
     FILL_VALUE_ATTR = '_FillValue'
@@ -39,6 +40,7 @@ class Output:
     # These encoding attributes are for M11 and M12 variables in radar granules
     SCALE_FACTOR = 'scale_factor'
     ADD_OFFSET = 'add_offset'
+
 
 class CubeOutput:
     """
@@ -69,8 +71,9 @@ class CubeOutput:
         AREA = 'Area'
         INSTITUTION = 'NASA Jet Propulsion Laboratory (JPL), California Institute of Technology'
         TITLE = 'ITS_LIVE datacube of image pair velocities'
-        AUTHOR =  'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)'
+        AUTHOR = 'ITS_LIVE, a NASA MEaSUREs project (its-live.jpl.nasa.gov)'
         CONVENTIONS = 'CF-1.8'
+
 
 class CompOutput:
     """
@@ -88,6 +91,7 @@ class CompOutput:
     class Values:
         TITLE = 'ITS_LIVE annual composites of image pair velocities'
 
+
 class Coords:
     """
     Coordinates for the data cube.
@@ -99,23 +103,25 @@ class Coords:
 
     STD_NAME = {
         MID_DATE: "image_pair_center_date_with_time_separation",
-        X:        "projection_x_coordinate",
-        Y:        "projection_y_coordinate"
+        X: "projection_x_coordinate",
+        Y: "projection_y_coordinate"
     }
 
     DESCRIPTION = {
-        MID_DATE: "midpoint of image 1 and image 2 acquisition date and time " \
-            "with granule's centroid longitude and latitude as microseconds",
-        X:  "x coordinate of projection",
-        Y:  "y coordinate of projection"
+        MID_DATE: "midpoint of image 1 and image 2 acquisition date and time "
+                  "with granule's centroid longitude and latitude as microseconds",
+        X: "x coordinate of projection",
+        Y: "y coordinate of projection"
     }
+
 
 class FileExtension:
     """
     File extensions used by datacube related files.
     """
     ZARR = '.zarr'
-    JSON  = '.json'
+    JSON = '.json'
+
 
 class DataVars:
     """
@@ -123,64 +129,64 @@ class DataVars:
     """
     # Granule attributes
     AUTORIFT_SOFTWARE_VERSION = 'autoRIFT_software_version'
-    AUTORIFT_PARAMETER_FILE   = 'autoRIFT_parameter_file'
+    AUTORIFT_PARAMETER_FILE = 'autoRIFT_parameter_file'
 
     # Datacube variable and its attributes to store skipped granule information
-    SKIPPED_GRANULES        = 'skipped_granules'
-    SKIP_EMPTY_DATA         = 'skipped_empty_data'
-    SKIP_DUPLICATE  = 'skipped_duplicate_middle_date'
+    SKIPPED_GRANULES = 'skipped_granules'
+    SKIP_EMPTY_DATA = 'skipped_empty_data'
+    SKIP_DUPLICATE = 'skipped_duplicate_middle_date'
     SKIP_PROJECTION = 'skipped_wrong_projection'
 
     # Attributes that appear for multiple data variables
-    DESCRIPTION_ATTR           = 'description'  # v, vx, vy
-    GRID_MAPPING               = 'grid_mapping' # v, vx, vy - store only one per cube
-    GRID_MAPPING_NAME          = 'grid_mapping_name' # New format: attribute to store grid mapping
+    DESCRIPTION_ATTR = 'description'  # v, vx, vy
+    GRID_MAPPING = 'grid_mapping'  # v, vx, vy - store only one per cube
+    GRID_MAPPING_NAME = 'grid_mapping_name'  # New format: attribute to store grid mapping
 
     # Store only one per cube (attributes in vx, vy)
     # Per Yang: generally yes, though for vxp and vyp it was calculated again
     # but the number should not change quite a bit. so it should be okay to
     # use a single value for all variables
-    STABLE_COUNT_SLOW          = 'stable_count_slow'
-    STABLE_COUNT_MASK          = 'stable_count_stationary'
+    STABLE_COUNT_SLOW = 'stable_count_slow'
+    STABLE_COUNT_MASK = 'stable_count_stationary'
 
     # Attributes for vx, vy, vr, va
-    # FLAG_STABLE_SHIFT             = 'flag_stable_shift' # Old granule format: In Radar and updated Optical formats
-    FLAG_STABLE_SHIFT             = 'stable_shift_flag' # In Radar and updated Optical formats
+    # FLAG_STABLE_SHIFT = 'flag_stable_shift' # Old granule format: In Radar and updated Optical formats
+    FLAG_STABLE_SHIFT = 'stable_shift_flag'  # In Radar and updated Optical formats
     FLAG_STABLE_SHIFT_DESCRIPTION = 'stable_shift_flag_description'
-    STABLE_SHIFT                  = 'stable_shift'
-    STABLE_SHIFT_SLOW             = 'stable_shift_slow'
-    STABLE_SHIFT_MASK             = 'stable_shift_stationary'
+    STABLE_SHIFT = 'stable_shift'
+    STABLE_SHIFT_SLOW = 'stable_shift_slow'
+    STABLE_SHIFT_MASK = 'stable_shift_stationary'
 
     # These data variables names are created at runtime: based on "stable_shift"
     # attribute of vx and vy variables
     VX_STABLE_SHIFT = 'vx_stable_shift'
     VY_STABLE_SHIFT = 'vy_stable_shift'
 
-    STD_NAME          = 'standard_name'
-    NOTE              = 'note'
+    STD_NAME = 'standard_name'
+    NOTE = 'note'
 
-    UNITS             = 'units'
-    M_Y_UNITS         = 'meter/year'
-    M_Y2_UNITS        = 'meter/year^2'
-    M_UNITS           = 'm'
-    COUNT_UNITS       = 'count'
-    BINARY_UNITS      = 'binary'
-    PERCENT_UNITS    = 'percent'
+    UNITS = 'units'
+    M_Y_UNITS = 'meter/year'
+    M_Y2_UNITS = 'meter/year^2'
+    M_UNITS = 'm'
+    COUNT_UNITS = 'count'
+    BINARY_UNITS = 'binary'
+    PERCENT_UNITS = 'percent'
     DAY_OF_YEAR_UNITS = 'day of year'
-    PIXEL_PER_M_YEAR  = 'pixel/(meter/year)'
-    M_PER_YEAR_PIXEL  = 'meter/(year*pixel)'
+    PIXEL_PER_M_YEAR = 'pixel/(meter/year)'
+    M_PER_YEAR_PIXEL = 'meter/(year*pixel)'
 
     # Original data variables and their attributes per ITS_LIVE granules.
-    V       = 'v'
+    V = 'v'
+    VX = 'vx'
+    VY = 'vy'
     V_ERROR = 'v_error'
-    VX      = 'vx'
-    VY      = 'vy'
 
     # Radar data variables to preserve in datacube
-    VA      = 'va'
-    VR      = 'vr'
-    M11     = 'M11'
-    M12     = 'M12'
+    VA = 'va'
+    VR = 'vr'
+    M11 = 'M11'
+    M12 = 'M12'
     # Attributes for M1* data
     DR_TO_VR_FACTOR = 'dr_to_vr_factor'
     DR_TO_VR_FACTOR_DESCRIPTION = 'dr_to_vr_factor_description'
@@ -190,18 +196,17 @@ class DataVars:
     # vx_error_description, vx_error_mask_description, vx_error_modeled_description,
     # vx_error_slow_description
     ERROR_DESCRIPTION = 'description'
-    ERROR             = 'error'
-    ERROR_MASK        = 'error_stationary'
-    ERROR_MODELED     = 'error_modeled'
-    ERROR_SLOW        = 'error_slow'
+    ERROR = 'error'
+    ERROR_MASK = 'error_stationary'
+    ERROR_MODELED = 'error_modeled'
+    ERROR_SLOW = 'error_slow'
 
-    CHIP_SIZE_HEIGHT  = 'chip_size_height'
-    CHIP_SIZE_WIDTH   = 'chip_size_width'
+    CHIP_SIZE_HEIGHT = 'chip_size_height'
+    CHIP_SIZE_WIDTH = 'chip_size_width'
     # Attributes
-    CHIP_SIZE_COORDS  = 'chip_size_coordinates'
+    CHIP_SIZE_COORDS = 'chip_size_coordinates'
 
-    INTERP_MASK      = 'interp_mask'
-
+    INTERP_MASK = 'interp_mask'
 
     # Specific to the datacube
     URL = 'granule_url'
@@ -211,71 +216,71 @@ class DataVars:
     # * UTM_Projection when epsg code of 326** or 327**
     POLAR_STEREOGRAPHIC = 'Polar_Stereographic'
     UTM_PROJECTION = 'UTM_Projection'
-    MAPPING = 'mapping' # New format
+    MAPPING = 'mapping'  # New format
 
     # Missing (FillValue) values for data variables
-    MISSING_BYTE         = 0.0
-    MISSING_VALUE        = -32767
-    MISSING_POS_VALUE    = 32767
-    MISSING_UINT8_VALUE  = 255
+    MISSING_BYTE = 0.0
+    MISSING_VALUE = -32767
+    MISSING_POS_VALUE = 32767
+    MISSING_UINT8_VALUE = 255
 
     # Standard name for variables to use
     NAME = {
         INTERP_MASK: 'interpolated_value_mask',
-        VA:          'azimuth_velocity',
-        VR:          'range_velocity',
-        V_ERROR:     'velocity_error',
-        M11:         'conversion_matrix_element_11',
-        M12:         'conversion_matrix_element_12',
+        VA: 'azimuth_velocity',
+        VR: 'range_velocity',
+        V_ERROR: 'velocity_error',
+        M11: 'conversion_matrix_element_11',
+        M12: 'conversion_matrix_element_12',
     }
 
     # Map of variables with integer data type
     INT_TYPE = {
-        INTERP_MASK:       np.ubyte,
-        CHIP_SIZE_HEIGHT:  np.uint16,
-        CHIP_SIZE_WIDTH:   np.uint16,
+        INTERP_MASK: np.ubyte,
+        CHIP_SIZE_HEIGHT: np.uint16,
+        CHIP_SIZE_WIDTH: np.uint16,
         FLAG_STABLE_SHIFT: np.uint8,
         STABLE_COUNT_SLOW: np.uint16,
         STABLE_COUNT_MASK: np.uint16,
-        V:        np.int16,
-        VX:       np.int16,
-        VY:       np.int16,
-        V_ERROR:  np.int16,
-        VA:       np.int16,
-        VR:       np.int16,
-        M11:      np.int16,
-        M12:      np.int16
+        V: np.int16,
+        VX: np.int16,
+        VY: np.int16,
+        V_ERROR: np.int16,
+        VA: np.int16,
+        VR: np.int16,
+        M11: np.int16,
+        M12: np.int16
     }
 
     # Missing value for data variables of integer data type
     INT_MISSING_VALUE = {
-        INTERP_MASK:      MISSING_BYTE,
+        INTERP_MASK: MISSING_BYTE,
         CHIP_SIZE_HEIGHT: MISSING_BYTE,
-        CHIP_SIZE_WIDTH:  MISSING_BYTE,
-        V:                MISSING_VALUE,
-        VX:               MISSING_VALUE,
-        VY:               MISSING_VALUE,
-        V_ERROR:          MISSING_VALUE,
-        VA:               MISSING_VALUE,
-        VR:               MISSING_VALUE,
-        M11:              MISSING_VALUE,
-        M12:              MISSING_VALUE
+        CHIP_SIZE_WIDTH: MISSING_BYTE,
+        V: MISSING_VALUE,
+        VX: MISSING_VALUE,
+        VY: MISSING_VALUE,
+        V_ERROR: MISSING_VALUE,
+        VA: MISSING_VALUE,
+        VR: MISSING_VALUE,
+        M11: MISSING_VALUE,
+        M12: MISSING_VALUE
     }
 
     # Description strings for all data variables and some
     # of their attributes.
     DESCRIPTION = {
-        V:  "velocity magnitude",
+        V: "velocity magnitude",
         VX: "velocity component in x direction",
         VY: "velocity component in y direction",
 
         STABLE_COUNT_SLOW: "number of valid pixels over slowest 25% of ice",
         STABLE_COUNT_MASK: "number of valid pixels over stationary or slow-flowing surfaces",
 
-        STABLE_SHIFT_SLOW: \
+        STABLE_SHIFT_SLOW:
             "{} shift calibrated using valid pixels over slowest 25% of retrieved velocities",
-        STABLE_SHIFT_MASK: \
-            "{} shift calibrated using valid pixels over stable surfaces, " \
+        STABLE_SHIFT_MASK:
+            "{} shift calibrated using valid pixels over stable surfaces, "
             " stationary or slow-flowing surfaces with velocity < 15 m/yr identified from an external mask",
 
         # These descriptions are based on Radar granule format. Have to set them
@@ -289,17 +294,17 @@ class DataVars:
         DR_TO_VR_FACTOR: "multiplicative factor that converts slant range pixel displacement dr to slant range velocity vr",
         V_ERROR: "velocity magnitude error",
         INTERP_MASK: "light interpolation mask",
-        CHIP_SIZE_COORDS: \
-            "Optical data: chip_size_coordinates = " \
-            "'image projection geometry: width = x, height = y'. Radar data: " \
+        CHIP_SIZE_COORDS:
+            "Optical data: chip_size_coordinates = "
+            "'image projection geometry: width = x, height = y'. Radar data: "
             "chip_size_coordinates = 'radar geometry: width = range, height = azimuth'",
         CHIP_SIZE_HEIGHT: "height of search template (chip)",
         CHIP_SIZE_WIDTH:  "width of search template (chip)",
-        FLAG_STABLE_SHIFT: \
-            "flag for applying velocity bias correction: " \
-            "0 = no correction; " \
-            "1 = correction from overlapping stable surface mask (stationary or " \
-            "slow-flowing surfaces with velocity < 15 m/yr)(top priority); " \
+        FLAG_STABLE_SHIFT:
+            "flag for applying velocity bias correction: "
+            "0 = no correction; "
+            "1 = correction from overlapping stable surface mask (stationary or "
+            "slow-flowing surfaces with velocity < 15 m/yr)(top priority); "
             "2 = correction from slowest 25% of overlapping velocities (second priority)",
         URL: "original granule URL",
         AUTORIFT_SOFTWARE_VERSION: "version of autoRIFT software",
@@ -317,27 +322,23 @@ class DataVars:
         DATE_UNITS = 'days since 1970-01-01'
 
         # Attributes
-        MISSION_IMG1              = 'mission_img1'
-        SENSOR_IMG1               = 'sensor_img1'
-        SATELLITE_IMG1            = 'satellite_img1'
-        MISSION_IMG2              = 'mission_img2'
-        SENSOR_IMG2               = 'sensor_img2'
-        SATELLITE_IMG2            = 'satellite_img2'
-        DATE_DT                   = 'date_dt'
+        MISSION_IMG1 = 'mission_img1'
+        SENSOR_IMG1 = 'sensor_img1'
+        SATELLITE_IMG1 = 'satellite_img1'
+        MISSION_IMG2 = 'mission_img2'
+        SENSOR_IMG2 = 'sensor_img2'
+        SATELLITE_IMG2 = 'satellite_img2'
+        DATE_DT = 'date_dt'
         # Rename mid_date to date_center as they are the same, don't collect this
-        DATE_CENTER               = 'date_center'
-        ROI_VALID_PERCENTAGE      = 'roi_valid_percentage'
-        LONGITUDE                 = 'longitude'
-        LATITUDE                  = 'latitude'
+        DATE_CENTER = 'date_center'
+        ROI_VALID_PERCENTAGE = 'roi_valid_percentage'
+        LONGITUDE = 'longitude'
+        LATITUDE = 'latitude'
 
         # New format defines these attributes, make them datacube attributes
         TIME_STANDARD_IMG1 = 'time_standard_img1'
         TIME_STANDARD_IMG2 = 'time_standard_img2'
 
-        # Optical and optical legacy formats define them as:
-        # AQUISITION_DATE_IMG1 = 'aquisition_date_img1'
-        # AQUISITION_DATE_IMG2 = 'aquisition_date_img2'
-        # New granule format (has correct spelling)
         ACQUISITION_DATE_IMG1 = 'acquisition_date_img1'
         ACQUISITION_DATE_IMG2 = 'acquisition_date_img2'
 
@@ -358,61 +359,61 @@ class DataVars:
         ]
 
         ALL_DTYPE = {
-            DATE_DT:              np.float32,
+            DATE_DT: np.float32,
             ROI_VALID_PERCENTAGE: np.float32,
-            MISSION_IMG1:   str,
-            MISSION_IMG2:   str,
+            MISSION_IMG1: str,
+            MISSION_IMG2: str,
             SATELLITE_IMG1: str,
             SATELLITE_IMG2: str,
-            SENSOR_IMG1:    str,
-            SENSOR_IMG2:    str
+            SENSOR_IMG1: str,
+            SENSOR_IMG2: str
         }
 
         # Description strings for data variables.
         DESCRIPTION = {
-            MISSION_IMG1:          "id of the mission that acquired image 1",
-            SENSOR_IMG1:           "id of the sensor that acquired image 1",
-            SATELLITE_IMG1:        "id of the satellite that acquired image 1",
+            MISSION_IMG1: "id of the mission that acquired image 1",
+            SENSOR_IMG1: "id of the sensor that acquired image 1",
+            SATELLITE_IMG1: "id of the satellite that acquired image 1",
             ACQUISITION_DATE_IMG1: "acquisition date and time of image 1",
-            MISSION_IMG2:          "id of the mission that acquired image 2",
-            SENSOR_IMG2:           "id of the sensor that acquired image 2",
-            SATELLITE_IMG2:        "id of the satellite that acquired image 2",
+            MISSION_IMG2: "id of the mission that acquired image 2",
+            SENSOR_IMG2: "id of the sensor that acquired image 2",
+            SATELLITE_IMG2: "id of the satellite that acquired image 2",
             ACQUISITION_DATE_IMG2: "acquisition date and time of image 2",
-            DATE_DT:                "time separation between acquisition of image 1 and image 2",
-            DATE_CENTER:            "midpoint of image 1 and image 2 acquisition date",
-            ROI_VALID_PERCENTAGE:  "percentage of pixels with a valid velocity " \
-                "estimate determined for the intersection of the full image " \
-                "pair footprint and the region of interest (roi) that defines " \
-                "where autoRIFT tried to estimate a velocity",
+            DATE_DT: "time separation between acquisition of image 1 and image 2",
+            DATE_CENTER: "midpoint of image 1 and image 2 acquisition date",
+            ROI_VALID_PERCENTAGE: "percentage of pixels with a valid velocity "
+                                  "estimate determined for the intersection of the full image "
+                                  "pair footprint and the region of interest (roi) that defines "
+                                  "where autoRIFT tried to estimate a velocity",
         }
 
         # Flag if data variable values are to be converted to the date objects
         CONVERT_TO_DATE = {
-            MISSION_IMG1:          False,
-            SENSOR_IMG1:           False,
-            SATELLITE_IMG1:        False,
+            MISSION_IMG1: False,
+            SENSOR_IMG1: False,
+            SATELLITE_IMG1: False,
             ACQUISITION_DATE_IMG1: True,
-            MISSION_IMG2:          False,
-            SENSOR_IMG2:           False,
-            SATELLITE_IMG2:        False,
+            MISSION_IMG2: False,
+            SENSOR_IMG2:  False,
+            SATELLITE_IMG2: False,
             ACQUISITION_DATE_IMG2: True,
-            DATE_DT:               False,
-            DATE_CENTER:           True,
-            ROI_VALID_PERCENTAGE:  False,
+            DATE_DT: False,
+            DATE_CENTER: True,
+            ROI_VALID_PERCENTAGE: False,
         }
 
         STD_NAME = {
-            MISSION_IMG1:          "image1_mission",
-            SENSOR_IMG1:           "image1_sensor",
-            SATELLITE_IMG1:        "image1_satellite",
+            MISSION_IMG1: "image1_mission",
+            SENSOR_IMG1: "image1_sensor",
+            SATELLITE_IMG1: "image1_satellite",
             ACQUISITION_DATE_IMG1: "image1_acquition_date",
-            MISSION_IMG2:          "image2_mission",
-            SENSOR_IMG2:           "image2_sensor",
-            SATELLITE_IMG2:        "image2_satellite",
+            MISSION_IMG2: "image2_mission",
+            SENSOR_IMG2: "image2_sensor",
+            SATELLITE_IMG2: "image2_satellite",
             ACQUISITION_DATE_IMG2: "image2_acquition_date",
-            DATE_DT:               "image_pair_time_separation",
-            DATE_CENTER:           "image_pair_center_date",
-            ROI_VALID_PERCENTAGE:  "region_of_interest_valid_pixel_percentage",
+            DATE_DT: "image_pair_time_separation",
+            DATE_CENTER: "image_pair_center_date",
+            ROI_VALID_PERCENTAGE: "region_of_interest_valid_pixel_percentage",
         }
 
         UNITS = {
@@ -422,23 +423,6 @@ class DataVars:
             # DATE_CENTER: DATE_UNITS
         }
 
-class BinaryFlag:
-    """
-    Class to store output format attributes and their values for the binary masking.
-    """
-    # Standard attributes for the output format
-    VALUES_ATTR   = 'flag_values'
-    MEANINGS_ATTR = 'flag_meanings'
-
-    # Binary mask values
-    VALUES = np.array([0, 1], dtype=np.uint8)
-
-    # Binary mask meanings
-    MEANINGS = {
-        DataVars.INTERP_MASK:  'measured interpolated',
-        ShapeFile.LANDICE:     'non-ice ice',
-        ShapeFile.FLOATINGICE: 'non-ice ice'
-    }
 
 class CompDataVars:
     """
@@ -466,31 +450,31 @@ class CompDataVars:
     SENSOR_INCLUDE = 'sensor_flag'
     VX0 = 'vx0'
     VY0 = 'vy0'
-    V0  = 'v0'
+    V0 = 'v0'
     COUNT0 = 'count0'
     VX0_ERROR = 'vx0_error'
     VY0_ERROR = 'vy0_error'
-    V0_ERROR  = 'v0_error'
-    SLOPE_VX  = 'dvx_dt'
-    SLOPE_VY  = 'dvy_dt'
-    SLOPE_V   = 'dv_dt'
+    V0_ERROR = 'v0_error'
+    SLOPE_VX = 'dvx_dt'
+    SLOPE_VY = 'dvy_dt'
+    SLOPE_V = 'dv_dt'
 
     STD_NAME = {
         DataVars.VX: 'land_ice_surface_x_velocity',
         DataVars.VY: 'land_ice_surface_y_velocity',
-        DataVars.V:  'velocity',
+        DataVars.V: 'velocity',
         VX_ERROR: 'x_velocity_error',
         VY_ERROR: 'y_velocity_error',
-        V_ERROR:  'velocity_error',
+        V_ERROR: 'velocity_error',
         VX_AMP_ERROR: 'vx_amplitude_error',
         VY_AMP_ERROR: 'vy_amplitude_error',
-        V_AMP_ERROR:  'v_amplitude_error',
+        V_AMP_ERROR: 'v_amplitude_error',
         VX_AMP: 'vx_amplitude',
         VY_AMP: 'vy_amplitude',
-        V_AMP:  'v_amplitude',
+        V_AMP: 'v_amplitude',
         VX_PHASE: 'vx_phase',
         VY_PHASE: 'vy_phase',
-        V_PHASE:  'v_phase',
+        V_PHASE: 'v_phase',
         SENSORS: 'sensors',
         TIME: 'time',
         COUNT: 'count',
@@ -506,42 +490,63 @@ class CompDataVars:
         V0_ERROR: 'v0_velocity_error',
         SLOPE_VX: 'dvx_dt',
         SLOPE_VY: 'dvy_dt',
-        SLOPE_V:  'dv_dt'
+        SLOPE_V: 'dv_dt'
     }
 
     DESCRIPTION = {
-        DataVars.VX:    'mean annual velocity of sinusoidal fit to vx',
-        DataVars.VY:    'mean annual velocity of sinusoidal fit to vy',
-        DataVars.V:     'mean annual velocity of sinusoidal fit to v',
-        TIME:           'time',
-        VX_ERROR:       'error weighted error for vx',
-        VY_ERROR:       'error weighted error for vy',
-        V_ERROR:        'error weighted error for v',
-        VX_AMP_ERROR:   'error for vx_amp',
-        VY_AMP_ERROR:   'error for vy_amp',
-        V_AMP_ERROR:    'error for v_amp',
-        VX_AMP:         'climatological mean seasonal amplitude of sinusoidal fit to vx',
-        VY_AMP:         'climatological mean seasonal amplitude in sinusoidal fit in vy',
-        V_AMP:          'climatological mean seasonal amplitude of sinusoidal fit to v',
-        VX_PHASE:       'day of maximum velocity of sinusoidal fit to vx',
-        VY_PHASE:       'day of maximum velocity of sinusoidal fit to vy',
-        V_PHASE:        'day of maximum velocity of sinusoidal fit to v',
-        COUNT:          'number of image pairs used in error weighted least squares fit',
-        MAX_DT:         'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
+        DataVars.VX: 'mean annual velocity of sinusoidal fit to vx',
+        DataVars.VY: 'mean annual velocity of sinusoidal fit to vy',
+        DataVars.V: 'mean annual velocity of sinusoidal fit to v',
+        TIME: 'time',
+        VX_ERROR: 'error weighted error for vx',
+        VY_ERROR: 'error weighted error for vy',
+        V_ERROR: 'error weighted error for v',
+        VX_AMP_ERROR: 'error for vx_amp',
+        VY_AMP_ERROR: 'error for vy_amp',
+        V_AMP_ERROR: 'error for v_amp',
+        VX_AMP: 'climatological mean seasonal amplitude of sinusoidal fit to vx',
+        VY_AMP: 'climatological mean seasonal amplitude in sinusoidal fit in vy',
+        V_AMP: 'climatological mean seasonal amplitude of sinusoidal fit to v',
+        VX_PHASE: 'day of maximum velocity of sinusoidal fit to vx',
+        VY_PHASE: 'day of maximum velocity of sinusoidal fit to vy',
+        V_PHASE: 'day of maximum velocity of sinusoidal fit to v',
+        COUNT: 'number of image pairs used in error weighted least squares fit',
+        MAX_DT: 'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
         SENSOR_INCLUDE: 'flag = 1 if sensor group (see sensor variable) is included, flag = 0 if sensor group is excluded',
-        OUTLIER_FRAC:   'percentage of data identified as outliers and excluded from error weighted least squares fit',
-        SENSORS:        'combinations of unique sensors and missions that are grouped together for date_dt filtering',
-        VX0:            'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        VY0:            'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        V0:             'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        COUNT0:         'number of image pairs used for climatological means',
-        VX0_ERROR:      'error for vx0',
-        VY0_ERROR:      'error for vy0',
-        V0_ERROR:       'error for v0',
-        SLOPE_VX:       'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
-        SLOPE_VY:       'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
-        SLOPE_V:        'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
+        OUTLIER_FRAC:  'percentage of data identified as outliers and excluded from error weighted least squares fit',
+        SENSORS: 'combinations of unique sensors and missions that are grouped together for date_dt filtering',
+        VX0: 'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        VY0: 'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        V0: 'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
+        COUNT0: 'number of image pairs used for climatological means',
+        VX0_ERROR: 'error for vx0',
+        VY0_ERROR: 'error for vy0',
+        V0_ERROR: 'error for v0',
+        SLOPE_VX: 'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
+        SLOPE_VY: 'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
+        SLOPE_V: 'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
     }
+
+
+class BinaryFlag:
+    """
+    Class to store output format attributes and their values for the binary masking.
+    """
+    # Standard attributes for the output format
+    VALUES_ATTR = 'flag_values'
+    MEANINGS_ATTR = 'flag_meanings'
+
+    # Binary mask values
+    VALUES = np.array([0, 1], dtype=np.uint8)
+
+    # Binary mask meanings
+    MEANINGS = {
+        DataVars.INTERP_MASK: 'measured interpolated',
+        ShapeFile.LANDICE: 'non-ice ice',
+        ShapeFile.FLOATINGICE: 'non-ice ice',
+        CompDataVars.SENSOR_INCLUDE: 'excluded included'
+    }
+
 
 class BatchVars:
     """
@@ -581,6 +586,7 @@ class BatchVars:
     # HTTP URL for the datacube/composite/mosaics full path in S3 bucket
     HTTP_PREFIX = 'http://its-live-data.s3.amazonaws.com'
 
+
 class CubeJson:
     """
     Variables names within GeoJson cube definition file.
@@ -603,13 +609,15 @@ class CubeJson:
     # String token to use in filenames to specify EPSG code for the data
     EPSG_TOKEN = 'EPSG'
 
+
 class FilenamePrefix:
     """
     Filename prefixes used by ITS_LIVE data products.
     """
-    Datacube   = 'ITS_LIVE_vel'
+    Datacube = 'ITS_LIVE_vel'
     Composites = 'ITS_LIVE_velocity'
-    Mosaics    = 'ITS_LIVE_velocity'
+    Mosaics = 'ITS_LIVE_velocity'
+
 
 # Define attributes for coordinates of composites and annual mosaics
 # ATTN: this is done to set coordinates attributes of the xr.Dataset before
@@ -634,12 +642,14 @@ Y_ATTRS = {
     DataVars.UNITS: DataVars.M_UNITS
 }
 
+
 def datacube_filename_zarr(epsg_format: str, grid_size: int, mid_x: int, mid_y: int):
     """
     Format filename for the datacube:
     ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr
     """
     return f"{FilenamePrefix.Datacube}_{epsg_format}_G{grid_size:04d}_X{mid_x}_Y{mid_y}.zarr"
+
 
 def composite_filename_zarr(epsg_format: int, grid_size: str, mid_x: int, mid_y: int):
     """
@@ -654,6 +664,7 @@ def composite_filename_zarr(epsg_format: int, grid_size: str, mid_x: int, mid_y:
     mid_y: Y coordinate of datacube centroid
     """
     return f"{FilenamePrefix.Composites}_{CubeJson.EPSG_TOKEN}{epsg_format}_{int(grid_size):03d}m_X{mid_x}_Y{mid_y}.zarr"
+
 
 def annual_mosaics_filename_nc(grid_size: str, region: str, year_date, version: str):
     """
@@ -675,6 +686,7 @@ def annual_mosaics_filename_nc(grid_size: str, region: str, year_date, version: 
 
     return f"{FilenamePrefix.Mosaics}_{grid_size}m_{region}_{year_value}_{version}.nc"
 
+
 def summary_mosaics_filename_nc(grid_size: str, region: str, version: str):
     """
     Format filename for the summary mosaics of the region:
@@ -682,7 +694,8 @@ def summary_mosaics_filename_nc(grid_size: str, region: str, version: str):
     """
     return f"{FilenamePrefix.Mosaics}_{grid_size}m_{region}_0000_{version}.nc"
 
-def to_int_type(data, data_type = np.uint16, fill_value=DataVars.MISSING_POS_VALUE):
+
+def to_int_type(data, data_type=np.uint16, fill_value=DataVars.MISSING_POS_VALUE):
     """
     Convert data to requested integer datatype. "fill_value" must correspond
     to the "data_type" to replace NaNs with corresponding to the datatype missing_value:
