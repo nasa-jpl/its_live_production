@@ -3055,8 +3055,9 @@ class ITSLiveComposite:
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSOR_INCLUDE],
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
-                CompOutput.SENSORS_LABELS: sensors_labels_attr,
-                DataVars.UNITS: DataVars.BINARY_UNITS
+                BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[CompDataVars.SENSOR_INCLUDE],
+                CompOutput.SENSORS_LABELS: sensors_labels_attr
             }
         )
         self.sensor_include = None
