@@ -61,6 +61,7 @@ from itscube_types import Coords, DataVars, Output
 from nsidc_types import Mapping
 from nsidc_vel_image_pairs import NSIDCFormat, get_attr_value, PlatformSensor
 
+
 class Vars:
     """
     Variable names for elevation data.
@@ -69,22 +70,22 @@ class Vars:
     QUALITY_FLAG = 'quality_flag'
 
     # Old names
-    H     = 'h'
-    DH    = 'dh'
-    RMSE  = 'rmse'
+    H = 'h'
+    DH = 'dh'
+    RMSE = 'rmse'
     BASIN = 'basin'
 
     # New names
-    HEIGHT             = 'height'
-    HEIGHT_CHANGE      = 'height_change'
+    HEIGHT = 'height'
+    HEIGHT_CHANGE = 'height_change'
     HEIGHT_CHANGE_RMSE = 'height_change_rmse'
-    GLACIER_BASIN      = 'glacier_basin'
+    GLACIER_BASIN = 'glacier_basin'
 
     # Mapping between old and new variable names
     OldToNewMap = {
-        H:     HEIGHT,
-        DH:    HEIGHT_CHANGE,
-        RMSE:  HEIGHT_CHANGE_RMSE,
+        H: HEIGHT,
+        DH: HEIGHT_CHANGE,
+        RMSE: HEIGHT_CHANGE_RMSE,
         BASIN: GLACIER_BASIN
     }
 
@@ -214,7 +215,7 @@ class NSIDCElevationMeta:
 
             # Append premet with sensor info
             for each_sensor in missions:
-                fh.write(f"Container=AssociatedPlatformInstrumentSensor\n")
+                fh.write("Container=AssociatedPlatformInstrumentSensor\n")
                 fh.write(f"AssociatedPlatformShortName={NSIDCElevationMeta.SHORT_NAME[each_sensor].platform}\n")
                 fh.write(f"AssociatedInstrumentShortName={NSIDCElevationMeta.SHORT_NAME[each_sensor].sensor}\n")
                 fh.write(f"AssociatedSensorShortName={NSIDCElevationMeta.SHORT_NAME[each_sensor].sensor}\n")
@@ -265,7 +266,7 @@ class NSIDCElevationMeta:
             # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
             projection_cf_minx = xvals[0] - pix_size_x/2.0
             projection_cf_maxx = xvals[-1] + pix_size_x/2.0
-            projection_cf_miny = yvals[-1] + pix_size_y/2.0 # pix_size_y is negative!
+            projection_cf_miny = yvals[-1] + pix_size_y/2.0  # pix_size_y is negative!
             projection_cf_maxy = yvals[0] - pix_size_y/2.0  # pix_size_y is negative!
 
             epsgcode = int(get_attr_value(ds['mapping'].attrs['spatial_epsg']))
@@ -274,13 +275,13 @@ class NSIDCElevationMeta:
             if epsgcode == NSIDCFormat.ESRI_CODE:
                 epsgcode_str = f'ESRI:{epsgcode}'
 
-            transformer = pyproj.Transformer.from_crs(epsgcode_str, "EPSG:4326", always_xy=True) # ensure lonlat output order
+            transformer = pyproj.Transformer.from_crs(epsgcode_str, "EPSG:4326", always_xy=True)  # ensure lonlat output order
 
             # Convert coordinates to long/lat
             # low right coordinate
-            lr_lonlat = np.round(transformer.transform(projection_cf_maxx,projection_cf_miny),decimals = 3).tolist()
+            lr_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_miny), decimals=3).tolist()
             # upper left coordinate
-            ul_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_maxy),decimals = 3).tolist()
+            ul_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_maxy), decimals=3).tolist()
 
         # Write to spatial file
         with open(meta_filename, 'w') as fh:
@@ -292,8 +293,8 @@ class NSIDCElevationMeta:
         # Raise exception if south and north points have the same values
         if projection_cf_miny == projection_cf_maxy:
             is_valid = False
-            logging.info(f'WARNING: Update spatial points as identical values are detected for southern and northern points of the polygon (pole wrap around issue most likely): ' \
-                f'ul_lonlat={ul_lonlat} lr_lonlat={lr_lonlat} in local file {meta_filename}. Then copy updated file to the destination S3 bucket.')
+            logging.info(f'WARNING: Update spatial points as identical values are detected for southern and northern points of the polygon (pole wrap around issue most likely): '
+                         f'ul_lonlat={ul_lonlat} lr_lonlat={lr_lonlat} in local file {meta_filename}. Then copy updated file to the destination S3 bucket.')
 
         return is_valid, meta_filename
 
@@ -341,13 +342,12 @@ class NSIDCElevationFormat:
         init_total_files = total_num_files
 
         if total_num_files <= 0:
-            logging.info(f"Nothing to process, exiting.")
+            logging.info("Nothing to process, exiting.")
             return
 
         # Current start index into list of files to process
         start = 0
 
-        file_list = []
         while total_num_files > 0:
             logging.info(f"Starting {self.infiles[start]} {start} out of {init_total_files} total files")
             results = NSIDCElevationFormat.fix_file(
@@ -372,13 +372,12 @@ class NSIDCElevationFormat:
         init_total_files = total_num_files
 
         if total_num_files <= 0:
-            logging.info(f"Nothing to process, exiting.")
+            logging.info("Nothing to process, exiting.")
             return
 
         # Current start index into list of granules to process
         start = 0
 
-        file_list = []
         while total_num_files > 0:
             num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
 
@@ -412,9 +411,6 @@ class NSIDCElevationFormat:
         Fix data format and create corresponding metadata files as required by NSIDC.
         """
         # Update convention to 1.8 just to be consistent with other v01 data products
-        _missing_value = 'missing_value'
-        _meter_year_units = 'meter/year'
-
         _comment = 'comment'
         _time_comment_value = 'The arrays in the time steps between 1990 and 1992 are empty as no input data were available'
 
@@ -424,13 +420,10 @@ class NSIDCElevationFormat:
         _flag_values = 'flag_values'
         _flag_meanings = 'flag_meanings'
 
-        _scale_factor = 'scale_factor'
-        _add_offset = 'add_offset'
-
         _latitude_of_origin = 'latitude_of_origin'
 
-        binary_flags = np.array([1, 2, 3], dtype=np.uint8)
-        _binary_meanings = 'high_quality_data low_quality_data pole_hole'
+        _binary_flags = np.array([0, 1, 2, 3], dtype=np.uint8)
+        _binary_meanings = 'no_data high_quality_data low_quality_data pole_hole'
 
         # Could identify empty data at runtime - for now we just know that these
         # years don't have any data
@@ -452,8 +445,6 @@ class NSIDCElevationFormat:
         }
 
         filename_tokens = infilewithpath.split(os.path.sep)
-        directory = os.path.sep.join(filename_tokens[1:-1])
-
         filename = filename_tokens[-1]
         local_file = filename + '.local'
 
@@ -474,8 +465,6 @@ class NSIDCElevationFormat:
             # Download file locally - takes too long to read the whole mosaic file
             # from S3 in order for it to write fixed dataset locally
             s3_client.download_file(target_bucket, file_path, local_file)
-
-            epsgcode = None
 
             with xr.open_dataset(local_file, engine='h5netcdf') as ds:
                 sizes = ds.sizes
@@ -501,7 +490,7 @@ class NSIDCElevationFormat:
 
                     # 1. Remove "none" units
                     if DataVars.UNITS in ds[each_var].attrs and \
-                        ds[each_var].attrs[DataVars.UNITS] == "none":
+                            ds[each_var].attrs[DataVars.UNITS] == "none":
                         # Remove "none" units
                         del ds[each_var].attrs[DataVars.UNITS]
 
@@ -514,7 +503,7 @@ class NSIDCElevationFormat:
                     if each_var == Vars.QUALITY_FLAG:
                         del ds[each_var].attrs[DataVars.DESCRIPTION_ATTR]
 
-                        ds[each_var].attrs[_flag_values] = binary_flags
+                        ds[each_var].attrs[_flag_values] = _binary_flags
                         ds[each_var].attrs[_flag_meanings] = _binary_meanings
 
                         # 7. Set quality_flag to "0" (no data) for time coordinates that correspond to
@@ -524,12 +513,43 @@ class NSIDCElevationFormat:
                         empty_data = [(index, t) for index, t in enumerate(time_values) if str(t).startswith(_empty_data_t)]
                         logging.info(f'Got {len(empty_data)} entries for empty data in time dimension')
 
-                        empty_array = np.full((sizes[Coords.Y], sizes[Coords.X]), np.nan)
+                        empty_array = np.full((sizes[Coords.Y], sizes[Coords.X]), 0)
 
                         for each in empty_data:
                             i = each[0]
                             logging.info(f'Setting {Vars.QUALITY_FLAG} to no data for {each} ...')
                             ds[Vars.QUALITY_FLAG][i, :, :] = empty_array
+
+                        non_empty_data = [(index, t) for index, t in enumerate(time_values) if not str(t).startswith(_empty_data_t)]
+                        logging.info(f'Got {len(non_empty_data)} entries for empty data in time dimension')
+
+                        for each in non_empty_data:
+                            index = each[0]
+                            logging.info(f'Fixing {Vars.QUALITY_FLAG} values for {each} ...')
+
+                            values = ds[Vars.QUALITY_FLAG][index, :, :].values
+
+                            # Set NaNs to zero
+                            nan_mask = np.isnan(values)
+                            values[nan_mask] = 0
+
+                            # Get masks for values of 2 and 3, switch the values:
+                            # from current
+                            #   "pole hole = 2, low-quality = 3"
+                            # to
+                            #   "2 = low quality data, 3 = pole hole"
+                            #
+                            # (
+                            #   according to the "description" attribute and the paper:
+                            #   0 = no data, 1 = high quality data, 2 = low quality data, 3 = pole hole
+                            # )
+                            two_mask = (values == 2)
+                            three_mask = (values == 3)
+                            values[two_mask] = 3
+                            values[three_mask] = 2
+
+                            # Reset to fixed values
+                            ds[Vars.QUALITY_FLAG][index, :, :] = values
 
                     # 5. Add missing description of the var:
                     if each_var in _desc:
@@ -537,8 +557,6 @@ class NSIDCElevationFormat:
 
                     # 6. Fix various attributes of "mapping" variable
                     if each_var == DataVars.MAPPING:
-                        epsgcode = int(get_attr_value(ds[each_var].attrs[Mapping.SPACIAL_EPSG]))
-
                         # Optional attribute; but if to be included, set to 6378137.0
                         ds[each_var].attrs[Mapping.SEMI_MAJOR_AXIS] = 6378137.0
 
@@ -647,12 +665,14 @@ class NSIDCElevationFormat:
 
         return msgs
 
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser( \
+    parser = argparse.ArgumentParser(
         description="""
            Fix ITS_LIVE V1 elevation to be CF compliant for ingestion by NSIDC.
         """,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
 
     parser.add_argument(
         '-bucket',
