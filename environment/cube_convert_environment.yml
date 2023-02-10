@@ -9,7 +9,7 @@
 #
 # $ conda activate itslivecube
 #
-name: itslivecube
+name: itslivecube-convert
 
 channels:
   - conda-forge
