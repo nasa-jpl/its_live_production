@@ -219,7 +219,8 @@ class FixAnnualComposites:
             # vx_phase_deg = vx_phase*360/365.24;
             # vy_phase_deg = vy_phase*360/365.24;
 
-            # Convert phase to fraction of the year
+            # Convert phase to fraction of the year: 0.25 is "backed in" to phase,
+            # no need to add
             vx_phase = (ds.vx_phase.values/365.25)
             vy_phase = (ds.vy_phase.values/365.25)
 
