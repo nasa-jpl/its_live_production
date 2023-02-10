@@ -139,7 +139,6 @@ class FixGranules:
 
                 return msgs
 
-
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__.split('\n')[0],
@@ -182,7 +181,9 @@ def main():
         default=8,
         help='Number of Dask parallel workers [%(default)d]'
     )
-    parser.add_argument('-s', '--start-granule', type=int,
+    parser.add_argument(
+        '-s', '--start-granule',
+        type=int,
         default=0,
         help='Index for the start granule to process (if previous processing terminated) [%(default)d]'
     )
