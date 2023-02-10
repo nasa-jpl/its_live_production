@@ -10,9 +10,9 @@ This script creates three lists of composites to process:
    and "count0" variables as there was no overflow.
 2. Composites that should be re-created using SPOT EC2 instances as they are not
    large in size and won't take as long to run.
-3. Composites that should be re-created using On-Demand EC2 instance as they are
-   too large in size and most likely EC2 instance will get terminated by AWS, so
-   don't waste time and just submit them to On-Demand queue.
+3. Composites that should be re-created using On-Demand EC2 instance as corresponding
+   datacubes are too large in size and most likely EC2 instance will get
+   terminated by AWS, so don't waste time and just submit them to On-Demand queue.
 
 ATTN: This script should run from AWS EC2 instance to have fast access to the S3
 bucket. It takes 2 seconds to upload the file to the S3 bucket from EC2 instance
@@ -238,7 +238,7 @@ class AnnualCompositesCountOverflow:
 
                 with xr.open_dataset(zarr_store, decode_timedelta=False, engine='zarr', consolidated=True) as datacube_ds:
                     # Find corresponding datacube and check on its size which will
-                    # determine AWSs queue for the composite to re-create
+                    # determine AWS queue for the composite to re-create
                     sizes = datacube_ds.sizes
                     queue_msg = f'Need to re-process due to the datacube size threshold ({sizes}): adding to '
 
