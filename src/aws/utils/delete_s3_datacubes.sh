@@ -20,5 +20,5 @@ while read -r line; do
     name="$line"
     echo "Deleting - $name"
     # aws s3 ls $name
-    aws s3 rm --recursive $name
+    aws s3 rm --recursive --quiet $name
 done < "$filename"
