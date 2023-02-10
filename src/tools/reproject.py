@@ -37,7 +37,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-
 __spatial_ref_3031 = "PROJCS[\"WGS 84 / Antarctic Polar Stereographic\"," \
     "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\"," \
     "6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]]," \
@@ -59,6 +58,14 @@ __spatial_ref_3413 = "PROJCS[\"WGS 84 / NSIDC Sea Ice Polar Stereographic North\
     "PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0]," \
     "UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",SOUTH]," \
     "AXIS[\"Northing\",SOUTH],AUTHORITY[\"EPSG\",\"3413\"]]"
+
+__spatial_ref_102027 = "PROJCS[\"Asia_North_Lambert_Conformal_Conic\",GEOGCS[\"GCS_WGS_1984\"," \
+    "DATUM[\"WGS_1984\",SPHEROID[\"WGS_1984\",6378137,298.257223563]]," \
+    "PRIMEM[\"Greenwich\",0],UNIT[\"Degree\",0.017453292519943295]]," \
+    "PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"False_Easting\",0]," \
+    "PARAMETER[\"False_Northing\",0],PARAMETER[\"Central_Meridian\",95]," \
+    "PARAMETER[\"Standard_Parallel_1\",15],PARAMETER[\"Standard_Parallel_2\",65]," \
+    "PARAMETER[\"Latitude_Of_Origin\",30],UNIT[\"Meter\",1],AUTHORITY[\"EPSG\",\"102027\"]]"
 
 # Attribute of Polar_Stereographic or UTM_Projection
 _GRID_MAPPING_NAME = 'grid_mapping_name'
@@ -833,6 +840,8 @@ class ItsLiveReproject:
         ij0_points = xy_to_ij_transfer.TransformPoints(xy0_points)
 
         # Calculate x unit vector: add unit length to ij0_points.x
+        # TODO: Optimize - just use already transformed points when computing bounding box
+        #       in target projection
         ij_unit = np.array(ij0_points)
         ij_unit[:, 0] += self.x_size
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit.tolist())
@@ -846,7 +855,8 @@ class ItsLiveReproject:
         # Compute unit vector for each cell of the output grid
         for index in range(num_xy0_points):
             xunit_v[index] = np.array(xy_points[index]) - np.array(xy0_points[index])
-            xunit_v[index] /= np.linalg.norm(xunit_v[index])
+            # xunit_v[index] /= np.linalg.norm(xunit_v[index])
+            xunit_v[index] /= self.x_size
 
         # Calculate Y unit vector: add unit length to ij0_points.y
         ij_unit = np.array(ij0_points)
@@ -860,7 +870,8 @@ class ItsLiveReproject:
         # in output projection
         for index in range(num_xy0_points):
             yunit_v[index] = np.array(xy_points[index]) - np.array(xy0_points[index])
-            yunit_v[index] /= np.linalg.norm(yunit_v[index])
+            # yunit_v[index] /= np.linalg.norm(yunit_v[index])
+            yunit_v[index] /= np.abs(self.y_size)
 
         # Local normal vector
         normal = np.array([0.0, 0.0, 1.0])
