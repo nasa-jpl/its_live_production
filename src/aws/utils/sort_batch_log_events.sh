@@ -3,7 +3,7 @@
 # This script sorts events within each exported Batch log stream in
 # chronological order and renames log files according to the datacube
 # it corresponds to.
-# AWS does not export events within log s`tream in chronological order as of
+# AWS does not export events within log stream in chronological order as of
 # September 2021.
 #
 # To run the script, execute the following command from the top-level directory
@@ -24,7 +24,7 @@
 # >find . -type f -exec grep -qiF 'Number of found by API granules: 0' {} \; -exec mv {} zero_granules_by_searchAPI \;
 
 # mkdir done
-# >find . -type f -exec grep -qiF 'Done' {} \; -exec mv {} done \;
+# >find . -type f -exec grep -qiF 'Done\.' {} \; -exec mv {} done \;
 
 # find . -type f -exec grep -qiF 'Killed' {} \; -exec mv {} killed \;
 
