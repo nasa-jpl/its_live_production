@@ -42,6 +42,14 @@ Script to prepare V1 ITS_LIVE elevation to be ingested by NSIDC:
     rmse:  height_change_rmse,
     basin: glacier_basin
 
+10. Modify quality_flag values:
+    * from current "pole hole = 2, low-quality = 3"
+      to "2 = low quality data, 3 = pole hole" (according to the "description"
+      attribute and the paper:
+      0 = no data, 1 = high quality data, 2 = low quality data, 3 = pole hole)
+    * replace NaN's with zero values and remove _FillValue = 0 from variable's
+      encoding
+
 Authors: Masha Liukis (JPL), Alex Gardner (JPL), Mark Fahnestock (UFA)
 """
 
@@ -100,7 +108,7 @@ ElevationEncoding = {
     Vars.DH:           {'_FillValue': -32767.0, 'dtype': np.short, "zlib": True, "complevel": 2, "shuffle": True},
     Vars.H:            {'_FillValue': -32767.0, 'dtype': np.short, "zlib": True, "complevel": 2, "shuffle": True},
     Vars.RMSE:         {'_FillValue': -32767.0, 'dtype': np.short, "zlib": True, "complevel": 2, "shuffle": True},
-    Vars.QUALITY_FLAG: {'_FillValue': 0, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
+    Vars.QUALITY_FLAG: {'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
     Vars.BASIN:        {'_FillValue': 0, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
     Vars.TIME:         {'_FillValue': None, 'units': 'days since 1950-01-01', "zlib": True, "complevel": 2, "shuffle": True},
     DataVars.MAPPING:  {'_FillValue': None, 'dtype': np.float32},
