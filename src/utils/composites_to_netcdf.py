@@ -59,6 +59,42 @@ ENCODING = {
     'y':                         {'_FillValue': None}
 }
 
+ENCODING_OLD = {
+    'v':                         {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx':                        {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy':                        {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx0':                       {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy0':                       {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'v0':                        {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'dvx_dt':                    {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'dvy_dt':                    {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'dv_dt':                     {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_error':                  {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_error':                  {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'v_error':                   {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_amp_error':              {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_amp_error':              {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'v_amp_error':               {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_amp':                    {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_amp':                    {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'v_amp':                     {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx_phase':                  {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy_phase':                  {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'v_phase':                   {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'dt_max':                    {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'vx0_error':                 {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'vy0_error':                 {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'v0_error':                  {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'count':                     {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'count0':                    {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'outlier_frac':              {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+    'sensor_flag':               {'_FillValue': 255, 'dtype': np.uint8, "zlib": True, "complevel": 2, "shuffle": True},
+    'time':                      {'_FillValue': None, 'units': 'days since 1970-01-01'},
+    'sensor':                    {'_FillValue': None, 'dtype': 'S1'},
+    'x':                         {'_FillValue': None},
+    'y':                         {'_FillValue': None}
+}
+
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                     datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
@@ -67,6 +103,8 @@ def convert(ds_zarr: xr.Dataset, output_file: str, nc_engine: str):
     Store datacube to NetCDF format file.
     """
     start_time = timeit.default_timer()
+
+    # logging.info(f'Dataset variables: {ds_zarr.variables}')
 
     # Workaround for QGIS: add an attribute to map band index to the band label:
     sensors = ds_zarr.sensor.values
