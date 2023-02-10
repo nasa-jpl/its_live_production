@@ -3,6 +3,8 @@
 
 FROM continuumio/miniconda3:4.9.2
 
+MAINTAINER Masha Liukis <mliukis@jpl.nasa.gov>
+
 # Set an encoding to make things work smoothly
 ENV LANG en_US.UTF-8
 
