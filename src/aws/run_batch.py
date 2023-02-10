@@ -211,12 +211,13 @@ class DataCubeBatch:
                             #     ]
                             # },
                             retryStrategy={
-                                'attempts': 2
+                                'attempts': 1
                             },
                             timeout={
                                 # 'attemptDurationSeconds': 86400
-                                # Change to 48 hours
-                                'attemptDurationSeconds': 172800
+                                # Change to 48 hours (172800)
+                                # Change to 72 hours (259200) for very large cubes
+                                'attemptDurationSeconds': 259200
                             }
                         )
 
@@ -226,7 +227,7 @@ class DataCubeBatch:
                         # then starts a whole bunch at once anyway
                         # # Sleep for 30 seconds to make sure that all AWS Batch jobs
                         # # are not started at the same time
-                        time.sleep(60)
+                        # time.sleep(30)
 
                     num_jobs += 1
                     jobs.append({
@@ -351,7 +352,7 @@ def parse_args():
         action='store',
         # default='datacube-convert-8vCPU-64GB',
         # default='datacube-convert-16vCPU-128GB',
-        default='datacube-convert-ondemand-16vCPU-128GB',
+        default='datacube-ondemand-16vCPU-128GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
@@ -460,6 +461,10 @@ def parse_args():
         # Replace each path by the datacube basename
         BatchVars.CUBES_TO_GENERATE = [os.path.basename(each) for each in BatchVars.CUBES_TO_GENERATE if len(each)]
         logging.info(f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubesFile}: {BatchVars.CUBES_TO_GENERATE}")
+
+        # Make sure all datacubes are unique
+        BatchVars.CUBES_TO_GENERATE = list(set(BatchVars.CUBES_TO_GENERATE))
+        logging.info(f"Found {len(BatchVars.CUBES_TO_GENERATE)} unique datacubes to generate from {args.processCubesFile}: {BatchVars.CUBES_TO_GENERATE}")
 
     elif args.processCubes:
         BatchVars.CUBES_TO_GENERATE = json.loads(args.processCubes)
