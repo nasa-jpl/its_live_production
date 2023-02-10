@@ -42,6 +42,7 @@ mkdir -p ${TEMP_STAGING_DIR}/env
 cp -r ${WORKSPACE}/src/itscube_types.py ${WORKSPACE}/src/itscube.py \
       ${WORKSPACE}/src/grid.py ${WORKSPACE}/src/itslive_utils.py \
       ${WORKSPACE}/src/itslive_composite.py \
+      ${WORKSPACE}/src/utils/zarr_to_netcdf.py \
       ${WORKSPACE}/LICENSE \
       ${TEMP_STAGING_DIR}/
 
