@@ -561,7 +561,7 @@ if __name__ == '__main__':
                         type=int,
                         default=0,
                         help="Start index for the granule to begin cataloging with [%(default)d]. " \
-                             "Usefull if continuing interrupted process cataloging the files.")
+                             "Useful if continuing interrupted process cataloging the files.")
 
     parser.add_argument('-c', '--create_catalog_list',
                         action='store_true',
