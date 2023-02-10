@@ -200,7 +200,7 @@ class DataCubeCompositeBatch:
                     # Format cube composites filename:
                     # s3://its-live-data/composites/annual/v02/N60W130/ITS_LIVE_velocity_120m_X-3250000_Y250000.zarr
                     # composite_filename =f"{FilenamePrefix.Composites}_{int(self.grid_size_str):03d}m_X{mid_x}_Y{mid_y}.zarr"
-                    composite_filename = composite_filename_zarr(epsg, self.grid_size, mid_x, mid_y)
+                    composite_filename = composite_filename_zarr(epsg_code, self.grid_size, mid_x, mid_y)
                     logging.info(f'Cube composite name: {composite_filename}')
 
                     # Check if list of specific composites was provided
@@ -477,6 +477,7 @@ def parse_args():
 
     args = parser.parse_args()
     logging.info(f"Command-line arguments: {sys.argv}")
+    logging.info(f'Parser arguments: {args}')
 
     BatchVars.HTTP_PREFIX = args.urlPath
     BatchVars.PATH_TOKEN  = args.pathToken
