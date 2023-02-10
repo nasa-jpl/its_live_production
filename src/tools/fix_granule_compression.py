@@ -94,7 +94,7 @@ class FixGranules:
 
                 # Write the granule locally, upload it to the bucket, remove file
                 fixed_file = os.path.join(local_dir, granule_basename)
-                ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.LANDSAT)
+                ds.to_netcdf(fixed_file, engine='h5netcdf', encoding = Encoding.LANDSAT_SENTINEL2)
 
                 # Upload corrected granule to the bucket
                 s3_client = boto3.client('s3')
