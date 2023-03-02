@@ -320,7 +320,7 @@ def parse_args():
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='datacubes/v02',
+        default='datacubes/v02_latest',
         help="Destination S3 bucket for the datacubes [%(default)s]"
     )
     parser.add_argument(
@@ -341,18 +341,18 @@ def parse_args():
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-from-scratch-64Gb:1',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-128Gb:1',
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-128Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        # default='datacube-convert-8vCPU-64GB',
-        # default='datacube-convert-16vCPU-128GB',
-        default='datacube-ondemand-16vCPU-128GB',
+        # default='datacube-ondemand-8vCPU-64GB',
+        default='datacube-spot-8vCPU-64GB',
+        # default='datacube-ondemand-16vCPU-128GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
