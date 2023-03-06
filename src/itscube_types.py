@@ -496,7 +496,7 @@ class CompDataVars:
     DESCRIPTION = {
         DataVars.VX: 'mean annual velocity of sinusoidal fit to vx',
         DataVars.VY: 'mean annual velocity of sinusoidal fit to vy',
-        DataVars.V: 'mean annual velocity of sinusoidal fit to v',
+        DataVars.V: 'mean annual velocity determined by taking the hypotenuse of vx and vy',
         TIME: 'time',
         VX_ERROR: 'error weighted error for vx',
         VY_ERROR: 'error weighted error for vy',
@@ -504,9 +504,9 @@ class CompDataVars:
         VX_AMP_ERROR: 'error for vx_amp',
         VY_AMP_ERROR: 'error for vy_amp',
         V_AMP_ERROR: 'error for v_amp',
-        VX_AMP: 'climatological mean seasonal amplitude of sinusoidal fit to vx',
-        VY_AMP: 'climatological mean seasonal amplitude in sinusoidal fit in vy',
-        V_AMP: 'climatological mean seasonal amplitude of sinusoidal fit to v',
+        VX_AMP: f'climatological [%i-%i] mean seasonal amplitude of sinusoidal fit to vx',
+        VY_AMP: f'climatological [%i-%i] mean seasonal amplitude in sinusoidal fit in vy',
+        V_AMP: f'climatological [%i-%i] mean seasonal amplitude in the direction of mean flow as defined by vx0 and vy0',
         VX_PHASE: 'day of maximum velocity of sinusoidal fit to vx',
         VY_PHASE: 'day of maximum velocity of sinusoidal fit to vy',
         V_PHASE: 'day of maximum velocity of sinusoidal fit to v',
@@ -515,16 +515,16 @@ class CompDataVars:
         SENSOR_INCLUDE: 'flag = 1 if sensor group (see sensor variable) is included, flag = 0 if sensor group is excluded',
         OUTLIER_FRAC:  'percentage of data identified as outliers and excluded from error weighted least squares fit',
         SENSORS: 'combinations of unique sensors and missions that are grouped together for date_dt filtering',
-        VX0: 'climatological vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        VY0: 'climatological vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        V0: 'climatological v determined by taking the hypotenuse of vx0 and vy0. The climatology is arbitrarily fixed to a y-intercept of July 2, 2019.',
-        COUNT0: 'number of image pairs used for climatological means',
+        VX0: f'climatological [%i-%i] vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology uses a time-intercept of January 1, %i.',
+        VY0: f'climatological [%i-%i] vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology uses a time-intercept of January 1, %i.',
+        V0: f'climatological [%i-%i] v determined by taking the hypotenuse of vx0 and vy0. The climatology uses a time-intercept of January 1, %i.',
+        COUNT0: f'number of image pairs used for climatological [%i-%i] means',
         VX0_ERROR: 'error for vx0',
         VY0_ERROR: 'error for vy0',
         V0_ERROR: 'error for v0',
-        SLOPE_VX: 'trend in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
-        SLOPE_VY: 'trend in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
-        SLOPE_V: 'trend in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
+        SLOPE_VX: f'trend [%i-%i] in vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values',
+        SLOPE_VY: f'trend [%i-%i] in vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values',
+        SLOPE_V: f'trend [%i-%i] in v determined by projecting dvx_dt and dvy_dt onto the unit flow vector defined by vx0 and vy0'
     }
 
 
