@@ -3044,7 +3044,7 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_PHASE],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_PHASE],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_PHASE] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.DAY_OF_YEAR_UNITS
             }
@@ -3086,7 +3086,7 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX_PHASE],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_PHASE],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_PHASE] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.DAY_OF_YEAR_UNITS
             }
@@ -3128,7 +3128,7 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY_PHASE],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_PHASE],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_PHASE] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.DAY_OF_YEAR_UNITS
             }
@@ -3215,7 +3215,7 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.OUTLIER_FRAC],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.OUTLIER_FRAC],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.OUTLIER_FRAC] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.PERCENT_UNITS
             }
