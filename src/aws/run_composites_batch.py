@@ -364,14 +364,14 @@ def parse_args():
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='datacubes/v02',
+        default='datacubes/v02_latest',
         help="S3 directory for the datacubes [%(default)s]"
     )
     parser.add_argument(
         '-o', '--outputBucketDir',
         type=str,
         action='store',
-        default='composites/annual/v02',
+        default='composites/annual/v02_latest',
         help="Destination S3 directory for the composites [%(default)s]"
     )
     parser.add_argument(
