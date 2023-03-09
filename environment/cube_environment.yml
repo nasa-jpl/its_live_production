@@ -18,6 +18,12 @@ channels:
 # scipy is required by numba
 # Use MKL installation of numpy: from "defaults" channel,
 # as "conda-forge" channel provides OpenBLAS installation of numpy (slower)
+# Have to have specific "fiona" version (1.8.22) as geopandas.read_file(shape_file) raises an exception
+# for annual_composites Docker image:
+# ImportError: the 'read_file' function requires the 'fiona' package, but it is not installed or does not import correctly.
+# Importing fiona resulted in: libtiff.so.5: cannot open shared object file: No such file or directory
+# If specify fiona==1.8.22 in dependencies, then getting circular dependency error,
+# but specifying "defaults" channels first seems to fix the problem.
 dependencies:
   - python==3.9.6
   - dask==2.30.0
