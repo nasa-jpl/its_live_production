@@ -48,6 +48,7 @@ import xarray as xr
 from grid import Bounds
 import itslive_utils
 from itscube_types import \
+    BinaryFlag, \
     Coords, \
     DataVars, \
     CompDataVars, \
@@ -2361,7 +2362,7 @@ def parse_args():
         type=str,
         action='store',
         default=None,
-        help="GeoJson file that stores cube polygon definitions [%(default)s]."
+        help="GeoJson file that stores existing datacubes Zarr S3 URLs [%(default)s]."
     )
     parser.add_argument(
         '--processCubesWithinPolygon',
