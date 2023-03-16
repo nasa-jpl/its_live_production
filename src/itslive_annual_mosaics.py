@@ -1732,7 +1732,7 @@ class ITSLiveAnnualMosaics:
 
                     if each_var not in ds:
                         # Create data variable in output dataset
-                        if each_var == ShapeFile.LANDICE:
+                        if each_var == ShapeFile.LANDICE or each_var == ShapeFile.FLOATINGICE:
                             # Variable does not have year dimension
                             ds[each_var] = each_ds.s3.ds[each_var].load()
 
@@ -1743,7 +1743,7 @@ class ITSLiveAnnualMosaics:
 
                     else:
                         # Update data variable in output dataset
-                        if each_var == ShapeFile.LANDICE:
+                        if each_var == ShapeFile.LANDICE or each_var == ShapeFile.FLOATINGICE:
                             # Variable does not have year dimension
                             ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var].load()
 
