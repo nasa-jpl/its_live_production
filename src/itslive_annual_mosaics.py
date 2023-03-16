@@ -2388,21 +2388,21 @@ def parse_args():
         '-d', '--cubeDir',
         type=str,
         action='store',
-        default='datacubes/v02',
+        default='datacubes/v02_latest',
         help="S3 directory with datacubes [%(default)s]"
     )
     parser.add_argument(
         '-s', '--compositesDir',
         type=str,
         action='store',
-        default='composites/annual/v02',
+        default='composites/annual/v02_latest',
         help="Destination S3 directory with composites [%(default)s]"
     )
     parser.add_argument(
         '-m', '--mosaicsDir',
         type=str,
         action='store',
-        default='mosaics/annual/v02',
+        default='mosaics/annual/v02_latest',
         help="Destination S3 directory to store mosaics to [%(default)s]"
     )
     parser.add_argument(
