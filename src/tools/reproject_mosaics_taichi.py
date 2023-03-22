@@ -941,7 +941,7 @@ class MosaicsReproject:
             )
             warp_data = None
             gc.collect()
-
+            
         # Warp "floatingice" variable (check for variable existence in older mosaics)
         if ShapeFile.FLOATINGICE in self.ds:
             is_binary_data = True
@@ -1269,11 +1269,16 @@ class MosaicsReproject:
 
         if is_binary_data:
             # Make sure the mask is of 0/1 values
-            warp_data_mask = (np_ds > 0)
+            warp_data_mask = (np_ds > 0) & (np_ds != DataVars.MISSING_UINT8_VALUE)
             np_ds[warp_data_mask] = 1
 
         if MosaicsReproject.VERBOSE:
             verbose_mask = np.isfinite(np_ds)
+            # In case of the binary data missing_value=255,
+            # so take this into account when reporting min/max values
+            if is_binary_data:
+                verbose_mask &= (np_ds != DataVars.MISSING_UINT8_VALUE)
+
             logging.info(f"Warped {var}:  min={np.nanmin(np_ds[verbose_mask])} max={np.nanmax(np_ds[verbose_mask])}")
 
         return np_ds
@@ -1367,7 +1372,7 @@ class MosaicsReproject:
             # Re-project velocity variables
             dv = [_vx[j, i], _vy[j, i]]
 
-            # Some points get NODATA for vx but valid vy and v.v.
+            # Some points get NODATA for vx but valid vy and vx.
             if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
                 # Apply transformation matrix to (vx, vy) values converted to pixel displacement
                 xy_v = np.matmul(t_matrix, dv)
@@ -2133,11 +2138,10 @@ class MosaicsReproject:
         logging.info(f'Computed yunit (took {timeit.default_timer() - start_time} seconds)')
 
         # Compute transformation matrix per cell
-        transform_matrix = TiTransformMatrix(num_xy0_points)
 
         # Fill out array of "original" indices (indices in input projection)
         # (x,y indices per each cell) with -1 (invalid cell index)
-        self.original_ij_index = np.full((num_xy0_points, 2), MosaicsReproject.INVALID_CELL_INDEX)
+        self.original_ij_index = np.full((num_xy0_points, 2), MosaicsReproject.INVALID_CELL_INDEX, dtype=np.int32)
 
         # Counter of how many points don't have transformation matrix
         no_value_counter = 0
@@ -2196,10 +2200,64 @@ class MosaicsReproject:
         # TODO: check if all cells are excluded from computations
         logging.info('Creating transformation matrix...')
         t1 = timeit.default_timer()
-        transform_matrix.compute(xunit_v.data, yunit_v.data, valid_indices, self.original_ij_index, v_all_values)
-        logging.info(f'Created transformation matrix, took {timeit.default_timer() - t1} seconds')
 
-        self.transformation_matrix = transform_matrix.data.to_numpy()
+        use_taichi = False
+        if use_taichi is True:
+            transform_matrix = TiTransformMatrix(num_xy0_points)
+
+            # TODO: 
+            # investigate why taichi code segfaults for HMA: 32642/ITS_LIVE_velocity_120m_HMA_2020_v02.nc -p 102027
+            # but not ANT: 32724/ITS_LIVE_velocity_120m_ANT_2020_v02.nc -p 3031
+            transform_matrix.compute(xunit_v.data, yunit_v.data, valid_indices, self.original_ij_index, v_all_values)
+
+            self.transformation_matrix = transform_matrix.data.to_numpy()
+
+        else:
+            self.transformation_matrix = np.full((num_xy0_points, TiUnitVector.SIZE, TiUnitVector.SIZE), 
+                                                 DataVars.MISSING_VALUE,
+                                                 dtype=np.float16
+                                                )
+            xunit_v = xunit_v.data.to_numpy()
+            yunit_v = yunit_v.data.to_numpy()
+
+            for i in tqdm(valid_indices, ascii=True, desc="Creating transformation matrix..."):
+                # Find corresponding point in source P_in projection
+                x_index, y_index = self.original_ij_index[i]
+
+                # Check if velocity is valid for the cell, if not then
+                # don't compute the matrix
+                v_value = v_all_values[y_index, x_index]
+
+                if v_value != DataVars.MISSING_VALUE:
+                    xunit = xunit_v[i]
+                    yunit = yunit_v[i]
+
+                    # See (A9)-(A15) in Yang's autoRIFT paper:
+                    # a = normal[2]*yunit[0]-normal[0]*yunit[2]
+                    # b = normal[2]*yunit[1]-normal[1]*yunit[2]
+                    # c = normal[2]*xunit[0]-normal[0]*xunit[2]
+                    # d = normal[2]*xunit[1]-normal[1]*xunit[2]
+                    # Since normal[0]=normal[1]=0, remove not necessary second multiplication,
+                    # and remove "normal[2]*" since normal[2]=1
+                    # a = yunit[0]
+                    # b = yunit[1]
+                    # c = xunit[0]
+                    # d = xunit[1]
+                    #
+                    # self.transformation_matrix[each_index] = np.array([[-b*f, d*e], [a*f, -c*e]])
+                    # self.transformation_matrix[each_index] /= (a*d - b*c)
+
+                    # self.transformation_matrix[i] is a 2x2 matrix
+                    denom = (yunit[0]*xunit[1] - yunit[1]*xunit[0])
+                    self.transformation_matrix[i] = [
+                        [-yunit[1]/denom, xunit[1]/denom],
+                        [yunit[0]/denom, -xunit[0]/denom]
+                    ]
+
+                else:
+                    no_value_counter += 1
+
+        logging.info(f'Created transformation matrix, took {timeit.default_timer() - t1} seconds')
 
         # Reshape transformation matrix and original cell indices into 2D matrix: (y, x)
         self.transformation_matrix = self.transformation_matrix.reshape(
