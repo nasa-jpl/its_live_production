@@ -277,7 +277,7 @@ if __name__ == '__main__':
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='its-live-data/datacubes/v02',
+        default='its-live-data/datacubes/v02_latest',
         help="Destination S3 bucket and directory for the datacubes [%(default)s]"
     )
 
