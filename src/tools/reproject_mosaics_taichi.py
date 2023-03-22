@@ -2135,8 +2135,8 @@ class MosaicsReproject:
         # Compute transformation matrix per cell
         transform_matrix = TiTransformMatrix(num_xy0_points)
 
-        # Fill out array of original indices (x,y indices per each cell) with -1
-        # (invalid cell index)
+        # Fill out array of "original" indices (indices in input projection)
+        # (x,y indices per each cell) with -1 (invalid cell index)
         self.original_ij_index = np.full((num_xy0_points, 2), MosaicsReproject.INVALID_CELL_INDEX)
 
         # Counter of how many points don't have transformation matrix
@@ -2163,8 +2163,6 @@ class MosaicsReproject:
 
         # Convert list of points to numpy array
         np_ij_points = np.array(ij0_points)
-        # np_ij0_points_x = np_ij0_points[:, 0]
-        # np_ij0_points_y = np_ij0_points[:, 1]
 
         # Find indices for the original point on its grid
         x_index_all = (np_ij_points[:, 0] - ij_x_bbox.min) / self.x_size
@@ -2193,7 +2191,7 @@ class MosaicsReproject:
         # yunit_v = yunit_v.data.to_numpy()
 
         # Get indices of cells with valid original_ij_index
-        valid_indices, = np.where(invalid_mask is False)
+        valid_indices, = np.where(~invalid_mask)
 
         # TODO: check if all cells are excluded from computations
         logging.info('Creating transformation matrix...')
@@ -2202,45 +2200,6 @@ class MosaicsReproject:
         logging.info(f'Created transformation matrix, took {timeit.default_timer() - t1} seconds')
 
         self.transformation_matrix = transform_matrix.data.to_numpy()
-
-        # # Compute transformation matrix only for cells with valid mask
-        # for each_i in tqdm(range(len(valid_indices)), ascii=True, desc="Creating transformation matrix..."):
-        #     each_index = valid_indices[each_i]
-        #     # Find corresponding point in source P_in projection
-        #     x_index, y_index = self.original_ij_index[each_index]
-        #
-        #     # Check if velocity=NODATA_VALUE for original point -->
-        #     # don't compute the matrix
-        #     v_value = v_all_values[y_index, x_index]
-        #
-        #     if np.isnan(v_value) or v_value == DataVars.MISSING_VALUE:
-        #         no_value_counter += 1
-        #         continue
-        #
-        #     xunit = xunit_v[each_index]
-        #     yunit = yunit_v[each_index]
-        #
-        #     # See (A9)-(A15) in Yang's autoRIFT paper:
-        #     # a = normal[2]*yunit[0]-normal[0]*yunit[2]
-        #     # b = normal[2]*yunit[1]-normal[1]*yunit[2]
-        #     # c = normal[2]*xunit[0]-normal[0]*xunit[2]
-        #     # d = normal[2]*xunit[1]-normal[1]*xunit[2]
-        #     # Since normal[0]=normal[1]=0, remove not necessary second multiplication,
-        #     # and remove "normal[2]*" since normal[2]=1
-        #     # a = yunit[0]
-        #     # b = yunit[1]
-        #     # c = xunit[0]
-        #     # d = xunit[1]
-        #     #
-        #     # self.transformation_matrix[each_index] = np.array([[-b*f, d*e], [a*f, -c*e]])
-        #     # self.transformation_matrix[each_index] /= (a*d - b*c)
-        #     self.transformation_matrix[each_index] = np.array(
-        #         [[-yunit[1], xunit[1]],
-        #          [yunit[0], -xunit[0]]]
-        #     )
-        #     self.transformation_matrix[each_index] /= (yunit[0]*xunit[1] - yunit[1]*xunit[0])
-
-        # logging.info(f'No value counter = {no_value_counter} after setting transformation matrix')
 
         # Reshape transformation matrix and original cell indices into 2D matrix: (y, x)
         self.transformation_matrix = self.transformation_matrix.reshape(
