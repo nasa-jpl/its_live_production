@@ -2,6 +2,8 @@
 Helper script to remove original granules from the "its-live-data" S3 bucket.
 S3 paths are provided through input JSON file.
 """
+import dask
+from dask.diagnostics import ProgressBar
 import subprocess
 import os
 import logging
@@ -43,9 +45,9 @@ def remove_s3_granule(s3_path: str, is_dryrun: bool):
     # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
     # resulting in as many error messages as there are files in Zarr store
     # to copy
-    is_dryrun_str = 'DRYRUN: ' if is_dryrun else ''
-
     granule_path = os.path.join(S3_PREFIX, s3_path)
+
+    msgs = []
 
     # There are corresponding browse and thumbprint images to transfer
     for target_ext in [None, '.png', '_thumb.png']:
@@ -60,7 +62,7 @@ def remove_s3_granule(s3_path: str, is_dryrun: bool):
                 "awsv2", "s3", "rm", "--quiet",
                 file_path
             ]
-            logging.info(f'{is_dryrun_str}Removing existing {file_path}: {" ".join(command_line)}')
+            # logging.info(f'{is_dryrun_str}Removing existing {file_path}: {" ".join(command_line)}')
 
             if not is_dryrun:
                 command_return = subprocess.run(
@@ -71,9 +73,11 @@ def remove_s3_granule(s3_path: str, is_dryrun: bool):
                     stderr=subprocess.STDOUT
                 )
                 if command_return.returncode != 0:
-                    raise RuntimeError(f"Failed to remove original {file_path}: {command_return.stdout}")
+                    msgs.append(f"ERROR: failed to remove {file_path}: {command_return.stdout}")
         else:
-            logging.info(f'WARNING: {file_path} does not exist, skip removal')
+            msgs.append(f'WARNING: {file_path} does not exist, skip removal')
+
+    return msgs
 
 
 if __name__ == '__main__':
@@ -97,10 +101,38 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    CHUNK_SIZE = 100
+    DASK_WORKERS = 8
+
     with open(args.granulesFile) as fh:
         all_granules = json.load(fh)
 
-        for each in all_granules:
-            remove_s3_granule(each, args.dryrun)
+        num_to_fix = len(all_granules)
+        logging.info(f"{num_to_fix} granules to remove...")
+
+        start = 0
+
+        while num_to_fix > 0:
+            num_tasks = CHUNK_SIZE if num_to_fix > CHUNK_SIZE else num_to_fix
+
+            logging.info(f"Starting tasks {start}:{start+num_tasks}")
+            tasks = [
+                dask.delayed(remove_s3_granule)(each, args.dryrun) for each in all_granules[start:start+num_tasks]
+            ]
+            results = None
+
+            with ProgressBar():
+                # Display progress bar
+                results = dask.compute(tasks, scheduler="processes", num_workers=DASK_WORKERS)
+
+            msgs = []
+            for each_result in results[0]:
+                msgs.extend(each_result)
+
+            if len(msgs):
+                logging.info("\n-->".join(msgs))
+
+            num_to_fix -= num_tasks
+            start += num_tasks
 
     logging.info("Done.")
