@@ -37,12 +37,14 @@ def remove_s3_granule(s3_path: str, is_dryrun: bool):
         if target_ext is not None:
             file_path = s3_path.replace('.nc', target_ext)
 
-        obj = s3.Object(S3_PREFIX, file_path)
-        # logging.info(obj)
+        try:
+            obj = s3.Object(S3_PREFIX, file_path)
+            # logging.info(obj)
 
-        if not is_dryrun:
-            _ = obj.delete()
-
+            if not is_dryrun:
+                _ = obj.delete()
+        except Exception as exc:
+            raise RuntimeError(f'Error processing: {file_path}: {exc}')
 
 if __name__ == '__main__':
     import argparse
