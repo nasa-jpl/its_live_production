@@ -27,6 +27,9 @@ def remove_s3_granule(s3_path: str, is_dryrun: bool):
     # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
     # resulting in as many error messages as there are files in Zarr store
     # to copy
+    if s3_path is None:
+        return
+
     s3 = boto3.resource('s3')
 
     # There are corresponding browse and thumbprint images to transfer
@@ -44,7 +47,7 @@ def remove_s3_granule(s3_path: str, is_dryrun: bool):
             if not is_dryrun:
                 _ = obj.delete()
         except Exception as exc:
-            raise RuntimeError(f'Error processing: {file_path}: {exc}')
+            logging.info(f'Error processing {file_path}: {exc}')
 
 if __name__ == '__main__':
     import argparse
