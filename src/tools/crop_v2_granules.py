@@ -346,7 +346,7 @@ def main():
     parser.add_argument(
         '-t', '--target_bucket_dir',
         type=str,
-        default='velocity_image_pair/sentinel2/v2',
+        default='velocity_image_pair/sentinel2/v02',
         help='AWS S3 bucket and directory that store the granules'
     )
     parser.add_argument(
