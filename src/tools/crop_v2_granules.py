@@ -102,7 +102,7 @@ class ProcessV2Granules:
             ]
 
         # For debugging only: convert first granule
-        # self.all_granules = self.all_granules[:1]
+        self.all_granules = self.all_granules[:1]
 
         logging.info(f"Number of granules to process: {len(self.all_granules)}")
 
@@ -250,11 +250,11 @@ class ProcessV2Granules:
                 s3_client = boto3.client('s3')
                 try:
                     bucket_granule = os.path.join(target_prefix, granule_basename)
-                    msgs.append(f"Uploading {bucket_granule} to {ProcessV2Granules.BUCKET}")
+                    msgs.append(f"Uploading to {target_prefix}")
 
                     s3_client.upload_file(fixed_file, ProcessV2Granules.BUCKET, bucket_granule)
 
-                    msgs.append(f"Removing local {fixed_file}")
+                    # msgs.append(f"Removing local {fixed_file}")
                     os.unlink(fixed_file)
 
                     # Original granule in S3 bucket
@@ -274,7 +274,7 @@ class ProcessV2Granules:
                         }
 
                         bucket.copy(source_dict, target_key)
-                        msgs.append(f'Copying {source_key} to {target_key}')
+                        msgs.append(f'Copying {target_ext} to s3')
 
                 except ClientError as exc:
                     msgs.append(f"ERROR: {exc}")
@@ -311,7 +311,7 @@ class ProcessV2Granules:
                 }
 
                 bucket.copy(source_dict, target_key)
-                msgs.append(f'Copying {source_key} to {target_key}')
+                msgs.append(f'Copying {source_key if target_ext is None else target_ext} to s3')
 
         except ClientError as exc:
             msgs.append(f"ERROR: {exc}")
