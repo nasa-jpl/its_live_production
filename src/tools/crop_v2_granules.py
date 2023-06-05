@@ -17,6 +17,8 @@ from datetime import datetime
 from botocore.exceptions import ClientError
 import dask
 from dask.diagnostics import ProgressBar
+import json
+import geojson
 import logging
 import numpy as np
 import os
@@ -70,6 +72,10 @@ class ProcessV2Granules:
     # Number of Dask workers for parallel processing
     DASK_WORKERS = 8
 
+    STORE_GRANULE_LIST_FILE = False
+    READ_GRANULE_LIST_FILE = False
+    GRANULE_LIST_FILE = 'used_granules.json'
+
     def __init__(self, glob_pattern: dir):
         """
         Initialize object.
@@ -79,10 +85,24 @@ class ProcessV2Granules:
         """
         self.s3 = s3fs.S3FileSystem()
         self.granule_method_to_call = ProcessV2Granules.crop
+        self.all_granules = []
 
         # Use glob to list directory
-        logging.info(f"Reading {ProcessV2Granules.SOURCE_DIR}")
-        self.all_granules = self.s3.glob(f'{os.path.join(ProcessV2Granules.BUCKET, ProcessV2Granules.SOURCE_DIR)}/{glob_pattern}')
+        if ProcessV2Granules.READ_GRANULE_LIST_FILE:
+            granule_filename = os.path.join(
+                ProcessV2Granules.BUCKET,
+                ProcessV2Granules.TARGET_DIR,
+                ProcessV2Granules.GRANULE_LIST_FILE
+            )
+
+            with self.s3.open(granule_filename, 'r') as ins3file:
+                self.all_granules = json.load(ins3file)
+                logging.info(f"Loaded {len(self.all_granules)} granules from '{granule_filename}'")
+
+        else:
+            logging.info(f"Reading {ProcessV2Granules.SOURCE_DIR}")
+            self.all_granules = self.s3.glob(f'{os.path.join(ProcessV2Granules.BUCKET, ProcessV2Granules.SOURCE_DIR)}/{glob_pattern}')
+
         logging.info(f"Number of granules: {len(self.all_granules)}")
 
         if ProcessV2Granules.COPY_ZERO_PERCENT_COVERAGE_FILES is True:
@@ -105,6 +125,17 @@ class ProcessV2Granules:
         # self.all_granules = self.all_granules[:1]
 
         logging.info(f"Number of granules to process: {len(self.all_granules)}")
+
+        if ProcessV2Granules.STORE_GRANULE_LIST_FILE:
+            # Store the granule list to the file in S3 target directory
+            granule_filename = os.path.join(
+                ProcessV2Granules.BUCKET,
+                ProcessV2Granules.TARGET_DIR,
+                ProcessV2Granules.GRANULE_LIST_FILE
+            )
+            with self.s3.open(granule_filename, 'w') as outs3file:
+                geojson.dump(self.all_granules, outs3file)
+                logging.info(f'Stored granule list to {granule_filename}')
 
     def __call__(self, start_index: int):
         """
@@ -384,6 +415,16 @@ def main():
         action='store_true',
         help=f'Copy *{ProcessV2Granules.ZERO_PERCENT_COVERAGE} granules to the target S3 bucket only. '
     )
+    parser.add_argument(
+        '--read_granule_list',
+        action='store_true',
+        help=f'Read granule file list from {ProcessV2Granules.GRANULE_LIST_FILE} stored in the target S3 bucket only (to avoid time consuming glob). '
+    )
+    parser.add_argument(
+        '--store_granule_list',
+        action='store_true',
+        help=f'Collect granule files and store them to the {ProcessV2Granules.GRANULE_LIST_FILE} in the target S3 bucket. '
+    )
 
     args = parser.parse_args()
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
@@ -400,6 +441,8 @@ def main():
     ProcessV2Granules.TARGET_DIR = args.target_bucket_dir
     ProcessV2Granules.LOCAL_DIR = args.local_dir
     ProcessV2Granules.COPY_ZERO_PERCENT_COVERAGE_FILES = args.zero_coverage_files
+    ProcessV2Granules.STORE_GRANULE_LIST_FILE = args.store_granule_list
+    ProcessV2Granules.READ_GRANULE_LIST_FILE = args.read_granule_list
 
     process_granules = ProcessV2Granules(args.glob)
     process_granules(args.start_granule)
