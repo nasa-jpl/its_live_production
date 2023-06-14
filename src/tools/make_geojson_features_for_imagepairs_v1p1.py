@@ -396,7 +396,7 @@ class GranuleCatalog:
 
             minval_x, pix_size_x, rot_x_ignored, maxval_y, rot_y_ignored, pix_size_y = [float(x) for x in projection_cf.attrs['GeoTransform'].split()]
 
-            epsgcode = int(projection_cf.attrs['spatial_epsg'][0])
+            epsgcode = int(GranuleCatalog.get_h5_attribute_value(projection_cf.attrs['spatial_epsg']))
 
             # Maximum v error
             v_error_max = max(
