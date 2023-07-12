@@ -100,14 +100,19 @@ class CorrectV2Granules:
 
         logging.info(f"Total number of granules to correct: {len(self.table)}")
 
-    def __call__(self, start_index: int):
+    def __call__(self, start_index: int = 0, stop_index: int = 0):
         """
         Correct V2 S1 granules and copy corrected files to the target location in S3 bucket.
         """
-        num_to_fix = len(self.table) - start_index
+        num_to_fix = len(self.table)
+
+        if stop_index > 0:
+            num_to_fix = stop_index
+
+        num_to_fix -= start_index
 
         # For debugging only
-        num_to_fix = 3
+        # num_to_fix = 3
 
         start = start_index
         logging.info(f"{num_to_fix} granules to correct...")
@@ -374,16 +379,22 @@ def main():
         help='Directory to store fixed granules before uploading them to the S3 bucket'
     )
     parser.add_argument(
-        '-w', '--dask-workers',
+        '-w', '--dask_workers',
         type=int,
         default=8,
         help='Number of Dask parallel workers [%(default)d]'
     )
     parser.add_argument(
-        '-s', '--start-granule',
+        '-s', '--start_granule',
         type=int,
         default=0,
         help='Index for the start granule to process (if previous processing terminated) [%(default)d]'
+    )
+    parser.add_argument(
+        '-e', '--stop_granule',
+        type=int,
+        default=0,
+        help='Index for the last granule to process (if splitting processing across multiple EC2s) [%(default)d]'
     )
     parser.add_argument(
         '--granule_table',
@@ -404,7 +415,7 @@ def main():
     CorrectV2Granules.LOCAL_DIR = args.local_dir
 
     process_granules = CorrectV2Granules(args.granule_table)
-    process_granules(args.start_granule)
+    process_granules(args.start_granule, args.stop_granule)
 
 
 if __name__ == '__main__':
