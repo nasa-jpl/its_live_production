@@ -238,6 +238,11 @@ class CorrectV2Granules:
 
         # This is constant value as dj_to_va_factor
         # dr_to_vr_factor = ds.M11.attrs['dr_to_vr_factor']
+        if ds.vr.values.shape != di_to_vr_factor.shape:
+            msgs.append(f'ERROR: inconsistent shape for granule={ds.vr.values.shape} vs. {os.path.join(ref_bucket, ref_dir, CorrectV2Granules.VX_TIFF_FILE)}={di_to_vr_factor.shape}')
+            msgs.append(f'{os.path.join(ref_bucket, ref_dir, CorrectV2Granules.VY_TIFF_FILE)}.shape={dj_to_va_factor.shape}')
+            msgs.append(f'{os.path.join(ref_bucket, ref_dir, CorrectV2Granules.WINDOW_TIFF_FILE)}.shape={scalefactor_di.shape}')
+            return msgs
 
         di = ds.vr.values / di_to_vr_factor
         dj = ds.va.values / dj_to_va_factor
