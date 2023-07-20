@@ -157,7 +157,7 @@ class ProcessV2Granules:
             logging.info(f'Excluded corrected granules, leaving number of granules: {len(self.all_granules)}')
 
         # For debugging only: convert first granule
-        self.all_granules = self.all_granules[:1]
+        # self.all_granules = self.all_granules[:1]
 
         logging.info(f"Number of granules to process: {len(self.all_granules)}")
 
