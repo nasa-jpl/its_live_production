@@ -24,6 +24,7 @@ import geojson
 import logging
 import numpy as np
 import os
+import pandas as pd
 import pyproj
 import s3fs
 import xarray as xr
@@ -78,14 +79,30 @@ class ProcessV2Granules:
     READ_GRANULE_LIST_FILE = False
     GRANULE_LIST_FILE = 'used_granules.json'
 
-    def __init__(self, glob_pattern: dir):
+    def __init__(self, glob_pattern: dir, granule_table: str = ''):
         """
         Initialize object.
 
-        bucket: S3 bucket to store original and cropped granules
         glob_pattern: Glob pattern to use to collect existing granules.
+        granule_table: Paquet file that stores corrected granules. Default is ''.
+            These granules need to be excluded from
         """
         self.s3 = s3fs.S3FileSystem()
+
+        self.exclude_granules = []
+
+        if len(granule_table):
+            table = pd.read_parquet(granule_table)
+
+            # Keep rows with granules that need to be corrected
+            table = table.loc[table['to_correct'] == True]
+
+            self.exclude_granules = table['v2_s3_key'].tolist()
+
+            # Append bucket name to each granule path
+            self.exclude_granules = [os.path.join(ProcessV2Granules.BUCKET, each) for each in self.exclude_granules]
+            logging.info(f"Number of corrected granules to exclude: {len(self.exclude_granules)}")
+
         self.granule_method_to_call = ProcessV2Granules.crop
         self.all_granules = []
 
@@ -105,7 +122,18 @@ class ProcessV2Granules:
             logging.info(f"Reading {ProcessV2Granules.SOURCE_DIR}")
             self.all_granules = self.s3.glob(f'{os.path.join(ProcessV2Granules.BUCKET, ProcessV2Granules.SOURCE_DIR)}/{glob_pattern}')
 
-        logging.info(f"Number of granules: {len(self.all_granules)}")
+        logging.info(f"Number of granules using glob pattern: {len(self.all_granules)}")
+
+        if ProcessV2Granules.STORE_GRANULE_LIST_FILE:
+            # Store the granule list to the file in S3 target directory
+            granule_filename = os.path.join(
+                ProcessV2Granules.BUCKET,
+                ProcessV2Granules.TARGET_DIR,
+                ProcessV2Granules.GRANULE_LIST_FILE
+            )
+            with self.s3.open(granule_filename, 'w') as outs3file:
+                geojson.dump(self.all_granules, outs3file)
+                logging.info(f'Stored granule list to {granule_filename}')
 
         if ProcessV2Granules.COPY_ZERO_PERCENT_COVERAGE_FILES is True:
             # Set the method to call for the granules
@@ -118,26 +146,20 @@ class ProcessV2Granules:
             ]
 
         else:
-            # Don't process granules that have 0% coverage
+            # Don't crop granules that have 0% coverage - only update v.description attribute for those
             self.all_granules = [
                 each for each in self.all_granules if not each.endswith(ProcessV2Granules.ZERO_PERCENT_COVERAGE)
             ]
+
+        # Remove corrected granules from the jobs to process
+        if len(self.exclude_granules):
+            self.all_granules = list(set(self.all_granules).difference(self.exclude_granules))
+            logging.info(f'Excluded corrected granules, leaving number of granules: {len(self.all_granules)}')
 
         # For debugging only: convert first granule
         self.all_granules = self.all_granules[:1]
 
         logging.info(f"Number of granules to process: {len(self.all_granules)}")
-
-        if ProcessV2Granules.STORE_GRANULE_LIST_FILE:
-            # Store the granule list to the file in S3 target directory
-            granule_filename = os.path.join(
-                ProcessV2Granules.BUCKET,
-                ProcessV2Granules.TARGET_DIR,
-                ProcessV2Granules.GRANULE_LIST_FILE
-            )
-            with self.s3.open(granule_filename, 'w') as outs3file:
-                geojson.dump(self.all_granules, outs3file)
-                logging.info(f'Stored granule list to {granule_filename}')
 
     def __call__(self, start_index: int):
         """
@@ -326,7 +348,6 @@ class ProcessV2Granules:
 
         # Upload granule to the target directory in the bucket without cropping it to new X/Y extends
         source = granule_url.replace(ProcessV2Granules.BUCKET+'/', '')
-        target = source.replace(ProcessV2Granules.SOURCE_DIR, ProcessV2Granules.TARGET_DIR)
 
         with s3.open(granule_url) as fhandle:
             with xr.open_dataset(fhandle) as ds:
@@ -471,6 +492,12 @@ def main():
         action='store_true',
         help=f'Collect granule files and store them to the {ProcessV2Granules.GRANULE_LIST_FILE} in the target S3 bucket. '
     )
+    parser.add_argument(
+        '--granule_table',
+        # default='fix_s1_v2_granules/correction_table/sentinel-1-correction-files.parquet',
+        default='sentinel-1-correction-files.parquet',
+        help='Table that provides the reference data for the granules to correct [%(default)s]'
+    )
 
     args = parser.parse_args()
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
@@ -490,7 +517,7 @@ def main():
     ProcessV2Granules.STORE_GRANULE_LIST_FILE = args.store_granule_list
     ProcessV2Granules.READ_GRANULE_LIST_FILE = args.read_granule_list
 
-    process_granules = ProcessV2Granules(args.glob)
+    process_granules = ProcessV2Granules(args.glob, args.granule_table)
     process_granules(args.start_granule)
 
 
