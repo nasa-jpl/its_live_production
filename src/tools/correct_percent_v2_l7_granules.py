@@ -145,17 +145,20 @@ class ProcessV2Granules:
     @staticmethod
     def correct(granule_url: str, new_pvalue: float, v1_pvalue: float, s3: s3fs.S3FileSystem):
         """
-        Correct percent valid for the granule in NetCDF format to the local directory:
+        1. Correct percent valid for the granule in NetCDF format to the local directory:
         * Rename granule
         * Rename corresponding PNG files
         * Update img_pair_info.roi_valid_percentage to int(new_pvalue)
         * Push new granule to the target location in S3 bucket.
         * Copy original PNG files to the target location in S3 bucket using new filenames
 
+        2. Crop granule's X/Y grid only to the valid data extends
+
         Inputs:
         granule_url - HTTPS URL for the granule to correct.
         new_pvalue - Newly computed percent valid value.
         v1_pvalue - V1 percent valid value.
+        s3 - s3fs.S3FileSystem object to access granules in AWS S3 bucket.
         """
         msgs = [f'Processing {granule_url} new_pvalue={new_pvalue} v1_pvalue={v1_pvalue}']
 
@@ -226,9 +229,6 @@ class ProcessV2Granules:
                 # It was decided to keep all values in GeoTransform center-based
                 cropped_ds[DataVars.MAPPING].attrs['GeoTransform'] = f"{x_values[0]} {x_cell} 0 {y_values[0]} 0 {y_cell}"
 
-                # Update v.description attribute of the granule
-                cropped_ds[DataVars.V].attrs[DataVars.DESCRIPTION_ATTR] = 'velocity magnitude'
-
                 # Save to local file
                 granule_basename = os.path.basename(granule_url)
 
@@ -290,7 +290,7 @@ class ProcessV2Granules:
                             'Key': source_key
                         }
 
-                        msgs.append(f'Copying {source_key} to {target_key}')
+                        msgs.append(f'Copying {target_ext} to S3')
 
                         if not ProcessV2Granules.DRYRUN:
                             bucket.copy(source_dict, target_key)
