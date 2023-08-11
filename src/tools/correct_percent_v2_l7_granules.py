@@ -97,12 +97,12 @@ class ProcessV2Granules:
 
         while num_files_to_process > 0:
             current_file = self.new_pvalue_files[index]
-            logging.info(f'Processing {index}: {current_file}')
-
             file_data = pd.read_csv(current_file, header=None, delimiter=r"\s+")
 
             granules_to_fix = len(file_data)
             start_granule = 0
+
+            logging.info(f'Processing {index}: {current_file} {granules_to_fix} total granules')
 
             # For debugging only!!!
             # granules_to_fix = 4
@@ -112,7 +112,7 @@ class ProcessV2Granules:
             while granules_to_fix > 0:
                 num_tasks = ProcessV2Granules.CHUNK_SIZE if granules_to_fix > ProcessV2Granules.CHUNK_SIZE else granules_to_fix
 
-                logging.info(f"Starting tasks {start_granule}:{start_granule+num_tasks}")
+                logging.info(f"Starting tasks {start_granule}:{start_granule+num_tasks} ({granules_to_fix} left)")
 
                 tasks = [
                     dask.delayed(ProcessV2Granules.correct)(
