@@ -97,7 +97,7 @@ class ProcessV2Granules:
 
         while num_files_to_process > 0:
             current_file = self.new_pvalue_files[index]
-            logging.info(f'Processing {current_file}')
+            logging.info(f'Processing {index}: {current_file}')
 
             file_data = pd.read_csv(current_file, header=None, delimiter=r"\s+")
 
@@ -266,7 +266,7 @@ class ProcessV2Granules:
                 s3_client = boto3.client('s3')
                 try:
                     bucket_granule = os.path.join(target_prefix, new_granule_basename)
-                    msgs.append(f"Uploading to {target_prefix}")
+                    msgs.append(f"Uploading to {target_prefix}/{bucket_granule}")
 
                     if not ProcessV2Granules.DRYRUN:
                         s3_client.upload_file(fixed_file, ProcessV2Granules.BUCKET, bucket_granule)
