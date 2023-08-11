@@ -23,29 +23,7 @@ from botocore.exceptions import ClientError
 import hyp3_sdk as sdk
 import numpy as np
 
-
-#
-# Author: Mark Fahnestock
-#
-def point_to_prefix(dir_path: str, lat: float, lon: float) -> str:
-    """
-    Returns a string (for example, N78W124) for directory name based on
-    granule centerpoint lat,lon
-    """
-    NShemi_str = 'N' if lat >= 0.0 else 'S'
-    EWhemi_str = 'E' if lon >= 0.0 else 'W'
-
-    outlat = int(10*np.trunc(np.abs(lat/10.0)))
-    if outlat == 90: # if you are exactly at a pole, put in lat = 80 bin
-        outlat = 80
-
-    outlon = int(10*np.trunc(np.abs(lon/10.0)))
-
-    if outlon >= 180: # if you are at the dateline, back off to the 170 bin
-        outlon = 170
-
-    dirstring = os.path.join(dir_path, f'{NShemi_str}{outlat:02d}{EWhemi_str}{outlon:03d}')
-    return dirstring
+from lon_lat_to_dir_prefix import point_to_prefix
 
 
 class ASFTransfer:
@@ -224,8 +202,10 @@ class ASFTransfer:
                     msgs.append(f'WARNING: {bucket.name}/{target_key} already exists, skipping {job}')
 
                 else:
-                    source_dict = {'Bucket': job.files[0]['s3']['bucket'],
-                                   'Key': source_key}
+                    source_dict = {
+                        'Bucket': job.files[0]['s3']['bucket'],
+                        'Key': source_key
+                    }
 
                     bucket.copy(source_dict, target_key)
                     msgs.append(f'Copying {source_dict["Bucket"]}/{source_dict["Key"]} to {bucket.name}/{target_key}')
