@@ -342,8 +342,10 @@ args = parser.parse_args()
 gdal.SetConfigOption('GDAL_DISABLE_READDIR_ON_OPEN', 'EMPTY_DIR')
 # gdal.SetConfigOption('GDAL_DISABLE_READDIR_ON_OPEN', 'TRUE')
 
-gdal.SetConfigOption('AWS_ACCESS_KEY_ID', 'AKIARBIAKMKAERCC3DK5')
-gdal.SetConfigOption('AWS_SECRET_ACCESS_KEY', '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')
+# Acquire access key and secret access key for AWS access (may be use environment
+# variable or store in the external file
+gdal.SetConfigOption('AWS_ACCESS_KEY_ID', '')
+gdal.SetConfigOption('AWS_SECRET_ACCESS_KEY', '')
 gdal.SetConfigOption('AWS_REQUEST_PAYER','requester')
 
 # gdal.SetConfigOption('CPL_VSIL_CURL_ALLOWED_EXTENSIONS', 'TIF')
