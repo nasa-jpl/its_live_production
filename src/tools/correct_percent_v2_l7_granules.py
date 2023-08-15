@@ -71,7 +71,7 @@ class ProcessV2Granules:
         self.new_pvalue_files = sorted(glob.glob(os.path.join(new_p_values_dir, glob_pattern)))
         logging.info(f'Got {len(self.new_pvalue_files)} files with new pvalue to process')
 
-    def __call__(self, start_index: int = 0):
+    def __call__(self, start_index: int = 0, start_granule_first_file: int = 0):
         """
         Correct percent value for the granules. Copy file and corresponding PNG files into
         specified location in S3 bucket.
@@ -92,21 +92,20 @@ class ProcessV2Granules:
 
         num_files_to_process = num_files
 
-        # For debugging only!!!
-        # num_files_to_process = 1
-
         while num_files_to_process > 0:
             current_file = self.new_pvalue_files[index]
             file_data = pd.read_csv(current_file, header=None, delimiter=r"\s+")
 
             granules_to_fix = len(file_data)
+            logging.info(f'Got {index}: {current_file} {granules_to_fix} total granules')
             start_granule = 0
 
-            logging.info(f'Processing {index}: {current_file} {granules_to_fix} total granules')
+            # Reset start granule for the first processed file only
+            if num_files_to_process == num_files:
+                start_granule = start_granule_first_file
+                granules_to_fix -= start_granule_first_file
 
-            # For debugging only!!!
-            # granules_to_fix = 4
-            # start_granule = 304
+            logging.info(f'Processing {index}: {current_file} {granules_to_fix} remaining granules')
 
             # Process granules within the file
             while granules_to_fix > 0:
@@ -170,32 +169,71 @@ class ProcessV2Granules:
                 xy_ds = ds.where(ds.v.notnull(), drop=True)
 
                 x_values = xy_ds.x.values
-                grid_x_min, grid_x_max = x_values.min(), x_values.max()
-
                 y_values = xy_ds.y.values
-                grid_y_min, grid_y_max = y_values.min(), y_values.max()
 
-                # Based on X/Y extends, mask original dataset
-                mask_lon = (ds.x >= grid_x_min) & (ds.x <= grid_x_max)
-                mask_lat = (ds.y >= grid_y_min) & (ds.y <= grid_y_max)
-                mask = (mask_lon & mask_lat)
+                cropped_ds = None
+                center_lon_lat = None
 
-                # No need to check as we are changing coverage for non-P000 % coverage
-                # if mask.values.sum() <= 1:
-                #     msgs.append('There is not enough data in cropped granule, skip cropping')
+                if len(x_values) <= 1 or len(y_values) <= 1:
+                    msgs.append(f'WARNING Skipping cropping due to invalid X or Y length (len(x) = {len(x_values)}, len(y) = {len(y_values)}) for {granule_url} new_pvalue={new_pvalue} v1_pvalue={v1_pvalue}')
+                    cropped_ds = ds.load()
 
-                #     # Copy original granule and corresponding *png files to the destination
-                #     # location in S3 bucket
-                #     msgs.extend(ProcessV2Granules.copy(granule_url, s3))
-                # else:
-                cropped_ds = ds.where(mask, drop=True)
-                cropped_ds = cropped_ds.load()
+                    # Use current centroid information for the granule
+                    center_lon_lat = (
+                        float(cropped_ds[DataVars.ImgPairInfo.NAME].attrs['longitude']),
+                        float(cropped_ds[DataVars.ImgPairInfo.NAME].attrs['latitude'])
+                    )
 
-                # Reset data for DataVars.MAPPING and DataVars.ImgPairInfo.NAME
-                # data variables as ds.where() extends data of all data variables
-                # to the dimentions of the "mask"
-                cropped_ds[DataVars.MAPPING] = ds[DataVars.MAPPING]
-                cropped_ds[DataVars.ImgPairInfo.NAME] = ds[DataVars.ImgPairInfo.NAME]
+                else:
+                    grid_x_min, grid_x_max = x_values.min(), x_values.max()
+                    grid_y_min, grid_y_max = y_values.min(), y_values.max()
+
+                    # Based on X/Y extends, mask original dataset
+                    mask_lon = (ds.x >= grid_x_min) & (ds.x <= grid_x_max)
+                    mask_lat = (ds.y >= grid_y_min) & (ds.y <= grid_y_max)
+                    mask = (mask_lon & mask_lat)
+
+                    # No need to check as we are changing coverage for non-P000 % coverage
+                    # if mask.values.sum() <= 1:
+                    #     msgs.append('There is not enough data in cropped granule, skip cropping')
+
+                    #     # Copy original granule and corresponding *png files to the destination
+                    #     # location in S3 bucket
+                    #     msgs.extend(ProcessV2Granules.copy(granule_url, s3))
+                    # else:
+                    cropped_ds = ds.where(mask, drop=True)
+                    cropped_ds = cropped_ds.load()
+
+                    # Reset data for DataVars.MAPPING and DataVars.ImgPairInfo.NAME
+                    # data variables as ds.where() extends data of all data variables
+                    # to the dimentions of the "mask"
+                    cropped_ds[DataVars.MAPPING] = ds[DataVars.MAPPING]
+                    cropped_ds[DataVars.ImgPairInfo.NAME] = ds[DataVars.ImgPairInfo.NAME]
+
+                    # Compute centroid longitude/latitude
+                    center_x = (grid_x_min + grid_x_max)/2
+                    center_y = (grid_y_min + grid_y_max)/2
+
+                    # Convert to lon/lat coordinates
+                    projection = ds[DataVars.MAPPING].attrs['spatial_epsg']
+                    to_lon_lat_transformer = pyproj.Transformer.from_crs(
+                        f"EPSG:{projection}",
+                        ProcessV2Granules.LON_LAT_PROJECTION,
+                        always_xy=True
+                    )
+
+                    # Update centroid information for the granule
+                    center_lon_lat = to_lon_lat_transformer.transform(center_x, center_y)
+
+                    cropped_ds[DataVars.ImgPairInfo.NAME].attrs['latitude'] = round(center_lon_lat[1], 2)
+                    cropped_ds[DataVars.ImgPairInfo.NAME].attrs['longitude'] = round(center_lon_lat[0], 2)
+
+                    # Update mapping.GeoTransform
+                    x_cell = x_values[1] - x_values[0]
+                    y_cell = y_values[1] - y_values[0]
+
+                    # It was decided to keep all values in GeoTransform center-based
+                    cropped_ds[DataVars.MAPPING].attrs['GeoTransform'] = f"{x_values[0]} {x_cell} 0 {y_values[0]} 0 {y_cell}"
 
                 # Add date when granule was updated
                 cropped_ds.attrs['date_updated'] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
@@ -203,31 +241,6 @@ class ProcessV2Granules:
                 # Update valid percent coverage
                 pvalue_to_use = float(new_pvalue) if new_pvalue <= v1_pvalue else float(v1_pvalue)
                 cropped_ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE] = pvalue_to_use
-
-                # Compute centroid longitude/latitude
-                center_x = (grid_x_min + grid_x_max)/2
-                center_y = (grid_y_min + grid_y_max)/2
-
-                # Convert to lon/lat coordinates
-                projection = ds[DataVars.MAPPING].attrs['spatial_epsg']
-                to_lon_lat_transformer = pyproj.Transformer.from_crs(
-                    f"EPSG:{projection}",
-                    ProcessV2Granules.LON_LAT_PROJECTION,
-                    always_xy=True
-                )
-
-                # Update centroid information for the granule
-                center_lon_lat = to_lon_lat_transformer.transform(center_x, center_y)
-
-                cropped_ds[DataVars.ImgPairInfo.NAME].attrs['latitude'] = round(center_lon_lat[1], 2)
-                cropped_ds[DataVars.ImgPairInfo.NAME].attrs['longitude'] = round(center_lon_lat[0], 2)
-
-                # Update mapping.GeoTransform
-                x_cell = x_values[1] - x_values[0]
-                y_cell = y_values[1] - y_values[0]
-
-                # It was decided to keep all values in GeoTransform center-based
-                cropped_ds[DataVars.MAPPING].attrs['GeoTransform'] = f"{x_values[0]} {x_cell} 0 {y_values[0]} 0 {y_cell}"
 
                 # Save to local file
                 granule_basename = os.path.basename(granule_url)
@@ -352,6 +365,18 @@ def main():
         help='Directory to store fixed granules before uploading them to the S3 bucket [%(default)s]'
     )
     parser.add_argument(
+        '--start_file',
+        type=int,
+        default=0,
+        help='Index for the start file to process (if previous processing terminated) [%(default)d]'
+    )
+    parser.add_argument(
+        '--start_granule',
+        type=int,
+        default=0,
+        help='Index for the start granule to process (if previous processing terminated) [%(default)d]'
+    )
+    parser.add_argument(
         '-glob', action='store',
         type=str,
         default='new_p_valid_fixes_*.txt',
@@ -383,7 +408,7 @@ def main():
     ProcessV2Granules.DRYRUN = args.dryrun
 
     process_granules = ProcessV2Granules(args.text_files, args.glob)
-    process_granules()
+    process_granules(args.start_file, args.start_granule)
 
 
 if __name__ == '__main__':
