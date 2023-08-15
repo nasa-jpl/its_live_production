@@ -163,153 +163,170 @@ class ProcessV2Granules:
 
         s3_granule_url = granule_url.replace(ProcessV2Granules.HTTP_BUCKET_URL, ProcessV2Granules.BUCKET)
 
-        with s3.open(s3_granule_url) as fhandle:
-            with xr.open_dataset(fhandle) as ds:
-                # this will drop X/Y coordinates, so drop non-None values just to get X/Y extends
-                xy_ds = ds.where(ds.v.notnull(), drop=True)
+        open_attempts = 0
+        done = False
 
-                x_values = xy_ds.x.values
-                y_values = xy_ds.y.values
+        while open_attempts < 3 and not done:
+            open_attempts += 1
 
-                cropped_ds = None
-                center_lon_lat = None
+            try:
+                with s3.open(s3_granule_url) as fhandle:
+                    with xr.open_dataset(fhandle) as ds:
+                        # this will drop X/Y coordinates, so drop non-None values just to get X/Y extends
+                        xy_ds = ds.where(ds.v.notnull(), drop=True)
 
-                if len(x_values) <= 1 or len(y_values) <= 1:
-                    msgs.append(f'WARNING Skipping cropping due to invalid X or Y length (len(x) = {len(x_values)}, len(y) = {len(y_values)}) for {granule_url} new_pvalue={new_pvalue} v1_pvalue={v1_pvalue}')
-                    cropped_ds = ds.load()
+                        x_values = xy_ds.x.values
+                        y_values = xy_ds.y.values
 
-                    # Use current centroid information for the granule
-                    center_lon_lat = (
-                        float(cropped_ds[DataVars.ImgPairInfo.NAME].attrs['longitude']),
-                        float(cropped_ds[DataVars.ImgPairInfo.NAME].attrs['latitude'])
-                    )
+                        cropped_ds = None
+                        center_lon_lat = None
+
+                        if len(x_values) <= 1 or len(y_values) <= 1:
+                            msgs.append(f'WARNING Skipping cropping due to invalid X or Y length (len(x) = {len(x_values)}, len(y) = {len(y_values)}) for {granule_url} new_pvalue={new_pvalue} v1_pvalue={v1_pvalue}')
+                            cropped_ds = ds.load()
+
+                            # Use current centroid information for the granule
+                            center_lon_lat = (
+                                float(cropped_ds[DataVars.ImgPairInfo.NAME].attrs['longitude']),
+                                float(cropped_ds[DataVars.ImgPairInfo.NAME].attrs['latitude'])
+                            )
+
+                        else:
+                            grid_x_min, grid_x_max = x_values.min(), x_values.max()
+                            grid_y_min, grid_y_max = y_values.min(), y_values.max()
+
+                            # Based on X/Y extends, mask original dataset
+                            mask_lon = (ds.x >= grid_x_min) & (ds.x <= grid_x_max)
+                            mask_lat = (ds.y >= grid_y_min) & (ds.y <= grid_y_max)
+                            mask = (mask_lon & mask_lat)
+
+                            # No need to check as we are changing coverage for non-P000 % coverage
+                            # if mask.values.sum() <= 1:
+                            #     msgs.append('There is not enough data in cropped granule, skip cropping')
+
+                            #     # Copy original granule and corresponding *png files to the destination
+                            #     # location in S3 bucket
+                            #     msgs.extend(ProcessV2Granules.copy(granule_url, s3))
+                            # else:
+                            cropped_ds = ds.where(mask, drop=True)
+                            cropped_ds = cropped_ds.load()
+
+                            # Reset data for DataVars.MAPPING and DataVars.ImgPairInfo.NAME
+                            # data variables as ds.where() extends data of all data variables
+                            # to the dimentions of the "mask"
+                            cropped_ds[DataVars.MAPPING] = ds[DataVars.MAPPING]
+                            cropped_ds[DataVars.ImgPairInfo.NAME] = ds[DataVars.ImgPairInfo.NAME]
+
+                            # Compute centroid longitude/latitude
+                            center_x = (grid_x_min + grid_x_max)/2
+                            center_y = (grid_y_min + grid_y_max)/2
+
+                            # Convert to lon/lat coordinates
+                            projection = ds[DataVars.MAPPING].attrs['spatial_epsg']
+                            to_lon_lat_transformer = pyproj.Transformer.from_crs(
+                                f"EPSG:{projection}",
+                                ProcessV2Granules.LON_LAT_PROJECTION,
+                                always_xy=True
+                            )
+
+                            # Update centroid information for the granule
+                            center_lon_lat = to_lon_lat_transformer.transform(center_x, center_y)
+
+                            cropped_ds[DataVars.ImgPairInfo.NAME].attrs['latitude'] = round(center_lon_lat[1], 2)
+                            cropped_ds[DataVars.ImgPairInfo.NAME].attrs['longitude'] = round(center_lon_lat[0], 2)
+
+                            # Update mapping.GeoTransform
+                            x_cell = x_values[1] - x_values[0]
+                            y_cell = y_values[1] - y_values[0]
+
+                            # It was decided to keep all values in GeoTransform center-based
+                            cropped_ds[DataVars.MAPPING].attrs['GeoTransform'] = f"{x_values[0]} {x_cell} 0 {y_values[0]} 0 {y_cell}"
+
+                        # Add date when granule was updated
+                        cropped_ds.attrs['date_updated'] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
+
+                        # Update valid percent coverage
+                        pvalue_to_use = float(new_pvalue) if new_pvalue <= v1_pvalue else float(v1_pvalue)
+                        cropped_ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE] = pvalue_to_use
+
+                        # Save to local file
+                        granule_basename = os.path.basename(granule_url)
+
+                        # Replace the pvalue in filename
+                        granule_basename_tokens = granule_basename.split('_')
+                        granule_basename_tokens[-1] = f'P{int(pvalue_to_use):03d}.nc'
+
+                        new_granule_basename = '_'.join(granule_basename_tokens)
+
+                        # Write the granule locally, upload it to the bucket, remove file
+                        fixed_file = os.path.join(ProcessV2Granules.LOCAL_DIR, new_granule_basename)
+
+                        # Set chunking for 2D data variables
+                        dims = cropped_ds.dims
+                        num_x = dims[Coords.X]
+                        num_y = dims[Coords.Y]
+
+                        # Compute chunking like AutoRIFT does:
+                        # https://github.com/ASFHyP3/hyp3-autorift/blob/develop/hyp3_autorift/vend/netcdf_output.py#L410-L411
+                        chunk_lines = np.min([np.ceil(8192/num_y)*128, num_y])
+                        two_dim_chunks_settings = (chunk_lines, num_x)
+
+                        granule_encoding = Encoding.LANDSAT_SENTINEL2.copy()
+
+                        for each_var, each_var_settings in granule_encoding.items():
+                            if each_var_settings[Output.FILL_VALUE_ATTR] is not None:
+                                each_var_settings[Output.CHUNKSIZES_ATTR] = two_dim_chunks_settings
+
+                        # Get encoding for the file
+                        cropped_ds.to_netcdf(fixed_file, engine='h5netcdf', encoding=granule_encoding)
+
+                        target_prefix = point_to_prefix(ProcessV2Granules.TARGET_DIR, center_lon_lat[1], center_lon_lat[0])
+
+                        # Upload corrected granule to the bucket - format sub-directory based on new cropped values
+                        s3_client = boto3.client('s3')
+                        try:
+                            bucket_granule = os.path.join(target_prefix, new_granule_basename)
+                            msgs.append(f"Uploading to {target_prefix}/{bucket_granule}")
+
+                            if not ProcessV2Granules.DRYRUN:
+                                s3_client.upload_file(fixed_file, ProcessV2Granules.BUCKET, bucket_granule)
+
+                                # msgs.append(f"Removing local {fixed_file}")
+                                os.unlink(fixed_file)
+
+                            # Original granule in S3 bucket
+                            source = s3_granule_url.replace(ProcessV2Granules.BUCKET+'/', '')
+
+                            bucket = boto3.resource('s3').Bucket(ProcessV2Granules.BUCKET)
+
+                            # There are corresponding browse and thumbprint images to transfer
+                            for target_ext in ['.png', '_thumb.png']:
+                                target_key = bucket_granule.replace('.nc', target_ext)
+
+                                source_key = source.replace('.nc', target_ext)
+
+                                source_dict = {
+                                    'Bucket': ProcessV2Granules.BUCKET,
+                                    'Key': source_key
+                                }
+
+                                msgs.append(f'Copying {target_ext} to S3')
+
+                                if not ProcessV2Granules.DRYRUN:
+                                    bucket.copy(source_dict, target_key)
+
+                        except ClientError as exc:
+                            msgs.append(f"ERROR: {exc}")
+
+                        done = True
+            except ValueError as exc:
+                # Retry only network kind of exceptions accesing the file
+                if 'h5netcdf' in exc:
+                    msgs.append(f'Attempt #{open_attempts}: ValueError exception reading {granule_url}: {exc}')
 
                 else:
-                    grid_x_min, grid_x_max = x_values.min(), x_values.max()
-                    grid_y_min, grid_y_max = y_values.min(), y_values.max()
-
-                    # Based on X/Y extends, mask original dataset
-                    mask_lon = (ds.x >= grid_x_min) & (ds.x <= grid_x_max)
-                    mask_lat = (ds.y >= grid_y_min) & (ds.y <= grid_y_max)
-                    mask = (mask_lon & mask_lat)
-
-                    # No need to check as we are changing coverage for non-P000 % coverage
-                    # if mask.values.sum() <= 1:
-                    #     msgs.append('There is not enough data in cropped granule, skip cropping')
-
-                    #     # Copy original granule and corresponding *png files to the destination
-                    #     # location in S3 bucket
-                    #     msgs.extend(ProcessV2Granules.copy(granule_url, s3))
-                    # else:
-                    cropped_ds = ds.where(mask, drop=True)
-                    cropped_ds = cropped_ds.load()
-
-                    # Reset data for DataVars.MAPPING and DataVars.ImgPairInfo.NAME
-                    # data variables as ds.where() extends data of all data variables
-                    # to the dimentions of the "mask"
-                    cropped_ds[DataVars.MAPPING] = ds[DataVars.MAPPING]
-                    cropped_ds[DataVars.ImgPairInfo.NAME] = ds[DataVars.ImgPairInfo.NAME]
-
-                    # Compute centroid longitude/latitude
-                    center_x = (grid_x_min + grid_x_max)/2
-                    center_y = (grid_y_min + grid_y_max)/2
-
-                    # Convert to lon/lat coordinates
-                    projection = ds[DataVars.MAPPING].attrs['spatial_epsg']
-                    to_lon_lat_transformer = pyproj.Transformer.from_crs(
-                        f"EPSG:{projection}",
-                        ProcessV2Granules.LON_LAT_PROJECTION,
-                        always_xy=True
-                    )
-
-                    # Update centroid information for the granule
-                    center_lon_lat = to_lon_lat_transformer.transform(center_x, center_y)
-
-                    cropped_ds[DataVars.ImgPairInfo.NAME].attrs['latitude'] = round(center_lon_lat[1], 2)
-                    cropped_ds[DataVars.ImgPairInfo.NAME].attrs['longitude'] = round(center_lon_lat[0], 2)
-
-                    # Update mapping.GeoTransform
-                    x_cell = x_values[1] - x_values[0]
-                    y_cell = y_values[1] - y_values[0]
-
-                    # It was decided to keep all values in GeoTransform center-based
-                    cropped_ds[DataVars.MAPPING].attrs['GeoTransform'] = f"{x_values[0]} {x_cell} 0 {y_values[0]} 0 {y_cell}"
-
-                # Add date when granule was updated
-                cropped_ds.attrs['date_updated'] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
-
-                # Update valid percent coverage
-                pvalue_to_use = float(new_pvalue) if new_pvalue <= v1_pvalue else float(v1_pvalue)
-                cropped_ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE] = pvalue_to_use
-
-                # Save to local file
-                granule_basename = os.path.basename(granule_url)
-
-                # Replace the pvalue in filename
-                granule_basename_tokens = granule_basename.split('_')
-                granule_basename_tokens[-1] = f'P{int(pvalue_to_use):03d}.nc'
-
-                new_granule_basename = '_'.join(granule_basename_tokens)
-
-                # Write the granule locally, upload it to the bucket, remove file
-                fixed_file = os.path.join(ProcessV2Granules.LOCAL_DIR, new_granule_basename)
-
-                # Set chunking for 2D data variables
-                dims = cropped_ds.dims
-                num_x = dims[Coords.X]
-                num_y = dims[Coords.Y]
-
-                # Compute chunking like AutoRIFT does:
-                # https://github.com/ASFHyP3/hyp3-autorift/blob/develop/hyp3_autorift/vend/netcdf_output.py#L410-L411
-                chunk_lines = np.min([np.ceil(8192/num_y)*128, num_y])
-                two_dim_chunks_settings = (chunk_lines, num_x)
-
-                granule_encoding = Encoding.LANDSAT_SENTINEL2.copy()
-
-                for each_var, each_var_settings in granule_encoding.items():
-                    if each_var_settings[Output.FILL_VALUE_ATTR] is not None:
-                        each_var_settings[Output.CHUNKSIZES_ATTR] = two_dim_chunks_settings
-
-                # Get encoding for the file
-                cropped_ds.to_netcdf(fixed_file, engine='h5netcdf', encoding=granule_encoding)
-
-                target_prefix = point_to_prefix(ProcessV2Granules.TARGET_DIR, center_lon_lat[1], center_lon_lat[0])
-
-                # Upload corrected granule to the bucket - format sub-directory based on new cropped values
-                s3_client = boto3.client('s3')
-                try:
-                    bucket_granule = os.path.join(target_prefix, new_granule_basename)
-                    msgs.append(f"Uploading to {target_prefix}/{bucket_granule}")
-
-                    if not ProcessV2Granules.DRYRUN:
-                        s3_client.upload_file(fixed_file, ProcessV2Granules.BUCKET, bucket_granule)
-
-                        # msgs.append(f"Removing local {fixed_file}")
-                        os.unlink(fixed_file)
-
-                    # Original granule in S3 bucket
-                    source = s3_granule_url.replace(ProcessV2Granules.BUCKET+'/', '')
-
-                    bucket = boto3.resource('s3').Bucket(ProcessV2Granules.BUCKET)
-
-                    # There are corresponding browse and thumbprint images to transfer
-                    for target_ext in ['.png', '_thumb.png']:
-                        target_key = bucket_granule.replace('.nc', target_ext)
-
-                        source_key = source.replace('.nc', target_ext)
-
-                        source_dict = {
-                            'Bucket': ProcessV2Granules.BUCKET,
-                            'Key': source_key
-                        }
-
-                        msgs.append(f'Copying {target_ext} to S3')
-
-                        if not ProcessV2Granules.DRYRUN:
-                            bucket.copy(source_dict, target_key)
-
-                except ClientError as exc:
-                    msgs.append(f"ERROR: {exc}")
+                    msgs.append(f'ERROR: {exc}')
+                    done = True
 
         return msgs
 
