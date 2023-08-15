@@ -321,7 +321,7 @@ class ProcessV2Granules:
                         done = True
             except ValueError as exc:
                 # Retry only network kind of exceptions accesing the file
-                if 'h5netcdf' in exc:
+                if 'h5netcdf' in repr(exc):
                     msgs.append(f'Attempt #{open_attempts}: ValueError exception reading {granule_url}: {exc}')
 
                 else:
