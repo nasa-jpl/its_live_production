@@ -70,6 +70,8 @@ Fix ITS_LIVE S1 V2 granules metadata to confirm to the latest format and NSIDC s
         flag_values = 0UB, 1UB; // ubyte
         flag_meanings = 'measured, interpolated'
 
+14. Change global attribute 'motion_coordinates':  'radar, map' (from 'radar')
+
 ATTN: This script should run from AWS EC2 instance to have fast access to the S3
 bucket.
 It takes 2 seconds to upload the file to the S3 bucket from EC2 instance
@@ -91,7 +93,7 @@ import s3fs
 import xarray as xr
 
 from mission_info import Encoding
-from itscube_types import DataVars
+from itscube_types import DataVars, Coords, Output
 from nsidc_types import Mapping
 from nsidc_vel_image_pairs import required_attrs
 
@@ -171,9 +173,18 @@ def fix_metadata(ds: xr.Dataset):
     13.Replace 'binary' units for 'interp_mask' by:
         flag_values = 0UB, 1UB; // ubyte
         flag_meanings = 'measured, interpolated'
+
+    14. Change global attribute 'motion_coordinates':  'radar, map' (from 'radar')
+
+    15. Change interp_mask.description to 'true where values have been interpolated'
+
+    16. Fix latest V2 granuels: under va in the stable_shift_flag_description there’s a typo …< 15 meter/yearr… with two r’s
     """
     _conventions = 'Conventions'
     _cf_value = 'CF-1.8'
+
+    _motion_coordinates = 'motion_coordinates'
+    _motion_coordinates_value = 'radar, map'
 
     _new_std_name = {
         DataVars.VX: "land_ice_surface_x_velocity",
@@ -201,6 +212,7 @@ def fix_metadata(ds: xr.Dataset):
     _old_m_y_units = 'm/y'
     _old_m_yr_units = 'm/yr'
 
+    _interp_mask_description = 'true where values have been interpolated'
 
     _spatial_epsg = 'spatial_epsg'
 
@@ -222,6 +234,9 @@ def fix_metadata(ds: xr.Dataset):
 
     # 1. Fix global attribute:
     ds.attrs[_conventions] = _cf_value
+
+    # 14. Change global attribute 'motion_coordinates':  'radar, map' (from 'radar')
+    ds.attrs[_motion_coordinates] = _motion_coordinates_value
 
     # 2. img_pair_info:standard_name = "image_pair_information"
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.STD_NAME] = "image_pair_information"
@@ -287,6 +302,8 @@ def fix_metadata(ds: xr.Dataset):
         ds[DataVars.INTERP_MASK].attrs[flag_values] = binary_flags
         ds[DataVars.INTERP_MASK].attrs[flag_meanings] = _binary_meanings[DataVars.INTERP_MASK]
 
+    ds[DataVars.INTERP_MASK].attrs[DataVars.DESCRIPTION_ATTR] = _interp_mask_description
+
     epsgcode = int(mapping_attrs[_spatial_epsg])
 
     # Apply corrections based on the EPSG code
@@ -334,6 +351,10 @@ def fix_all(source_bucket: str, source_dir: str, target_dir: str, granule_url: s
 
             # Check if granule confirms to the new format already, then fix v.description only
             if DataVars.STABLE_SHIFT_MASK in ds[DataVars.VX].attrs:
+                # 16. Fix latest V2 granuels: under va in the stable_shift_flag_description there’s a typo …< 15 meter/yearr… with two r’s
+                ds[DataVars.VA].attrs[DataVars.FLAG_STABLE_SHIFT_DESCRIPTION] = \
+                    ds[DataVars.VA].attrs[DataVars.FLAG_STABLE_SHIFT_DESCRIPTION].replace('meter/yearr', DataVars.M_Y_UNITS)
+
                 msgs.append('Confirms to new format already.')
 
             else:
@@ -343,7 +364,24 @@ def fix_all(source_bucket: str, source_dir: str, target_dir: str, granule_url: s
             # Write the granule locally, upload it to the bucket, remove local file
             granule_basename = os.path.basename(granule_url)
             fixed_file = os.path.join(local_dir, granule_basename)
-            ds.to_netcdf(fixed_file, engine='h5netcdf', encoding=Encoding.SENTINEL1)
+
+            # Set chunking for 2D data variables
+            dims = ds.dims
+            num_x = dims[Coords.X]
+            num_y = dims[Coords.Y]
+
+            # Compute chunking like AutoRIFT does:
+            # https://github.com/ASFHyP3/hyp3-autorift/blob/develop/hyp3_autorift/vend/netcdf_output.py#L410-L411
+            chunk_lines = np.min([np.ceil(8192/num_y)*128, num_y])
+            two_dim_chunks_settings = (chunk_lines, num_x)
+
+            granule_encoding = Encoding.SENTINEL1.copy()
+
+            for each_var, each_var_settings in granule_encoding.items():
+                if each_var_settings[Output.FILL_VALUE_ATTR] is not None:
+                    each_var_settings[Output.CHUNKSIZES_ATTR] = two_dim_chunks_settings
+
+            ds.to_netcdf(fixed_file, engine='h5netcdf', encoding=granule_encoding)
 
             # Upload corrected granule to the bucket
             s3_client = boto3.client('s3')
