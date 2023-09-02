@@ -72,6 +72,12 @@ Fix ITS_LIVE S1 V2 granules metadata to confirm to the latest format and NSIDC s
 
 14. Change global attribute 'motion_coordinates':  'radar, map' (from 'radar')
 
+16. Fix latest V2 granuels: under va in the stable_shift_flag_description there’s a typo …< 15 meter/yearr… with two r’s
+
+17. Add id_img1, id_img2 attributes to img_pair_info. For example:
+    string img_pair_info:id_img1 = "S1A_IW_SLC__1SDV_20220627T125747_20220627T125815_043849_053C18_DD96" ;
+    string img_pair_info:id_img2 = "S1A_IW_SLC__1SDV_20220709T125748_20220709T125816_044024_054146_7026" ;
+
 ATTN: This script should run from AWS EC2 instance to have fast access to the S3
 bucket.
 It takes 2 seconds to upload the file to the S3 bucket from EC2 instance
@@ -179,6 +185,12 @@ def fix_metadata(ds: xr.Dataset):
     15. Change interp_mask.description to 'true where values have been interpolated'
 
     16. Fix latest V2 granuels: under va in the stable_shift_flag_description there’s a typo …< 15 meter/yearr… with two r’s
+
+    17. Add id_img1, id_img2 attributes to img_pair_info. For example, for granule filename
+        S1A_IW_SLC__1SDV_20220627T125747_20220627T125815_043849_053C18_DD96_X_S1A_IW_SLC__1SDV_20220709T125748_20220709T125816_044024_054146_7026_G0120V02_P094.nc:
+
+        string img_pair_info:id_img1 = "S1A_IW_SLC__1SDV_20220627T125747_20220627T125815_043849_053C18_DD96" ;
+        string img_pair_info:id_img2 = "S1A_IW_SLC__1SDV_20220709T125748_20220709T125816_044024_054146_7026" ;
     """
     _conventions = 'Conventions'
     _cf_value = 'CF-1.8'
@@ -240,6 +252,7 @@ def fix_metadata(ds: xr.Dataset):
 
     # 2. img_pair_info:standard_name = "image_pair_information"
     ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.STD_NAME] = "image_pair_information"
+
 
     # Adding crs_wkt (redundant with spatial_ref) expands interoperability
     # with geolocation tools:
@@ -335,6 +348,8 @@ def fix_all(source_bucket: str, source_dir: str, target_dir: str, granule_url: s
     Fix everything in the granule.
     """
     _v_description = "velocity magnitude"
+    _id_img1 = 'id_img1'
+    _id_img2 = 'id_img2'
 
     msgs = [f'Processing {granule_url}']
 
@@ -360,6 +375,11 @@ def fix_all(source_bucket: str, source_dir: str, target_dir: str, granule_url: s
             else:
                 # Apply all the fixes
                 ds = fix_metadata(ds)
+
+                # 17. Add id_img1, id_img2 attributes to img_pair_info.
+                granule_basename_tokens = os.path.basename(granule_url).split('_X_')
+                ds[DataVars.ImgPairInfo.NAME].attrs[_id_img1] = granule_basename_tokens[0]
+                ds[DataVars.ImgPairInfo.NAME].attrs[_id_img2] = granule_basename_tokens[1][:-17]
 
             # Write the granule locally, upload it to the bucket, remove local file
             granule_basename = os.path.basename(granule_url)
