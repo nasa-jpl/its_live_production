@@ -576,10 +576,10 @@ def main():
         help='Dry run, do not apply any fixes to the granules stored in AWS S3 bucket'
     )
     parser.add_argument(
-        '--granule_list',
+        '--glob_pattern',
         type=str,
-        default='used_granules.json',
-        help='Read granule file list to avoid time consuming glob of S3 bucket [%(default)s]'
+        default='*/*.nc',
+        help='Glob pattern to use to collect existing granules in the source directory of the S3 bucket [%(default)s]'
     )
     parser.add_argument(
         '-start_index',
@@ -617,12 +617,12 @@ def main():
 
     # Read in granule file list from S3 file
     granule_list = None
-    granule_list_file = os.path.join(args.bucket, args.bucket_dir, args.granule_list)
+    granule_list = s3fs.S3FileSystem().glob(f'{os.path.join(FixSentinel1Granules.BUCKET, FixSentinel1Granules.BUCKET_DIR)}/{args.glob_pattern}')
+    logging.info(f"Found {len(granule_list)} granules from '{FixSentinel1Granules.BUCKET_DIR}'")
 
-    logging.info(f"Opening granules file: {granule_list_file}")
-    with s3fs.S3FileSystem().open(granule_list_file, 'r') as granule_fhandle:
-        granule_list = json.load(granule_fhandle)
-        logging.info(f"Loaded {len(granule_list)} granules from '{granule_list_file}'")
+    # Save granule list locally
+    with open('sentinel1_granules.txt', 'w') as fhandle:
+        json.dump(granule_list, fhandle)
 
     fix_metadata = FixSentinel1Granules(
         granule_list,
