@@ -250,10 +250,6 @@ def fix_metadata(ds: xr.Dataset):
     # 14. Change global attribute 'motion_coordinates':  'radar, map' (from 'radar')
     ds.attrs[_motion_coordinates] = _motion_coordinates_value
 
-    # 2. img_pair_info:standard_name = "image_pair_information"
-    ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.STD_NAME] = "image_pair_information"
-
-
     # Adding crs_wkt (redundant with spatial_ref) expands interoperability
     # with geolocation tools:
     # 3a. Add "crs_wkt" which is a duplicate of "spatial_ref"
@@ -363,6 +359,9 @@ def fix_all(source_bucket: str, source_dir: str, target_dir: str, granule_url: s
             # V2 latest campaign
             # 5a. v:description = "velocity magnitude"
             ds[DataVars.V].attrs[DataVars.DESCRIPTION_ATTR] = _v_description
+
+            # 2. img_pair_info:standard_name = "image_pair_information"
+            ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.STD_NAME] = "image_pair_information"
 
             # Check if granule confirms to the new format already, then fix v.description only
             if DataVars.STABLE_SHIFT_MASK in ds[DataVars.VX].attrs:
