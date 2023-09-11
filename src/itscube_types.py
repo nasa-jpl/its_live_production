@@ -19,8 +19,8 @@ class ShapeFile:
         FLOATINGICE: 'floating ice mask',
     }
     Description = {
-        LANDICE: 'land ice mask, 1 = land-ice, 0 = non-land-ice',
-        FLOATINGICE: 'floating ice mask, 1 = floating-ice, 0 = non-floating-ice',
+        LANDICE: 'land ice mask, 0 = non-land-ice, 1 = land-ice',
+        FLOATINGICE: 'floating ice mask, 0 = non-floating-ice, 1 = floating-ice',
     }
 
 
