@@ -1146,13 +1146,18 @@ class ITSCube:
         """
         Return xr.DataArray that corresponds to the data variable if it exists
         in the 'ds' dataset, or empty xr.DataArray if it is not present in the 'ds'.
+        If requested datatype for output data is not of data's original type, convert data 
         Empty xr.DataArray assumes the same dimensions as ds.v data array.
         """
-
         if var_name in ds:
             if data_dtype and ds[var_name].dtype != np.dtype(data_dtype):
-                # Return as requested type
-                return ds[var_name].astype(data_dtype)
+                # Return data of requested type with corresponding "missing_value"
+                return xr.DataArray(
+                    data=to_int_type(ds[var_name].values, data_type=np.dtype(data_dtype), fill_value=data_fill_value),
+                    coords=ds[var_name].coords,
+                    dims=ds[var_name].dims,
+                    attrs=ds[var_name].attrs
+                )
 
             return ds[var_name]
 
@@ -1318,7 +1323,7 @@ class ITSCube:
                 empty = True
 
             else:
-                mask_data = ds.where(mask_lon & mask_lat, drop=True)
+                mask_data = ds.where(mask, drop=True)
 
                 # Another way to filter (have to put min/max values in the order
                 # corresponding to the grid)
