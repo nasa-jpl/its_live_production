@@ -17,6 +17,7 @@ from pathlib import Path
 import psutil
 import pyproj
 import shutil
+import time
 import timeit
 import zarr
 import dask
@@ -353,7 +354,7 @@ class ITSCube:
 
         self.logger.info(f"ITS_LIVE search API params: {params}")
         start_time = timeit.default_timer()
-        found_urls = [each['url'] for each in itslive_utils.get_granule_urls_streamed(params, total_retries=3)]
+        found_urls = [each['url'] for each in itslive_utils.get_granule_urls_streamed(params, total_retries=10, num_seconds=45)]
 
         # Beware that entries in 'found_urls' list are not always returned in
         # the same order as in previous query. This might result in excluding only
@@ -889,7 +890,11 @@ class ITSCube:
             gc.collect()
 
             for each_ds in results[0]:
-                self.add_layer(*each_ds)
+                if len(each_ds[0]):
+                    # There were exceptions reading the data, log it
+                    self.logging.info('--->'.join(each_ds[0]))
+
+                self.add_layer(*each_ds[1:])
 
             del results
             gc.collect()
@@ -962,7 +967,11 @@ class ITSCube:
             gc.collect()
 
             for each_ds in results[0]:
-                self.add_layer(*each_ds)
+                if len(each_ds[0]):
+                    # There were exceptions reading the data, log it
+                    self.logging.info('--->'.join(each_ds[0]))
+
+                self.add_layer(*each_ds[1:])
 
             del results
             gc.collect()
@@ -1146,7 +1155,7 @@ class ITSCube:
         """
         Return xr.DataArray that corresponds to the data variable if it exists
         in the 'ds' dataset, or empty xr.DataArray if it is not present in the 'ds'.
-        If requested datatype for output data is not of data's original type, convert data 
+        If requested datatype for output data is not of data's original type, convert data
         Empty xr.DataArray assumes the same dimensions as ds.v data array.
         """
         if var_name in ds:
@@ -2244,16 +2253,49 @@ class ITSCube:
         with xr.open_dataset(url) as ds:
             return self.preprocess_dataset(ds, url)
 
-    def read_s3_dataset(self, each_url: str, s3):
+    def read_s3_dataset(
+            self,
+            each_url: str,
+            s3: s3fs.S3FileSystem,
+            total_retries: int = 5,
+            num_seconds: int = 15
+    ):
         """
-        Read Dataset from the S3 bucket and pre-process for the cube layer.
+        Read Dataset from the S3 bucket and pre-process it for the cube layer.
+        Return re-tried exceptions messages, if any, and cube layer information.
+
+        each_url: Granule S3 URL.
+        s3: s3fs.S3FileSystem object to access the granule from.
+        total_retries: Number of retries in a case of exception
+        num_seconds: Number of seconds to sleep between retries.
         """
         s3_path = each_url.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
         s3_path = s3_path.replace(ITSCube.PATH_URL, '')
 
-        with s3.open(s3_path, mode='rb') as fhandle:
-            with xr.open_dataset(fhandle, engine=ITSCube.NC_ENGINE) as ds:
-                return self.preprocess_dataset(ds, each_url)
+        num_retries = 0
+        got_granule = False
+
+        exception_info = []
+
+        while not got_granule and num_retries < total_retries:
+            num_retries += 1
+            try:
+                with s3.open(s3_path, mode='rb') as fhandle:
+                    with xr.open_dataset(fhandle, engine=ITSCube.NC_ENGINE) as ds:
+                        results = self.preprocess_dataset(ds, each_url)
+                        return exception_info, *results
+
+            except RuntimeError:
+                # Re-raise the exception
+                raise
+
+            except:
+                # Other types of exceptions (like botocore.exceptions.ResponseStreamingError)
+                exception_info.append(f'Got exception reading {s3_path}: {sys.exc_info()}')
+                if num_retries < total_retries:
+                    # Sleep if it's not last attempt
+                    exception_info.append(f'Sleeping for {num_seconds} seconds...')
+                    time.sleep(num_seconds)
 
     @staticmethod
     def plot(cube, variable, boundaries: tuple = None):
@@ -2467,7 +2509,6 @@ if __name__ == '__main__':
     import argparse
     import warnings
     import sys
-    import time
 
     warnings.filterwarnings('ignore')
 
@@ -2807,7 +2848,7 @@ if __name__ == '__main__':
         # This is to eliminate out of disk space failures when the same EC2 instance is
         # being re-used by muliple Batch jobs.
         if len(args.outputBucket) and len(ITSCube.SKIPPED_GRANULES_FILE) and \
-           os.path.exists(ITSCube.SKIPPED_GRANULES_FILE):
+                os.path.exists(ITSCube.SKIPPED_GRANULES_FILE):
             logging.info(f'Removing local copy of {ITSCube.SKIPPED_GRANULES_FILE}')
             os.unlink(ITSCube.SKIPPED_GRANULES_FILE)
 
