@@ -619,7 +619,8 @@ class ITSLiveAnnualMosaics:
             "-i", mosaics_file,
             "-o", reproject_mosaics_filename,
             "-p", str(epsg),
-            "-m", reproject_matrix_filename
+            "-m", reproject_matrix_filename,
+            "-v"  # Enable verbose mode for debugging
         ]
         logging.info(' '.join(command_line))
 
@@ -2389,21 +2390,21 @@ def parse_args():
         '-d', '--cubeDir',
         type=str,
         action='store',
-        default='datacubes/v02_latest',
+        default='datacubes/v2',
         help="S3 directory with datacubes [%(default)s]"
     )
     parser.add_argument(
         '-s', '--compositesDir',
         type=str,
         action='store',
-        default='composites/annual/v02_latest',
+        default='composites/annual/v2',
         help="Destination S3 directory with composites [%(default)s]"
     )
     parser.add_argument(
         '-m', '--mosaicsDir',
         type=str,
         action='store',
-        default='mosaics/annual/v02_latest',
+        default='mosaics/annual/v2',
         help="Destination S3 directory to store mosaics to [%(default)s]"
     )
     parser.add_argument(
@@ -2440,7 +2441,7 @@ def parse_args():
         action='store',
         default=None,
         help='EPSG code to create intermediate mosaics for [%(default)s]. This is '
-             'lazy parallelization.'
+            'lazy parallelization.'
     )
     parser.add_argument(
         '--mergeYear',
@@ -2448,7 +2449,7 @@ def parse_args():
         action='store',
         default=None,
         help="Year to merge intermediate mosaics for [%(default)s]. This is done "
-             "to do lazy parallelization."
+            "to do lazy parallelization."
     )
     parser.add_argument(
         '-g', '--gridCellSize',
@@ -2460,7 +2461,7 @@ def parse_args():
         '--dryrun',
         action='store_true',
         default=False,
-        help='Dry run, do not actually submit any AWS Batch jobs'
+        help='Dry run, do not copy mosaics to AWS S3 bucket'
     )
     parser.add_argument(
         '-n', '--engine',
