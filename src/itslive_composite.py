@@ -477,8 +477,8 @@ def init_lsq_fit1(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, a
 
     return (results_valid, start_year, stop_year, v_in, v_err_in, dyr, totalnum, M_in)
 
-
-@nb.jit(nopython=True) 
+# FOR_DEBUGGING_ONLY: _enable_debug = True: logging is not working with numba
+@nb.jit(nopython=True)
 def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input, mad_thresh, mad_std_ratio):
     """
     Initialize variables for LSQ fit.
@@ -578,7 +578,7 @@ def create_v0_years_mask(start_year, stop_year, v0_years):
     #  Reduce number of image pairs only to the provided range: v0_years[0] <= mid_date < v0_years[-1]+1
     mid_date = start_year + (stop_year - start_year)/2.0
 
-    v0_year_mask = (mid_date >= v0_years[0]) & (mid_date < (v0_years[-1]+1)) 
+    v0_year_mask = (mid_date >= v0_years[0]) & (mid_date < (v0_years[-1]+1))
     return v0_year_mask
 
 
@@ -764,7 +764,7 @@ def itslive_lsqfit_annual(
     count[ind] = N_int
 
     offset, slope, se = np.nan, np.nan, np.nan
-    
+
     # Reduce input data to specified years to compute climatological values
     v0_ind = itersect_years(y1, v0_years)
 
@@ -773,7 +773,7 @@ def itslive_lsqfit_annual(
         offset, slope, se = weighted_linear_fit(y1[v0_ind], mean[ind][v0_ind], error[ind][v0_ind])
 
     # If there is more than 1 iterations for LSQ fit invoked above, then all data vars (start_year, stop_year, dyr, etc.)
-    # might be reduced by "non_outlier_mask" mask in last iteration. Therefore, the v0_year_mask must be applied to the 
+    # might be reduced by "non_outlier_mask" mask in last iteration. Therefore, the v0_year_mask must be applied to the
     # initial values of these data variables. Confirm with Alex that it's the case. For now just raise an
     # exception if more than 1 iterations are required.
     if _mad_filter_iterations > 1:
@@ -848,7 +848,7 @@ def itslive_lsqfit_annual(
 
                 y1 = y1[hasdata]
                 M = M[:, hasdata]
-    
+
         # logging.info(f'Reducing count_image_pairs from {count_image_pairs} to {M[_v0_year_mask, :].shape[0]}')
         count_image_pairs = M.shape[0]
 
@@ -881,16 +881,16 @@ def itslive_lsqfit_annual(
         # Compute climatology amplitude error based on annual values
         amp_error = np.sqrt((A_err**2).sum())/(Nyrs-1)
 
-    if _enable_debug:
-        logging.info(f'ind: {ind}')
-        logging.info(f'y1: {y1}')
-        logging.info(f'mean: {mean[ind]}')
-        logging.info(f'error: {error[ind]}')
-        logging.info(f'count: {count[ind]}')
-        logging.info(f'count_image_pairs: {count_image_pairs}')
-        logging.info(f'offset: {offset}')
-        logging.info(f'slope: {slope}')
-        logging.info(f'se: {se}')
+    # if _enable_debug:
+    #     logging.info(f'ind: {ind}')
+    #     logging.info(f'y1: {y1}')
+    #     logging.info(f'mean: {mean[ind]}')
+    #     logging.info(f'error: {error[ind]}')
+    #     logging.info(f'count: {count[ind]}')
+    #     logging.info(f'count_image_pairs: {count_image_pairs}')
+    #     logging.info(f'offset: {offset}')
+    #     logging.info(f'slope: {slope}')
+    #     logging.info(f'se: {se}')
 
     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs])
 
@@ -1022,6 +1022,8 @@ def climatology_magnitude(
     if np.sum(invalid_mask) > 0:
         # Since it's invalid v0, report all output as invalid
         v[invalid_mask] = np.nan
+        vx0[invalid_mask] = np.nan
+        vy0[invalid_mask] = np.nan
 
     uv_x = vx0/v  # unit flow vector in x direction
     uv_y = vy0/v  # unit flow vector in y direction
@@ -1118,7 +1120,7 @@ def climatology_magnitude(
     return v, dv_dt, v_amp, v_amp_err, v_phase, v_se
 
 
-# @nb.jit(nopython=True): numba does not support datetime objects - can probably convert 
+# @nb.jit(nopython=True): numba does not support datetime objects - can probably convert
 #  the datetime to decimal year and pass into the function as an argument instead
 def weighted_linear_fit(t, v, v_err, datetime0=CENTER_DATE):
     """
@@ -2251,6 +2253,15 @@ class ITSLiveComposite:
         # x_start = 639
         # x_num_to_process = 1
 
+        # Debug "numpy.linalg.LinAlgError: SVD did not converge in Linear Least Squares" for
+        # ITS_LIVE_vel_EPSG3031_G0120_X-50000_Y1750000.zarr
+        # x_num_to_process = 100
+        # x_start = 400
+
+        # Debug large vx and vy in Malaspina cube
+        # x_start = 650
+        # x_num_to_process = 100
+
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
         # ======================
@@ -2276,6 +2287,13 @@ class ITSLiveComposite:
             # y_start = 298  # huge value
             # y_start = 299  # good value
             # y_num_to_process = 1
+
+            # Debug "numpy.linalg.LinAlgError: SVD did not converge in Linear Least Squares" for
+            # ITS_LIVE_vel_EPSG3031_G0120_X-50000_Y1750000.zarr
+            # y_num_to_process = 100
+
+            # Debug large vx and vy in Malaspina cube
+            # y_num_to_process = 100
 
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # For debugging only
@@ -2408,7 +2426,7 @@ class ITSLiveComposite:
             ITSLiveComposite.STOP_DECIMAL_YEAR,
             ITSLiveComposite.V0_YEARS
         )
- 
+
         count_mask = ~np.isnan(vx[..., _v0_year_mask])
         count0_vx = count_mask.sum(axis=2)
 
@@ -2769,9 +2787,13 @@ class ITSLiveComposite:
         # Nan out invalid values
         invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT)
         self.mean.v[invalid_mask] = np.nan
+        self.mean.vx[invalid_mask] = np.nan
+        self.mean.vy[invalid_mask] = np.nan
 
         invalid_mask = (self.amplitude.v > ITSLiveComposite.V_AMP_LIMIT)
         self.amplitude.v[invalid_mask] = np.nan
+        self.amplitude.vx[invalid_mask] = np.nan
+        self.amplitude.vy[invalid_mask] = np.nan
 
     def to_zarr(self, output_store: str, s3_bucket: str):
         """
