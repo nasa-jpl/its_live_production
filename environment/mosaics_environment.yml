@@ -18,13 +18,13 @@ channels:
 # Use MKL installation of numpy: from "defaults" channel,
 # as "conda-forge" channel provides OpenBLAS installation of numpy (slower)
 dependencies:
-  - python==3.9.6
+  - python==3.9*
   - dask==2.30.0
   - geopandas==0.9.*
   - gdal
   - pandas
   - defaults::numpy
-  - numpy
+  - numpy==1.21.5
   - numba==0.55.0
   - h5py
   - h5netcdf
@@ -33,7 +33,7 @@ dependencies:
   - xarray==0.20.1
   - netcdf4
   - flake8
-  - scipy
+  - scipy==1.9.1
   - s3fs==0.4.2
   - fsspec==0.8.3
   - shapely
@@ -45,4 +45,4 @@ dependencies:
     - geojson
     - awscliv2
     - rioxarray
-    # - taichi
+    - taichi==1.1.3
