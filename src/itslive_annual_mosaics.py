@@ -346,7 +346,7 @@ class ITSLiveAnnualMosaics:
 
         cubes_file: GeoJson catalog file with existing datacube's Zarr S3 URLs.
         s3_bucket: S3 bucket that stores all data (assumes that all datacubes,
-                   composites, and mosaics are stored in the same bucket).
+                    composites, and mosaics are stored in the same bucket).
         cube_dir:  Directory path within S3 bucket that stores datacubes.
         composite_dir: Directory path within S3 bucket that stores datacubes' composites.
         mosaics_dir:   Directory path within S3 bucket that stores datacubes' mosaics.
@@ -444,7 +444,7 @@ class ITSLiveAnnualMosaics:
 
         cubes_file: GeoJson catalog file with existing datacubes' Zarr S3 URLs.
         s3_bucket: S3 bucket that stores all data (assumes that all datacubes,
-                   composites, and mosaics are stored in the same bucket).
+                    composites, and mosaics are stored in the same bucket).
         cube_dir:  Directory path within S3 bucket that stores datacubes.
         composite_dir: Directory path within S3 bucket that stores datacubes' composites.
         """
@@ -567,13 +567,13 @@ class ITSLiveAnnualMosaics:
                     # Check if composite exists in S3 bucket (should exist, just to be sure)
                     composite_exists = self.s3.ls(composite_s3)
                     if len(composite_exists) == 0:
-                        logging.info(f"Datacube composite {composite_s3} does not exist, skipping.")
+                        logging.info(f"Composite {composite_s3} does not exist, skipping.")
                         continue
 
                     if composite_s3 in all_composites:
                         # TODO: For now just issue a warning. Once composites are re-created, enable exception
-                        # raise RuntimeError(f'Composite {composite_s3} already exists for {all_composites[composite_s3]} datacube. Check on {cube_s3}!!!')
-                        logging.info(f'WARNING_ATTENTION: Composite {composite_s3} already exists for {all_composites[composite_s3]} datacube. Check on {cube_s3}!!!')
+                        raise RuntimeError(f'Composite {composite_s3} already exists for {all_composites[composite_s3]} datacube. Check on {cube_s3}!!!')
+                        # logging.info(f'WARNING_ATTENTION: Composite {composite_s3} already exists for {all_composites[composite_s3]} datacube. Check on {cube_s3}!!!')
 
                     all_composites[composite_s3] = cube_s3
 
@@ -717,9 +717,11 @@ class ITSLiveAnnualMosaics:
                 # from composites filenames
                 ds_projection = int(ds_from_zarr.attrs['projection'])
                 if epsg_code != ds_projection:
-                    logging.info(f'WARNING_ATTENTION: ds.projection {ds_projection} '
-                                 f'differs from epsg_code {epsg_code} being processed for '
-                                 f'{composite_s3_path}, ignoring the file')
+                    logging.info(
+                        f'WARNING_ATTENTION: ds.projection {ds_projection} '
+                        f'differs from epsg_code {epsg_code} being processed for '
+                        f'{composite_s3_path}, ignoring the file'
+                    )
                     # For now to be able to test with "combo" composites, don't
                     # include such composite for EPSG
                     continue
@@ -1138,8 +1140,8 @@ class ITSLiveAnnualMosaics:
         contributed to the mosaic into separate json file (for traceability).
 
         first_ds: xarray.Dataset object that represents any (first) composite dataset.
-                  It's used to collect global attributes that are applicable to the
-                  mosaics.
+                It's used to collect global attributes that are applicable to the
+                mosaics.
         s3_bucket: AWS S3 bucket to place result mosaics file in.
         mosaics_dir: AWS S3 directory to place mosaics in.
         copy_to_s3: Boolean flag to indicate if generated mosaics files should be copied
@@ -1325,6 +1327,12 @@ class ITSLiveAnnualMosaics:
 
                 logging.info(f'Merging {each_var} from {each_file}')
 
+                # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
+                # get mask for all valid magnitude values, then mask out corresponding
+                # X and Y components
+                v0_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V0])
+                v_amp_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V_AMP])
+
                 # Skip the variable if it's not present in any of previous mosaics
                 if skip_var:
                     # Remove variable if it was skipped from some of mosaics
@@ -1355,7 +1363,14 @@ class ITSLiveAnnualMosaics:
                     if CompOutput.SENSORS_LABELS in ds[ds_var].attrs:
                         ds[ds_var].attrs[CompOutput.SENSORS_LABELS] = sensors_labels
 
-                data_list.append(each_ds.s3.ds[each_var].load())
+                if each_var in [CompDataVars.VX0, CompDataVars.VY0]:
+                    data_list.append(each_ds.s3.ds[each_var].where(v0_valid_mask, np.nan))
+
+                elif each_var in [CompDataVars.VX_AMP, CompDataVars.VY_AMP]:
+                    data_list.append(each_ds.s3.ds[each_var].where(v_amp_valid_mask, np.nan))
+
+                else:
+                    data_list.append(each_ds.s3.ds[each_var].load())
 
                 if len(data_list) > 1:
                     # Concatenate once we have 2 arrays
@@ -1378,8 +1393,10 @@ class ITSLiveAnnualMosaics:
                 # If there is only one mosaic contributing to the final dataset,
                 # no need to average the values
                 if len(data_list) == 0:
-                    raise RuntimeError('At least one mosaic should have contributed '
-                                       'to the final dataset, none are found')
+                    raise RuntimeError(
+                        'At least one mosaic should have contributed '
+                        'to the final dataset, none are found'
+                    )
 
                 logging.info(f'Using only one available mosaic for {each_var}')
                 avg_overlap = data_list[0]
@@ -1461,8 +1478,8 @@ class ITSLiveAnnualMosaics:
         merged - thus all metadata is set when static mosaics are processed.
 
         first_ds: xarray.Dataset object that represents any (first) composite dataset.
-                  It's used to collect global attributes that are applicable to the
-                  mosaics.
+                It's used to collect global attributes that are applicable to the
+                mosaics.
         year: Year for the mosaic to create.
         s3_bucket: AWS S3 bucket to place result mosaics file in.
         mosaics_dir: AWS S3 directory to place mosaics in.
@@ -1543,8 +1560,13 @@ class ITSLiveAnnualMosaics:
                 # If any of the mosaics have the variable missing, skip the whole variable
                 if skip_var:
                     logging.info(f'WARNING: skipping {each_var} from {each_file} '
-                                 f'since it is missing from previous mosaics')
+                                f'since it is missing from previous mosaics')
                     continue
+
+                # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
+                # get mask for all valid magnitude values, then mask out corresponding
+                # X and Y components
+                v_valid_mask = ~np.isnan(each_ds.s3.ds[DataVars.V])
 
                 if each_var not in ds:
                     # Create data variable
@@ -1555,7 +1577,11 @@ class ITSLiveAnnualMosaics:
                         attrs=each_ds.s3.ds[each_var].attrs
                     )
 
-                data_list.append(each_ds.s3.ds[each_var].load())
+                if each_var in [DataVars.VX, DataVars.VY]:
+                    data_list.append(each_ds.s3.ds[each_var].where(v_valid_mask, np.nan))
+
+                else:
+                    data_list.append(each_ds.s3.ds[each_var].load())
 
                 if len(data_list) > 1:
                     # Concatenate once we have 2 arrays
@@ -1586,8 +1612,10 @@ class ITSLiveAnnualMosaics:
                 # If there is only one mosaic contributing to the final dataset,
                 # no need to average the values
                 if len(data_list) == 0:
-                    raise RuntimeError('At least one mosaic should have contributed '
-                                       'to the final dataset, none are found')
+                    raise RuntimeError(
+                        'At least one mosaic should have contributed '
+                        'to the final dataset, none are found'
+                    )
 
                 logging.info(f'Using only one available mosaic for {each_var}')
                 avg_overlap = data_list[0]
@@ -1876,8 +1904,8 @@ class ITSLiveAnnualMosaics:
 
         ds_projection: EPSG projection for the current mosaics.
         first_ds: xarray.Dataset object that represents any (first) composite dataset.
-                  It's used to collect global attributes that are applicable to the
-                  mosaics.
+                It's used to collect global attributes that are applicable to the
+                mosaics.
         s3_bucket: AWS S3 bucket to place result mosaics file in.
         mosaics_dir: AWS S3 directory to place mosaics in.
         copy_to_s3: Boolean flag to indicate if generated mosaics files should be copied
@@ -2014,6 +2042,10 @@ class ITSLiveAnnualMosaics:
                 ds_var = each_var
                 if rename_zero_based_data_vars:
                     ds_var = each_var.replace('0', '')
+
+                # CONTINUE
+                # TODO: Have to mask out large X and Y component values for v0 -
+                # this is to handle issue #20 workaround for composites that were affected
 
                 if each_var not in ds:
                     # Create data variable in result dataset
