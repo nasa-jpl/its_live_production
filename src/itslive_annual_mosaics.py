@@ -1685,8 +1685,7 @@ class ITSLiveAnnualMosaics:
 
         ds_projection: EPSG projection for the current mosaics.
         first_ds: xarray.Dataset object that represents any (first) composite dataset.
-                  It's used to collect global attributes that are applicable to the
-                  mosaics.
+                It's used to collect global attributes that are applicable to the mosaics.
         year_date: Datetime object for the mosaic to create.
         s3_bucket: AWS S3 bucket to place result mosaics file in.
         mosaics_dir: AWS S3 directory to place mosaics in.
@@ -1753,6 +1752,11 @@ class ITSLiveAnnualMosaics:
                 # Composites have data for the year
                 year_index = each_ds.time.index(year_date.year)
 
+                # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
+                # get mask for all valid magnitude values, then mask out corresponding
+                # X and Y components
+                v_valid_mask = ~np.isnan(each_ds.s3.ds[DataVars.V])
+
                 for each_var in ITSLiveAnnualMosaics.ANNUAL_VARS:
                     # To support old composites
                     if each_var not in each_ds.s3.ds:
@@ -1766,7 +1770,11 @@ class ITSLiveAnnualMosaics:
                             ds[each_var] = each_ds.s3.ds[each_var].load()
 
                         else:
-                            ds[each_var] = each_ds.s3.ds[each_var][year_index].load()
+                            if each_var in [DataVars.VX, DataVars.VY]:
+                                ds[each_var] = each_ds.s3.ds[each_var][year_index].where(v_valid_mask[year_index], np.nan)
+
+                            else:
+                                ds[each_var] = each_ds.s3.ds[each_var][year_index].load()
 
                         ds[each_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
 
@@ -1777,7 +1785,11 @@ class ITSLiveAnnualMosaics:
                             ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var].load()
 
                         else:
-                            ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var][year_index].load()
+                            if each_var in [DataVars.VX, DataVars.VY]:
+                                ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var][year_index].where(v_valid_mask[year_index], np.nan)
+
+                            else:
+                                ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var][year_index].load()
 
             else:
                 logging.warning(f'{each_file} does not have data for {year_date.year} year, skipping.')
@@ -2029,6 +2041,12 @@ class ITSLiveAnnualMosaics:
         for each_file, each_ds in self.raw_ds.items():
             logging.info(f'Collecting summary data from {each_file}')
 
+            # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
+            # get mask for all valid magnitude values, then mask out corresponding
+            # X and Y components
+            v0_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V0])
+            v_amp_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V_AMP])
+
             for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
                 # logging.info(f'Collecting {each_var} from {each_file}')
 
@@ -2043,15 +2061,18 @@ class ITSLiveAnnualMosaics:
                 if rename_zero_based_data_vars:
                     ds_var = each_var.replace('0', '')
 
-                # CONTINUE
-                # TODO: Have to mask out large X and Y component values for v0 -
-                # this is to handle issue #20 workaround for composites that were affected
-
                 if each_var not in ds:
                     # Create data variable in result dataset
                     # This applies only to 2d variables as 3d variables need to
                     # be allocated before this loop
-                    ds[ds_var] = each_ds.s3.ds[each_var].load()
+                    if each_var in [CompDataVars.VX0, CompDataVars.VY0]:
+                        ds[ds_var] = each_ds.s3.ds[each_var].where(v0_valid_mask, np.nan)
+
+                    elif each_var in [CompDataVars.VX_AMP, CompDataVars.VY_AMP]:
+                        ds[ds_var] = each_ds.s3.ds[each_var].where(v_amp_valid_mask, np.nan)
+
+                    else:
+                        ds[ds_var] = each_ds.s3.ds[each_var].load()
 
                     # Set mapping attribute
                     ds[ds_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
@@ -2065,7 +2086,14 @@ class ITSLiveAnnualMosaics:
                         _coords = dict(x=each_ds.x, y=each_ds.y, sensor=each_ds.sensor)
 
                     # Update data variable in result dataset
-                    ds[ds_var].loc[_coords] = each_ds.s3.ds[each_var].load()
+                    if each_var in [CompDataVars.VX0, CompDataVars.VY0]:
+                        ds[ds_var].loc[_coords] = each_ds.s3.ds[each_var].where(v0_valid_mask, np.nan)
+
+                    elif each_var in [CompDataVars.VX_AMP, CompDataVars.VY_AMP]:
+                        ds[ds_var].loc[_coords] = each_ds.s3.ds[each_var].where(v_amp_valid_mask, np.nan)
+
+                    else:
+                        ds[ds_var].loc[_coords] = each_ds.s3.ds[each_var].load()
 
                 # Replace zeros in attributes:
                 if rename_zero_based_data_vars:
