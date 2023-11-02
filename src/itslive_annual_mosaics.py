@@ -2034,9 +2034,6 @@ class ITSLiveAnnualMosaics:
         # contribute to each of the static mosaic
         self.attrs = {key: [] for key in ITSLiveAnnualMosaics.ALL_ATTR}
 
-        # For debugging only to speed up the runtime
-        # index = 0
-
         # Concatenate data for each data variable
         for each_file, each_ds in self.raw_ds.items():
             logging.info(f'Collecting summary data from {each_file}')
@@ -2061,10 +2058,12 @@ class ITSLiveAnnualMosaics:
                 if rename_zero_based_data_vars:
                     ds_var = each_var.replace('0', '')
 
-                if each_var not in ds:
+                if ds_var not in ds:
                     # Create data variable in result dataset
                     # This applies only to 2d variables as 3d variables need to
                     # be allocated before this loop
+                    logging.info(f'Adding {each_var}')
+
                     if each_var in [CompDataVars.VX0, CompDataVars.VY0]:
                         ds[ds_var] = each_ds.s3.ds[each_var].where(v0_valid_mask, np.nan)
 
@@ -2078,6 +2077,8 @@ class ITSLiveAnnualMosaics:
                     ds[ds_var].attrs[DataVars.GRID_MAPPING] = DataVars.MAPPING
 
                 else:
+                    logging.info(f'Updating {each_var}')
+
                     _coords = dict(x=each_ds.x, y=each_ds.y)
                     if each_ds.s3.ds[each_var].ndim == 3:
                         # If it has a sensor dimension, then data variable is already in
