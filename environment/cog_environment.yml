@@ -1,0 +1,37 @@
+#
+# Configuration file to create conda environment to generate COG (Cloud Optimized GeoTiffs)
+# for ITS_LIVE composites.
+#
+# To create conda environment, run command:
+#
+# $ conda env create -f cog_environment.yml
+#
+# Followed by the following command to activate the environment:
+#
+# $ conda activate itslive_cog
+#
+name: itslive_cog
+
+channels:
+  - defaults
+  - conda-forge
+
+# Use MKL installation of numpy: from "defaults" channel,
+# as "conda-forge" channel provides OpenBLAS installation of numpy (slower)
+dependencies:
+  - python
+  - dask
+  - gdal
+  - h5py
+  - h5netcdf
+  - requests
+  - xarray
+  - flake8
+  - s3fs
+  - fsspec
+  - tqdm
+  - zarr
+  - pip
+  - pip:
+    - geojson
+    - awscliv2
