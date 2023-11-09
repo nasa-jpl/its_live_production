@@ -176,8 +176,8 @@ class CompositesCOG:
             cog_file,
             '-a_srs',
             f'epsg:{projection}',
-            # '-co',
-            # 'TILING_SCHEME=GoogleMapsCompatible'
+            '-co',
+            'TILING_SCHEME=GoogleMapsCompatible'
         ]
         msgs.append(' '.join(command_line))
 
