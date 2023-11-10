@@ -25,9 +25,11 @@ if __name__ == '__main__':
     )
 
     # Command-line arguments parser
-    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0],
-                                     epilog=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__.split('\n')[0],
+        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         '-c', '--cube_file',
         type=str,
@@ -59,6 +61,13 @@ if __name__ == '__main__':
         default=None,
         help="JSON list of RGI codes to extract datacubes for [%(default)s]."
     )
+    group.add_argument(
+        '--region_id',
+        type=str,
+        action='store',
+        default=None,
+        help="Region ID (introduced in V2 data) to extract datacubes for [%(default)s]"
+    )
 
     args = parser.parse_args()
     logging.info(f"Command-line arguments: {sys.argv}")
@@ -71,6 +80,12 @@ if __name__ == '__main__':
         # Region ID is provided
         attr_name = CubeJson.REGION
         attr_value = args.region
+        logging.info(f"Generating list for {attr_name}: {attr_value}")
+
+    elif args.region_id:
+        # Region ID is provided: introduced in final V2 catalog
+        attr_name = CubeJson.REGION_ID
+        attr_value = args.region_id
         logging.info(f"Generating list for {attr_name}: {attr_value}")
 
     elif args.rgi_code:
@@ -111,8 +126,8 @@ if __name__ == '__main__':
 
             if attr_name in properties:
                 if attr_name and \
-                   ((isinstance(attr_value, list) and properties[attr_name] in attr_value) or \
-                   (not isinstance(attr_value, list) and properties[attr_name] == attr_value)):
+                        ((isinstance(attr_value, list) and properties[attr_name] in attr_value) or \
+                        (not isinstance(attr_value, list) and properties[attr_name] == attr_value)):
                     cubes_to_generate.append(properties[CubeJson.URL])
 
     logging.info(f'Number of cubes for {attr_name}={attr_value}: {len(cubes_to_generate)}')
