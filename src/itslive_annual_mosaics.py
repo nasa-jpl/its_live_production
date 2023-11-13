@@ -1327,11 +1327,11 @@ class ITSLiveAnnualMosaics:
 
                 logging.info(f'Merging {each_var} from {each_file}')
 
-                # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
-                # get mask for all valid magnitude values, then mask out corresponding
-                # X and Y components
-                v0_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V0])
-                v_amp_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V_AMP])
+                # # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
+                # # get mask for all valid magnitude values, then mask out corresponding
+                # # X and Y components
+                # v0_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V0])
+                # v_amp_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V_AMP])
 
                 # Skip the variable if it's not present in any of previous mosaics
                 if skip_var:
@@ -1363,14 +1363,14 @@ class ITSLiveAnnualMosaics:
                     if CompOutput.SENSORS_LABELS in ds[ds_var].attrs:
                         ds[ds_var].attrs[CompOutput.SENSORS_LABELS] = sensors_labels
 
-                if each_var in [CompDataVars.VX0, CompDataVars.VY0]:
-                    data_list.append(each_ds.s3.ds[each_var].where(v0_valid_mask, np.nan))
+                # if each_var in [CompDataVars.VX0, CompDataVars.VY0]:
+                #     data_list.append(each_ds.s3.ds[each_var].where(v0_valid_mask, np.nan))
 
-                elif each_var in [CompDataVars.VX_AMP, CompDataVars.VY_AMP]:
-                    data_list.append(each_ds.s3.ds[each_var].where(v_amp_valid_mask, np.nan))
+                # elif each_var in [CompDataVars.VX_AMP, CompDataVars.VY_AMP]:
+                #     data_list.append(each_ds.s3.ds[each_var].where(v_amp_valid_mask, np.nan))
 
-                else:
-                    data_list.append(each_ds.s3.ds[each_var].load())
+                # else:
+                data_list.append(each_ds.s3.ds[each_var].load())
 
                 if len(data_list) > 1:
                     # Concatenate once we have 2 arrays
@@ -1563,10 +1563,10 @@ class ITSLiveAnnualMosaics:
                                 f'since it is missing from previous mosaics')
                     continue
 
-                # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
-                # get mask for all valid magnitude values, then mask out corresponding
-                # X and Y components
-                v_valid_mask = ~np.isnan(each_ds.s3.ds[DataVars.V])
+                # # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
+                # # get mask for all valid magnitude values, then mask out corresponding
+                # # X and Y components
+                # v_valid_mask = ~np.isnan(each_ds.s3.ds[DataVars.V])
 
                 if each_var not in ds:
                     # Create data variable
@@ -1577,11 +1577,11 @@ class ITSLiveAnnualMosaics:
                         attrs=each_ds.s3.ds[each_var].attrs
                     )
 
-                if each_var in [DataVars.VX, DataVars.VY]:
-                    data_list.append(each_ds.s3.ds[each_var].where(v_valid_mask, np.nan))
+                # if each_var in [DataVars.VX, DataVars.VY]:
+                #     data_list.append(each_ds.s3.ds[each_var].where(v_valid_mask, np.nan))
 
-                else:
-                    data_list.append(each_ds.s3.ds[each_var].load())
+                # else:
+                data_list.append(each_ds.s3.ds[each_var].load())
 
                 if len(data_list) > 1:
                     # Concatenate once we have 2 arrays
