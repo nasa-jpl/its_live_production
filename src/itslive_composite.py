@@ -359,7 +359,6 @@ def create_M(y1, start_year, stop_year, dyr):
 # Disable numba as its wrapper for lstsq does not support "rcond" input parameter for LSQ fit
 # @nb.jit(nopython=True)
 def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
-# def itslive_lsqfit_iteration(start_year, stop_year, M, w_d, d_obs):
     """
     LSQ fit iteration for a single spacial point of the datacube.
     """
@@ -665,7 +664,6 @@ def original_itslive_lsqfit_annual(
 
     if not results_valid:
         # There is no data to process, exit
-        # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
         return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
 
     # Compute outside of numba-compiled code as numba does not support a lot of scipy
@@ -683,7 +681,6 @@ def original_itslive_lsqfit_annual(
 
     if not results_valid:
         # There is no data to process, exit
-        # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
         return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
 
     # Filter sum of each column
@@ -727,7 +724,6 @@ def original_itslive_lsqfit_annual(
             if np.all(outliers):
                 # All are outliers, return from the function
                 results_valid = False
-                # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
                 return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
 
             if (outliers.sum() / totalnum) < 0.01:
@@ -752,7 +748,6 @@ def original_itslive_lsqfit_annual(
             if not np.any(hasdata):
                 # Since we are throwing away everything, report all as outliers
                 results_valid = False
-                # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
                 return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
 
             y1 = y1[hasdata]
@@ -847,7 +842,6 @@ def original_itslive_lsqfit_annual(
                 if np.all(outliers):
                     # All are outliers, return from the function
                     results_valid = False
-                    # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
                     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
 
                 if (outliers.sum() / totalnum) < 0.01:
@@ -872,7 +866,6 @@ def original_itslive_lsqfit_annual(
                 if not np.any(hasdata):
                     # Since we are throwing away everything, report all as outliers
                     results_valid = False
-                    # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
                     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
 
                 y1 = y1[hasdata]
@@ -921,7 +914,6 @@ def original_itslive_lsqfit_annual(
     #     logging.info(f'slope: {slope}')
     #     logging.info(f'se: {se}')
 
-    # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs], global_i, global_j]
     return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs], global_i, global_j)
 
 def itslive_lsqfit_annual(
@@ -981,13 +973,10 @@ def itslive_lsqfit_annual(
         v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, M_input
     )
 
-    # To make numba happy, pre-allocate the returned array of "empty" values
-    # empty_results = (0.0,) * 7
     empty_results = []
 
     if not results_valid:
         # There is no data to process, exit
-        # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
         return (results_valid, empty_results, global_i, global_j)
 
     # Compute outside of numba-compiled code as numba does not support a lot of scipy
@@ -1001,7 +990,6 @@ def itslive_lsqfit_annual(
 
     if not results_valid:
         # There is no data to process, exit
-        # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
         return (results_valid, empty_results, global_i, global_j)
 
     # Filter sum of each column
@@ -1043,7 +1031,6 @@ def itslive_lsqfit_annual(
             if np.all(outliers):
                 # All are outliers, return from the function
                 results_valid = False
-                # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
                 return (results_valid, empty_results, global_i, global_j)
 
             if (outliers.sum() / totalnum) < 0.01:
@@ -1068,7 +1055,6 @@ def itslive_lsqfit_annual(
             if not np.any(hasdata):
                 # Since we are throwing away everything, report all as outliers
                 results_valid = False
-                # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
                 return (results_valid, empty_results, global_i, global_j)
 
             y1 = y1[hasdata]
@@ -1163,7 +1149,6 @@ def itslive_lsqfit_annual(
                 if np.all(outliers):
                     # All are outliers, return from the function
                     results_valid = False
-                    # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
                     return (results_valid, empty_results, global_i, global_j)
 
                 if (outliers.sum() / totalnum) < 0.01:
@@ -1188,7 +1173,6 @@ def itslive_lsqfit_annual(
                 if not np.any(hasdata):
                     # Since we are throwing away everything, report all as outliers
                     results_valid = False
-                    # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j]
                     return (results_valid, empty_results, global_i, global_j)
 
                 y1 = y1[hasdata]
