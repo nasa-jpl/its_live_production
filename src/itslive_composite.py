@@ -1459,82 +1459,6 @@ def climatology_magnitude(
     return v, dv_dt, v_amp, v_amp_err, v_phase, v_se
 
 
-# @nb.jit(nopython=True): numba does not support datetime objects - can probably convert
-#  the datetime to decimal year and pass into the function as an argument instead
-def original_weighted_linear_fit(t, v, v_err, datetime0=CENTER_DATE):
-    """
-    Returns the offset, slope, and error for a weighted linear fit to v with an intercept of datetime0.
-
-    t: date (year) of input estimates
-    v: estimates
-    v_err: estimate errors
-    datetime0: model intercept
-    """
-    yr = np.array([decimal_year(datetime.datetime(each, CENTER_DATE.month, CENTER_DATE.day)) for each in t])
-    yr0 = decimal_year(datetime0)
-    yr = yr - yr0
-
-    # Per Chad:
-    # In the data testing Matlab script I posted, you may notice I added a step
-    # because in a few grid cells we were getting crazy velocities where, say,
-    # there were only v measurements in 2013 and 2014, and that meant we were
-    # extrapolating to get to 2019.5.
-    # To minimize the influence of such cases, we should
-    # * Only calculate the slope in grid cells that contain at least one valid
-    #   measurement before 2019 and at least one valid measurement after 2019.
-    #   That will constrain the values of v0 by ensuring we’re interpolating
-    #   between good measurements.
-    # * Wherever Condition 1 is not met, fill v0 with the weighted mean velocity
-    #   of whatever measurements are available.
-    # * Wherever Condition 1 is not met, fill dv_dt with NaN.
-    # If there is no data before or after datetime0.year, then return NaN's
-    valid = (~np.isnan(v)) & (~np.isnan(v_err))
-
-    if valid.sum() == 0:
-        # There are no valid entries
-        return np.nan, np.nan, np.nan
-
-    # weights for velocities:
-    w_v = 1 / (v_err**2)
-    w_v = w_v[valid]
-
-    before_datetime0 = (yr < 0)
-    after_datetime0 = (yr >= 0)
-
-    # Is there data on both sides of datatime0:
-    interpolate_data = np.any(valid & before_datetime0) and np.any(valid & after_datetime0)
-    if not interpolate_data:
-        # There is no valid data on both ends of the datetime0, populate:
-        # v0 (offset):   with weighted mean of whatever values are available
-        # dv_dt (slope): with NaN
-        offset = np.average(v[valid], weights=w_v)
-        slope = np.nan
-        error = np.sqrt((v_err[valid]**2).sum())/(valid.sum()-1)
-
-        return offset, slope, error
-
-    # Normalize the weights per Chad's suggestion before LSQ fit:
-    w_v = np.sqrt(w_v/np.mean(w_v))
-
-    # create design matrix
-    D = np.ones((len(yr), 2))
-    D[:, 1] = yr
-
-    # Solve for coefficients of each column in the Vandermonde:
-    # w_v = w_v[valid]
-    D = D[valid, :]
-
-    # Julia: offset, slope = (w_v[valid].*D[valid,:]) \ (w_v[valid].*v[valid]);
-    offset, slope = np.linalg.lstsq(w_v.reshape((len(w_v), 1)) * D, w_v*v[valid])[0]
-    # offset = p[0]
-    # slope = p[1]
-
-    # Julia: error = sqrt(sum(v_err[valid].^2))/(sum(valid)-1)
-    error = np.sqrt((v_err[valid]**2).sum())/(valid.sum()-1)
-
-    return offset, slope, error
-
-
 @nb.jit(nopython=True)
 def weighted_linear_fit(yr, v, v_err):
     """
@@ -2322,123 +2246,6 @@ class StableShiftFilter:
 
         return (return_vx, return_vy)
 
-def cubelsqfit2_parallel_loop_dask(
-    var_name,
-    start_x_chunk,
-    start_y_chunk,
-    x_len_chunk,
-    y_len_chunk,
-    v,
-    v_err,
-    start_decimal_year,
-    stop_decimal_year,
-    decimal_dt,
-    years,
-    M,
-    mad_std_ratio,
-    v0_years,
-    amplitude,
-    phase,
-    mean,
-    error,
-    sigma,
-    count,
-    count_image_pairs,
-    offset,
-    slope,
-    se
-):
-    """
-    Parallel loop for the cube LSQ fit with 2 iterations.
-
-    Populate: [amplitude, phase, mean, error, sigma, count, count_image_pairs, offset, slope, se]
-
-    Inputs:
-    =======
-    TODO:...
-    """
-    # Minimum number of non-NAN values in the data to proceed with LSQ fit
-    _num_valid_points = 5
-
-    init_time1 = 0
-    init_time2 = 0
-    init_time3 = 0
-    lsq_time = 0
-
-    tasks = []
-
-    # for j in tqdm(range(0, y_len_chunk), ascii=True, desc='cubelsqfit2: y'):
-    for j in range(0, y_len_chunk):
-        for i in range(0, x_len_chunk):
-            mask = ~np.isnan(v[j, i, :])
-            if mask.sum() < _num_valid_points:
-                # Skip the point, return no outliers
-                continue
-
-            global_i = i + start_x_chunk
-            global_j = j + start_y_chunk
-
-            tasks.append(
-                dask.delayed(itslive_lsqfit_annual)(
-                    var_name,
-                    v[j, i, :],
-                    v_err[j, i, :],
-                    start_decimal_year,
-                    stop_decimal_year,
-                    decimal_dt,
-                    years,
-                    M,
-                    mad_std_ratio,
-                    v0_years,
-                    # ITSLiveComposite.START_DECIMAL_YEAR,
-                    # ITSLiveComposite.STOP_DECIMAL_YEAR,
-                    # ITSLiveComposite.DECIMAL_DT,
-                    # ITSLiveComposite.YEARS,
-                    # ITSLiveComposite.M,
-                    # ITSLiveComposite.MAD_STD_RATIO,
-                    # ITSLiveComposite.V0_YEARS,
-                    mean[global_j, global_i, :],
-                    error[global_j, global_i, :],
-                    count[global_j, global_i, :],
-                    global_i, global_j
-                )
-            )
-        dask_results = None
-
-    with ProgressBar():
-        # Display progress bar
-        dask_results = dask.compute(
-            tasks,
-            scheduler="threads",
-            num_workers=ITSLiveComposite.NUM_DASK_THREADS
-        )
-
-    for each_result in dask_results[0]:
-        # logging.info(each_result)
-
-        results_valid, init_runtime1, init_runtime2, init_runtime3, lsq_runtime, results, global_i, global_j = each_result
-
-        init_time1 += init_runtime1
-        init_time2 += init_runtime2
-        init_time3 += init_runtime3
-        lsq_time += lsq_runtime
-
-        if not results_valid:
-            # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
-            continue
-
-        # Unpack results into corresponding data variables
-        amplitude[global_j, global_i], \
-            sigma[global_j, global_i], \
-            phase[global_j, global_i], \
-            offset[global_j, global_i], \
-            slope[global_j, global_i], \
-            se[global_j, global_i], \
-            count_image_pairs[global_j, global_i] = results
-
-        # logging.info(f'DEBUG: Offset [{global_j}, {global_i}]: {offset[global_j, global_i]}')
-    return init_time1, init_time2, init_time3, lsq_time
-
 
 class ITSLiveComposite:
     """
@@ -3039,7 +2846,6 @@ class ITSLiveComposite:
 
         # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
         # Transform vx data to make time series continuous in memory: [y, x, t]
-        # ITSLiveComposite.cubelsqfit2(
         cubelsqfit2(
             'vx',
             vx,
@@ -3061,7 +2867,6 @@ class ITSLiveComposite:
         start_time = timeit.default_timer()
 
         # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
-        # ITSLiveComposite.cubelsqfit2(
         cubelsqfit2(
             'vy',
             vy,
@@ -3153,7 +2958,6 @@ class ITSLiveComposite:
 
                 # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
                 # Transform vx data to make time series continuous in memory: [y, x, t]
-                # ITSLiveComposite.cubelsqfit2(
                 cubelsqfit2(
                     'vx_exclS2',
                     vx,
@@ -3175,7 +2979,6 @@ class ITSLiveComposite:
                 start_time = timeit.default_timer()
 
                 # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
-                # ITSLiveComposite.cubelsqfit2(
                 cubelsqfit2(
                     'vy_exclS2',
                     vy,
