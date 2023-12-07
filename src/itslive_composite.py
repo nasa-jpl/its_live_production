@@ -2814,8 +2814,8 @@ class ITSLiveComposite:
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
         # For debugging only
         # ======================
-        x_start = 600
-        x_num_to_process = 20
+        # x_start = 600
+        # x_num_to_process = 20
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -2848,8 +2848,8 @@ class ITSLiveComposite:
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
             # For debugging only
             # ======================
-            y_start = 200
-            y_num_to_process = 20
+            # y_start = 200
+            # y_num_to_process = 20
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -4208,368 +4208,6 @@ class ITSLiveComposite:
             # logging.info(f'DEBUG: Offset [{global_j}, {global_i}]: {offset[global_j, global_i]}')
         return init_time1, init_time2, init_time3, lsq_time
 
-    @staticmethod
-    def original_cubelsqfit2(
-        var_name,
-        v,
-        v_err_data,
-        amplitude,
-        phase,
-        mean,
-        error,
-        sigma,
-        count,
-        count_image_pairs,
-        offset,
-        slope,
-        se
-    ):
-        """
-        Cube LSQ fit with 2 iterations.
-
-        Populate: [amp, phase, mean, err, sigma, cnt]
-
-        Inputs:
-        =======
-        TODO:...
-        """
-        # Minimum number of non-NAN values in the data to proceed with LSQ fit
-        _num_valid_points = 5
-
-        # This is only done for generic parfor "slicing" may not be needed when
-        # recoded
-        v_err = v_err_data
-        if v_err_data.ndim != v.ndim:
-            # Expand vector to 3-d array
-            logging.info(f'Expand v_error from {v_err_data.ndim} to {v.ndim} dimensions...')
-
-            reshape_v_err = v_err_data.reshape((1, 1, v_err_data.size))
-            # v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
-            v_err = np.broadcast_to(
-                reshape_v_err,
-                (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, v_err_data.size)
-            )
-
-        tasks = []
-        for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
-            for i in range(0, ITSLiveComposite.Chunk.x_len):
-                mask = ~np.isnan(v[j, i, :])
-                if mask.sum() < _num_valid_points:
-                    # Skip the point, return no outliers
-                    continue
-
-                global_i = i + ITSLiveComposite.Chunk.start_x
-                global_j = j + ITSLiveComposite.Chunk.start_y
-
-                tasks.append(
-                    dask.delayed(itslive_lsqfit_annual)(
-                        var_name,
-                        v[j, i, :],
-                        v_err[j, i, :],
-                        # start_decimal_year,
-                        # stop_decimal_year,
-                        # decimal_dt,
-                        # years,
-                        # M,
-                        # mad_std_ratio,
-                        # v0_years,
-                        ITSLiveComposite.START_DECIMAL_YEAR,
-                        ITSLiveComposite.STOP_DECIMAL_YEAR,
-                        ITSLiveComposite.DECIMAL_DT,
-                        ITSLiveComposite.YEARS,
-                        ITSLiveComposite.M,
-                        ITSLiveComposite.MAD_STD_RATIO,
-                        ITSLiveComposite.V0_YEARS,
-                        mean[global_j, global_i, :],
-                        error[global_j, global_i, :],
-                        count[global_j, global_i, :],
-                        global_i, global_j
-                    )
-                )
-
-        dask_results = None
-
-        with ProgressBar():
-            # Display progress bar
-            dask_results = dask.compute(
-                tasks,
-                scheduler="threads",
-                num_workers=ITSLiveComposite.NUM_DASK_THREADS
-            )
-
-        init_time1 = 0
-        init_time2 = 0
-        init_time3 = 0
-        lsq_time = 0
-
-        for each_result in dask_results[0]:
-            # logging.info(each_result)
-
-            results_valid, init_runtime1, init_runtime2, init_runtime3, lsq_runtime, results, global_i, global_j = each_result
-
-            init_time1 += init_runtime1
-            init_time2 += init_runtime2
-            init_time3 += init_runtime3
-            lsq_time += lsq_runtime
-
-            if not results_valid:
-                # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
-                continue
-
-            # Unpack results into corresponding data variables
-            amplitude[global_j, global_i], \
-                sigma[global_j, global_i], \
-                phase[global_j, global_i], \
-                offset[global_j, global_i], \
-                slope[global_j, global_i], \
-                se[global_j, global_i], \
-                count_image_pairs[global_j, global_i] = results
-
-        # Use parallel loop empowered by numba
-        # cubelsqfit2_parallel_numba(
-        #     var_name,
-        #     ITSLiveComposite.Chunk.start_x,
-        #     ITSLiveComposite.Chunk.start_y,
-        #     ITSLiveComposite.Chunk.x_len,
-        #     ITSLiveComposite.Chunk.y_len,
-        #     v,
-        #     v_err,
-        #     ITSLiveComposite.START_DECIMAL_YEAR,
-        #     ITSLiveComposite.STOP_DECIMAL_YEAR,
-        #     ITSLiveComposite.DECIMAL_DT,
-        #     ITSLiveComposite.YEARS,
-        #     ITSLiveComposite.M,
-        #     ITSLiveComposite.MAD_STD_RATIO,
-        #     tuple(ITSLiveComposite.V0_YEARS),
-        #     amplitude,
-        #     phase,
-        #     mean,
-        #     error,
-        #     sigma,
-        #     count,
-        #     count_image_pairs,
-        #     offset,
-        #     slope,
-        #     se
-        # )
-
-        # Use parallel loop empowered by dask
-        use_dask_loop = False
-        if use_dask_loop:
-            # init_time1, init_time2, init_time3, lsq_time = ITSLiveComposite.cubelsqfit2_parallel_loop_dask(
-            init_time1, init_time2, init_time3, lsq_time = cubelsqfit2_parallel_loop_dask(
-                var_name,
-                ITSLiveComposite.Chunk.start_x,
-                ITSLiveComposite.Chunk.start_y,
-                ITSLiveComposite.Chunk.x_len,
-                ITSLiveComposite.Chunk.y_len,
-                v,
-                v_err,
-                ITSLiveComposite.START_DECIMAL_YEAR,
-                ITSLiveComposite.STOP_DECIMAL_YEAR,
-                ITSLiveComposite.DECIMAL_DT,
-                ITSLiveComposite.YEARS,
-                ITSLiveComposite.M,
-                ITSLiveComposite.MAD_STD_RATIO,
-                ITSLiveComposite.V0_YEARS,
-                amplitude,
-                phase,
-                mean,
-                error,
-                sigma,
-                count,
-                count_image_pairs,
-                offset,
-                slope,
-                se
-            )
-
-        # Original implementation
-        # init_time1 = 0
-        # init_time2 = 0
-        # init_time3 = 0
-        # lsq_time = 0
-
-        # # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
-        # for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
-        #     for i in range(0, ITSLiveComposite.Chunk.x_len):
-        # # for j in tqdm(nb.prange(ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
-        # #     for i in nb.prange(ITSLiveComposite.Chunk.x_len):
-        #         mask = ~np.isnan(v[j, i, :])
-        #         if mask.sum() < _num_valid_points:
-        #             # Skip the point, return no outliers
-        #             continue
-
-        #         global_i = i + ITSLiveComposite.Chunk.start_x
-        #         global_j = j + ITSLiveComposite.Chunk.start_y
-
-        #         results_valid, init_runtime1, init_runtime2, init_runtime3, lsq_runtime, results, _, _ = \
-        #             itslive_lsqfit_annual(
-        #                 var_name,
-        #                 v[j, i, :],
-        #                 v_err[j, i, :],
-        #                 ITSLiveComposite.START_DECIMAL_YEAR,
-        #                 ITSLiveComposite.STOP_DECIMAL_YEAR,
-        #                 ITSLiveComposite.DECIMAL_DT,
-        #                 ITSLiveComposite.YEARS,
-        #                 ITSLiveComposite.M,
-        #                 ITSLiveComposite.MAD_STD_RATIO,
-        #                 ITSLiveComposite.V0_YEARS,
-        #                 mean[global_j, global_i, :],
-        #                 error[global_j, global_i, :],
-        #                 count[global_j, global_i, :],
-        #                 global_i,
-        #                 global_j
-        #             )
-
-        #         init_time1 += init_runtime1
-        #         init_time2 += init_runtime2
-        #         init_time3 += init_runtime3
-        #         lsq_time += lsq_runtime
-
-        #         if not results_valid:
-        #             # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
-        #             continue
-
-        #         # Unpack results into corresponding data variables
-        #         amplitude[global_j, global_i], \
-        #             sigma[global_j, global_i], \
-        #             phase[global_j, global_i], \
-        #             offset[global_j, global_i], \
-        #             slope[global_j, global_i], \
-        #             se[global_j, global_i], \
-        #             count_image_pairs[global_j, global_i] = results
-
-        #         # logging.info(f'DEBUG: Offset [{global_j}, {global_i}]: {offset[global_j, global_i]}')
-
-
-        # Use multiprocessing
-        # Create a list to store the processes
-        # processes = []
-        # work_load = []
-
-        # init_runtime = timeit.default_timer()
-
-        # # Generate combinations of work per process
-        # for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: generate work combinations'):
-        #     for i in range(0, ITSLiveComposite.Chunk.x_len):
-        #         mask = ~np.isnan(v[j, i, :])
-        #         if mask.sum() < _num_valid_points:
-        #             # Skip the point, return no outliers
-        #             continue
-
-        #         global_i = i + ITSLiveComposite.Chunk.start_x
-        #         global_j = j + ITSLiveComposite.Chunk.start_y
-
-        #         work_load.append(
-        #             (
-        #                 var_name,
-        #                 v[j, i, :],
-        #                 v_err[j, i, :],
-        #                 ITSLiveComposite.START_DECIMAL_YEAR,
-        #                 ITSLiveComposite.STOP_DECIMAL_YEAR,
-        #                 ITSLiveComposite.DECIMAL_DT,
-        #                 ITSLiveComposite.YEARS,
-        #                 ITSLiveComposite.M,
-        #                 ITSLiveComposite.MAD_STD_RATIO,
-        #                 ITSLiveComposite.V0_YEARS,
-        #                 mean[global_j, global_i, :],
-        #                 error[global_j, global_i, :],
-        #                 count[global_j, global_i, :],
-        #                 global_i,
-        #                 global_j
-        #             )
-        #         )
-        # logging.info(f'Init_workload: {timeit.default_timer() - init_runtime} sec')
-
-        # results = []
-
-        # init_runtime = timeit.default_timer()
-        # with mp.Pool(mp.cpu_count() - 1) as pool:
-        #     results = list(tqdm(pool.imap(multiprocessing_worker, work_load), total=len(work_load)))
-
-        # logging.info(f'pool_runtime: {timeit.default_timer() - init_runtime} sec')
-
-        # # Unpack results
-        # print(f'Got results: {len(results)}')
-
-        # init_time1 += init_runtime1
-        # init_time2 += init_runtime2
-        # init_time3 += init_runtime3
-        # lsq_time += lsq_runtime
-
-        # if not results_valid:
-        #     # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
-        #     continue
-
-        # # Unpack results into corresponding data variables
-        # amplitude[global_j, global_i], \
-        #     sigma[global_j, global_i], \
-        #     phase[global_j, global_i], \
-        #     offset[global_j, global_i], \
-        #     slope[global_j, global_i], \
-        #     se[global_j, global_i], \
-        #     count_image_pairs[global_j, global_i] = results
-
-
-        logging.info(f'Init_time1: {init_time1} sec, Init_time2: {init_time2} sec, Init_time3: {init_time3} sec, lsq_time: {lsq_time} seconds')
-        return
-
-
-def cubelsqfit2_func_temp(
-    var_name,
-    v,
-    v_err_data,
-    amplitude,
-    phase,
-    mean,
-    error,
-    sigma,
-    count,
-    count_image_pairs,
-    offset,
-    slope,
-    se
-):
-    """
-    Cube LSQ fit with 2 iterations.
-
-    Populate: [amp, phase, mean, err, sigma, cnt]
-
-    Inputs:
-    =======
-    TODO:...
-    """
-
-    return cubelsqfit2_wrapper(
-        var_name,
-        ITSLiveComposite.Chunk,
-        # ITSLiveComposite.Chunk.start_x,
-        # ITSLiveComposite.Chunk.start_y,
-        # ITSLiveComposite.Chunk.x_len,
-        # ITSLiveComposite.Chunk.y_len,
-        v,
-        v_err_data,
-        ITSLiveComposite.START_DECIMAL_YEAR,
-        ITSLiveComposite.STOP_DECIMAL_YEAR,
-        ITSLiveComposite.DECIMAL_DT,
-        ITSLiveComposite.YEARS,
-        ITSLiveComposite.M,
-        ITSLiveComposite.MAD_STD_RATIO,
-        ITSLiveComposite.V0_YEARS,
-        CENTER_DATE,
-        amplitude,
-        phase,
-        mean,
-        error,
-        sigma,
-        count,
-        count_image_pairs,
-        offset,
-        slope,
-        se
-    )
-
 # def cubelsqfit2_wrapper(
 def cubelsqfit2(
     var_name,
@@ -4624,7 +4262,7 @@ def cubelsqfit2(
             ( ITSLiveComposite.Chunk.y_len,  ITSLiveComposite.Chunk.x_len, v_err_data.size)
         )
 
-    use_dask = False
+    use_dask = True
     if use_dask:
         tasks = []
 
@@ -4643,13 +4281,6 @@ def cubelsqfit2(
                         var_name,
                         v[j, i, :],
                         v_err[j, i, :],
-                        # start_decimal_year,
-                        # stop_decimal_year,
-                        # decimal_dt,
-                        # years,
-                        # M,
-                        # mad_std_ratio,
-                        # v0_years,
                         ITSLiveComposite.START_DECIMAL_YEAR,
                         ITSLiveComposite.STOP_DECIMAL_YEAR,
                         ITSLiveComposite.DECIMAL_DT,
@@ -4693,7 +4324,7 @@ def cubelsqfit2(
                     se[global_j, global_i], \
                     count_image_pairs[global_j, global_i] = results
 
-    use_original = True
+    use_original = False
     if use_original:
         # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
         for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
@@ -4737,79 +4368,6 @@ def cubelsqfit2(
                         se[global_j, global_i], \
                         count_image_pairs[global_j, global_i] = results
 
-
-    #######################
-    # USE MULTIPROCESSING
-    #######################
-
-    # Create a list to store the processes
-    # processes = []
-    # work_load = []
-
-    # init_runtime = timeit.default_timer()
-
-    # # Generate combinations of work per process
-    # for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: generate work combinations'):
-    #     for i in range(0, ITSLiveComposite.Chunk.x_len):
-    #         mask = ~np.isnan(v[j, i, :])
-    #         if mask.sum() < _num_valid_points:
-    #             # Skip the point, return no outliers
-    #             continue
-
-    #         global_i = i + ITSLiveComposite.Chunk.start_x
-    #         global_j = j + ITSLiveComposite.Chunk.start_y
-
-    #         work_load.append(
-    #             (
-    #                 var_name,
-    #                 v[j, i, :],
-    #                 v_err[j, i, :],
-    #                 ITSLiveComposite.START_DECIMAL_YEAR,
-    #                 ITSLiveComposite.STOP_DECIMAL_YEAR,
-    #                 ITSLiveComposite.DECIMAL_DT,
-    #                 ITSLiveComposite.YEARS,
-    #                 ITSLiveComposite.M,
-    #                 ITSLiveComposite.MAD_STD_RATIO,
-    #                 ITSLiveComposite.V0_YEARS,
-    #                 mean[global_j, global_i, :],
-    #                 error[global_j, global_i, :],
-    #                 count[global_j, global_i, :],
-    #                 global_i,
-    #                 global_j
-    #             )
-    #         )
-    # logging.info(f'Init_workload: {timeit.default_timer() - init_runtime} sec')
-
-    # results = []
-
-    # init_runtime = timeit.default_timer()
-    # with mp.Pool(mp.cpu_count() - 1) as pool:
-    #     results = list(tqdm(pool.imap(multiprocessing_worker, work_load), total=len(work_load)))
-
-    # logging.info(f'pool_runtime: {timeit.default_timer() - init_runtime} sec')
-
-    # # Unpack results
-    # print(f'Got results: {len(results)}')
-
-    # init_time1 += init_runtime1
-    # init_time2 += init_runtime2
-    # init_time3 += init_runtime3
-    # lsq_time += lsq_runtime
-
-    # if not results_valid:
-    #     # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
-    #     continue
-
-    # # Unpack results into corresponding data variables
-    # amplitude[global_j, global_i], \
-    #     sigma[global_j, global_i], \
-    #     phase[global_j, global_i], \
-    #     offset[global_j, global_i], \
-    #     slope[global_j, global_i], \
-    #     se[global_j, global_i], \
-    #     count_image_pairs[global_j, global_i] = results
-
-    # logging.info(f'Init_time1: {init_time1} sec, Init_time2: {init_time2} sec, Init_time3: {init_time3} sec, lsq_time: {lsq_time} seconds')
     return
 
 
