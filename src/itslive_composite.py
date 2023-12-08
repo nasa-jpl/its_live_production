@@ -415,7 +415,6 @@ def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
 # Getting numba warning:
 # Encountered the use of a type that is scheduled for deprecation: type 'reflected list' found for argument 'select_years' of function 'itersect_years'.
 # For more information visit https://numba.readthedocs.io/en/stable/reference/deprecation.html#deprecation-of-reflection-for-list-and-set-types
-# ===> disable numba for now
 @nb.jit(nopython=True)
 def itersect_years(all_years, select_years):
     """
@@ -589,332 +588,6 @@ def create_v0_years_mask(start_year, stop_year, v0_years):
     v0_year_mask = (mid_date >= v0_years[0]) & (mid_date < (v0_years[-1]+1))
     return v0_year_mask
 
-
-# Don't compile the whole function with numba - runs a bit slower (why???)
-# @nb.jit(nopython=True)
-# @nb.jit(nopython=False, forceobj=True)
-# @nb.jit(nopython=False)
-def original_itslive_lsqfit_annual(
-    var_name,
-    v_input,
-    v_err_input,
-    start_dec_year,
-    stop_dec_year,
-    dec_dt,
-    all_years,
-    M_input,
-    mad_std_ratio,
-    v0_years,
-    mean,  # outputs to populate
-    error,
-    count,
-    global_i,
-    global_j
-):
-    """
-    Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,count_image_pairs] data
-    variables.
-    Computes the amplitude and phase of seasonal velocity
-    variability, and also gives interannual variability.
-
-    From original Matlab code:
-    % [A,ph,A_err,t_int,v_int,v_int_err,N_int] = itslive_sinefit_lsq(t,v,v_err)
-    % also returns the standard deviation of amplitude residuals A_err. Outputs
-    % t_int and v_int describe interannual velocity variability, and can then
-    % be used to reconstruct a continuous time series, as shown below. Output
-    % Output N_int is the number of image pairs that contribute to the annual mean
-    % v_int of each year. The output |v_int_err| is a formal estimate of error
-    % in the v_int.
-    %
-    %% Author Info
-    % Chad A. Greene, Jan 2020.
-    %
-
-    Inputs:
-    =======
-    TODO: ...
-    v0_years: List of years to filter data by for calculations of climatological data
-    """
-    _two_pi = np.pi * 2
-
-    # Filter parameters for lsq fit for outlier rejections
-    _mad_thresh = 6
-    _mad_filter_iterations = 1
-
-    # Apply MAD filter to input v
-    _mad_kernel_size = 15
-
-    init_runtime = timeit.default_timer()
-
-    results_valid = True
-
-    results_valid, start_year, stop_year, v, v_err, dyr, totalnum, M = init_lsq_fit1(
-        v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, M_input
-    )
-
-    # Capture runtimes of specific processing steps
-    init_runtime1 = timeit.default_timer() - init_runtime
-    init_runtime2 = 0
-    init_runtime3 = 0
-    iter_runtime = 0
-
-    # To make numba happy, pre-allocate the returned array of "empty" values
-    # empty_results = (0.0,) * 7
-    empty_results = []
-
-    if not results_valid:
-        # There is no data to process, exit
-        return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
-
-    # Compute outside of numba-compiled code as numba does not support a lot of scipy
-    # functionality
-    # Apply 15-point moving median to v, subtract from v to get residual
-    init_runtime = timeit.default_timer()
-    v_median = ndimage.median_filter(v, _mad_kernel_size)
-    init_runtime2 = timeit.default_timer() - init_runtime
-
-    init_runtime = timeit.default_timer()
-    results_valid, start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1, M = init_lsq_fit2(
-        v_median, v, v_err, start_year, stop_year, dyr, all_years, M, _mad_thresh, mad_std_ratio
-    )
-    init_runtime3 = timeit.default_timer() - init_runtime
-
-    if not results_valid:
-        # There is no data to process, exit
-        return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
-
-    # Filter sum of each column
-    hasdata = M.sum(axis=0) > 0
-    y1 = y1[hasdata]
-    M = M[:, hasdata]
-
-    # if _enable_debug:
-    #     with open(f'{var_name}_dec_year.json', 'w') as fh:
-    #         json.dump(dyr.tolist(), fh, indent=3)
-
-    #     logging.info(f'DEBUG: dyr[:50]: {dyr[:50]}')
-
-    # logging.info(f'Finished building M and filter by M ({timeit.default_timer() - start_time} seconds)')
-    # start_time = timeit.default_timer()
-    # logging.info(f"Start 1st iteration of LSQ")
-
-    #
-    # LSQ iterations
-    # Iterative mad filter
-    p = None
-    d_model = None
-
-    # Last iteration of LSQ should always skip the outlier filter
-    last_iteration = _mad_filter_iterations - 1
-
-    for i in range(0, _mad_filter_iterations):
-        # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-        runtime = timeit.default_timer()
-        p, d_model = itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs)
-        iter_runtime += (timeit.default_timer() - runtime)
-
-        if i < last_iteration:
-            # Divide by dt to avoid penalizing long dt [asg]
-            d_resid = np.abs(d_obs - d_model)/dyr
-
-            # Robust standard deviation of errors, using median absolute deviation
-            d_sigma = np.median(d_resid)*mad_std_ratio
-
-            outliers = d_resid > (_mad_thresh * d_sigma)
-            if np.all(outliers):
-                # All are outliers, return from the function
-                results_valid = False
-                return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
-
-            if (outliers.sum() / totalnum) < 0.01:
-                # There are less than 1% outliers, skip the rest of iterations
-                # if it's not the last iteration
-                # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
-                break
-
-            # Remove outliers
-            non_outlier_mask = ~outliers
-            start_year = start_year[non_outlier_mask]
-            stop_year = stop_year[non_outlier_mask]
-            dyr = dyr[non_outlier_mask]
-            d_obs = d_obs[non_outlier_mask]
-            w_d = w_d[non_outlier_mask]
-            w_v = w_v[non_outlier_mask]
-            M = M[non_outlier_mask]
-
-            # Remove no-data columns from M
-            hasdata = M.sum(axis=0) > 1
-
-            if not np.any(hasdata):
-                # Since we are throwing away everything, report all as outliers
-                results_valid = False
-                return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
-
-            y1 = y1[hasdata]
-            M = M[:, hasdata]
-
-    # logging.info(f'Size of p:{p.shape}')
-
-    # WAS: v_int = p[2*Nyrs:]
-    v_int = p[2:]
-
-    # Number of equivalent image pairs per year: (1 image pair equivalent means a full year of data. It takes about 23 16-day image pairs to make 1 year equivalent image pair.)
-    N_int = (M > 0).sum(axis=0)
-
-    # Reshape array to have the same number of dimensions as M for multiplication
-    w_v = w_v.reshape((1, w_v.shape[0]))
-
-    v_int_err = 1/np.sqrt((w_v@M).sum(axis=0))
-
-    # Identify year's indices to assign return values to in "final" composite
-    # variables
-    ind = itersect_years(all_years, tuple(y1))
-
-    # logging.info(f'Finished post-process ({timeit.default_timer() - start_time} seconds)')
-    # start_time = timeit.default_timer()
-
-    # On return: amp1, phase1, sigma1, t_int1, xmean1, err1, cnt1
-    # amplitude[ind] = A
-    # phase[ind] = ph
-    # sigma[ind] = A_err
-    mean[ind] = v_int
-    error[ind] = v_int_err
-    count[ind] = N_int
-
-    offset, slope, se = np.nan, np.nan, np.nan
-
-    # Reduce input data to specified years to compute climatological values
-    v0_ind = itersect_years(y1, tuple(v0_years))
-
-    if v0_ind.size != 0:
-        # logging.info(f'DEBUG: LSQ fit error: {error}')
-        yr = np.array([decimal_year(datetime.datetime(each, CENTER_DATE.month, CENTER_DATE.day)) for each in y1[v0_ind]])
-        yr0 = decimal_year(CENTER_DATE)
-        yr = yr - yr0
-
-        offset, slope, se = weighted_linear_fit(yr, mean[ind][v0_ind], error[ind][v0_ind])
-
-    # If there is more than 1 iterations for LSQ fit invoked above, then all data vars (start_year, stop_year, dyr, etc.)
-    # might be reduced by "non_outlier_mask" mask in last iteration. Therefore, the v0_year_mask must be applied to the
-    # initial values of these data variables. Confirm with Alex that it's the case. For now just raise an
-    # exception if more than 1 iterations are required.
-    if _mad_filter_iterations > 1:
-        raise RuntimeError(f'_mad_filter_iterations={_mad_filter_iterations}: need to apply v0_years mask '
-                            'to original values of start_year, stop_year, dyr, etc. for next '
-                            'LSQ fit as these values might have been reduced by "non_outlier_mask" above.')
-
-    #  Reduce number of image pairs only to the provided range: v0_years[0] <= mid_date < v0_years[-1]+1
-    _v0_year_mask = create_v0_years_mask(start_year, stop_year, v0_years)
-
-    start_year = start_year[_v0_year_mask]
-    stop_year = stop_year[_v0_year_mask]
-    dyr = dyr[_v0_year_mask]
-    d_obs = d_obs[_v0_year_mask]
-    w_d = w_d[_v0_year_mask]
-    M = M[_v0_year_mask]
-
-    # Filter sum of each column
-    hasdata = M.sum(axis=0) > 0
-    y1 = y1[hasdata]
-    M = M[:, hasdata]
-
-    count_image_pairs = np.nan
-    A, ph, amp_error = np.nan, np.nan, np.nan
-
-    if np.any(hasdata):
-        # Last iteration of LSQ should always skip the outlier filter
-        last_iteration = _mad_filter_iterations - 1
-
-        for i in range(0, _mad_filter_iterations):
-            # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-            runtime = timeit.default_timer()
-            p, d_model = itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs)
-            iter_runtime += (timeit.default_timer() - runtime)
-
-            if i < last_iteration:
-                # Divide by dt to avoid penalizing long dt [asg]
-                d_resid = np.abs(d_obs - d_model)/dyr
-
-                # Robust standard deviation of errors, using median absolute deviation
-                d_sigma = np.median(d_resid)*mad_std_ratio
-
-                outliers = d_resid > (_mad_thresh * d_sigma)
-                if np.all(outliers):
-                    # All are outliers, return from the function
-                    results_valid = False
-                    return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
-
-                if (outliers.sum() / totalnum) < 0.01:
-                    # There are less than 1% outliers, skip the rest of iterations
-                    # if it's not the last iteration
-                    # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
-                    break
-
-                # Remove outliers
-                non_outlier_mask = ~outliers
-                start_year = start_year[non_outlier_mask]
-                stop_year = stop_year[non_outlier_mask]
-                dyr = dyr[non_outlier_mask]
-                d_obs = d_obs[non_outlier_mask]
-                w_d = w_d[non_outlier_mask]
-                w_v = w_v[non_outlier_mask]
-                M = M[non_outlier_mask]
-
-                # Remove no-data columns from M
-                hasdata = M.sum(axis=0) > 1
-
-                if not np.any(hasdata):
-                    # Since we are throwing away everything, report all as outliers
-                    results_valid = False
-                    return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, empty_results, global_i, global_j)
-
-                y1 = y1[hasdata]
-                M = M[:, hasdata]
-
-        # logging.info(f'Reducing count_image_pairs from {count_image_pairs} to {M[_v0_year_mask, :].shape[0]}')
-        count_image_pairs = M.shape[0]
-
-        # Either v0_years are not provided or second LSQ fit was not invoked when v0_years are provided
-        # Convert coefficients to amplitude and phase of a single sinusoid:
-        Nyrs = len(y1)
-
-        # Amplitude of sinusoid from trig identity a*sin(t) + b*cos(t) = d*sin(t+phi), where d=hypot(a,b) and phi=atan2(b,a).
-        # WAS: A = np.hypot(p[0:Nyrs], p[Nyrs:2*Nyrs])
-        A = np.hypot(p[0], p[1])
-
-        # phase in radians
-        # ph_rad = np.arctan2(p[Nyrs:2*Nyrs], p[0:Nyrs])
-        ph_rad = np.arctan2(p[1], p[0])
-
-        # phase converted such that it reflects the day when value is maximized
-        ph = 365.25*((0.25 - ph_rad/_two_pi) % 1)
-
-        # A_err is the *velocity* (not displacement) error, which is the displacement error divided by the weighted mean dt:
-        # WAS: A_err = np.full_like(A, np.nan)
-        A_err = np.full((Nyrs), np.nan)
-
-        for k in range(Nyrs):
-            ind = M[:, k] > 0
-
-            # asg replaced call to wmean
-            _w_d_ind = w_d[ind]
-            A_err[k] = weighted_std(d_obs[ind]-d_model[ind], _w_d_ind) / ((_w_d_ind*dyr[ind]).sum() / _w_d_ind.sum())
-
-        # Compute climatology amplitude error based on annual values
-        amp_error = np.sqrt((A_err**2).sum())/(Nyrs-1)
-
-    # if _enable_debug:
-    #     logging.info(f'ind: {ind}')
-    #     logging.info(f'y1: {y1}')
-    #     logging.info(f'mean: {mean[ind]}')
-    #     logging.info(f'error: {error[ind]}')
-    #     logging.info(f'count: {count[ind]}')
-    #     logging.info(f'count_image_pairs: {count_image_pairs}')
-    #     logging.info(f'offset: {offset}')
-    #     logging.info(f'slope: {slope}')
-    #     logging.info(f'se: {se}')
-
-    return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs], global_i, global_j)
 
 def itslive_lsqfit_annual(
     var_name,
@@ -1101,8 +774,6 @@ def itslive_lsqfit_annual(
 
         offset, slope, se = weighted_linear_fit(yr, mean[ind][v0_ind], error[ind][v0_ind])
 
-        # offset, slope, se = weighted_linear_fit(y1[v0_ind], mean[ind][v0_ind], error[ind][v0_ind])
-
     # If there is more than 1 iterations for LSQ fit invoked above, then all data vars (start_year, stop_year, dyr, etc.)
     # might be reduced by "non_outlier_mask" mask in last iteration. Therefore, the v0_year_mask must be applied to the
     # initial values of these data variables. Confirm with Alex that it's the case. For now just raise an
@@ -1221,18 +892,8 @@ def itslive_lsqfit_annual(
     #     logging.info(f'slope: {slope}')
     #     logging.info(f'se: {se}')
 
-    # return [results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs], global_i, global_j]
     return (results_valid, [A, amp_error, ph, offset, slope, se, count_image_pairs], global_i, global_j)
 
-def multiprocessing_worker(args):
-    """
-    Wrapper for the itslive_lsqfit_annual() function to invoke within multiprocessing.Pool.
-
-    Inputs:
-    =======
-    args: Input arguments to call the function with.
-    """
-    return itslive_lsqfit_annual(*args)
 
 @nb.jit(nopython=True)
 def annual_magnitude(
@@ -2565,7 +2226,7 @@ class ITSLiveComposite:
         # TODO: take care of self.date_updated when support for composites updates
         # is implemented
 
-    def create(self, output_store: str, s3_bucket: str):
+    def create(self, output_store: str):
         """
         Create datacube composite: cube time mean values.
         """
@@ -2603,10 +2264,6 @@ class ITSLiveComposite:
         # x_num_to_process = 100
 
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
-        # For debugging only
-        # ======================
-        # x_start = 600
-        # x_num_to_process = 20
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -2637,10 +2294,6 @@ class ITSLiveComposite:
             # y_num_to_process = 100
 
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-            # For debugging only
-            # ======================
-            # y_start = 200
-            # y_num_to_process = 20
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -2655,7 +2308,7 @@ class ITSLiveComposite:
             x_start += x_num_tasks
 
         # Save data to Zarr store
-        self.to_zarr(output_store, s3_bucket)
+        self.to_zarr(output_store)
 
     @staticmethod
     def project_v_to_median_flow(ds_vx, ds_vy, ds_date_dt, ds_sensors_str, exclude_sensors):
@@ -2798,7 +2451,7 @@ class ITSLiveComposite:
         # Apply dt filter: step through all sensors groups
         for i, sensor_group in enumerate(self.sensors_groups):
             logging.info(f'Filtering dt for sensors of "{sensor_group.mission}" ({i+1} out '
-                         f'of {len(self.sensors_groups)} sensor groups)')
+                            f'of {len(self.sensors_groups)} sensor groups)')
 
             # Find which layers correspond to the sensor group
             mask = (self.sensor_filter.sensors_str == sensor_group.mission)
@@ -3137,7 +2790,7 @@ class ITSLiveComposite:
         self.amplitude.vx[invalid_mask] = np.nan
         self.amplitude.vy[invalid_mask] = np.nan
 
-    def to_zarr(self, output_store: str, s3_bucket: str):
+    def to_zarr(self, output_store: str):
         """
         Store datacube annual composite to the Zarr store.
         """
@@ -4150,7 +3803,7 @@ if __name__ == '__main__':
         logging.info(f'Composite URL: {ITSLiveComposite.URL}')
 
     mosaics = ITSLiveComposite(args.inputCube, args.inputBucket)
-    mosaics.create(args.outputStore, args.targetBucket)
+    mosaics.create(args.outputStore)
 
     if os.path.exists(args.outputStore):
         output_size = subprocess.run(['du', '-skh', args.outputStore], capture_output=True, text=True).stdout.split()[0]
