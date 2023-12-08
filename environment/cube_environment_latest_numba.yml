@@ -1,0 +1,53 @@
+#
+# Configuration file to create conda environment to run ItsLiveCube related code.
+#
+# To create conda environment, run command:
+#
+# $ conda env create -f cube_environment.yml
+#
+# Followed by the following command to activate the environment:
+#
+# $ conda activate itslivecube
+#
+name: itslivecube_latest_numba
+
+channels:
+  - defaults
+  - conda-forge
+
+# scipy is required by numba
+# Use MKL installation of numpy: from "defaults" channel,
+# as "conda-forge" channel provides OpenBLAS installation of numpy (slower)
+# Have to have specific "fiona" version (1.8.22) as geopandas.read_file(shape_file) raises an exception
+# for annual_composites Docker image:
+# ImportError: the 'read_file' function requires the 'fiona' package, but it is not installed or does not import correctly.
+# Importing fiona resulted in: libtiff.so.5: cannot open shared object file: No such file or directory
+# If specify fiona==1.8.22 in dependencies, then getting circular dependency error,
+# but specifying "defaults" channels first seems to fix the problem.
+dependencies:
+  - python
+  - dask
+  - geopandas
+  - pandas
+  - defaults::numpy
+  - numpy
+  - numba
+  - h5py
+  - h5netcdf
+  - requests
+  - pyproj
+  - xarray
+  - netcdf4
+  - flake8
+  - scipy
+  - s3fs
+  - fsspec
+  - shapely
+  - tqdm
+  - utm
+  - zarr
+  - pip
+  - pip:
+    - geojson
+    - awscliv2
+    - rioxarray

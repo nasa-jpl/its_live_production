@@ -9,11 +9,14 @@ Jet Propulsion Laboratory, California Institute of Technology, Pasadena, Califor
 March 21, 2022
 """
 import collections
+import dask
+from dask.diagnostics import ProgressBar
 import datetime
 from dateutil.parser import parse
 import gc
 import json
 import logging
+import multiprocessing as mp
 import numba as nb
 import numpy as np
 import os
@@ -372,30 +375,30 @@ def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
     )
 
     # Add M: a different constant for each year (annual mean)
-    if _enable_debug:
-        with open(f'{var_name}_D.json', 'w') as fh:
-            json.dump(D.tolist(), fh, indent=3)
+    # if _enable_debug:
+    #     with open(f'{var_name}_D.json', 'w') as fh:
+    #         json.dump(D.tolist(), fh, indent=3)
 
-        with open(f'{var_name}_M.json', 'w') as fh:
-            json.dump(M.tolist(), fh, indent=3)
+    #     with open(f'{var_name}_M.json', 'w') as fh:
+    #         json.dump(M.tolist(), fh, indent=3)
 
     D = np.concatenate((D, M), axis=1)
 
-    if _enable_debug:
-        with open(f'{var_name}_DM.json', 'w') as fh:
-            json.dump(D.tolist(), fh, indent=3)
+    # if _enable_debug:
+    #     with open(f'{var_name}_DM.json', 'w') as fh:
+    #         json.dump(D.tolist(), fh, indent=3)
 
-        with open(f'{var_name}_start_year.json', 'w') as fh:
-            json.dump(start_year.tolist(), fh, indent=3)
+    #     with open(f'{var_name}_start_year.json', 'w') as fh:
+    #         json.dump(start_year.tolist(), fh, indent=3)
 
-        with open(f'{var_name}_stop_year.json', 'w') as fh:
-            json.dump(stop_year.tolist(), fh, indent=3)
+    #     with open(f'{var_name}_stop_year.json', 'w') as fh:
+    #         json.dump(stop_year.tolist(), fh, indent=3)
 
-        with open(f'{var_name}_w_d.json', 'w') as fh:
-            json.dump(w_d.tolist(), fh, indent=3)
+    #     with open(f'{var_name}_w_d.json', 'w') as fh:
+    #         json.dump(w_d.tolist(), fh, indent=3)
 
-        with open(f'{var_name}_d_obs.json', 'w') as fh:
-            json.dump(d_obs.tolist(), fh, indent=3)
+    #     with open(f'{var_name}_d_obs.json', 'w') as fh:
+    #         json.dump(d_obs.tolist(), fh, indent=3)
 
     # Make numpy happy: have all data 2D
     # w_d.reshape((len(w_d), 1))
@@ -409,6 +412,9 @@ def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
     return (p, d_model)
 
 
+# Getting numba warning:
+# Encountered the use of a type that is scheduled for deprecation: type 'reflected list' found for argument 'select_years' of function 'itersect_years'.
+# For more information visit https://numba.readthedocs.io/en/stable/reference/deprecation.html#deprecation-of-reflection-for-list-and-set-types
 @nb.jit(nopython=True)
 def itersect_years(all_years, select_years):
     """
@@ -421,18 +427,18 @@ def itersect_years(all_years, select_years):
 
 
 @nb.jit(nopython=True)
-def init_lsq_fit1(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input):
+def init_lsq_fit1(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, M_input):
     """
     Initialize variables for LSQ fit.
 
     Return:
     results_valid: Boolean flag set to True if results are valid, False otherwise meaning that
-                   further computation should be skipped. Computations should be
-                   skipped if identified data validity mask is empty which results
-                   in no data to be processed.
-                   This flag has to be introduced in order to use numba compilation
-                   otherwise numba-compiled code fails when using empty mask (pure
-                   Python code does not).
+                    further computation should be skipped. Computations should be
+                    skipped if identified data validity mask is empty which results
+                    in no data to be processed.
+                    This flag has to be introduced in order to use numba compilation
+                    otherwise numba-compiled code fails when using empty mask (pure
+                    Python code does not).
     start_year, stop_year, v_in, v_err_in, dyr, totalnum, M_in: Filtered by data validity mask
                     and sorted by mid_date all input data variables.
     """
@@ -485,14 +491,14 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
 
     Return:
     results_valid: Boolean flag set to True if results are valid, False otherwise meaning that
-                   further computation should be skipped. Computations should be
-                   skipped if identified data validity mask is empty which results
-                   in no data to be processed.
-                   This flag has to be introduced in order to use numba compilation
-                   otherwise numba-compiled code fails when using empty mask (pure
-                   Python code does not).
+                    further computation should be skipped. Computations should be
+                    skipped if identified data validity mask is empty which results
+                    in no data to be processed.
+                    This flag has to be introduced in order to use numba compilation
+                    otherwise numba-compiled code fails when using empty mask (pure
+                    Python code does not).
     start_year, stop_year, v_in, v_err_in, dyr, w_v, w_d, d_obs, y1, M_in: Filtered by data
-                   validity mask and pre-processed for LSQ fit input data variables.
+                    validity mask and pre-processed for LSQ fit input data variables.
     """
     _num_valid_points = 30
 
@@ -510,12 +516,12 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
 
     non_outlier_mask = ~(v_residual > (2.0 * mad_thresh * v_sigma))
 
-    if _enable_debug:
-        logging.info(f'non_outlier_mask.size={non_outlier_mask.shape} vs. num of valid points={np.sum(non_outlier_mask)}')
-        logging.info(f'non_outlier_mask[:50]: {non_outlier_mask[:50]}')
+    # if _enable_debug:
+    #     logging.info(f'non_outlier_mask.size={non_outlier_mask.shape} vs. num of valid points={np.sum(non_outlier_mask)}')
+    #     logging.info(f'non_outlier_mask[:50]: {non_outlier_mask[:50]}')
 
-        logging.info(f'start_dec_year[:50]: {start_dec_year[:50]}')
-        logging.info(f'stop_dec_year[:50]: {stop_dec_year[:50]}')
+    #     logging.info(f'start_dec_year[:50]: {start_dec_year[:50]}')
+    #     logging.info(f'stop_dec_year[:50]: {stop_dec_year[:50]}')
 
     # If less than _num_valid_points don't do the fit: not enough observations
     results_valid = (np.sum(non_outlier_mask) >= _num_valid_points)
@@ -565,6 +571,7 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
 
     return (results_valid, start_year, stop_year, v_in, v_err_in, dyr, w_v, w_d, d_obs, y1, M_in)
 
+@nb.jit(nopython=True)
 def create_v0_years_mask(start_year, stop_year, v0_years):
     """
     Create a mask based on the median date which falls within v0_years.
@@ -582,8 +589,6 @@ def create_v0_years_mask(start_year, stop_year, v0_years):
     return v0_year_mask
 
 
-# Don't compile the whole function with numba - runs a bit slower (why???)
-# @nb.jit(nopython=True)
 def itslive_lsqfit_annual(
     var_name,
     v_input,
@@ -595,9 +600,12 @@ def itslive_lsqfit_annual(
     M_input,
     mad_std_ratio,
     v0_years,
+    center_date,
     mean,  # outputs to populate
     error,
-    count
+    count,
+    global_i,
+    global_j
 ):
     """
     Populates [A,ph,A_err,t_int,v_int,v_int_err,N_int,count_image_pairs] data
@@ -632,49 +640,41 @@ def itslive_lsqfit_annual(
     # Apply MAD filter to input v
     _mad_kernel_size = 15
 
-    init_runtime = timeit.default_timer()
+    results_valid = True
 
     results_valid, start_year, stop_year, v, v_err, dyr, totalnum, M = init_lsq_fit1(
-        v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input
+        v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, M_input
     )
 
-    # Capture runtimes of specific processing steps
-    init_runtime1 = timeit.default_timer() - init_runtime
-    init_runtime2 = 0
-    init_runtime3 = 0
-    iter_runtime = 0
+    empty_results = []
 
     if not results_valid:
         # There is no data to process, exit
-        return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
+        return (results_valid, empty_results, global_i, global_j)
 
     # Compute outside of numba-compiled code as numba does not support a lot of scipy
     # functionality
     # Apply 15-point moving median to v, subtract from v to get residual
-    init_runtime = timeit.default_timer()
     v_median = ndimage.median_filter(v, _mad_kernel_size)
-    init_runtime2 = timeit.default_timer() - init_runtime
 
-    init_runtime = timeit.default_timer()
     results_valid, start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1, M = init_lsq_fit2(
         v_median, v, v_err, start_year, stop_year, dyr, all_years, M, _mad_thresh, mad_std_ratio
     )
-    init_runtime3 = timeit.default_timer() - init_runtime
 
     if not results_valid:
         # There is no data to process, exit
-        return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
+        return (results_valid, empty_results, global_i, global_j)
 
     # Filter sum of each column
     hasdata = M.sum(axis=0) > 0
     y1 = y1[hasdata]
     M = M[:, hasdata]
 
-    if _enable_debug:
-        with open(f'{var_name}_dec_year.json', 'w') as fh:
-            json.dump(dyr.tolist(), fh, indent=3)
+    # if _enable_debug:
+    #     with open(f'{var_name}_dec_year.json', 'w') as fh:
+    #         json.dump(dyr.tolist(), fh, indent=3)
 
-        logging.info(f'DEBUG: dyr[:50]: {dyr[:50]}')
+    #     logging.info(f'DEBUG: dyr[:50]: {dyr[:50]}')
 
     # logging.info(f'Finished building M and filter by M ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
@@ -691,9 +691,7 @@ def itslive_lsqfit_annual(
 
     for i in range(0, _mad_filter_iterations):
         # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-        runtime = timeit.default_timer()
         p, d_model = itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs)
-        iter_runtime += (timeit.default_timer() - runtime)
 
         if i < last_iteration:
             # Divide by dt to avoid penalizing long dt [asg]
@@ -706,7 +704,7 @@ def itslive_lsqfit_annual(
             if np.all(outliers):
                 # All are outliers, return from the function
                 results_valid = False
-                return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
+                return (results_valid, empty_results, global_i, global_j)
 
             if (outliers.sum() / totalnum) < 0.01:
                 # There are less than 1% outliers, skip the rest of iterations
@@ -730,7 +728,7 @@ def itslive_lsqfit_annual(
             if not np.any(hasdata):
                 # Since we are throwing away everything, report all as outliers
                 results_valid = False
-                return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
+                return (results_valid, empty_results, global_i, global_j)
 
             y1 = y1[hasdata]
             M = M[:, hasdata]
@@ -750,7 +748,7 @@ def itslive_lsqfit_annual(
 
     # Identify year's indices to assign return values to in "final" composite
     # variables
-    ind = itersect_years(all_years, y1)
+    ind = itersect_years(all_years, tuple(y1))
 
     # logging.info(f'Finished post-process ({timeit.default_timer() - start_time} seconds)')
     # start_time = timeit.default_timer()
@@ -766,11 +764,15 @@ def itslive_lsqfit_annual(
     offset, slope, se = np.nan, np.nan, np.nan
 
     # Reduce input data to specified years to compute climatological values
-    v0_ind = itersect_years(y1, v0_years)
+    v0_ind = itersect_years(y1, tuple(v0_years))
 
     if v0_ind.size != 0:
         # logging.info(f'DEBUG: LSQ fit error: {error}')
-        offset, slope, se = weighted_linear_fit(y1[v0_ind], mean[ind][v0_ind], error[ind][v0_ind])
+        yr = np.array([decimal_year(datetime.datetime(each, center_date.month, center_date.day)) for each in y1[v0_ind]])
+        yr0 = decimal_year(center_date)
+        yr = yr - yr0
+
+        offset, slope, se = weighted_linear_fit(yr, mean[ind][v0_ind], error[ind][v0_ind])
 
     # If there is more than 1 iterations for LSQ fit invoked above, then all data vars (start_year, stop_year, dyr, etc.)
     # might be reduced by "non_outlier_mask" mask in last iteration. Therefore, the v0_year_mask must be applied to the
@@ -805,9 +807,7 @@ def itslive_lsqfit_annual(
 
         for i in range(0, _mad_filter_iterations):
             # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-            runtime = timeit.default_timer()
             p, d_model = itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs)
-            iter_runtime += (timeit.default_timer() - runtime)
 
             if i < last_iteration:
                 # Divide by dt to avoid penalizing long dt [asg]
@@ -820,7 +820,7 @@ def itslive_lsqfit_annual(
                 if np.all(outliers):
                     # All are outliers, return from the function
                     results_valid = False
-                    return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
+                    return (results_valid, empty_results, global_i, global_j)
 
                 if (outliers.sum() / totalnum) < 0.01:
                     # There are less than 1% outliers, skip the rest of iterations
@@ -844,7 +844,7 @@ def itslive_lsqfit_annual(
                 if not np.any(hasdata):
                     # Since we are throwing away everything, report all as outliers
                     results_valid = False
-                    return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [])
+                    return (results_valid, empty_results, global_i, global_j)
 
                 y1 = y1[hasdata]
                 M = M[:, hasdata]
@@ -892,7 +892,7 @@ def itslive_lsqfit_annual(
     #     logging.info(f'slope: {slope}')
     #     logging.info(f'se: {se}')
 
-    return (results_valid, init_runtime1, init_runtime2, init_runtime3, iter_runtime, [A, amp_error, ph, offset, slope, se, count_image_pairs])
+    return (results_valid, [A, amp_error, ph, offset, slope, se, count_image_pairs], global_i, global_j)
 
 
 @nb.jit(nopython=True)
@@ -1120,20 +1120,18 @@ def climatology_magnitude(
     return v, dv_dt, v_amp, v_amp_err, v_phase, v_se
 
 
-# @nb.jit(nopython=True): numba does not support datetime objects - can probably convert
-#  the datetime to decimal year and pass into the function as an argument instead
-def weighted_linear_fit(t, v, v_err, datetime0=CENTER_DATE):
+@nb.jit(nopython=True)
+def weighted_linear_fit(yr, v, v_err):
     """
     Returns the offset, slope, and error for a weighted linear fit to v with an intercept of datetime0.
 
-   - t: date (year) of input estimates
-   - v: estimates
-   - v_err: estimate errors
-   - datetime0: model intercept
-   """
-    yr = np.array([decimal_year(datetime.datetime(each, CENTER_DATE.month, CENTER_DATE.day)) for each in t])
-    yr0 = decimal_year(datetime0)
-    yr = yr - yr0
+    t: date (decimal year) of input estimates offset by the CENTER_DATE
+    v: estimates
+    v_err: estimate errors
+    """
+    # yr = np.array([decimal_year(datetime.datetime(each, CENTER_DATE.month, CENTER_DATE.day)) for each in t])
+    # yr0 = decimal_year(datetime0)
+    # yr = yr - yr0
 
     # Per Chad:
     # In the data testing Matlab script I posted, you may notice I added a step
@@ -1215,8 +1213,8 @@ class CompositeVariable:
     def transpose(self, dims=CONT_IN_X):
         """
         dims: a tuple of dimension indices for new data layout, i.e. if original
-              dimension indices are [y, x, t], then to get [t, y, x] dimensions,
-              tuple has to be (2, 0, 1).
+                dimension indices are [y, x, t], then to get [t, y, x] dimensions,
+                tuple has to be (2, 0, 1).
 
         Traspose data variables to new dimensions.
         This is used to switch from continuous memory layout approach (for
@@ -1515,7 +1513,7 @@ class SensorExcludeFilter:
         ds_vy:            Y component of velicity for the spacial points.
         ds_mid_date:      Middle date for the spacial points.
         ds_land_ice_mask: 2km inbuffer land ice mask for spacial points. SensorExcludeFilter
-                          should only be applied if land_ice 2km inbuffer mask == 0.
+                            should only be applied if land_ice 2km inbuffer mask == 0.
 
         Returns:
         ========
@@ -1701,11 +1699,11 @@ class StableShiftFilter:
 
     if (max(abs(vx_stable_shift), abs(vy_stable_shif)) .* date_dt./365.25) > threshold
         if stable_shift_flag == 1
-           exclude image pair
+            exclude image pair
 
         else if stable_shift_flag == 2
-           vx += vx_stable_shift
-           vy += vy_stable_shift
+            vx += vx_stable_shift
+            vy += vy_stable_shift
         end
     end
     """
@@ -1915,6 +1913,9 @@ class ITSLiveComposite:
     CLass to build annual composites for ITS_LIVE datacubes.
     """
     VERSION = '1.0'
+
+    # Number of threads to use by Dask parallezation
+    NUM_DASK_THREADS = 4
 
     # Only the following datacube variables are needed for composites/mosaics
     VARS = [
@@ -2225,7 +2226,7 @@ class ITSLiveComposite:
         # TODO: take care of self.date_updated when support for composites updates
         # is implemented
 
-    def create(self, output_store: str, s3_bucket: str):
+    def create(self, output_store: str):
         """
         Create datacube composite: cube time mean values.
         """
@@ -2263,9 +2264,6 @@ class ITSLiveComposite:
         # x_num_to_process = 100
 
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
-        # For debugging only
-        # ======================
-        # x_num_to_process = 100
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -2296,9 +2294,6 @@ class ITSLiveComposite:
             # y_num_to_process = 100
 
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-            # For debugging only
-            # ======================
-            # y_num_to_process = 100
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -2313,7 +2308,7 @@ class ITSLiveComposite:
             x_start += x_num_tasks
 
         # Save data to Zarr store
-        self.to_zarr(output_store, s3_bucket)
+        self.to_zarr(output_store)
 
     @staticmethod
     def project_v_to_median_flow(ds_vx, ds_vy, ds_date_dt, ds_sensors_str, exclude_sensors):
@@ -2456,7 +2451,7 @@ class ITSLiveComposite:
         # Apply dt filter: step through all sensors groups
         for i, sensor_group in enumerate(self.sensors_groups):
             logging.info(f'Filtering dt for sensors of "{sensor_group.mission}" ({i+1} out '
-                         f'of {len(self.sensors_groups)} sensor groups)')
+                            f'of {len(self.sensors_groups)} sensor groups)')
 
             # Find which layers correspond to the sensor group
             mask = (self.sensor_filter.sensors_str == sensor_group.mission)
@@ -2504,7 +2499,7 @@ class ITSLiveComposite:
 
         # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
         # Transform vx data to make time series continuous in memory: [y, x, t]
-        ITSLiveComposite.cubelsqfit2(
+        cubelsqfit2(
             'vx',
             vx,
             self.vx_error,
@@ -2525,7 +2520,7 @@ class ITSLiveComposite:
         start_time = timeit.default_timer()
 
         # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
-        ITSLiveComposite.cubelsqfit2(
+        cubelsqfit2(
             'vy',
             vy,
             self.vy_error,
@@ -2616,7 +2611,7 @@ class ITSLiveComposite:
 
                 # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
                 # Transform vx data to make time series continuous in memory: [y, x, t]
-                ITSLiveComposite.cubelsqfit2(
+                cubelsqfit2(
                     'vx_exclS2',
                     vx,
                     self.vx_error,
@@ -2637,7 +2632,7 @@ class ITSLiveComposite:
                 start_time = timeit.default_timer()
 
                 # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
-                ITSLiveComposite.cubelsqfit2(
+                cubelsqfit2(
                     'vy_exclS2',
                     vy,
                     self.vy_error,
@@ -2795,7 +2790,7 @@ class ITSLiveComposite:
         self.amplitude.vx[invalid_mask] = np.nan
         self.amplitude.vy[invalid_mask] = np.nan
 
-    def to_zarr(self, output_store: str, s3_bucket: str):
+    def to_zarr(self, output_store: str):
         """
         Store datacube annual composite to the Zarr store.
         """
@@ -3535,53 +3530,124 @@ class ITSLiveComposite:
         logging.info(f"Encoding settings: {encoding_settings}")
         ds.to_zarr(output_store, encoding=encoding_settings, consolidated=True)
 
-    @staticmethod
-    def cubelsqfit2(
-        var_name,
-        v,
-        v_err_data,
-        amplitude,
-        phase,
-        mean,
-        error,
-        sigma,
-        count,
-        count_image_pairs,
-        offset,
-        slope,
-        se
-    ):
-        """
-        Cube LSQ fit with 2 iterations.
 
-        Populate: [amp, phase, mean, err, sigma, cnt]
+def cubelsqfit2(
+    var_name,
+    # chunk,
+    # start_x,
+    # start_y,
+    # chunk_x_len,
+    # chunk_y_len,
+    v,
+    v_err_data,
+    # start_decimal_year,
+    # stop_decimal_year,
+    # decimal_dt,
+    # years,
+    # M,
+    # mad_std_ratio,
+    # v0_years,
+    # center_date,
+    amplitude,
+    phase,
+    mean,
+    error,
+    sigma,
+    count,
+    count_image_pairs,
+    offset,
+    slope,
+    se
+):
+    """
+    Cube LSQ fit with 2 iterations.
 
-        Inputs:
-        =======
-        TODO:...
-        """
-        # Minimum number of non-NAN values in the data to proceed with LSQ fit
-        _num_valid_points = 5
+    Populate: [amp, phase, mean, err, sigma, cnt]
 
-        # This is only done for generic parfor "slicing" may not be needed when
-        # recoded
-        v_err = v_err_data
-        if v_err_data.ndim != v.ndim:
-            # Expand vector to 3-d array
-            logging.info(f'Expand v_error from {v_err_data.ndim} to {v.ndim} dimensions...')
+    Inputs:
+    =======
+    TODO:...
+    """
+    # Minimum number of non-NAN values in the data to proceed with LSQ fit
+    _num_valid_points = 5
 
-            reshape_v_err = v_err_data.reshape((1, 1, v_err_data.size))
-            # v_err = np.tile(reshape_v_err, (1, ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len))
-            v_err = np.broadcast_to(
-                reshape_v_err,
-                (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, v_err_data.size)
+    # This is only done for generic parfor "slicing" may not be needed when
+    # recoded
+    v_err = v_err_data
+    if v_err_data.ndim != v.ndim:
+        # Expand vector to 3-d array
+        logging.info(f'Expand v_error from {v_err_data.ndim} to {v.ndim} dimensions...')
+
+        reshape_v_err = v_err_data.reshape((1, 1, v_err_data.size))
+        v_err = np.broadcast_to(
+            reshape_v_err,
+            ( ITSLiveComposite.Chunk.y_len,  ITSLiveComposite.Chunk.x_len, v_err_data.size)
+        )
+
+    use_dask = True
+    if use_dask:
+        tasks = []
+
+        for j in tqdm(range(0,  ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
+            for i in range(0,  ITSLiveComposite.Chunk.x_len):
+                mask = ~np.isnan(v[j, i, :])
+                if mask.sum() < _num_valid_points:
+                    # Skip the point, return no outliers
+                    continue
+
+                global_i = i +  ITSLiveComposite.Chunk.start_x
+                global_j = j +  ITSLiveComposite.Chunk.start_y
+
+                tasks.append(
+                    dask.delayed(itslive_lsqfit_annual)(
+                        var_name,
+                        v[j, i, :],
+                        v_err[j, i, :],
+                        ITSLiveComposite.START_DECIMAL_YEAR,
+                        ITSLiveComposite.STOP_DECIMAL_YEAR,
+                        ITSLiveComposite.DECIMAL_DT,
+                        ITSLiveComposite.YEARS,
+                        ITSLiveComposite.M,
+                        ITSLiveComposite.MAD_STD_RATIO,
+                        ITSLiveComposite.V0_YEARS,
+                        CENTER_DATE,
+                        mean[global_j, global_i, :],
+                        error[global_j, global_i, :],
+                        count[global_j, global_i, :],
+                        global_i, global_j
+                    )
+                )
+
+        dask_results = None
+
+        logging.info(f'Using {ITSLiveComposite.NUM_DASK_THREADS} Dask threads')
+        with ProgressBar():
+            # Display progress bar
+            dask_results = dask.compute(
+                tasks,
+                scheduler="threads",
+                num_workers=ITSLiveComposite.NUM_DASK_THREADS
             )
 
-        init_time1 = 0
-        init_time2 = 0
-        init_time3 = 0
-        lsq_time = 0
+        for each_result in dask_results[0]:
+            # logging.info(each_result)
 
+            results_valid, results, global_i, global_j = each_result
+
+            if results_valid:
+                # Update global results only if they are reported to be valid.
+                # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
+                # Unpack results into corresponding data variables
+                amplitude[global_j, global_i], \
+                    sigma[global_j, global_i], \
+                    phase[global_j, global_i], \
+                    offset[global_j, global_i], \
+                    slope[global_j, global_i], \
+                    se[global_j, global_i], \
+                    count_image_pairs[global_j, global_i] = results
+
+    use_original = False
+    if use_original:
         # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
         for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
             for i in range(0, ITSLiveComposite.Chunk.x_len):
@@ -3593,7 +3659,7 @@ class ITSLiveComposite:
                 global_i = i + ITSLiveComposite.Chunk.start_x
                 global_j = j + ITSLiveComposite.Chunk.start_y
 
-                results_valid, init_runtime1, init_runtime2, init_runtime3, lsq_runtime, results = \
+                results_valid, results, _, _ = \
                     itslive_lsqfit_annual(
                         var_name,
                         v[j, i, :],
@@ -3605,33 +3671,26 @@ class ITSLiveComposite:
                         ITSLiveComposite.M,
                         ITSLiveComposite.MAD_STD_RATIO,
                         ITSLiveComposite.V0_YEARS,
+                        CENTER_DATE,
                         mean[global_j, global_i, :],
                         error[global_j, global_i, :],
-                        count[global_j, global_i, :]
+                        count[global_j, global_i, :],
+                        global_i,
+                        global_j
                     )
 
-                init_time1 += init_runtime1
-                init_time2 += init_runtime2
-                init_time3 += init_runtime3
-                lsq_time += lsq_runtime
+                if results_valid:
+                    # logging.info(f'DEBUG: valid results for offset [{global_j}, {global_i}]')
+                    # Unpack results into corresponding data variables
+                    amplitude[global_j, global_i], \
+                        sigma[global_j, global_i], \
+                        phase[global_j, global_i], \
+                        offset[global_j, global_i], \
+                        slope[global_j, global_i], \
+                        se[global_j, global_i], \
+                        count_image_pairs[global_j, global_i] = results
 
-                if not results_valid:
-                    # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
-                    continue
-
-                # Unpack results into corresponding data variables
-                amplitude[global_j, global_i], \
-                    sigma[global_j, global_i], \
-                    phase[global_j, global_i], \
-                    offset[global_j, global_i], \
-                    slope[global_j, global_i], \
-                    se[global_j, global_i], \
-                    count_image_pairs[global_j, global_i] = results
-
-                # logging.info(f'DEBUG: Offset [{global_j}, {global_i}]: {offset[global_j, global_i]}')
-
-        logging.info(f'Init_time1: {init_time1} sec, Init_time2: {init_time2} sec, Init_time3: {init_time3} sec, lsq_time: {lsq_time} seconds')
-        return
+    return
 
 
 if __name__ == '__main__':
@@ -3703,6 +3762,12 @@ if __name__ == '__main__':
         default='2018/01/01',
         help=f"Intercept date used for weighted linear fit [%(default)s]."
     )
+    parser.add_argument(
+        '--numDaskThreads',
+        type=int,
+        default=mp.cpu_count(),
+        help=f"Intercept date used for weighted linear fit [%(default)s]."
+    )
 
     args = parser.parse_args()
 
@@ -3711,6 +3776,9 @@ if __name__ == '__main__':
 
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
+
+    # Set number of threads for the Dask processing
+    ITSLiveComposite.NUM_DASK_THREADS = args.numDaskThreads
 
     # Read shape file with ice masks information in
     ITSLiveComposite.SHAPE_FILE = ITSCube.read_shapefile(args.shapeFile)
@@ -3735,7 +3803,7 @@ if __name__ == '__main__':
         logging.info(f'Composite URL: {ITSLiveComposite.URL}')
 
     mosaics = ITSLiveComposite(args.inputCube, args.inputBucket)
-    mosaics.create(args.outputStore, args.targetBucket)
+    mosaics.create(args.outputStore)
 
     if os.path.exists(args.outputStore):
         output_size = subprocess.run(['du', '-skh', args.outputStore], capture_output=True, text=True).stdout.split()[0]
