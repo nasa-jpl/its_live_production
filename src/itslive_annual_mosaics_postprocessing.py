@@ -219,6 +219,8 @@ class ITSLiveAnnualMosaicsPostProcess:
                     logging.info(f'Masking values for {each_file}...')
                     basename_file = os.path.basename(each_file)
 
+                    ds = ds.load()
+
                     for each_var in ds.keys():
                         if each_var != DataVars.MAPPING:
                             logging.info(f'--->{each_var}')
