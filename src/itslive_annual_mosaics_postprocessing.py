@@ -319,7 +319,7 @@ if __name__ == '__main__':
     # Set static data for processing
     ITSLiveAnnualMosaicsPostProcess.DRYRUN = args.dryrun
 
-    postProcess = ITSLiveAnnualMosaicsPostProcess(args.shapefile, args.bucket, args.mosaicsRegex)
+    postProcess = ITSLiveAnnualMosaicsPostProcess(args.shapeFile, args.bucket, args.mosaicsRegex)
 
     result_files = postProcess(args.targetBucket, args.targetBucketDir)
 
