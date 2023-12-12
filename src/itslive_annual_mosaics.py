@@ -2348,16 +2348,18 @@ class ITSLiveAnnualMosaics:
 
         attrs_filename = ITSLiveAnnualMosaics.filename_nc_to_json(filename)
 
-        # Write attributes to local JSON file
-        logging.info(f'Writing attributes to {attrs_filename}')
-        with open(attrs_filename, 'w') as fh:
-            json.dump(mosaics_attrs, fh, indent=3)
+        # Write attributes to local JSON file if attributes are provided
+        if len(mosaics_attrs):
+            logging.info(f'Writing attributes to {attrs_filename}')
+            with open(attrs_filename, 'w') as fh:
+                json.dump(mosaics_attrs, fh, indent=3)
 
         if copy_to_s3:
             ITSLiveAnnualMosaics.copy_to_s3_bucket(filename, target_file)
 
-            target_file = ITSLiveAnnualMosaics.filename_nc_to_json(target_file)
-            ITSLiveAnnualMosaics.copy_to_s3_bucket(attrs_filename, target_file)
+            if len(mosaics_attrs):
+                target_file = ITSLiveAnnualMosaics.filename_nc_to_json(target_file)
+                ITSLiveAnnualMosaics.copy_to_s3_bucket(attrs_filename, target_file)
 
     @staticmethod
     def filename_nc_to_json(filename):
