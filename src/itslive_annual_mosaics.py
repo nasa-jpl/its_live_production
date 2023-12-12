@@ -237,6 +237,8 @@ class ITSLiveAnnualMosaics:
 
     COMPRESSION = {"zlib": True, "complevel": 2, "shuffle": True}
 
+    NC_ENGINE = 'h5netcdf'
+
     # Data variables for summary mosaics
     SUMMARY_VARS = [
         ShapeFile.LANDICE,
