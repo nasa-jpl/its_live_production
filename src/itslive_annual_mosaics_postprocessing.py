@@ -222,9 +222,15 @@ class ITSLiveAnnualMosaicsPostProcess:
                     ds = ds.load()
 
                     for each_var in ds.keys():
-                        if each_var != DataVars.MAPPING:
+                        if each_var not in [DataVars.MAPPING, ShapeFile.FLOATINGICE, ShapeFile.LANDICE]:
                             logging.info(f'--->{each_var}')
-                            ds[each_var] = ds[each_var].where(~self.mask_ds[ITSLiveAnnualMosaicsPostProcess.MASK_VAR])
+ 
+                            other_value = np.nan
+                            if each_var in [CompDataVars.SENSOR_INCLUDE]:
+                                # Use binary flag's "exclude" value to mask out the polygons
+                                other_value = 0
+
+                            ds[each_var] = ds[each_var].where(~self.mask_ds[ITSLiveAnnualMosaicsPostProcess.MASK_VAR], other=other_value)
 
                     if ITSLiveAnnualMosaics.SUMMARY_KEY in basename_file:
                         # This is a summary mosaic
