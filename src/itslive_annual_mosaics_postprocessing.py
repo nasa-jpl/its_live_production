@@ -224,11 +224,11 @@ class ITSLiveAnnualMosaicsPostProcess:
                     for each_var in ds.keys():
                         if each_var not in [DataVars.MAPPING, ShapeFile.FLOATINGICE, ShapeFile.LANDICE]:
                             logging.info(f'--->{each_var}')
- 
+
                             other_value = np.nan
                             if each_var in [CompDataVars.SENSOR_INCLUDE]:
                                 # Use binary flag's "exclude" value to mask out the polygons
-                                other_value = 0
+                                other_value = DataVars.MISSING_BYTE
 
                             ds[each_var] = ds[each_var].where(~self.mask_ds[ITSLiveAnnualMosaicsPostProcess.MASK_VAR], other=other_value)
 
@@ -270,7 +270,7 @@ def parse_args():
         type=str,
         action='store',
         default=None,
-        help="Shapefile file that stores polygon areas to mask out in mosaics [%(default)s]."
+        help="Shapefile that stores polygon areas to mask out in mosaics [%(default)s]."
     )
     parser.add_argument(
         '-m', '--mosaicsRegex',
