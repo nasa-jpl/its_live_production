@@ -214,7 +214,7 @@ class ITSLiveAnnualMosaicsPostProcess:
         # Mask out all variables data based on created mask
         for each_file in self.mosaics_files:
             with self.s3.open(each_file, mode='rb') as s3_file_obj:
-                with xr.open_dataset(s3_file_obj, engine=ITSCube.NC_ENGINE) as ds:
+                with xr.open_dataset(s3_file_obj, engine=ITSCube.NC_ENGINE, decode_timedelta=False) as ds:
                     logging.info(f'Masking values for {each_file}...')
                     basename_file = os.path.basename(each_file)
 
