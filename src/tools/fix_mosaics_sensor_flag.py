@@ -24,6 +24,7 @@ import xarray as xr
 from itscube_types import DataVars, BinaryFlag, Output
 from itslive_composite import CompDataVars
 from itslive_annual_mosaics import ITSLiveAnnualMosaics
+from itscube import ITSCube
 
 
 class FixMosaics:
@@ -36,6 +37,8 @@ class FixMosaics:
     COMPOSITES_TO_GENERATE = []
     S3_PREFIX = 's3://'
     DRY_RUN = False
+
+    ORIGINAL_DIR = 'sandbox_original'
 
     def __init__(self, bucket: str, bucket_dir: str, target_bucket_dir: str):
         """
@@ -54,14 +57,16 @@ class FixMosaics:
         logging.info(f"Reading sub-directories of {os.path.join(bucket, bucket_dir)}")
 
         self.all_mosaics = []
-        for each in self.s3.ls(os.path.join(bucket, bucket_dir)):
-            files = self.s3.ls(each)
-            files = [each for each in files if each.endswith('0000_v02.nc')]
-            self.all_mosaics.extend(files)
+        files = self.s3.ls(os.path.join(bucket, bucket_dir))
+        files = [each for each in files if each.endswith('0000_v02.nc')]
+        self.all_mosaics.extend(files)
 
         # Sort the list to guarantee the order of found files
         self.all_mosaics.sort()
         logging.info(f"Found number of static mosaics: {len(self.all_mosaics)}")
+
+        # For debugging only
+        self.all_mosaics = [self.all_mosaics[0]]
 
         self.num_to_fix = len(self.all_mosaics)
         logging.info(f"{self.num_to_fix} mosaics to fix: {json.dumps(self.all_mosaics, indent=4)}")
@@ -77,6 +82,10 @@ class FixMosaics:
         if not os.path.exists(local_dir):
             os.mkdir(local_dir)
 
+        # Create directory to store original mosaics - faster to read the whole thing if locally
+        if not os.path.exists(FixMosaics.ORIGINAL_DIR):
+            os.mkdir(FixMosaics.ORIGINAL_DIR)
+
         start = start_index
 
         num_to_fix = self.num_to_fix - start
@@ -85,6 +94,7 @@ class FixMosaics:
 
             logging.info(f"Starting tasks {start}:{start+num_tasks}")
             tasks = [dask.delayed(FixMosaics.all)(
+                FixMosaics.ORIGINAL_DIR,
                 each,
                 self.bucket_dir,
                 self.target_bucket_dir,
@@ -109,40 +119,68 @@ class FixMosaics:
             start += num_tasks
 
     @staticmethod
-    def all(mosaic_url: str, bucket_dir: str, target_bucket_dir: str, local_dir: str, s3_in):
+    def all(local_original_dir: str, mosaic_url: str, bucket_dir: str, target_bucket_dir: str, local_dir: str):
         """
         Fix static mosaics and copy them back to S3 bucket.
         """
         msgs = [f'Processing {mosaic_url}']
 
-        composite_basename = os.path.basename(mosaic_url)
+        mosaic_basename = os.path.basename(mosaic_url)
 
-        # Write datacube locally, upload it to the bucket, remove file
-        fixed_file = os.path.join(local_dir, composite_basename)
+        # Write original mosaic locally, fix it, upload it to the bucket, remove file
+        fixed_file = os.path.join(local_dir, mosaic_basename)
 
-        with s3_in.open(mosaic_url) as fhandle:
-            with xr.open_dataset(fhandle) as ds:
-                # Fix sensor_flag data:
-                curr_attrs = ds[CompDataVars.SENSOR_INCLUDE].attrs
-                curr_attrs[DataVars.DESCRIPTION_ATTR] = CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE]
-                curr_attrs[BinaryFlag.MEANINGS_ATTR] = BinaryFlag.MEANINGS[CompDataVars.SENSOR_INCLUDE]
+        # Bring original mosaics file locally as it's too slow to read the whole file from S3:
+        source_url = mosaic_url
+        if not source_url.startswith(ITSCube.S3_PREFIX):
+            source_url = ITSCube.S3_PREFIX + source_url
 
-                # Reverse 0s and 1s in data:
-                sensor_flag = xr.where(ds[CompDataVars.SENSOR_INCLUDE] == 1, 0, 1)
-                sensor_flag.attrs = curr_attrs
-                # xr.where does not preserve encoding of attributes of original data variable
-                sensor_flag.encoding = ds[CompDataVars.SENSOR_INCLUDE].encoding
+        local_original_mosaic = os.path.join(local_original_dir, mosaic_basename)
 
-                ds[CompDataVars.SENSOR_INCLUDE] = sensor_flag
-                ds[CompDataVars.SENSOR_INCLUDE].attrs = curr_attrs
+        command_line = [
+            "awsv2", "s3", "cp",
+            source_url,
+            local_original_mosaic
+        ]
 
-                # Fix encoding for the sensor_flag
-                ds[CompDataVars.SENSOR_INCLUDE].encoding[Output.MISSING_VALUE_ATTR] = DataVars.MISSING_BYTE
+        msgs.append(f"Creating local copy of {source_url}: {local_original_mosaic}")
+        msgs.append(' '.join(command_line))
 
-                # Change dtype to np.uint32 for count and count0 data variables
-                msgs.append(f"Saving mosaics to {fixed_file}")
+        env_copy = os.environ.copy()
 
-                ds.to_netcdf(fixed_file, engine=ITSLiveAnnualMosaics.NC_ENGINE)
+        command_return = subprocess.run(
+            command_line,
+            env=env_copy,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT
+        )
+
+        if command_return.returncode != 0:
+            raise RuntimeError(f"Failed to copy {source_url} to {local_original_mosaic}: {command_return.stdout}")
+
+        with xr.open_dataset(local_original_mosaic) as ds:
+            # Fix sensor_flag data:
+            curr_attrs = ds[CompDataVars.SENSOR_INCLUDE].attrs
+            curr_attrs[DataVars.DESCRIPTION_ATTR] = CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE]
+            curr_attrs[BinaryFlag.MEANINGS_ATTR] = BinaryFlag.MEANINGS[CompDataVars.SENSOR_INCLUDE]
+
+            # Reverse 0s and 1s in data:
+            sensor_flag = xr.where(ds[CompDataVars.SENSOR_INCLUDE] == 1, 0, 1)
+            sensor_flag.attrs = curr_attrs
+            # xr.where does not preserve encoding of attributes of original data variable
+            sensor_flag.encoding = ds[CompDataVars.SENSOR_INCLUDE].encoding
+
+            ds[CompDataVars.SENSOR_INCLUDE] = sensor_flag
+            ds[CompDataVars.SENSOR_INCLUDE].attrs = curr_attrs
+
+            # Fix encoding for the sensor_flag
+            ds[CompDataVars.SENSOR_INCLUDE].encoding[Output.MISSING_VALUE_ATTR] = DataVars.MISSING_BYTE
+
+            # Change dtype to np.uint32 for count and count0 data variables
+            msgs.append(f"Saving mosaics to {fixed_file}")
+
+            ds.to_netcdf(fixed_file, engine=ITSLiveAnnualMosaics.NC_ENGINE)
 
         target_url = mosaic_url.replace(bucket_dir, target_bucket_dir)
         if not target_url.startswith(FixMosaics.S3_PREFIX):
