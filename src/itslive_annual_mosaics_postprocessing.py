@@ -227,7 +227,7 @@ class ITSLiveAnnualMosaicsPostProcess:
                             other_value = np.nan
                             if each_var in [CompDataVars.SENSOR_INCLUDE]:
                                 # Use binary flag's "exclude" value to mask out the polygons
-                                other_value = DataVars.MISSING_BYTE
+                                other_value = 1
 
                             ds[each_var] = ds[each_var].where(~self.mask_ds[ITSLiveAnnualMosaicsPostProcess.MASK_VAR], other=other_value)
 
