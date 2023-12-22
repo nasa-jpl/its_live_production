@@ -39,6 +39,7 @@ class FixMosaics:
     DRY_RUN = False
 
     ORIGINAL_DIR = 'sandbox_original'
+    NC_ENGINE = 'h5netcdf'
 
     def __init__(self, bucket: str, bucket_dir: str, target_bucket_dir: str):
         """
@@ -98,8 +99,7 @@ class FixMosaics:
                 each,
                 self.bucket_dir,
                 self.target_bucket_dir,
-                local_dir,
-                self.s3
+                local_dir
             ) for each in self.all_mosaics[start:start+num_tasks]]
 
             results = None
@@ -130,7 +130,7 @@ class FixMosaics:
         # Write original mosaic locally, fix it, upload it to the bucket, remove file
         fixed_file = os.path.join(local_dir, mosaic_basename)
 
-        # Bring original mosaics file locally as it's too slow to read the whole file from S3:
+        # Bring original mosaics file locally as it's too slow to read the whole file from S3
         source_url = mosaic_url
         if not source_url.startswith(ITSCube.S3_PREFIX):
             source_url = ITSCube.S3_PREFIX + source_url
@@ -159,7 +159,7 @@ class FixMosaics:
         if command_return.returncode != 0:
             raise RuntimeError(f"Failed to copy {source_url} to {local_original_mosaic}: {command_return.stdout}")
 
-        with xr.open_dataset(local_original_mosaic) as ds:
+        with xr.open_dataset(local_original_mosaic, engine=FixMosaics.NC_ENGINE, decode_timedelta=False) as ds:
             # Fix sensor_flag data:
             curr_attrs = ds[CompDataVars.SENSOR_INCLUDE].attrs
             curr_attrs[DataVars.DESCRIPTION_ATTR] = CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE]
@@ -187,7 +187,7 @@ class FixMosaics:
             target_url = FixMosaics.S3_PREFIX + target_url
 
         if FixMosaics.DRY_RUN:
-            msgs.append(f'DRYRUN: copy composite to {target_url}')
+            msgs.append(f'DRYRUN: copy mosaic to {target_url}')
             return msgs
 
         if os.path.exists(fixed_file) and len(target_bucket_dir):
@@ -222,7 +222,10 @@ class FixMosaics:
                 msgs.append(f"ERROR: Failed to copy {fixed_file} to {target_url}: {command_return.stdout}")
 
             msgs.append(f"Removing local {fixed_file}")
-            shutil.rmtree(fixed_file)
+            os.unlink(fixed_file)
+
+            msgs.append(f'Removing local {local_original_mosaic}')
+            os.unlink(local_original_mosaic)
 
         return msgs
 
