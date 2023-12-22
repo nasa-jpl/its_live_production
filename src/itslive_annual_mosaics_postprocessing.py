@@ -29,10 +29,9 @@ import xarray as xr
 
 # Local imports
 from grid import Bounds, Grid
-from itslive_utils import transform_coord
 
 from itscube import ITSCube
-from itscube_types import Coords, BatchVars, DataVars, ShapeFile
+from itscube_types import Coords, BatchVars, DataVars, ShapeFile, CompDataVars
 from itslive_annual_mosaics import ITSLiveAnnualMosaics
 
 # Set up logging
