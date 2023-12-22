@@ -67,7 +67,7 @@ class FixMosaics:
         logging.info(f"Found number of static mosaics: {len(self.all_mosaics)}")
 
         # For debugging only
-        self.all_mosaics = [self.all_mosaics[0]]
+        # self.all_mosaics = [self.all_mosaics[0]]
 
         self.num_to_fix = len(self.all_mosaics)
         logging.info(f"{self.num_to_fix} mosaics to fix: {json.dumps(self.all_mosaics, indent=4)}")
