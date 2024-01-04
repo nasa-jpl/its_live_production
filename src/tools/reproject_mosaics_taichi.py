@@ -941,7 +941,7 @@ class MosaicsReproject:
             )
             warp_data = None
             gc.collect()
-            
+
         # Warp "floatingice" variable (check for variable existence in older mosaics)
         if ShapeFile.FLOATINGICE in self.ds:
             is_binary_data = True
@@ -2205,7 +2205,7 @@ class MosaicsReproject:
         if use_taichi is True:
             transform_matrix = TiTransformMatrix(num_xy0_points)
 
-            # TODO: 
+            # TODO:
             # investigate why taichi code segfaults for HMA: 32642/ITS_LIVE_velocity_120m_HMA_2020_v02.nc -p 102027
             # but not ANT: 32724/ITS_LIVE_velocity_120m_ANT_2020_v02.nc -p 3031
             transform_matrix.compute(xunit_v.data, yunit_v.data, valid_indices, self.original_ij_index, v_all_values)
@@ -2213,7 +2213,7 @@ class MosaicsReproject:
             self.transformation_matrix = transform_matrix.data.to_numpy()
 
         else:
-            self.transformation_matrix = np.full((num_xy0_points, TiUnitVector.SIZE, TiUnitVector.SIZE), 
+            self.transformation_matrix = np.full((num_xy0_points, TiUnitVector.SIZE, TiUnitVector.SIZE),
                                                  DataVars.MISSING_VALUE,
                                                  dtype=np.float16
                                                 )
