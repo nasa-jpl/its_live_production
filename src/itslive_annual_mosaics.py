@@ -2018,8 +2018,10 @@ class ITSLiveAnnualMosaics:
             }
         )
 
+        # Start with all values set to "include" (1)
+        # TODO: Change to new "include" value of 0 once the change is implemented in composites.
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
-            data=np.full(sensor_dims, 0, dtype=np.short),
+            data=np.full(sensor_dims, 1, dtype=np.short),
             coords=var_coords,
             dims=var_dims,
             attrs={
