@@ -29,7 +29,7 @@ from itscube import ITSCube
 
 class FixMosaics:
     """
-    Class to apply fixes to ITS_LIVE datacubes composites:
+    Class to apply fixes to ITS_LIVE datacubes mosaics:
 
     * Reverse "sensor_flag" values to: 0 - included; 1 - excluded
     * Use missing_value = 0
@@ -49,10 +49,6 @@ class FixMosaics:
         self.bucket = bucket
         self.bucket_dir = bucket_dir
         self.target_bucket_dir = target_bucket_dir
-
-        # For debugging only
-        # FixMosaics.COMPOSITES_TO_GENERATE = FixMosaics.COMPOSITES_TO_GENERATE[:2]
-        # logging.info(f"DEBUG ONLY: test ULRs: {FixMosaics.COMPOSITES_TO_GENERATE}")
 
         # Collect names for existing composites
         logging.info(f"Reading sub-directories of {os.path.join(bucket, bucket_dir)}")
@@ -159,7 +155,7 @@ class FixMosaics:
         if command_return.returncode != 0:
             raise RuntimeError(f"Failed to copy {source_url} to {local_original_mosaic}: {command_return.stdout}")
 
-        with xr.open_dataset(local_original_mosaic, engine=FixMosaics.NC_ENGINE, decode_timedelta=False) as ds:
+        with xr.open_dataset(local_original_mosaic, engine=FixMosaics.NC_ENGINE) as ds:
             # Fix sensor_flag data:
             curr_attrs = ds[CompDataVars.SENSOR_INCLUDE].attrs
             curr_attrs[DataVars.DESCRIPTION_ATTR] = CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE]
