@@ -199,7 +199,7 @@ class FixMosaics:
             env_copy = os.environ.copy()
 
             command_line = [
-                "aws", "s3", "cp", "--recursive",
+                "aws", "s3", "cp",
                 fixed_file,
                 target_url,
                 "--acl", "bucket-owner-full-control"
