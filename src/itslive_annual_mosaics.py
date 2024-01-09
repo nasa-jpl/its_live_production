@@ -122,6 +122,7 @@ class MosaicsOutputFormat:
     STATIC_TITLE = 'ITS_LIVE summary mosaics of image pair velocities'
 
     # Summary variables which dtype should be float32 in final mosaics
+    # with fill value = -32767
     FLOAT32_TYPES = [
         CompDataVars.SLOPE_V,
         CompDataVars.SLOPE_VX,
@@ -134,7 +135,8 @@ class MosaicsOutputFormat:
         DataVars.VY
     ]
 
-    # Summary variables which dtype should be uint16 in final mosaics
+    # Data variables (summary) which dtype should be uint16 in final mosaics with
+    # fill value = 32767
     UINT16_TYPES = [
         CompDataVars.V_ERROR,
         CompDataVars.VX_ERROR,
@@ -150,17 +152,32 @@ class MosaicsOutputFormat:
         CompDataVars.VY_AMP_ERROR,
         CompDataVars.V_PHASE,
         CompDataVars.VX_PHASE,
-        CompDataVars.VY_PHASE,
+        CompDataVars.VY_PHASE
+    ]
+
+    # Data variables (summary) which dtype should be uint16 in final mosaics with
+    # fill value = 0
+    UINT16_TYPES_ZERO_MISSING_VALUE = [
         CompDataVars.MAX_DT
     ]
+
+    # Data variables which dtype should be uint32 in final mosaics with
+    # fill value = 0
     UINT32_TYPES = [
         CompDataVars.COUNT0,
         CompDataVars.COUNT
     ]
 
+    # Data variables which dtype should be uint8 in final mosaics with
+    # fill value = 255
     UINT8_TYPES = [
         CompDataVars.OUTLIER_FRAC,
-        CompDataVars.SENSOR_INCLUDE,
+        CompDataVars.SENSOR_INCLUDE
+    ]
+
+    # Data variables which dtype should be uint8 in final mosaics with
+    # fill value = 0
+    UINT8_TYPES_ZERO_MISSING_VALUE = [
         ShapeFile.LANDICE,
         ShapeFile.FLOATINGICE
     ]
@@ -1423,9 +1440,17 @@ class ITSLiveAnnualMosaics:
                     attrs=avg_overlap.attrs
                 )
 
+            elif each_var in MosaicsOutputFormat.UINT16_TYPES_ZERO_MISSING_VALUE:
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values, fill_value=DataVars.MISSING_BYTE),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
+
             elif each_var in MosaicsOutputFormat.UINT32_TYPES:
                 avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values, np.uint32, DataVars.MISSING_BYTE),
+                    data=to_int_type(avg_overlap.values, data_type=np.uint32, fill_value=DataVars.MISSING_BYTE),
                     coords=avg_overlap.coords,
                     dims=avg_overlap.dims,
                     attrs=avg_overlap.attrs
@@ -1433,7 +1458,15 @@ class ITSLiveAnnualMosaics:
 
             elif each_var in MosaicsOutputFormat.UINT8_TYPES:
                 avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                    data=to_int_type(avg_overlap.values, data_type=np.uint8, fill_value=DataVars.MISSING_UINT8_VALUE),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
+
+            elif each_var in MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE:
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values, np.uint8, DataVars.MISSING_BYTE),
                     coords=avg_overlap.coords,
                     dims=avg_overlap.dims,
                     attrs=avg_overlap.attrs
@@ -1632,7 +1665,6 @@ class ITSLiveAnnualMosaics:
             avg_overlap_dims = dict(x=avg_overlap.x.values, y=avg_overlap.y.values)
 
             # Convert data variable to output integer datatype if required
-            # Convert data variable to output integer datatype if required
             if each_var in MosaicsOutputFormat.UINT16_TYPES:
                 avg_overlap = xr.DataArray(
                     data=to_int_type(avg_overlap.values),
@@ -1641,9 +1673,17 @@ class ITSLiveAnnualMosaics:
                     attrs=avg_overlap.attrs
                 )
 
+            elif each_var in MosaicsOutputFormat.UINT16_TYPES_ZERO_MISSING_VALUE:
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values, fill_value=DataVars.MISSING_BYTE),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
+
             elif each_var in MosaicsOutputFormat.UINT32_TYPES:
                 avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values, np.uint32, DataVars.MISSING_BYTE),
+                    data=to_int_type(avg_overlap.values, data_type=np.uint32, fill_value=DataVars.MISSING_BYTE),
                     coords=avg_overlap.coords,
                     dims=avg_overlap.dims,
                     attrs=avg_overlap.attrs
@@ -1651,7 +1691,15 @@ class ITSLiveAnnualMosaics:
 
             elif each_var in MosaicsOutputFormat.UINT8_TYPES:
                 avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                    data=to_int_type(avg_overlap.values, data_type=np.uint8, fill_value=DataVars.MISSING_UINT8_VALUE),
+                    coords=avg_overlap.coords,
+                    dims=avg_overlap.dims,
+                    attrs=avg_overlap.attrs
+                )
+
+            elif each_var in MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE:
+                avg_overlap = xr.DataArray(
+                    data=to_int_type(avg_overlap.values, data_type=np.uint8, fill_value=DataVars.MISSING_BYTE),
                     coords=avg_overlap.coords,
                     dims=avg_overlap.dims,
                     attrs=avg_overlap.attrs
@@ -1830,6 +1878,84 @@ class ITSLiveAnnualMosaics:
         return mosaics_filepath
 
     @staticmethod
+    def set_int_encoding(ds: xr.Dataset, encoding_settings: dict, two_dim_chunks_settings: tuple, three_dim_chunks_settings: tuple=()):
+        """
+        Set encoding settings for all data variables of integer data type for the input dataset.
+
+        Args:
+            ds (xr.Dataset): Dataset that stores all data variables
+            encoding_settings (dict): Dictionary to store encoding settings for all data variables.
+            two_dim_chunks_settings: Chunking for 2D data variables.
+            three_dim_chunks_settings: Chunking for 3D data variables.
+
+        Returns:
+            None: Input encoding_settings dictionary is updated with settings.
+        """
+        # Settings for "int" data types
+        for each in MosaicsOutputFormat.UINT16_TYPES:
+            if each in ds:
+                _chunks = two_dim_chunks_settings
+                if ds[each].ndim == 3:
+                    _chunks = three_dim_chunks_settings
+
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                    Output.DTYPE_ATTR: np.uint16,
+                    Output.CHUNKSIZES_ATTR: _chunks
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        for each in MosaicsOutputFormat.UINT16_TYPES_ZERO_MISSING_VALUE:
+            if each in ds:
+                _chunks = two_dim_chunks_settings
+                if ds[each].ndim == 3:
+                    _chunks = three_dim_chunks_settings
+
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
+                    Output.DTYPE_ATTR: np.uint16,
+                    Output.CHUNKSIZES_ATTR: _chunks
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        for each in MosaicsOutputFormat.UINT32_TYPES:
+            if each in ds:
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
+                    Output.DTYPE_ATTR: np.uint32,
+                    Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        for each in MosaicsOutputFormat.UINT8_TYPES:
+            if each in ds:
+                _chunks = two_dim_chunks_settings
+
+                if ds[each].ndim == 3:
+                    _chunks = three_dim_chunks_settings
+
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                    Output.DTYPE_ATTR: np.uint8,
+                    Output.CHUNKSIZES_ATTR: _chunks
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        for each in MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE:
+            if each in ds:
+                _chunks = two_dim_chunks_settings
+
+                if ds[each].ndim == 3:
+                    _chunks = three_dim_chunks_settings
+
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
+                    Output.DTYPE_ATTR: np.uint8,
+                    Output.CHUNKSIZES_ATTR: _chunks
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+    @staticmethod
     def annual_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str, copy_to_s3: bool):
         """
         Store datacube annual mosaics to NetCDF store.
@@ -1869,33 +1995,7 @@ class ITSLiveAnnualMosaics:
             })
             encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
-        # Settings for "int" data types
-        for each in MosaicsOutputFormat.UINT16_TYPES:
-            if each in ds:
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
-                    Output.DTYPE_ATTR: np.uint16,
-                    Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
-
-        for each in MosaicsOutputFormat.UINT32_TYPES:
-            if each in ds:
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
-                    Output.DTYPE_ATTR: np.uint32,
-                    Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
-
-        for each in MosaicsOutputFormat.UINT8_TYPES:
-            if each in ds:
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
-                    Output.DTYPE_ATTR: np.uint8,
-                    Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+        ITSLiveAnnualMosaics.set_int_encoding(ds, encoding_settings, two_dim_chunks_settings)
 
         # Write locally
         ds.to_netcdf(f'{filename}', engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
@@ -2304,45 +2404,7 @@ class ITSLiveAnnualMosaics:
                 })
                 encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
-        # for each in [Coords.X, Coords.Y]:
-        #     encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
-
-        # Settings for "int" data types
-        for each in MosaicsOutputFormat.UINT16_TYPES:
-            if each in ds:
-                _chunks = two_dim_chunks_settings
-                if ds[each].ndim == 3:
-                    _chunks = three_dim_chunks_settings
-
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
-                    Output.DTYPE_ATTR: np.uint16,
-                    Output.CHUNKSIZES_ATTR: _chunks
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
-
-        for each in MosaicsOutputFormat.UINT32_TYPES:
-            if each in ds:
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
-                    Output.DTYPE_ATTR: np.uint32,
-                    Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
-
-        for each in MosaicsOutputFormat.UINT8_TYPES:
-            if each in ds:
-                _chunks = two_dim_chunks_settings
-
-                if ds[each].ndim == 3:
-                    _chunks = three_dim_chunks_settings
-
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
-                    Output.DTYPE_ATTR: np.uint8,
-                    Output.CHUNKSIZES_ATTR: _chunks
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+        ITSLiveAnnualMosaics.set_int_encoding(ds, encoding_settings, two_dim_chunks_settings, three_dim_chunks_settings)
 
         logging.info(f'DS: {ds}')
         logging.info(f'DS encoding: {encoding_settings}')
