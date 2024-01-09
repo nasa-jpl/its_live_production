@@ -32,7 +32,7 @@ from grid import Bounds, Grid
 
 from itscube import ITSCube
 from itscube_types import Coords, BatchVars, DataVars, ShapeFile, CompDataVars
-from itslive_annual_mosaics import ITSLiveAnnualMosaics
+from itslive_annual_mosaics import ITSLiveAnnualMosaics, MosaicsOutputFormat
 
 # Set up logging
 logging.basicConfig(
@@ -231,6 +231,22 @@ class ITSLiveAnnualMosaicsPostProcess:
                                 other_value = 0
 
                             ds[each_var] = ds[each_var].where(~self.mask_ds[ITSLiveAnnualMosaicsPostProcess.MASK_VAR], other=other_value)
+
+                    ### Change missing_value for CompDataVars.SENSOR_INCLUDE
+
+                    # Data variables which dtype should be uint8 in final mosaics with
+                    # fill value = 255
+                    MosaicsOutputFormat.UINT8_TYPES = [
+                        CompDataVars.OUTLIER_FRAC
+                    ]
+
+                    # Data variables which dtype should be uint8 in final mosaics with
+                    # fill value = 0
+                    MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE = [
+                        ShapeFile.LANDICE,
+                        ShapeFile.FLOATINGICE,
+                        CompDataVars.SENSOR_INCLUDE
+                    ]
 
                     if ITSLiveAnnualMosaics.SUMMARY_KEY in basename_file:
                         # This is a summary mosaic
