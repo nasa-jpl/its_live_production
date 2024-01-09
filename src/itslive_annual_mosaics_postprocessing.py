@@ -226,8 +226,9 @@ class ITSLiveAnnualMosaicsPostProcess:
 
                             other_value = np.nan
                             if each_var in [CompDataVars.SENSOR_INCLUDE]:
-                                # Use binary flag's "exclude" value to mask out the polygons
-                                other_value = 1
+                                # Use binary flag's "include" value for masked out polygons:
+                                # per Alex: "1 = exulted by the filtering algorithm... not the masking"
+                                other_value = 0
 
                             ds[each_var] = ds[each_var].where(~self.mask_ds[ITSLiveAnnualMosaicsPostProcess.MASK_VAR], other=other_value)
 
