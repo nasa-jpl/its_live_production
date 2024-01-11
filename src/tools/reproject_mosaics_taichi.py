@@ -1097,7 +1097,7 @@ class MosaicsReproject:
 
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
                 Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             })
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
@@ -1193,8 +1193,14 @@ class MosaicsReproject:
             if ds[each].ndim == 3:
                 _chunks = three_dim_chunks_settings
 
+            _missing_value = DataVars.MISSING_POS_VALUE
+            if each in [
+                CompDataVars.MAX_DT
+            ]:
+                _missing_value = DataVars.MISSING_BYTE
+
             encoding_settings[each] = {
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                Output.MISSING_VALUE_ATTR: _missing_value,
                 Output.DTYPE_ATTR: np.uint16,
                 Output.CHUNKSIZES_ATTR: _chunks
             }
@@ -1211,8 +1217,7 @@ class MosaicsReproject:
             CompDataVars.OUTLIER_FRAC,
             CompDataVars.SENSOR_INCLUDE,
             ShapeFile.LANDICE,
-            ShapeFile.FLOATINGICE,
-
+            ShapeFile.FLOATINGICE
         ]:
             if each not in ds:
                 continue
@@ -1222,9 +1227,17 @@ class MosaicsReproject:
             if ds[each].ndim == 3:
                 _chunks = three_dim_chunks_settings
 
+            # ice masks should use 0 as missing_value
+            _missing_value = DataVars.MISSING_UINT8_VALUE
+            if each in [
+                ShapeFile.LANDICE,
+                ShapeFile.FLOATINGICE
+            ]:
+                _missing_value = DataVars.MISSING_BYTE
+
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                Output.MISSING_VALUE_ATTR: _missing_value,
                 Output.CHUNKSIZES_ATTR: _chunks
             })
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
