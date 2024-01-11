@@ -94,13 +94,13 @@ class TiUnitVector:
 
     # Custom compile-time type to represent a unit vector as you can't define one
     # at runtime within the function
-    VECTOR = ti.types.vector(SIZE, float)
+    VECTOR = ti.types.vector(SIZE, ti.f32)
 
     """
     """
     def __init__(self, n: int):
         # self.vector = ti.field(dtype=float, shape=(n, TiUnitVector.SIZE))
-        self.data = ti.Vector.field(TiUnitVector.SIZE, dtype=float, shape=(n))
+        self.data = ti.Vector.field(TiUnitVector.SIZE, dtype=ti.f32, shape=(n))
         self.dataLength = n
 
     @ti.kernel
@@ -136,7 +136,7 @@ class TiTransformMatrix:
     """
     def __init__(self, n: int):
         # Declares a matrix field of n-elements, each of its elements being a 2x2 matrix
-        self.data = ti.Matrix.field(n=TiUnitVector.SIZE, m=TiUnitVector.SIZE, dtype=float, shape=(n))
+        self.data = ti.Matrix.field(n=TiUnitVector.SIZE, m=TiUnitVector.SIZE, dtype=ti.f32, shape=(n))
         self.fill_data()
 
     @ti.kernel
@@ -2083,7 +2083,7 @@ class MosaicsReproject:
 
         # Get corresponding to xy0_points in original projection
         ij0_points = xy_to_ij_transfer.TransformPoints(xy0_points)
-        xy0_points = np.array(xy0_points)
+        xy0_points = np.array(xy0_points, dtype=np.float32)
 
         logging.info('Got list of points in original projection...')
 
@@ -2096,7 +2096,7 @@ class MosaicsReproject:
         ij_unit = [[each[0] + self.x_size, each[1]] for each in ij0_points]
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit)
         # logging.info(f'Type of xy_points: {type(xy_points)}') # list
-        xy_points = np.array(xy_points)
+        xy_points = np.array(xy_points, dtype=np.float32)
 
         num_xy0_points = len(xy0_points)
 
@@ -2127,7 +2127,7 @@ class MosaicsReproject:
         # xy_points = ij_to_xy_transfer.TransformPoints(ij_unit.tolist())
         ij_unit = [[each[0], each[1] + self.y_size] for each in ij0_points]
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit)
-        xy_points = np.array(xy_points)
+        xy_points = np.array(xy_points, dtype=np.float32)
 
         # yunit_v = np.zeros((num_xy0_points, 3))
         start_time = timeit.default_timer()
@@ -2173,8 +2173,8 @@ class MosaicsReproject:
         y_index_all = (np_ij_points[:, 1] - ij_y_bbox.max) / self.y_size
 
         invalid_mask = (x_index_all < 0) | (y_index_all < 0) | \
-                       (x_index_all >= num_i) | (x_index_all < 0) | \
-                       (y_index_all >= num_j) | (y_index_all < 0)
+                        (x_index_all >= num_i) | (x_index_all < 0) | \
+                        (y_index_all >= num_j) | (y_index_all < 0)
 
         no_value_counter = np.sum(invalid_mask)
         logging.info(f'No value counter = {no_value_counter} (out of {num_xy0_points}) after setting original ij indices')
@@ -2213,10 +2213,11 @@ class MosaicsReproject:
             self.transformation_matrix = transform_matrix.data.to_numpy()
 
         else:
-            self.transformation_matrix = np.full((num_xy0_points, TiUnitVector.SIZE, TiUnitVector.SIZE),
-                                                 DataVars.MISSING_VALUE,
-                                                 dtype=np.float16
-                                                )
+            self.transformation_matrix = np.full(
+                (num_xy0_points, TiUnitVector.SIZE, TiUnitVector.SIZE),
+                DataVars.MISSING_VALUE,
+                dtype=np.float32
+            )
             xunit_v = xunit_v.data.to_numpy()
             yunit_v = yunit_v.data.to_numpy()
 
