@@ -188,7 +188,7 @@ class ITSLiveAnnualMosaicsPostProcess:
 
             if mask.values.sum() == 0:
                 # One or both masks resulted in no coverage
-                logging.info(f'Skipping polygon since it does not overlap with mosaics')
+                logging.info('Skipping polygon since it does not overlap with mosaics')
 
             else:
                 # Reduce polygon to the mosaics coverage
@@ -208,8 +208,56 @@ class ITSLiveAnnualMosaicsPostProcess:
             # For debugging: plot final mask
             # self.mask_ds.data.plot(x='x', y='y')
 
-
         copy_file_to_s3 = not ITSLiveAnnualMosaicsPostProcess.DRYRUN
+
+        if ITSLiveAnnualMosaicsPostProcess.MASK_VAR not in self.mask_ds:
+            logging.info('Polygons do not overlap mosaics, just copy original mosaics to the target S3 destination')
+
+            _s3_prefix = 's3://'
+
+            # There is no polygon area that overlaps mosaics, just copy source mosaics
+            # to its target destination
+            for each_file in self.mosaics_files:
+                each_s3_path = each_file
+
+                if not each_file.startswith(_s3_prefix):
+                    each_s3_path = f'{_s3_prefix}{each_file}'
+
+                target_file = os.path.basename(each_file)
+
+                if copy_file_to_s3:
+                    target_file = os.path.join(target_bucket, target_bucket_dir, target_file)
+
+                logging.info(f'Copying {each_s3_path} to {target_file}')
+
+                if copy_file_to_s3:
+                    command_line = [
+                        "awsv2", "s3", "cp",
+                        each_s3_path,
+                        target_file,
+                        "--acl", "bucket-owner-full-control"
+                    ]
+
+                    logging.info(' '.join(command_line))
+
+                    command_return = None
+                    env_copy = os.environ.copy()
+
+                    logging.info(f"Copy {each_s3_path} to {target_file}")
+
+                    command_return = subprocess.run(
+                        command_line,
+                        env=env_copy,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT
+                    )
+
+                    if command_return.returncode != 0:
+                        # Report the whole stdout stream as one logging message
+                        raise RuntimeError(f"Failed to copy {each_s3_path} to {target_file} with returncode={command_return.returncode}: {command_return.stdout}")
+
+            return
 
         # Mask out all variables data based on created mask
         for each_file in self.mosaics_files:
@@ -227,12 +275,12 @@ class ITSLiveAnnualMosaicsPostProcess:
                             other_value = np.nan
                             if each_var in [CompDataVars.SENSOR_INCLUDE]:
                                 # Use binary flag's "include" value for masked out polygons:
-                                # per Alex: "1 = exulted by the filtering algorithm... not the masking"
+                                # per Alex: "1 = excluded by the filtering algorithm... not the masking"
                                 other_value = 0
 
                             ds[each_var] = ds[each_var].where(~self.mask_ds[ITSLiveAnnualMosaicsPostProcess.MASK_VAR], other=other_value)
 
-                    ### Change missing_value for CompDataVars.SENSOR_INCLUDE
+                    # Change missing_value for CompDataVars.SENSOR_INCLUDE
 
                     # Data variables which dtype should be uint8 in final mosaics with
                     # fill value = 255
@@ -344,8 +392,7 @@ if __name__ == '__main__':
     ITSLiveAnnualMosaicsPostProcess.DRYRUN = args.dryrun
 
     postProcess = ITSLiveAnnualMosaicsPostProcess(args.shapeFile, args.bucket, args.mosaicsRegex)
+    postProcess(args.targetBucket, args.targetBucketDir)
 
-    result_files = postProcess(args.targetBucket, args.targetBucketDir)
-
-    logging.info(f'Processed mosaics files: {json.dumps(result_files, indent=3)}')
+    logging.info(f'Processed mosaics files: {json.dumps(postProcess.mosaics_files, indent=3)}')
     logging.info("Done.")
