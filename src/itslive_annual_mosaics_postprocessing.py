@@ -224,9 +224,7 @@ class ITSLiveAnnualMosaicsPostProcess:
                     each_s3_path = f'{_s3_prefix}{each_file}'
 
                 target_file = os.path.basename(each_file)
-
-                if copy_file_to_s3:
-                    target_file = os.path.join(target_bucket, target_bucket_dir, target_file)
+                target_file = os.path.join(target_bucket, target_bucket_dir, target_file)
 
                 logging.info(f'Copying {each_s3_path} to {target_file}')
 
