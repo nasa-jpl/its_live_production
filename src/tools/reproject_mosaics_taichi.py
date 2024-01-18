@@ -325,6 +325,7 @@ class MosaicsReproject:
             # GDAL options to use for warping to new output grid
             self.warp_options_uint8 = None
             self.warp_options_uint16 = None
+            self.warp_options_uint16_zero_missing_value = None
             self.warp_options_uint32 = None
 
             # A "pointer" to the method to invoke to process the mosaic: static or annual
@@ -391,6 +392,20 @@ class MosaicsReproject:
             errorThreshold=MosaicsReproject.WARP_ET
         )
 
+        self.warp_options_uint8_zero_missing_value = gdal.WarpOptions(
+            # format='netCDF',
+            format=MosaicsReproject.WARP_FORMAT,
+            outputBounds=(self.x0_bbox.min, self.y0_bbox.min, self.x0_bbox.max, self.y0_bbox.max),
+            xRes=self.x_size,
+            yRes=self.y_size,
+            srcSRS=f'{self.ij_epsg_str}:{self.ij_epsg}',
+            dstSRS=f'{self.xy_epsg_str}:{self.xy_epsg}',
+            srcNodata=DataVars.MISSING_BYTE,
+            dstNodata=DataVars.MISSING_BYTE,
+            resampleAlg=gdal.GRA_NearestNeighbour,
+            errorThreshold=MosaicsReproject.WARP_ET
+        )
+
         self.warp_options_uint16 = gdal.WarpOptions(
             # format='netCDF',
             format=MosaicsReproject.WARP_FORMAT,
@@ -401,6 +416,20 @@ class MosaicsReproject:
             dstSRS=f'{self.xy_epsg_str}:{self.xy_epsg}',
             srcNodata=DataVars.MISSING_POS_VALUE,
             dstNodata=DataVars.MISSING_POS_VALUE,
+            resampleAlg=gdal.GRA_NearestNeighbour,
+            errorThreshold=MosaicsReproject.WARP_ET
+        )
+
+        self.warp_options_uint16_zero_missing_value = gdal.WarpOptions(
+            # format='netCDF',
+            format=MosaicsReproject.WARP_FORMAT,
+            outputBounds=(self.x0_bbox.min, self.y0_bbox.min, self.x0_bbox.max, self.y0_bbox.max),
+            xRes=self.x_size,
+            yRes=self.y_size,
+            srcSRS=f'{self.ij_epsg_str}:{self.ij_epsg}',
+            dstSRS=f'{self.xy_epsg_str}:{self.xy_epsg}',
+            srcNodata=DataVars.MISSING_BYTE,
+            dstNodata=DataVars.MISSING_BYTE,
             resampleAlg=gdal.GRA_NearestNeighbour,
             errorThreshold=MosaicsReproject.WARP_ET
         )
@@ -727,7 +756,7 @@ class MosaicsReproject:
         self.set_mapping(reproject_ds)
 
         # Warp "dt_max" variable: per each sensor dimension
-        warp_data = self.warp_var(CompDataVars.MAX_DT, self.warp_options_uint16)
+        warp_data = self.warp_var(CompDataVars.MAX_DT, self.warp_options_uint16_zero_missing_value)
 
         if warp_data.ndim == 2:
             # If warped data is 2d array
@@ -745,7 +774,7 @@ class MosaicsReproject:
             logging.info(f"Warped {CompDataVars.MAX_DT}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
 
         reproject_ds[CompDataVars.MAX_DT] = xr.DataArray(
-            data=to_int_type(warp_data),
+            data=to_int_type(warp_data, fill_value=DataVars.MISSING_BYTE),
             coords=ds_coords,
             attrs=self.ds[CompDataVars.MAX_DT].attrs
         )
@@ -757,11 +786,11 @@ class MosaicsReproject:
             is_binary_data = True
             warp_data = self.warp_var(
                 ShapeFile.LANDICE,
-                self.warp_options_uint8,
+                self.warp_options_uint8_zero_missing_value,
                 is_binary_data
             )
             reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_BYTE),
                 coords=ds_coords_2d,
                 attrs=self.ds[ShapeFile.LANDICE].attrs
             )
@@ -772,11 +801,11 @@ class MosaicsReproject:
             is_binary_data = True
             warp_data = self.warp_var(
                 ShapeFile.FLOATINGICE,
-                self.warp_options_uint8,
+                self.warp_options_uint8_zero_missing_value,
                 is_binary_data
             )
             reproject_ds[ShapeFile.FLOATINGICE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_BYTE),
                 coords=ds_coords_2d,
                 attrs=self.ds[ShapeFile.FLOATINGICE].attrs
             )
@@ -786,7 +815,7 @@ class MosaicsReproject:
         # Warp "outlier_frac" variable: per each sensor dimension
         warp_data = self.warp_var(CompDataVars.OUTLIER_FRAC, self.warp_options_uint8)
         reproject_ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
-            data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+            data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_UINT8_VALUE),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.OUTLIER_FRAC].attrs
         )
@@ -812,7 +841,7 @@ class MosaicsReproject:
                 warp_data = warp_data.reshape((1, _y_dim, _x_dim))
 
             reproject_ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_UINT8_VALUE),
                 coords=ds_coords,
                 attrs=self.ds[CompDataVars.SENSOR_INCLUDE].attrs
             )
@@ -931,11 +960,11 @@ class MosaicsReproject:
             is_binary_data = True
             warp_data = self.warp_var(
                 ShapeFile.LANDICE,
-                self.warp_options_uint8,
+                self.warp_options_uint8_zero_missing_value,
                 is_binary_data
             )
             reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_BYTE),
                 coords=ds_coords,
                 attrs=self.ds[ShapeFile.LANDICE].attrs
             )
@@ -947,11 +976,11 @@ class MosaicsReproject:
             is_binary_data = True
             warp_data = self.warp_var(
                 ShapeFile.FLOATINGICE,
-                self.warp_options_uint8,
+                self.warp_options_uint8_zero_missing_value,
                 is_binary_data
             )
             reproject_ds[ShapeFile.FLOATINGICE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_BYTE),
                 coords=ds_coords,
                 attrs=self.ds[ShapeFile.FLOATINGICE].attrs
             )
@@ -1649,7 +1678,7 @@ class MosaicsReproject:
 
             # If any of the values is NODATA, don't re-project, leave them as NODATA
             # if np.all(np.isfinite(dv)):
-            if(not math.isnan(dv[0])) and (not math.isnan(dv[1])):
+            if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
                 vx_phase[y, x], vy_phase[y, x] = np.matmul(np.abs(t_matrix), dv)
 
         # No need for some of original data, cleanup
@@ -2186,8 +2215,8 @@ class MosaicsReproject:
         y_index_all = (np_ij_points[:, 1] - ij_y_bbox.max) / self.y_size
 
         invalid_mask = (x_index_all < 0) | (y_index_all < 0) | \
-                        (x_index_all >= num_i) | (x_index_all < 0) | \
-                        (y_index_all >= num_j) | (y_index_all < 0)
+            (x_index_all >= num_i) | (x_index_all < 0) | \
+            (y_index_all >= num_j) | (y_index_all < 0)
 
         no_value_counter = np.sum(invalid_mask)
         logging.info(f'No value counter = {no_value_counter} (out of {num_xy0_points}) after setting original ij indices')
