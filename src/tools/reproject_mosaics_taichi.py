@@ -1744,20 +1744,19 @@ class MosaicsReproject:
         if MosaicsReproject.VERBOSE:
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_VX}:  min={np.nanmin(dvx_dt)} max={np.nanmax(dvx_dt)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_VY}:  min={np.nanmin(dvy_dt)} max={np.nanmax(dvy_dt)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_V}:  min={np.nanmin(dv_dt)} max={np.nanmax(dv_dt)}")
 
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VX_AMP}:  min={np.nanmin(vx_amp)} max={np.nanmax(vx_amp)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VY_AMP}:  min={np.nanmin(vy_amp)} max={np.nanmax(vy_amp)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP}:  min={np.nanmin(v_amp)} max={np.nanmax(v_amp)}")
 
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VX_AMP_ERROR}:  min={np.nanmin(vx_amp_error)} max={np.nanmax(vx_amp_error)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VY_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP_ERROR}:  min={np.nanmin(v_amp_error)} max={np.nanmax(v_amp_error)}")
 
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VX_PHASE}:  min={np.nanmin(vx_phase)} max={np.nanmax(vx_phase)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VY_PHASE}:  min={np.nanmin(vy_phase)} max={np.nanmax(vy_phase)}")
-
-            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_V}:  min={np.nanmin(dv_dt)} max={np.nanmax(dv_dt)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_PHASE}:  min={np.nanmin(v_phase)} max={np.nanmax(v_phase)}")
-            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP}:  min={np.nanmin(v_amp)} max={np.nanmax(v_amp)}")
-            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
 
         return (dvx_dt, dvy_dt, dv_dt, vx_amp, vy_amp, v_amp, vx_amp_error, vy_amp_error, v_amp_error, vx_phase, vy_phase, v_phase)
 
