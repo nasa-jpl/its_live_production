@@ -2336,7 +2336,7 @@ class ITSLiveAnnualMosaics:
         for each_file, each_ds in self.raw_ds.items():
             logging.info(f'Collecting summary data from {each_file}')
 
-            # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
+            # Workaround for non-masked X and Y components of V0 and V_AMP, V_AMP_ERROR data variables:
             # get mask for all valid magnitude values, then mask out corresponding
             # X and Y components
             v0_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V0])
@@ -2365,7 +2365,13 @@ class ITSLiveAnnualMosaics:
                     if each_var in [CompDataVars.VX0, CompDataVars.VY0]:
                         ds[ds_var] = each_ds.s3.ds[each_var].where(v0_valid_mask, np.nan)
 
-                    elif each_var in [CompDataVars.VX_AMP, CompDataVars.VY_AMP]:
+                    elif each_var in [
+                        CompDataVars.VX_AMP,
+                        CompDataVars.VY_AMP,
+                        CompDataVars.VX_AMP_ERROR,
+                        CompDataVars.VY_AMP_ERROR,
+                        CompDataVars.V_AMP_ERROR
+                    ]:
                         ds[ds_var] = each_ds.s3.ds[each_var].where(v_amp_valid_mask, np.nan)
 
                     else:
