@@ -1806,7 +1806,7 @@ class MosaicsReproject:
         Wrap phase and amplitude to be within valid ranges.
 
         Args:
-        v_phase: Input phase in degrees
+        v_phase: Input phase in degrees.
         v_amp: Input amplitude.
 
         Ouputs:
@@ -1896,8 +1896,6 @@ class MosaicsReproject:
         # Don't use np.nan values in calculations to avoid warnings
         valid_mask = (~np.isnan(vx_phase_deg)) & (~np.isnan(vy_phase_deg))
 
-        # logging.info(f'Degrees: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
-
         # Convert degrees to radians as numpy trig. functions take angles in radians
         # Explanation: if skipping *360.0 in vx_phase_deg, vy_phase_deg above,
         # then to convert to radians: *np.pi/180 --> 360*np.py/180 = 2*np.pi
@@ -1922,18 +1920,17 @@ class MosaicsReproject:
         # for rotation, not counter-clockwise as in Matlab prototype code.
         A1 = vx_amp*cos_theta
         B1 = -vy_amp*sin_theta
-        # Matlab WAY
+        # Matlab prototype:
         # B1 = -vy_amp*sin_theta
 
-        # Matlab WAY
+        # Matlab prototype:
         # A2 = vx_amp*sin_theta
         # B2 = vy_amp*cos_theta
-
-        # A2 = vx_amp*sin_theta
         A2 = vx_amp*sin_theta
         B2 = vy_amp*cos_theta
 
         # Matlab prototype code:
+        # % Rotation matrix for x component:
         # vx_amp_r   =   hypot(A1.*cosd(vx_phase_deg) + B1.*cosd(vy_phase_deg),  A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg));
         # vx_phase_r = atan2d((A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg)),(A1.*cosd(vx_phase_deg) + B1.*(cosd(vy_phase_deg))));
 
@@ -1943,6 +1940,7 @@ class MosaicsReproject:
         # vy_amp_r   =   hypot(A2.*cosd(vx_phase_deg) + B2.*cosd(vy_phase_deg),  A2.*sind(vx_phase_deg) + B2.*sind(vy_phase_deg));
         # vy_phase_r = atan2d((A2.*sind(vx_phase_deg) + B2.*sind(vy_phase_deg)),(A2.*cosd(vx_phase_deg) + B2.*(cosd(vy_phase_deg))));
 
+        # Allocate arrays
         vx_amp_r = np.full_like(vx_phase_deg, np.nan)
         vy_amp_r = np.full_like(vx_phase_deg, np.nan)
         vx_phase_r = np.full_like(vx_phase_deg, np.nan)
@@ -1968,11 +1966,6 @@ class MosaicsReproject:
             A2[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B2[valid_mask]*np.cos(vy_phase_deg[valid_mask])
         )*180.0/np.pi
 
-        # Matlab prototype code:
-        # % Make all amplitudes positive (and reverse phase accordingly):
-        # nx = vx_amp_r<0; % indices of negative Ax_r
-        # vx_amp_r(nx) = -vx_amp_r(nx);
-        # vx_phase_r(nx) = vx_phase_r(nx)+180;
         vx_phase_r, vx_amp_r = MosaicsReproject.wrap_amp_phase(vx_phase_r, vx_amp_r)
         vy_phase_r, vy_amp_r = MosaicsReproject.wrap_amp_phase(vy_phase_r, vy_amp_r)
 
@@ -2006,49 +1999,23 @@ class MosaicsReproject:
         v_phase (doy) - day of maximum velocity in original coordinate system
         v_amp (m/yr) - seasonal amplitude in the original coordinate system
         """
-        # DEBUG: indices into the problem cell
-        dx=369
-        dy=683
-
         _two_pi = np.pi * 2
 
         # Matlab prototype code:
         # % Convert phase values from day-of-year to degrees:
         # vx_phase_deg = vx_phase*360/365.24;
         # vy_phase_deg = vy_phase*360/365.24;
-        # TODO: avoid conversion to degrees - go from day-of-year to radians
-
-        # OLD WAY
-        # vx_phase_deg = vx_phase/365.24
-        # vy_phase_deg = vy_phase/365.24
-
-        # NEW WAY
-        logging.info(f'---->DEBUG: start with dx=369, dy=683: vx_phase={vx_phase[dy, dx]} vy_phase={vy_phase[dy, dx]}')
-
         vx_phase_deg = vx_phase/365.24
         vy_phase_deg = vy_phase/365.24
 
-        logging.info(f'---->DEBUG: to radians with dx=369, dy=683: vx_phase_deg={vx_phase_deg[dy, dx]} vy_phase_deg={vy_phase_deg[dy, dx]}')
-
         # Don't use np.nan values in calculations to avoid warnings
         valid_mask = (~np.isnan(vx_phase_deg)) & (~np.isnan(vy_phase_deg))
-
-        # logging.info(f'Degrees: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
 
         # Convert degrees to radians as numpy trig. functions take angles in radians
         # Explanation: if skipping *360.0 in vx_phase_deg, vy_phase_deg above,
         # then to convert to radians: *np.pi/180 --> 360*np.py/180 = 2*np.pi
         vx_phase_deg *= _two_pi
         vy_phase_deg *= _two_pi
-
-        logging.info(f'---->DEBUG: to radians of two_pi: with dx=369, dy=683: vx_phase_deg={vx_phase_deg[dy, dx]} vy_phase_deg={vy_phase_deg[dy, dx]}')
-
-        # # NEW WAY
-        # _to_radians = np.pi / 180.0
-        # vx_phase_deg *= _to_radians
-        # vy_phase_deg *= _to_radians
-
-        # logging.info(f'Radians: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
 
         # Matlab prototype code:
         # % Rotation matrix for x component:
@@ -2060,8 +2027,6 @@ class MosaicsReproject:
         theta = np.full_like(vx_phase_deg, np.nan)
         theta[valid_mask] = np.arctan2(vy0[valid_mask], vx0[valid_mask])
 
-        logging.info(f'--->DEBUG: dx=369, dy=683: theta={theta[dy, dx]}')
-
         if np.any(theta < 0):
             # logging.info(f'Got negative theta, converting to positive values')
             mask = (theta < 0)
@@ -2072,24 +2037,20 @@ class MosaicsReproject:
 
         # New in Python: assume clockwise rotation by theta as we need to align
         # vector with v0 direction. Therefore  use clockwise transformation matrix
-        # for rotation, not counter-clockwise as in Matlab prototype code.
+        # for rotation, not counter-clockwise as in Matlab prototype code when rotating
+        # both X and Y components.
         A1 = vx_amp*cos_theta
         B1 = vy_amp*sin_theta
 
         # Matlab WAY
         # B1 = -vy_amp*sin_theta
 
-        logging.info(f'---->DEBUG: dx=369, dy=683: vy0={vy0[dy, dx]} vx0={vx0[dy, dx]}, theta={theta[dy, dx]}')
-        logging.info(f'---->DEBUG: dx=369, dy=683: vx_amp={vx_amp[dy, dx]} vy_amp={vy_amp[dy, dx]}')
-        logging.info(f'---->DEBUG: dx=369, dy=683: vx_phase_deg={vx_phase_deg[dy, dx]} vy_phase_deg={vy_phase_deg[dy, dx]}')
-        logging.info(f'---->DEBUG: A1={A1[dy, dx]} B1={B1[dy, dx]}')
-
         # Matlab prototype code:
         # vx_amp_r   =   hypot(A1.*cosd(vx_phase_deg) + B1.*cosd(vy_phase_deg),  A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg));
         # vx_phase_r = atan2d((A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg)),(A1.*cosd(vx_phase_deg) + B1.*(cosd(vy_phase_deg))));
 
         # We want to retain the component only in the direction of v0,
-        # which becomes new v_amp and v_phase
+        # which becomes new v_amp and v_phase (see original itslive_composite.py code)
         v_amp = np.full_like(vx_phase_deg, np.nan)
         v_phase = np.full_like(vx_phase_deg, np.nan)
 
@@ -2103,48 +2064,7 @@ class MosaicsReproject:
             A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask])
         )*180.0/np.pi
 
-        logging.info(f'---->DEBUG: computed v_amp={v_amp[dy, dx]}')
-
-        # Matlab prototype code:
-        # % Make all amplitudes positive (and reverse phase accordingly):
-        # nx = vx_amp_r<0; % indices of negative Ax_r
-        # vx_amp_r(nx) = -vx_amp_r(nx);
-        # vx_phase_r(nx) = vx_phase_r(nx)+180;
-        mask = v_amp < 0
-        v_amp[mask] *= -1.0
-        # v_phase[mask] += np.pi
-        v_phase[mask] += 180
-
-        # Matlab prototype code:
-        # % Wrap to 360 degrees:
-        # px = vx_phase_r > 0;
-        # vx_phase_r = mod(vx_phase_r, 360);
-        # vx_phase_r((vx_phase_r == 0) & px) = 360;
-        mask = v_phase > 0
-        # v_phase[mask] = np.remainder(v_phase[mask], _two_pi)
-        v_phase[mask] = np.remainder(v_phase[mask], 360.0)
-        mask = mask & (v_phase == 0)
-        # v_phase[mask] = _two_pi
-        v_phase[mask] = 360.0
-
-        # New in Python: convert all values to positive
-        mask = v_phase < 0
-        if np.any(mask):
-            # logging.info(f'Got negative phase, converting to positive values')
-            # v_phase[mask] += _two_pi
-            v_phase[mask] = np.remainder(v_phase[mask], -360.0)
-            v_phase[mask] += 360.0
-
-        # Matlab prototype code:
-        # % Convert degrees to days:
-        # vx_phase_r = vx_phase_r*365.24/360;
-        # vy_phase_r = vy_phase_r*365.24/360;
-        # Composites code does:
-        # v_phase = 365.25*((0.25 - phase_rad/_two_pi) % 1),
-        # and since vx_phase and vy_phase are already shifted by 0.25 in original projection,
-        # so we don't need to do it after rotation in direction of v0
-        # Convert phase to the day of the year:
-        v_phase = v_phase*365.24/360
+        v_phase, v_amp = MosaicsReproject.wrap_amp_phase(v_phase, v_amp)
 
         return v_phase, v_amp
 
