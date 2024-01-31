@@ -317,6 +317,8 @@ class MosaicsReproject:
             # Transformation matrix to rotate warped velocity components (vx* and vy*)
             # in output projection taking distortion factor into consideration
             self.transformation_matrix = None
+            self.transformation_matrix_angle = None
+            self.transformation_matrix_scale = None
 
             # Lists of valid cell indices for which transformation matrix is available
             self.valid_cell_indices_x = None
@@ -1551,6 +1553,10 @@ class MosaicsReproject:
         # Read Y component of v_phase
         _vy_phase = self.ds[CompDataVars.VY_PHASE].values
 
+        # Read v_phase
+        # _v_phase = self.ds[CompDataVars.V_PHASE].values
+        _v_amp = self.ds[CompDataVars.V_AMP].values
+
         # Read X component of v_amp
         _vx_amp = self.ds[CompDataVars.VX_AMP].values
 
@@ -1653,14 +1659,20 @@ class MosaicsReproject:
                 # Apply transformation matrix to (dvx_dt, dvy_dt) vector
                 dvx_dt[y, x], dvy_dt[y, x] = np.matmul(t_matrix, dv)
 
-            # Re-project v_amp's X and Y components
-            dv = [_vx_amp[j, i], _vy_amp[j, i]]
+            # Populate v_amp's and v_phase's X and Y components with original values,
+            # they will be overwritten by reprojection
+            vx_phase[y, x] = _vx_phase[j, i]
+            vy_phase[y, x] = _vy_phase[j, i]
+            vx_amp[y, x] = _vx_amp[j, i]
+            vy_amp[y, x] = _vy_amp[j, i]
 
-            # Some points get NODATA for vx but valid vy and v.
-            # if np.all(np.isfinite(dv)):
-            if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
-                # Apply transformation matrix to (vx, vy) values
-                vx_amp[y, x], vy_amp[y, x] = np.matmul(np.abs(t_matrix), dv)
+            # dv = [_vx_amp[j, i], _vy_amp[j, i]]
+
+            # # Some points get NODATA for vx but valid vy and v.
+            # # if np.all(np.isfinite(dv)):
+            # if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
+            #     # Apply transformation matrix to (vx, vy) values
+            #     vx_amp[y, x], vy_amp[y, x] = np.matmul(np.abs(t_matrix), dv)
 
             # Re-project v_amp_error's components
             dv = [_vx_amp_error[j, i], _vy_amp_error[j, i]]
@@ -1673,13 +1685,26 @@ class MosaicsReproject:
                 # negative re-projected vx_error and vy_error values
                 vx_amp_error[y, x], vy_amp_error[y, x] = np.matmul(np.abs(t_matrix), dv)
 
-            # Re-project v_phase's components
-            dv = [_vx_phase[j, i], _vy_phase[j, i]]
+            # # Re-project v_phase's components
+            # dv = [_vx_phase[j, i], _vy_phase[j, i]]
 
-            # If any of the values is NODATA, don't re-project, leave them as NODATA
-            # if np.all(np.isfinite(dv)):
-            if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
-                vx_phase[y, x], vy_phase[y, x] = np.matmul(np.abs(t_matrix), dv)
+            # # If any of the values is NODATA, don't re-project, leave them as NODATA
+            # # if np.all(np.isfinite(dv)):
+            # if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
+            #     # vx_phase[y, x], vy_phase[y, x] = np.matmul(np.abs(t_matrix), dv)
+            #     vx_phase[y, x], vy_phase[y, x] = np.matmul(t_matrix, dv)
+
+        # DEBUG: indices into the problem cell
+        dx=369
+        dy=683
+        di=197
+        dj=726
+
+        # logging.info(f'self.transformation_matrix[y, x]')
+        # logging.info(f'GOT_ERROR v_amp_error>200: x={dx} y={dy} _vx_amp={_vx_amp[dj, di]} _vy_amp={_vy_amp[dj, di]}')
+        # logging.info(f'GOT_ERROR v_amp_error>200: x={dx} y={dy} _vx_phase={_vx_phase[dj, di]} _vy_phase={_vy_phase[dj, di]}')
+        # logging.info(f'GOT_ERROR v_amp_error>200: x={dx} y={dy} _v_phase={_v_phase[dj, di]} _v_amp={_v_amp[dj, di]}')
+
 
         # No need for some of original data, cleanup
         _dvx_dt = None
@@ -1692,12 +1717,24 @@ class MosaicsReproject:
         dv_dt = dvx_dt * uv_x
         dv_dt += dvy_dt * uv_y
 
-        # Wrap components of v_amp and v_phase to make sure they are in valid ranges
-        vx_phase, vx_amp = MosaicsReproject.wrap_amp_phase(vx_phase, vx_amp)
-        vy_phase, vy_amp = MosaicsReproject.wrap_amp_phase(vy_phase, vy_amp)
+        # Was for point with rotation matrix of positive B1
+        # dx=468
+        # dy=372
+        # di=226
+        # dj=368
 
-        # Compute v_phase and v_amp using analytical solution
-        v_phase, v_amp = MosaicsReproject.seasonal_velocity_rotation(vx0, vy0, vx_phase, vy_phase, vx_amp, vy_amp)
+        # Rotate v_phase and v_amp using analytical solution:
+        # - theta is rotation matrix as derived from the transformation matrix
+        # - vx_amp and vy_amp components are scaled by factors as derived from the transformation matrix
+        vx_phase_r, vy_phase_r, vx_amp_r, vy_amp_r = MosaicsReproject.seasonal_velocity_rotation(
+            self.transformation_matrix_angle,
+            vx_phase, vy_phase,
+            self.transformation_matrix_scale[:, :, 0]*vx_amp,
+            self.transformation_matrix_scale[:, :, 1]*vy_amp
+        )
+
+        # Now rotate in the flow direction determined by vx0 and vy0
+        v_phase, v_amp = MosaicsReproject.seasonal_velocity_rotation_x_term(vx0, vy0, vx_phase_r, vy_phase_r, vx_amp_r, vy_amp_r)
 
         # Compute v_amp_error using scale factor b/w old and newly re-projected v_amp values
         # (don't project v_amp_error in direction of unit flow vector
@@ -1737,9 +1774,12 @@ class MosaicsReproject:
                 scale_factor = v_amp_value/v_ij_value
 
             # if v_ij_value and (not np.any(np.isnan(_v_amp_error[j, i]))):
-            if v_ij_value and (not math.isnan(_v_amp_error[j, i])):
+            if (not math.isnan(v_ij_value)) and (not math.isnan(_v_amp_error[j, i])):
                 # Apply scale factor to the error value
                 v_amp_error[y, x] = _v_amp_error[j, i]*scale_factor
+
+            if math.isnan(v_amp_error[y, x]) and ~math.isnan(v_amp[y, x]):
+                logging.info(f'GOT_NAN_VAMP_ERROR: x={x} y={y} v_amp[y, x]={v_amp_value} v_ij_value={v_ij_value}')
 
         if MosaicsReproject.VERBOSE:
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_VX}:  min={np.nanmin(dvx_dt)} max={np.nanmax(dvx_dt)}")
@@ -1761,13 +1801,18 @@ class MosaicsReproject:
         return (dvx_dt, dvy_dt, dv_dt, vx_amp, vy_amp, v_amp, vx_amp_error, vy_amp_error, v_amp_error, vx_phase, vy_phase, v_phase)
 
     @staticmethod
-    def wrap_amp_phase(v_phase_days, v_amp):
+    def wrap_amp_phase(v_phase, v_amp):
         """
         Wrap phase and amplitude to be within valid ranges.
-        """
-        # Convert phase from days to degrees
-        v_phase = v_phase_days*360/365.24
 
+        Args:
+        v_phase: Input phase in degrees
+        v_amp: Input amplitude.
+
+        Ouputs:
+        v_phase, v_amp: Wrap-corrected input values.
+
+        """
         mask = v_amp < 0
         v_amp[mask] *= -1.0
         v_phase[mask] += 180
@@ -1807,7 +1852,134 @@ class MosaicsReproject:
         return v_phase, v_amp
 
     @staticmethod
-    def seasonal_velocity_rotation(vx0, vy0, vx_phase, vy_phase, vx_amp, vy_amp):
+    def seasonal_velocity_rotation(theta, vx_phase, vy_phase, vx_amp, vy_amp):
+        """
+        Rotate v_phase and v_amp given "theta" rotation angle and already scaled
+        vx_amp and vy_amp (according to the transformation matrix).
+
+        % seasonal_velocity_rotation gives the amplitude and phase of seasonal
+        % velocity components. (Only the x and y components change when rotation is
+        % applied, i.e., v_amp and v_phase are unchanged).
+        %
+        % Inputs:
+        % theta (degrees) rotation of the coordinate system.
+        % vx_amp (m/yr) x component of seasonal amplitude in the original coordinate system.
+        % vx_phase (doy) day of maximum x velocity in original coordinate system.
+        % vy_amp (m/yr) y component of seasonal amplitude in the original coordinate system.
+        % vy_phase (doy) day of maximum y velocity in original coordinate system.
+        %
+        % Outputs:
+        % vx_amp_r (m/yr) x component of seasonal amplitude in the original coordinate system.
+        % vx_phase_r (doy) day of maximum x velocity in original coordinate system.
+        % vy_amp_r (m/yr) y component of seasonal amplitude in the original coordinate system.
+        % vy_phase_r (doy) day of maximum y velocity in original coordinate system.
+        %
+        % Written (in Matlab) by Alex Gardner and Chad Greene, July 2022.
+
+        Returns:
+        vx_phase_r (doy) - day of maximum velocity in original coordinate system
+        vy_phase_r (doy) - day of maximum velocity in original coordinate system
+        vx_amp_r (m/yr) - x component of seasonal amplitude in the original coordinate system
+        vy_amp_r (m/yr) - y component of seasonal amplitude in the original coordinate system
+        """
+        _two_pi = np.pi * 2
+
+        # Matlab prototype code:
+        # % Convert phase values from day-of-year to degrees:
+        # vx_phase_deg = vx_phase*360/365.24;
+        # vy_phase_deg = vy_phase*360/365.24;
+        # Avoid conversion to degrees - go from day-of-year to radians
+
+        vx_phase_deg = vx_phase/365.24
+        vy_phase_deg = vy_phase/365.24
+
+        # Don't use np.nan values in calculations to avoid warnings
+        valid_mask = (~np.isnan(vx_phase_deg)) & (~np.isnan(vy_phase_deg))
+
+        # logging.info(f'Degrees: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
+
+        # Convert degrees to radians as numpy trig. functions take angles in radians
+        # Explanation: if skipping *360.0 in vx_phase_deg, vy_phase_deg above,
+        # then to convert to radians: *np.pi/180 --> 360*np.py/180 = 2*np.pi
+        vx_phase_deg *= _two_pi
+        vy_phase_deg *= _two_pi
+
+        # Matlab prototype code:
+        # % Rotation matrix for x component:
+        # A1 =  vx_amp.*cosd(theta);
+        # B1 = -vy_amp.*sind(theta);
+
+        if np.any(theta < 0):
+            # logging.info(f'Got negative theta, converting to positive values')
+            mask = (theta < 0)
+            theta[mask] += _two_pi
+
+        sin_theta = np.sin(theta)
+        cos_theta = np.cos(theta)
+
+        # New in Python: assume clockwise rotation by theta as we need to align
+        # vector with v0 direction. Therefore  use clockwise transformation matrix
+        # for rotation, not counter-clockwise as in Matlab prototype code.
+        A1 = vx_amp*cos_theta
+        B1 = -vy_amp*sin_theta
+        # Matlab WAY
+        # B1 = -vy_amp*sin_theta
+
+        # Matlab WAY
+        # A2 = vx_amp*sin_theta
+        # B2 = vy_amp*cos_theta
+
+        # A2 = vx_amp*sin_theta
+        A2 = vx_amp*sin_theta
+        B2 = vy_amp*cos_theta
+
+        # Matlab prototype code:
+        # vx_amp_r   =   hypot(A1.*cosd(vx_phase_deg) + B1.*cosd(vy_phase_deg),  A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg));
+        # vx_phase_r = atan2d((A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg)),(A1.*cosd(vx_phase_deg) + B1.*(cosd(vy_phase_deg))));
+
+        # % Rotation matrix for y component:
+        # A2 = vx_amp.*sind(theta);
+        # B2 = vy_amp.*cosd(theta);
+        # vy_amp_r   =   hypot(A2.*cosd(vx_phase_deg) + B2.*cosd(vy_phase_deg),  A2.*sind(vx_phase_deg) + B2.*sind(vy_phase_deg));
+        # vy_phase_r = atan2d((A2.*sind(vx_phase_deg) + B2.*sind(vy_phase_deg)),(A2.*cosd(vx_phase_deg) + B2.*(cosd(vy_phase_deg))));
+
+        vx_amp_r = np.full_like(vx_phase_deg, np.nan)
+        vy_amp_r = np.full_like(vx_phase_deg, np.nan)
+        vx_phase_r = np.full_like(vx_phase_deg, np.nan)
+        vy_phase_r = np.full_like(vx_phase_deg, np.nan)
+
+        vx_amp_r[valid_mask] = np.hypot(
+            A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask]),
+            A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask])
+        )
+        # np.arctan2 returns phase in radians, convert to degrees
+        vx_phase_r[valid_mask] = np.arctan2(
+            A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask]),
+            A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask])
+        )*180.0/np.pi
+
+        vy_amp_r[valid_mask] = np.hypot(
+            A2[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B2[valid_mask]*np.cos(vy_phase_deg[valid_mask]),
+            A2[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B2[valid_mask]*np.sin(vy_phase_deg[valid_mask])
+        )
+        # np.arctan2 returns phase in radians, convert to degrees
+        vy_phase_r[valid_mask] = np.arctan2(
+            A2[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B2[valid_mask]*np.sin(vy_phase_deg[valid_mask]),
+            A2[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B2[valid_mask]*np.cos(vy_phase_deg[valid_mask])
+        )*180.0/np.pi
+
+        # Matlab prototype code:
+        # % Make all amplitudes positive (and reverse phase accordingly):
+        # nx = vx_amp_r<0; % indices of negative Ax_r
+        # vx_amp_r(nx) = -vx_amp_r(nx);
+        # vx_phase_r(nx) = vx_phase_r(nx)+180;
+        vx_phase_r, vx_amp_r = MosaicsReproject.wrap_amp_phase(vx_phase_r, vx_amp_r)
+        vy_phase_r, vy_amp_r = MosaicsReproject.wrap_amp_phase(vy_phase_r, vy_amp_r)
+
+        return vx_phase_r, vy_phase_r, vx_amp_r, vy_amp_r
+
+    @staticmethod
+    def seasonal_velocity_rotation_x_term(vx0, vy0, vx_phase, vy_phase, vx_amp, vy_amp):
         """
         Rotate v_phase and v_amp in the direction of v which is defined by vx0 and vy0.
 
@@ -1834,6 +2006,10 @@ class MosaicsReproject:
         v_phase (doy) - day of maximum velocity in original coordinate system
         v_amp (m/yr) - seasonal amplitude in the original coordinate system
         """
+        # DEBUG: indices into the problem cell
+        dx=369
+        dy=683
+
         _two_pi = np.pi * 2
 
         # Matlab prototype code:
@@ -1841,8 +2017,18 @@ class MosaicsReproject:
         # vx_phase_deg = vx_phase*360/365.24;
         # vy_phase_deg = vy_phase*360/365.24;
         # TODO: avoid conversion to degrees - go from day-of-year to radians
+
+        # OLD WAY
+        # vx_phase_deg = vx_phase/365.24
+        # vy_phase_deg = vy_phase/365.24
+
+        # NEW WAY
+        logging.info(f'---->DEBUG: start with dx=369, dy=683: vx_phase={vx_phase[dy, dx]} vy_phase={vy_phase[dy, dx]}')
+
         vx_phase_deg = vx_phase/365.24
         vy_phase_deg = vy_phase/365.24
+
+        logging.info(f'---->DEBUG: to radians with dx=369, dy=683: vx_phase_deg={vx_phase_deg[dy, dx]} vy_phase_deg={vy_phase_deg[dy, dx]}')
 
         # Don't use np.nan values in calculations to avoid warnings
         valid_mask = (~np.isnan(vx_phase_deg)) & (~np.isnan(vy_phase_deg))
@@ -1850,8 +2036,18 @@ class MosaicsReproject:
         # logging.info(f'Degrees: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
 
         # Convert degrees to radians as numpy trig. functions take angles in radians
+        # Explanation: if skipping *360.0 in vx_phase_deg, vy_phase_deg above,
+        # then to convert to radians: *np.pi/180 --> 360*np.py/180 = 2*np.pi
         vx_phase_deg *= _two_pi
         vy_phase_deg *= _two_pi
+
+        logging.info(f'---->DEBUG: to radians of two_pi: with dx=369, dy=683: vx_phase_deg={vx_phase_deg[dy, dx]} vy_phase_deg={vy_phase_deg[dy, dx]}')
+
+        # # NEW WAY
+        # _to_radians = np.pi / 180.0
+        # vx_phase_deg *= _to_radians
+        # vy_phase_deg *= _to_radians
+
         # logging.info(f'Radians: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
 
         # Matlab prototype code:
@@ -1863,6 +2059,8 @@ class MosaicsReproject:
         # theta = arctan(vy0/vx0), since sin(theta)=vy0 and cos(theta)=vx0,
         theta = np.full_like(vx_phase_deg, np.nan)
         theta[valid_mask] = np.arctan2(vy0[valid_mask], vx0[valid_mask])
+
+        logging.info(f'--->DEBUG: dx=369, dy=683: theta={theta[dy, dx]}')
 
         if np.any(theta < 0):
             # logging.info(f'Got negative theta, converting to positive values')
@@ -1877,6 +2075,14 @@ class MosaicsReproject:
         # for rotation, not counter-clockwise as in Matlab prototype code.
         A1 = vx_amp*cos_theta
         B1 = vy_amp*sin_theta
+
+        # Matlab WAY
+        # B1 = -vy_amp*sin_theta
+
+        logging.info(f'---->DEBUG: dx=369, dy=683: vy0={vy0[dy, dx]} vx0={vx0[dy, dx]}, theta={theta[dy, dx]}')
+        logging.info(f'---->DEBUG: dx=369, dy=683: vx_amp={vx_amp[dy, dx]} vy_amp={vy_amp[dy, dx]}')
+        logging.info(f'---->DEBUG: dx=369, dy=683: vx_phase_deg={vx_phase_deg[dy, dx]} vy_phase_deg={vy_phase_deg[dy, dx]}')
+        logging.info(f'---->DEBUG: A1={A1[dy, dx]} B1={B1[dy, dx]}')
 
         # Matlab prototype code:
         # vx_amp_r   =   hypot(A1.*cosd(vx_phase_deg) + B1.*cosd(vy_phase_deg),  A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg));
@@ -1896,6 +2102,8 @@ class MosaicsReproject:
             A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask]),
             A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask])
         )*180.0/np.pi
+
+        logging.info(f'---->DEBUG: computed v_amp={v_amp[dy, dx]}')
 
         # Matlab prototype code:
         # % Make all amplitudes positive (and reverse phase accordingly):
@@ -2045,9 +2253,9 @@ class MosaicsReproject:
         This method creates transformation matrix for each point of the grid.
 
         vx_var - Name of the X component of the variable to decide if there is
-                 data in the cell.
+                data in the cell.
         vy_var - Name of the Y component of the variable to decide if there is
-                 data in the cell.
+                data in the cell.
         v_var - Name of the variable to decide if there is data in the cell.
         """
         logging.info(f'Creating trasformation matrix based on {vx_var}, {vy_var}, {v_var}...')
@@ -2106,8 +2314,10 @@ class MosaicsReproject:
             logging.info(f'Loading {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
             npzfile = np.load(MosaicsReproject.TRANSFORMATION_MATRIX_FILE, allow_pickle=True)
             self.transformation_matrix = npzfile['transformation_matrix']
+            self.transformation_matrix_angle=npzfile['transformation_matrix_angle']
+            self.transformation_matrix_scale=npzfile['transformation_matrix_scale']
             self.original_ij_index = npzfile['original_ij_index']
-            logging.info(f'Loaded transformation_matrix and original_ij_index from {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
+            logging.info(f'Loaded transformation_matrix, angle, scale and original_ij_index from {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
 
             self.valid_cell_indices_y = npzfile['valid_cell_indices_y']
             self.valid_cell_indices_x = npzfile['valid_cell_indices_x']
@@ -2115,8 +2325,10 @@ class MosaicsReproject:
 
             # Make sure matrix dimensions correspond to the target grid
             if self.transformation_matrix.shape != (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE):
-                raise RuntimeError(f'Unexpected shape of transformation matrix: {self.transformation_matrix.shape}'
-                                   f'vs. expected {(len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE)}')
+                raise RuntimeError(
+                    f'Unexpected shape of transformation matrix: {self.transformation_matrix.shape}'
+                    f'vs. expected {(len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE)}'
+                )
 
             return
 
@@ -2214,8 +2426,7 @@ class MosaicsReproject:
         y_index_all = (np_ij_points[:, 1] - ij_y_bbox.max) / self.y_size
 
         invalid_mask = (x_index_all < 0) | (y_index_all < 0) | \
-            (x_index_all >= num_i) | (x_index_all < 0) | \
-            (y_index_all >= num_j) | (y_index_all < 0)
+            (x_index_all >= num_i) | (y_index_all >= num_j)
 
         no_value_counter = np.sum(invalid_mask)
         logging.info(f'No value counter = {no_value_counter} (out of {num_xy0_points}) after setting original ij indices')
@@ -2259,6 +2470,18 @@ class MosaicsReproject:
                 DataVars.MISSING_VALUE,
                 dtype=np.float32
             )
+            # Rotation and scale factors based on computed transformation matrix
+            self.transformation_matrix_angle = np.full(
+                num_xy0_points,
+                DataVars.MISSING_VALUE,
+                dtype=np.float32
+            )
+            self.transformation_matrix_scale = np.full(
+                (num_xy0_points, 2),
+                DataVars.MISSING_VALUE,
+                dtype=np.float32
+            )
+
             xunit_v = xunit_v.data.to_numpy()
             yunit_v = yunit_v.data.to_numpy()
 
@@ -2291,9 +2514,27 @@ class MosaicsReproject:
 
                     # self.transformation_matrix[i] is a 2x2 matrix
                     denom = (yunit[0]*xunit[1] - yunit[1]*xunit[0])
-                    self.transformation_matrix[i] = [
+                    t = [
                         [-yunit[1]/denom, xunit[1]/denom],
                         [yunit[0]/denom, -xunit[0]/denom]
+                    ]
+                    self.transformation_matrix[i] = t
+
+                    # Extract rotation angle and scale factors for X and Y - to be used
+                    # to re-project amplitude and phase as can't apply transformation matrix directly,
+                    # have to use seasonal_velocity_rotation() to reproject v[xy]_amp and v[xy]_phase
+                    # M = [
+                    #       [cos(theta) * ScaleX, -sin(theta) * ScaleY],
+                    #       [ScaleX * sin(theta), ScaleY * cos(theta)]
+                    # ]
+                    self.transformation_matrix_angle[i] = np.arctan2(t[1][0], t[0][0])
+
+                    theta_cos = np.cos(self.transformation_matrix_angle[i])
+
+                    # Store scale factor for X and Y components:
+                    self.transformation_matrix_scale[i] = [
+                        t[0][0] / theta_cos,
+                        t[1][1] / theta_cos
                     ]
 
                 else:
@@ -2305,6 +2546,13 @@ class MosaicsReproject:
         self.transformation_matrix = self.transformation_matrix.reshape(
             (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE)
         )
+        self.transformation_matrix_angle = self.transformation_matrix_angle.reshape(
+            (len(self.y0_grid), len(self.x0_grid))
+        )
+        self.transformation_matrix_scale = self.transformation_matrix_scale.reshape(
+            (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE)
+        )
+
         self.original_ij_index = self.original_ij_index.reshape(
             (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE)
         )
@@ -2326,6 +2574,8 @@ class MosaicsReproject:
         np.savez(
             MosaicsReproject.TRANSFORMATION_MATRIX_FILE,
             transformation_matrix=self.transformation_matrix,
+            transformation_matrix_angle=self.transformation_matrix_angle,
+            transformation_matrix_scale=self.transformation_matrix_scale,
             original_ij_index=self.original_ij_index,
             valid_cell_indices_x=self.valid_cell_indices_x,
             valid_cell_indices_y=self.valid_cell_indices_y
@@ -2388,9 +2638,11 @@ def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, 
     MosaicsReproject.COMPUTE_DEBUG_VARS = compute_debug_vars
     MosaicsReproject.TRANSFORMATION_MATRIX_FILE = matrix_file
 
-    logging.info(f'reproject_mosaics: verbose={MosaicsReproject.VERBOSE}, '
-                 f'compute_debug={MosaicsReproject.COMPUTE_DEBUG_VARS}, '
-                 f'matrix_file={MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
+    logging.info(
+        f'reproject_mosaics: verbose={MosaicsReproject.VERBOSE}, '
+        f'compute_debug={MosaicsReproject.COMPUTE_DEBUG_VARS}, '
+        f'matrix_file={MosaicsReproject.TRANSFORMATION_MATRIX_FILE}'
+    )
 
     reproject = MosaicsReproject(input_file, output_proj)
     reproject(output_file)
