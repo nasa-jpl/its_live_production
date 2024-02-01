@@ -41,6 +41,10 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+# Non-EPSG projection that can be provided on input
+ESRICode = 102027
+ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs'
+
 
 class ITSLiveAnnualMosaicsPostProcess:
     """
@@ -97,12 +101,18 @@ class ITSLiveAnnualMosaicsPostProcess:
                 # Mosaic's EPSG
                 self.epsg = int(ds.mapping.attrs[ITSLiveAnnualMosaicsPostProcess.SPATIAL_EPSG_ATTR])
 
+                output_projection = osr.SpatialReference()
+
+                if self.epsg != ESRICode:
+                    output_projection.ImportFromEPSG(self.epsg)
+
+                else:
+                    output_projection.ImportFromProj4(ESRICode_Proj4)
+
                 input_projection = osr.SpatialReference()
                 input_projection.ImportFromEPSG(int(BatchVars.LON_LAT_PROJECTION))
                 input_projection.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-                output_projection = osr.SpatialReference()
-                output_projection.ImportFromEPSG(self.epsg)
 
                 # Initialize transfer from lon/lat to mosaic's EPSG
                 self.ij_to_xy_transfer = osr.CoordinateTransformation(input_projection, output_projection)
