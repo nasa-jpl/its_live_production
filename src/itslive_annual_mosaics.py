@@ -65,7 +65,7 @@ from itscube_types import \
     SENSORS_ATTRS
 
 # from reproject_mosaics import main as reproject_main
-from reproject_mosaics import ESRICode, ESRICode_Proj4, MosaicsReproject
+from reproject_mosaics_taichi import ESRICode, ESRICode_Proj4, MosaicsReproject
 
 from itslive_composite import CENTER_DATE
 
