@@ -6,7 +6,7 @@ Command examples
 * Generate mosaics for ALA region:
  ** use cube definitions from tools/catalog_datacubes_v02.json
  ** use only cubes which center point falls within region polygon as defined by
-   aws/regions/Alaska.geojson
+    aws/regions/Alaska.geojson
  ** create mosaics in 3413 EPSG projection code
 
 python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
@@ -20,7 +20,7 @@ python ./itslive_annual_mosaics.py -c ~/itslive_data/catalog_v2_Alaska.json
 * Generate mosaics for HMA region:
  ** use cube definitions from tools/catalog_datacubes_v02.json
  ** use only cubes as listed in HMA_datacubes.json (see extract_region_cubes.py
-   helper script to extract cubes for the region)
+    helper script to extract cubes for the region)
  ** create mosaics in 102027 ESRI projection code
 python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
     --processCubesFile HMA_datacubes.json -r HMA
@@ -58,8 +58,9 @@ from itscube_types import \
     CubeJson, \
     ShapeFile, \
     annual_mosaics_filename_nc, \
-    composite_filename_zarr, \
     summary_mosaics_filename_nc, \
+    composite_filename_zarr, \
+    get_corresponding_static_mosaics_filename, \
     to_int_type, \
     SENSORS_ATTRS
 
@@ -1123,14 +1124,36 @@ class ITSLiveAnnualMosaics:
         output_files[ITSLiveAnnualMosaics.SUMMARY_KEY] = self.merge_summary_mosaics(first_ds, s3_bucket, mosaics_dir, copy_to_s3)
 
         # Force garbage collection as it does not always kick in
+        self.raw_ds = {}
         gc.collect()
 
-        # Create annual mosaics
+        # Merge annual mosaics
+        #######################
         logging.info(f'Merging annual mosaics for {ITSLiveAnnualMosaics.REGION}')
+
+        # Have to open all static mosaics as only they have "count0" data variable: necessary
+        # to merge multiple EPSGs mosaics based on highest "count0" value for the overlapping cells
+        static_raw_ds = {}
+        logging.info(f'Open static mosaics to access {CompDataVars.COUNT0}')
+        for mosaics_dict in epsg_mosaics_files.values():
+            # Get mosaic file corresponding to '0000': must be present for each EPSG "sub_directory"
+            mosaic_file = mosaics_dict[ITSLiveAnnualMosaics.SUMMARY_KEY]
+            ds_from_nc = xr.open_dataset(mosaic_file, engine=MosaicsReproject.NC_ENGINE, decode_timedelta=False)
+
+            # Store open mosaics and corresponding metadata
+            static_raw_ds[mosaic_file] = ITSLiveAnnualMosaics.CompositeCollection(
+                ITSLiveAnnualMosaics.CompositeS3(ds_from_nc, None),
+                ds_from_nc.x.values,
+                ds_from_nc.y.values,
+                None,
+                ds_from_nc.sensor.values.tolist()
+            )
+
         for each_year in all_years:
             self.raw_ds = {}
             gc.collect()
 
+            logging.info(f'Merging {each_year} annual mosaics...')
             # If requested to merge only one year, skip the rest of the years
             if ITSLiveAnnualMosaics.MERGE_YEAR_ONLY and ITSLiveAnnualMosaics.MERGE_YEAR_ONLY != each_year:
                 logging.info(f'Skipping {each_year} as only merging for {ITSLiveAnnualMosaics.MERGE_YEAR_ONLY} is requested.')
@@ -1138,7 +1161,7 @@ class ITSLiveAnnualMosaics:
 
             # Populate raw data
             for mosaics_epsg, mosaics_dict in epsg_mosaics_files.items():
-                # Get mosaic file corresponding to '0000': must be present for each EPSG "sub_directory"
+                # Get mosaic file corresponding to the current mosaics year being merged
                 if each_year not in mosaics_dict:
                     logging.info(f'Missing {each_year} from {mosaics_epsg} re-projection')
                     continue
@@ -1163,14 +1186,15 @@ class ITSLiveAnnualMosaics:
                     None
                 )
 
-            output_files[each_year] = self.merge_annual_mosaics(first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3)
+            output_files[each_year] = self.merge_annual_mosaics(static_raw_ds, first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3)
 
             # Force garbage collection as it does not always kick in
+            static_raw_ds = None
             gc.collect()
 
         return output_files
 
-    def create_mask(self, ds: xr.Dataset):
+    def create_mask(self, ds: xr.Dataset, raw_ds: dict):
         """
         Create summary mask based on max_count0=max(count0) across all mosaics. This mask is used to select
         cell values from the composites that correspond to the highest mask value when merging the rest of
@@ -1179,6 +1203,7 @@ class ITSLiveAnnualMosaics:
         Args:
             ds: Dataset to add mask to. Need to remove the mask variable from the annual mosaics dataset since
                 it is only present in summary mosaics.
+            raw_ds: Mapping of static mosaic filename to open corresponding file and its metadata.
         """
         # Check if mask already exists
         if self.mask_ds:
@@ -1201,7 +1226,7 @@ class ITSLiveAnnualMosaics:
         two_dims_len = (len(self.y_coords), len(self.x_coords))
 
         # Step through all datasets and concatenate data in new dimension
-        for each_file, each_ds in self.raw_ds.items():
+        for each_file, each_ds in raw_ds.items():
             logging.info(f'Merging {each_var} from {each_file}')
 
             if ds_var not in ds:
@@ -1296,12 +1321,6 @@ class ITSLiveAnnualMosaics:
                     to the target S3 bucket.
         """
         logging.info(f'Merging summary mosaics for {ITSLiveAnnualMosaics.REGION} region')
-
-        if CompDataVars.COUNT0 != ITSLiveAnnualMosaics.SUMMARY_VARS[0]:
-            raise RuntimeError(
-                f'{CompDataVars.COUNT0} must be specified as very first data variable in ITSLiveAnnualMosaics.SUMMARY_VARS '
-                f'to guaranee that mask based on {CompDataVars.COUNT0} is constructed before all other variables values are merged.'
-            )
 
         # Format filename for the mosaics
         mosaics_filename = summary_mosaics_filename_nc(self.grid_size_str, ITSLiveAnnualMosaics.REGION, ITSLiveAnnualMosaics.FILE_VERSION)
@@ -1447,7 +1466,7 @@ class ITSLiveAnnualMosaics:
         self.attrs[CubeOutput.LONGITUDE] = lon
 
         # 1. Create summary mask based on max_count0=max(count0) across all mosaics
-        self.create_mask(ds)
+        self.create_mask(ds, self.raw_ds)
 
         # Concatenate data for each data variable:
         # 2. Merge all other data variables based on the max_count0 mask: pick values from the
@@ -1672,7 +1691,7 @@ class ITSLiveAnnualMosaics:
 
         return mosaics_filename
 
-    def merge_annual_mosaics(self, first_ds: xr.Dataset, year: str, s3_bucket, mosaics_dir: str, copy_to_s3: bool):
+    def merge_annual_mosaics(self, static_raw_ds: dict, first_ds: xr.Dataset, year: str, s3_bucket, mosaics_dir: str, copy_to_s3: bool):
         """
         Merge mosaics for a specific year that were generated by re-projection of
         EPSG mosaics into target projection. Store result to NetCDF format file in
@@ -1680,6 +1699,8 @@ class ITSLiveAnnualMosaics:
         This method relies on the fact that it's called after static mosaics were
         merged - thus all metadata is set when static mosaics are processed.
 
+        static_raw_ds: Mapping of static mosaics name to the correspondingopen file and metadata information
+                        (needed for "count0").
         first_ds: xarray.Dataset object that represents any (first) composite dataset.
                 It's used to collect global attributes that are applicable to the
                 mosaics.
@@ -1734,7 +1755,7 @@ class ITSLiveAnnualMosaics:
         ds.attrs[CubeOutput.LONGITUDE] = json.dumps(self.attrs[CubeOutput.LONGITUDE])
 
         # 1. Create summary mask based on max_count0=max(count0) across all mosaics
-        self.create_mask(ds)
+        self.create_mask(ds, static_raw_ds)
 
         # Remove mask data variable from the target dataset as it should be stored in summary mosaics only
         if self.mask_var in ds:
@@ -1781,10 +1802,10 @@ class ITSLiveAnnualMosaics:
                     )
                     continue
 
-                # # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
-                # # get mask for all valid magnitude values, then mask out corresponding
-                # # X and Y components
-                # v_valid_mask = ~np.isnan(each_ds.s3.ds[DataVars.V])
+                # Get dataset to represent corresponding static mosaic
+                static_mosaic_filename = get_corresponding_static_mosaics_filename(year, each_file, ITSLiveAnnualMosaics.SUMMARY_KEY)
+                logging.info(f'Got corresponding static mosaics" {static_mosaic_filename}...')
+                static_ds = static_raw_ds[static_mosaic_filename]
 
                 if each_var not in ds:
                     # Create data variable
@@ -1800,7 +1821,7 @@ class ITSLiveAnnualMosaics:
 
                 # else:
                 data_list.append(each_ds.s3.ds[each_var].load())
-                mask_list.append(each_ds.s3.ds[CompDataVars.COUNT0].load())
+                mask_list.append(static_ds.s3.ds[CompDataVars.COUNT0].load())
 
                 if len(data_list) > 1:
                     # Merge once we have 2 mosaics

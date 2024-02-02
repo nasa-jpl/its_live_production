@@ -677,7 +677,7 @@ def annual_mosaics_filename_nc(grid_size: str, region: str, year_date, version: 
     grid_size: Size of the grid cell (assumes the same in X and Y dimentions)
     region: Region for which mosaic file is created.
     year_date: Year for which mosaic file is created. Can be a string or a
-               datetime object.
+                datetime object.
     """
     year_value = year_date
 
@@ -686,6 +686,25 @@ def annual_mosaics_filename_nc(grid_size: str, region: str, year_date, version: 
         year_value = year_date.year
 
     return f"{FilenamePrefix.Mosaics}_{grid_size}m_{region}_{year_value}_{version}.nc"
+
+def get_corresponding_static_mosaics_filename(year_date, annual_mosaics_filename: str, static_key: str):
+    """
+    Get filename for static mosaics filename that is based on existing annual mosaics of the region.
+    Given "ITS_LIVE_velocity_120m_ALA_2013_v02.nc" filename it will generate "ITS_LIVE_velocity_120m_ALA_0000_v02.nc"
+
+    Inputs:
+    =======
+    year_date: Year for which mosaic file is created. Can be a string or a
+                datetime object.
+    annual_mosaics_filename: Name of the annual mosaics filename.
+    """
+    year_value = year_date
+
+    if not isinstance(year_value, str):
+        # Provided as datetime object, extract year value
+        year_value = year_date.year
+
+    return annual_mosaics_filename.replace(f'{year_value}', static_key)
 
 
 def summary_mosaics_filename_nc(grid_size: str, region: str, version: str):
@@ -707,7 +726,7 @@ def to_int_type(data, data_type=np.uint16, fill_value=DataVars.MISSING_POS_VALUE
     Inputs:
     =======
     data: Data to convert to new datatype to. It can be of numpy.ndarray or
-          xarray.DataArray data type.
+            xarray.DataArray data type.
     data_type: numpy data type to convert data to. Default is np.uint16.
     fill_value: value to replace NaN's with before conversion to integer type.
     """
