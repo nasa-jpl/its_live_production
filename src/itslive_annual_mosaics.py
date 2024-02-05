@@ -1188,9 +1188,9 @@ class ITSLiveAnnualMosaics:
 
             output_files[each_year] = self.merge_annual_mosaics(static_raw_ds, first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3)
 
-            # Force garbage collection as it does not always kick in
-            static_raw_ds = None
-            gc.collect()
+        # Force garbage collection as it does not always kick in
+        static_raw_ds = None
+        gc.collect()
 
         return output_files
 
