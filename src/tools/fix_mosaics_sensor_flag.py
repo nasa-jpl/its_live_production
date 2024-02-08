@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import s3fs
-import shutil
 import subprocess
 import xarray as xr
 
@@ -161,21 +160,27 @@ class FixMosaics:
             curr_attrs[DataVars.DESCRIPTION_ATTR] = CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE]
             curr_attrs[BinaryFlag.MEANINGS_ATTR] = BinaryFlag.MEANINGS[CompDataVars.SENSOR_INCLUDE]
 
-            # Reverse 0s and 1s in data:
-            sensor_flag = xr.where(ds[CompDataVars.SENSOR_INCLUDE] == 1, 0, 1)
-            sensor_flag.attrs = curr_attrs
-            # xr.where does not preserve encoding of attributes of original data variable
-            sensor_flag.encoding = ds[CompDataVars.SENSOR_INCLUDE].encoding
+            # Reverse 0s and 1s in data: have to do it numpy as xarray does not support
+            # [23]-D masking
+            np_sensor_flag = ds[CompDataVars.SENSOR_INCLUDE].values
 
-            ds[CompDataVars.SENSOR_INCLUDE] = sensor_flag
-            ds[CompDataVars.SENSOR_INCLUDE].attrs = curr_attrs
+            mask_zeros = np_sensor_flag == 0
+            mask_ones = np_sensor_flag == 1
+
+            np_sensor_flag[mask_zeros] = 1
+            np_sensor_flag[mask_ones] = 0
+
+            # Reset data
+            ds[CompDataVars.SENSOR_INCLUDE].data = np_sensor_flag
+
+            # Update attributes
+            ds[CompDataVars.SENSOR_INCLUDE].attrs[DataVars.DESCRIPTION_ATTR] = CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE]
+            ds[CompDataVars.SENSOR_INCLUDE].attrs[BinaryFlag.MEANINGS_ATTR] = BinaryFlag.MEANINGS[CompDataVars.SENSOR_INCLUDE]
 
             # Fix encoding for the sensor_flag
             ds[CompDataVars.SENSOR_INCLUDE].encoding[Output.MISSING_VALUE_ATTR] = DataVars.MISSING_BYTE
 
-            # Change dtype to np.uint32 for count and count0 data variables
             msgs.append(f"Saving mosaics to {fixed_file}")
-
             ds.to_netcdf(fixed_file, engine=ITSLiveAnnualMosaics.NC_ENGINE)
 
         target_url = mosaic_url.replace(bucket_dir, target_bucket_dir)
