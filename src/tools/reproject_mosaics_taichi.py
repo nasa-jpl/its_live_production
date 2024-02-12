@@ -1394,42 +1394,42 @@ class MosaicsReproject:
 
         if MosaicsReproject.VERBOSE:
             verbose_mask = np.isfinite(_vx)
-            if np.mask(verbose_mask) == 0:
+            if np.sum(verbose_mask) == 0:
                 logging.info(f"reproject_velocity: Original {vx_var}: no valid data")
 
             else:
                 logging.info(f"reproject_velocity: Original {vx_var}:  min={np.nanmin(_vx[verbose_mask])} max={np.nanmax(_vx[verbose_mask])}")
 
             verbose_mask = np.isfinite(_vy)
-            if np.mask(verbose_mask) == 0:
+            if np.sum(verbose_mask) == 0:
                 logging.info(f"reproject_velocity: Original {vy_var}: no valid data")
 
             else:
                 logging.info(f"reproject_velocity: Original {vy_var}:  min={np.nanmin(_vy[verbose_mask])} max={np.nanmax(_vy[verbose_mask])}")
 
             verbose_mask = np.isfinite(_v)
-            if np.mask(verbose_mask) == 0:
+            if np.sum(verbose_mask) == 0:
                 logging.info(f"reproject_velocity: Original {v_var}: no valid data")
 
             else:
                 logging.info(f"reproject_velocity: Original {v_var}: min={np.nanmin(_v[verbose_mask])} max={np.nanmax(_v[verbose_mask])}")
 
             verbose_mask = np.isfinite(_vx_error)
-            if np.mask(verbose_mask) == 0:
+            if np.sum(verbose_mask) == 0:
                 logging.info(f"reproject_velocity: Original {vx_error_var}: no valid data")
 
             else:
                 logging.info(f"reproject_velocity: Original {vx_error_var}: min={np.nanmin(_vx_error[verbose_mask])} max={np.nanmax(_vx_error[verbose_mask])}")
 
             verbose_mask = np.isfinite(_vy_error)
-            if np.mask(verbose_mask) == 0:
+            if np.sum(verbose_mask) == 0:
                 logging.info(f"reproject_velocity: Original {vy_error_var}: no valid data")
 
             else:
                 logging.info(f"reproject_velocity: Original {vy_error_var}: min={np.nanmin(_vy_error[verbose_mask])} max={np.nanmax(_vy_error[verbose_mask])}")
 
             verbose_mask = np.isfinite(_v_error)
-            if np.mask(verbose_mask) == 0:
+            if np.sum(verbose_mask) == 0:
                 logging.info(f"reproject_velocity: Original {v_error_var}: no valid data")
 
             else:
