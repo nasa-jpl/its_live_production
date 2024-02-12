@@ -770,10 +770,18 @@ class MosaicsReproject:
         if MosaicsReproject.VERBOSE:
             _values = self.ds[CompDataVars.MAX_DT].values
             verbose_mask = np.isfinite(_values)
-            logging.info(f"Original {CompDataVars.MAX_DT}:  min={np.nanmin(_values[verbose_mask])} max={np.nanmax(_values[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f'Original {CompDataVars.MAX_DT}: no valid data')
+
+            else:
+                logging.info(f"Original {CompDataVars.MAX_DT}:  min={np.nanmin(_values[verbose_mask])} max={np.nanmax(_values[verbose_mask])}")
 
             verbose_mask = np.isfinite(warp_data) & (warp_data != DataVars.MISSING_POS_VALUE)
-            logging.info(f"Warped {CompDataVars.MAX_DT}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f'Warped {CompDataVars.MAX_DT}: no valid data')
+
+            else:
+                logging.info(f"Warped {CompDataVars.MAX_DT}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
 
         reproject_ds[CompDataVars.MAX_DT] = xr.DataArray(
             data=to_int_type(warp_data, fill_value=DataVars.MISSING_BYTE),
@@ -1386,22 +1394,46 @@ class MosaicsReproject:
 
         if MosaicsReproject.VERBOSE:
             verbose_mask = np.isfinite(_vx)
-            logging.info(f"reproject_velocity: Original {vx_var}:  min={np.nanmin(_vx[verbose_mask])} max={np.nanmax(_vx[verbose_mask])}")
+            if np.mask(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {vx_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {vx_var}:  min={np.nanmin(_vx[verbose_mask])} max={np.nanmax(_vx[verbose_mask])}")
 
             verbose_mask = np.isfinite(_vy)
-            logging.info(f"reproject_velocity: Original {vy_var}:  min={np.nanmin(_vy[verbose_mask])} max={np.nanmax(_vy[verbose_mask])}")
+            if np.mask(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {vy_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {vy_var}:  min={np.nanmin(_vy[verbose_mask])} max={np.nanmax(_vy[verbose_mask])}")
 
             verbose_mask = np.isfinite(_v)
-            logging.info(f"reproject_velocity: Original {v_var}: min={np.nanmin(_v[verbose_mask])} max={np.nanmax(_v[verbose_mask])}")
+            if np.mask(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {v_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {v_var}: min={np.nanmin(_v[verbose_mask])} max={np.nanmax(_v[verbose_mask])}")
 
             verbose_mask = np.isfinite(_vx_error)
-            logging.info(f"reproject_velocity: Original {vx_error_var}: min={np.nanmin(_vx_error[verbose_mask])} max={np.nanmax(_vx_error[verbose_mask])}")
+            if np.mask(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {vx_error_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {vx_error_var}: min={np.nanmin(_vx_error[verbose_mask])} max={np.nanmax(_vx_error[verbose_mask])}")
 
             verbose_mask = np.isfinite(_vy_error)
-            logging.info(f"reproject_velocity: Original {vy_error_var}: min={np.nanmin(_vy_error[verbose_mask])} max={np.nanmax(_vy_error[verbose_mask])}")
+            if np.mask(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {vy_error_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {vy_error_var}: min={np.nanmin(_vy_error[verbose_mask])} max={np.nanmax(_vy_error[verbose_mask])}")
 
             verbose_mask = np.isfinite(_v_error)
-            logging.info(f"reproject_velocity: Original {v_error_var}: min={np.nanmin(_v_error[verbose_mask])} max={np.nanmax(_v_error[verbose_mask])}")
+            if np.mask(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {v_error_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {v_error_var}: min={np.nanmin(_v_error[verbose_mask])} max={np.nanmax(_v_error[verbose_mask])}")
 
         for y, x in tqdm(
             zip(self.valid_cell_indices_y, self.valid_cell_indices_x),
