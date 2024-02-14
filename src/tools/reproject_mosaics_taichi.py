@@ -571,7 +571,7 @@ class MosaicsReproject:
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
                 Mapping.CRS_WKT: spacial_ref_value,
-                Mapping.SPACIAL_EPSG: spacial_ref_value,
+                Mapping.SPATIAL_REF: spacial_ref_value,
                 Mapping.PROJ4TEXT: f"+proj=utm +zone={zone} +datum=WGS84 +units=m +no_defs"
             }
 
@@ -594,7 +594,7 @@ class MosaicsReproject:
         #
         # else:
         #    reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
-        reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
+        reproject_ds[DataVars.MAPPING].attrs[Mapping.SPATIAL_EPSG] = self.xy_epsg
 
         # Format GeoTransform attribute:
         # x top left (cell left most boundary), grid size, 0, y top left (cell upper most boundary), 0, -grid size
