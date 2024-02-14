@@ -594,7 +594,7 @@ class MosaicsReproject:
         #
         # else:
         #    reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
-        reproject_ds[DataVars.MAPPING].attrs[Mapping.SPATIAL_EPSG] = self.xy_epsg
+        reproject_ds[DataVars.MAPPING].attrs[Mapping.SPACIAL_EPSG] = self.xy_epsg
 
         # Format GeoTransform attribute:
         # x top left (cell left most boundary), grid size, 0, y top left (cell upper most boundary), 0, -grid size
