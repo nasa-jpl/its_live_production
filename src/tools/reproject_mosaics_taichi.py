@@ -27,7 +27,7 @@ import xarray as xr
 
 from grid import Grid, Bounds
 from itscube_types import Coords, DataVars, Output, CompDataVars, to_int_type, ShapeFile
-
+from nsidc_types import Mapping
 
 # GDAL: enable exceptions and register all drivers
 gdal.UseExceptions()
@@ -79,6 +79,43 @@ ESRICode = 102027
 ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs'
 # ESRICode_Proj4 = '+proj=lcc +lat_1=15 +lat_2=65 +lat_0=30 +lon_0=95 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
 
+required_mapping_attributes = {
+    32610: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -123.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 0.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
+    32632: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 9.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 0.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
+    32638: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 45.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 0.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
+    32718: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -75.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 10000000.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
+    32759: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 171.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 10000000.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    }
+}
 
 @ti.data_oriented
 class TiUnitVector:
@@ -509,6 +546,23 @@ class MosaicsReproject:
             }
 
         else:
+            # Example of mapping for EPGS=32632:
+            # string mapping ;
+            #     string mapping:GeoTransform = "200032.5 120.0 0 5317327.5 0 -120.0" ;
+            #     string mapping:crs_wkt = "PROJCS[\"WGS 84 / UTM zone 32N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32632\"]]" ;
+            #     mapping:false_easting = 500000. ;
+            #     mapping:false_northing = 0. ;
+            #     string mapping:grid_mapping_name = "universal_transverse_mercator" ;
+            #     mapping:inverse_flattening = 298.257223563 ;
+            #     mapping:latitude_of_projection_origin = 0. ;
+            #     mapping:longitude_of_central_meridian = 9. ;
+            #     string mapping:proj4text = "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs" ;
+            #     mapping:scale_factor_at_central_meridian = 0.9996 ;
+            #     mapping:semi_major_axis = 6378137. ;
+            #     mapping:spatial_epsg = 32632LL ;
+            #     string mapping:spatial_ref = "PROJCS[\"WGS 84 / UTM zone 32N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32632\"]]" ;
+            #     mapping:utm_zone_number = 32. ;
+
             zone, spacial_ref_value = self.spatial_ref_32x()
 
             proj_attrs = {
@@ -516,9 +570,17 @@ class MosaicsReproject:
                 'utm_zone_number': zone,
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
-                'crs_wkt': spacial_ref_value,
-                'proj4text': f"+proj=utm +zone={zone} +datum=WGS84 +units=m +no_defs"
+                Mapping.CRS_WKT: spacial_ref_value,
+                Mapping.SPACIAL_EPSG: spacial_ref_value,
+                Mapping.PROJ4TEXT: f"+proj=utm +zone={zone} +datum=WGS84 +units=m +no_defs"
             }
+
+            if self.xy_epsg in required_mapping_attributes:
+                for each_attr, each_value in required_mapping_attributes[self.xy_epsg].items():
+                    proj_attrs[each_attr] = each_value
+
+            else:
+                raise RuntimeError(f'Missing definition of mapping attributes for EPSG={self.xy_epsg}: please update required_mapping_attributes')
 
         reproject_ds[DataVars.MAPPING] = xr.DataArray(
             data='',
