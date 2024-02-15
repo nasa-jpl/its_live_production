@@ -1721,6 +1721,7 @@ class StableShiftFilter:
     # If mission group is provided, then include granules for this group only.
     KEEP_MISSION_GROUP = None
 
+    # Optional list of missions to exclude from composites.
     EXCLUDE_MISSION_GROUP = None
 
     def __init__(self, cube_sensors):
@@ -1765,7 +1766,7 @@ class StableShiftFilter:
                 logging.info(f'Need to exclude {np.sum(mask)} granules for {each_group.mission} group')
 
             if StableShiftFilter.EXCLUDE_MISSION_GROUP and \
-                    each_group.mission == StableShiftFilter.EXCLUDE_MISSION_GROUP.mission:
+                    each_group.mission in StableShiftFilter.EXCLUDE_MISSION_GROUP:
                 # Disable requested mission group
                 self.keep_granule_mask[mask] = False
                 self.num_exclude_granules += np.sum(mask)
@@ -3781,9 +3782,9 @@ if __name__ == '__main__':
     )
     group.add_argument(
         '--excludeMissionGroup',
-        type=str,
+        type=lambda s: json.loads(s),
         default=None,
-        help=f"Mission group to exclude from composites [%(default)s]. One of {list(MissionSensor.ALL_GROUPS.keys())}."
+        help=f"JSON list of mission groups to exclude from composites [%(default)s]. One of {list(MissionSensor.ALL_GROUPS.keys())}."
     )
     parser.add_argument(
         '--v0Years',
@@ -3823,7 +3824,7 @@ if __name__ == '__main__':
         StableShiftFilter.KEEP_MISSION_GROUP = MissionSensor.ALL_GROUPS[args.missionGroup]
 
     elif args.excludeMissionGroup:
-        StableShiftFilter.EXCLUDE_MISSION_GROUP = MissionSensor.ALL_GROUPS[args.excludeMissionGroup]
+        StableShiftFilter.EXCLUDE_MISSION_GROUP = [MissionSensor.ALL_GROUPS[each].mission for each in args.excludeMissionGroup]
 
     ITSLiveComposite.V0_YEARS = json.loads(args.v0Years)
     CENTER_DATE = parse(args.interceptDate)
