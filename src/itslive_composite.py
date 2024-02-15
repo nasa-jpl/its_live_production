@@ -1721,6 +1721,8 @@ class StableShiftFilter:
     # If mission group is provided, then include granules for this group only.
     KEEP_MISSION_GROUP = None
 
+    EXCLUDE_MISSION_GROUP = None
+
     def __init__(self, cube_sensors):
         """
         Initialize the filter.
@@ -1758,6 +1760,13 @@ class StableShiftFilter:
             if StableShiftFilter.KEEP_MISSION_GROUP and \
                     each_group.mission != StableShiftFilter.KEEP_MISSION_GROUP.mission:
                 # Disable other than requested mission group
+                self.keep_granule_mask[mask] = False
+                self.num_exclude_granules += np.sum(mask)
+                logging.info(f'Need to exclude {np.sum(mask)} granules for {each_group.mission} group')
+
+            if StableShiftFilter.EXCLUDE_MISSION_GROUP and \
+                    each_group.mission == StableShiftFilter.EXCLUDE_MISSION_GROUP.mission:
+                # Disable requested mission group
                 self.keep_granule_mask[mask] = False
                 self.num_exclude_granules += np.sum(mask)
                 logging.info(f'Need to exclude {np.sum(mask)} granules for {each_group.mission} group')
@@ -3744,11 +3753,20 @@ if __name__ == '__main__':
         default='s3://its-live-data/autorift_parameters/v001/autorift_landice_0120m.shp',
         help="Shapefile that stores ice masks per each of the EPSG codes [%(default)s]."
     )
-    parser.add_argument(
-        '-m', '--missionGroup',
+
+    # Add optional group of mission include/exclude options
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        '--missionGroup',
         type=str,
         default=None,
         help=f"Mission group to create composites for [%(default)s]. One of {list(MissionSensor.ALL_GROUPS.keys())}."
+    )
+    group.add_argument(
+        '--excludeMissionGroup',
+        type=str,
+        default=None,
+        help=f"Mission group to exclude from composites [%(default)s]. One of {list(MissionSensor.ALL_GROUPS.keys())}."
     )
     parser.add_argument(
         '--v0Years',
@@ -3786,6 +3804,9 @@ if __name__ == '__main__':
     if args.missionGroup:
         # Mission group is provided
         StableShiftFilter.KEEP_MISSION_GROUP = MissionSensor.ALL_GROUPS[args.missionGroup]
+
+    elif args.excludeMissionGroup:
+        StableShiftFilter.EXCLUDE_MISSION_GROUP = MissionSensor.ALL_GROUPS[args.excludeMissionGroup]
 
     ITSLiveComposite.V0_YEARS = json.loads(args.v0Years)
     CENTER_DATE = parse(args.interceptDate)
