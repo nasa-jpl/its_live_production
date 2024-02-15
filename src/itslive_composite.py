@@ -1847,7 +1847,7 @@ class StableShiftFilter:
                 # If only specific mission group is used, then some of the granules
                 # might be set to be excluded already. Get the number of total excluded
                 # granules in the mask.
-                self.num_exclude_granules = np.sum(self.keep_granule_mask is False)
+                self.num_exclude_granules = np.sum(self.keep_granule_mask == False)
                 logging.info(f'StableShiftFilter: need to skip {self.num_exclude_granules} granules')
 
                 # DEBUG: pandas.errors.InvalidIndexError: Reindexing only valid with uniquely valued Index objects:
