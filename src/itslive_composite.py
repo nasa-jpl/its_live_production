@@ -2887,7 +2887,7 @@ class ITSLiveComposite:
         self.land_ice_mask_composite = to_int_type(
             self.land_ice_mask_composite,
             np.uint8,
-            DataVars.MISSING_UINT8_VALUE
+            DataVars.MISSING_BYTE
         )
         # Land ice mask exists for the composite
         ds[ShapeFile.LANDICE] = xr.DataArray(
@@ -2909,7 +2909,7 @@ class ITSLiveComposite:
         self.floating_ice_mask_composite = to_int_type(
             self.floating_ice_mask_composite,
             np.uint8,
-            DataVars.MISSING_UINT8_VALUE
+            DataVars.MISSING_BYTE
         )
         # Land ice mask exists for the composite
         ds[ShapeFile.FLOATINGICE] = xr.DataArray(
@@ -3201,10 +3201,18 @@ class ITSLiveComposite:
         gc.collect()
 
         self.sensor_include = self.sensor_include.transpose(CompositeVariable.CONT_IN_X)
+
+        # Flip values: 0 - include; 1 - exclude (decision made at the time mosaics were created)
+        mask_zeros = self.sensor_include == 0
+        mask_ones = self.sensor_include == 1
+
+        self.sensor_include[mask_zeros] = 1
+        self.sensor_include[mask_ones] = 0
+
         self.sensor_include = to_int_type(
             self.sensor_include,
             np.uint8,
-            DataVars.MISSING_UINT8_VALUE
+            DataVars.MISSING_BYTE
         )
 
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
@@ -3465,7 +3473,16 @@ class ITSLiveComposite:
 
         # Settings for variables of "uint8" data type
         for each in [
-            CompDataVars.OUTLIER_FRAC,
+            CompDataVars.OUTLIER_FRAC
+        ]:
+            encoding_settings.setdefault(each, {}).update({
+                Output.DTYPE_ATTR: np.uint8,
+                Output.COMPRESSOR_ATTR: compressor,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE
+            })
+
+        # Variables that have missing_value = 0
+        for each in [
             CompDataVars.SENSOR_INCLUDE,
             ShapeFile.LANDICE,
             ShapeFile.FLOATINGICE
@@ -3473,7 +3490,7 @@ class ITSLiveComposite:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
                 Output.COMPRESSOR_ATTR: compressor,
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE
             })
 
         # Settings for variables of "uint32" data type
