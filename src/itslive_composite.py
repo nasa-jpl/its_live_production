@@ -1927,6 +1927,9 @@ class ITSLiveComposite:
     # Number of threads to use by Dask parallezation
     NUM_DASK_THREADS = 4
 
+    # Flag is valid v[xy]_error_slow should be used in place of v[xy]_error
+    USE_ERROR_SLOW = False
+
     # Only the following datacube variables are needed for composites/mosaics
     VARS = [
         DataVars.VX,
@@ -2109,7 +2112,22 @@ class ITSLiveComposite:
         # Load Dask arrays before being able to modify their values
         logging.info("Add systematic error based on level of co-registration...")
         self.vx_error = self.stable_shift_filter.exclude(cube_ds.vx_error.astype(np.float32).values)
+
+        if ITSLiveComposite.USE_ERROR_SLOW:
+            # Replace vx_error with valid vx_error_slow
+            vx_error_slow = self.stable_shift_filter.exclude(cube_ds.vx_error_slow.astype(np.float32).values)
+            mask = ~np.isnan(vx_error_slow)
+            logging.info(f'Replacing vx_error with vx_error_slow for {np.sum(mask)} values')
+            self.vx_error[mask] = vx_error_slow[mask]
+
         self.vy_error = self.stable_shift_filter.exclude(cube_ds.vy_error.astype(np.float32).values)
+
+        if ITSLiveComposite.USE_ERROR_SLOW:
+            # Replace vy_error with valid vx_error_slow
+            vy_error_slow = self.stable_shift_filter.exclude(cube_ds.vy_error_slow.astype(np.float32).values)
+            mask = ~np.isnan(vy_error_slow)
+            logging.info(f'Replacing vy_error with vy_error_slow for {np.sum(mask)} values')
+            self.vy_error[mask] = vy_error_slow[mask]
 
         stable_shift_values = self.stable_shift_filter.exclude(cube_ds[DataVars.FLAG_STABLE_SHIFT])
         for value, error in ITSLiveComposite.CO_REGISTRATION_ERROR.items():
@@ -3799,6 +3817,11 @@ if __name__ == '__main__':
         help=f"Intercept date used for weighted linear fit [%(default)s]."
     )
     parser.add_argument(
+        '--enableErrorSlowUse',
+        action='store_true',
+        help=f"Enable use of valid v[xy]_error_slow instead of v[xy]_error values [False]."
+    )
+    parser.add_argument(
         '--numDaskThreads',
         type=int,
         default=mp.cpu_count(),
@@ -3812,6 +3835,12 @@ if __name__ == '__main__':
 
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
+    ITSLiveComposite.USE_ERROR_SLOW = args.enableErrorSlowUse
+
+    if ITSLiveComposite.USE_ERROR_SLOW:
+        # Extend variables to load for processing
+        ITSLiveComposite.VARS.append(f'{DataVars.VX}_{DataVars.ERROR_SLOW}')
+        ITSLiveComposite.VARS.append(f'{DataVars.VY}_{DataVars.ERROR_SLOW}')
 
     # Set number of threads for the Dask processing
     ITSLiveComposite.NUM_DASK_THREADS = args.numDaskThreads
