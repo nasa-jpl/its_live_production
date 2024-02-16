@@ -22,7 +22,7 @@ variables=(
 )
 
 # Iterate over static mosaics in the S3 bucket location
-for filename in $(awsv2 s3 ls "$bucket"/ | grep .nc | awk '{print $NF}'); do
+for filename in $(awsv2 s3 ls "$bucket"/ | grep .nc | grep -v 2023 | awk '{print $NF}'); do
     # Copy file locally
     awsv2 s3 cp "$bucket/$filename" "$filename"
 
@@ -34,7 +34,7 @@ for filename in $(awsv2 s3 ls "$bucket"/ | grep .nc | awk '{print $NF}'); do
         # Call gdal_translate for each file and variable
         gdal_translate -of COG -co "BIGTIFF=YES" NETCDF:\"$filename\":"$var" "$output_filename"
         awsv2 s3 cp "$output_filename" "$target_bucket/$output_filename"
-        # rm "$output_filename"
+        rm "$output_filename"
     done
 
     rm "$filename"
