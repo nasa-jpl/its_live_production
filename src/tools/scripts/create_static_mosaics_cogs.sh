@@ -49,7 +49,7 @@ for filename in $(awsv2 s3 ls "$bucket"/ | grep .nc | awk '{print $NF}'); do
         # Call gdal_translate for each file and variable
         gdal_translate -of COG -co "BIGTIFF=YES" NETCDF:\"$filename\":"$var" "$output_filename"
         awsv2 s3 cp "$output_filename" "$target_bucket/$output_filename"
-        rm "$output_filename"
+        # rm "$output_filename"
     done
 
     rm "$filename"
