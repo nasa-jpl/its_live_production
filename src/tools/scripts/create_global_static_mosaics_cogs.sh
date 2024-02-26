@@ -61,7 +61,8 @@ for var in "${variables[@]}"; do
     done
 
     # Output filename for the global mosaic file
-    global_filename=$(echo "$downloaded_files[0]" | sed 's/_RGI[0-9][0-9]A//')
+    first_file=$(echo "$downloaded_files" | head -n1)
+    global_filename=$(echo "$first_file" | sed 's/_RGI[0-9][0-9]A//')
     global_filename="${global_filename/.tif/.vrt}"
 
     # Call gdalbuild to create global mosaics for the variable
