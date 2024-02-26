@@ -43,20 +43,18 @@ num_threads=60
 for var in "${variables[@]}"; do
     # Array of static mosaics TIF files for the variable
     downloaded_files=$(awsv2 s3 ls "$bucket"/ | grep v02_"$var".tif | awk '{print $NF}')
-    echo "Found $downloaded_files for $var in $bucket"
 
     reprojected_files=()
-    for filename in "${downloaded_files[@]}"; do
+    for filename in ${downloaded_files[@]}; do
         # Download the file
-        echo "Downloading $filename..."
         awsv2 s3 cp "$bucket/$filename" "$filename"
 
         # Format output filename
-        output_filename="${filename/v02_$var.tif/v02_$var_3857.tif}"
+        output_filename=$(echo "$filename" | sed 's/\.tif/_3857\.tif/')
         reprojected_files+=("$output_filename")
 
         # Reproject to the Google Maps projection (epgs:3857)
-        gdalwarp -of COG -co “BIGTIFF=YES” "$filename" -t_srs epsg:3857 "$output_filename" -r bilinear -wm 9000 -multi -wo “NUM_THREADS=$num_threads"
+        gdalwarp -of COG -co "BIGTIFF=YES" "$filename" -t_srs epsg:3857 "$output_filename" -r bilinear -wm 9000 -multi -wo "NUM_THREADS=$num_threads"
 
         # Remove local copy of original file
         rm "$filename"
@@ -70,7 +68,7 @@ for var in "${variables[@]}"; do
     gdalbuildvrt "$global_filename" *3857.tif
 
     # Copy all contributing TIFs to the VRT to the target S3 destination
-    for filename in "${reprojected_files[@]}"; do
+    for filename in ${reprojected_files[@]}; do
         # Upload the file
         awsv2 s3 cp "$filename" "$target_bucket/$filename"
 
