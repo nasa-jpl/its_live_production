@@ -56,7 +56,7 @@ for var in "${variables[@]}"; do
         reprojected_files+=("$output_filename")
 
         # Reproject to the Google Maps projection (epgs:3857)
-        gdalwarp -of COG -co “BIGTIFF=YES” "$filename" -t_srs epsg:3857 $output_filename -r bilinear -wm 9000 -multi -wo “NUM_THREADS=$num_threads"
+        gdalwarp -of COG -co “BIGTIFF=YES” "$filename" -t_srs epsg:3857 "$output_filename" -r bilinear -wm 9000 -multi -wo “NUM_THREADS=$num_threads"
 
         # Remove local copy of original file
         rm "$filename"
@@ -78,8 +78,6 @@ for var in "${variables[@]}"; do
         rm "$filename"
     done
 
-    # awsv2 s3 cp "$global_filename" "$target_bucket/$global_filename"
+    awsv2 s3 cp "$global_filename" "$target_bucket/$global_filename"
     rm "$global_filename"
 done
-
-
