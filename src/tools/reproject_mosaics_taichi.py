@@ -101,6 +101,13 @@ required_mapping_attributes = {
         Mapping.FALSE_NORTHING: 0.0,
         Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
     },
+    32645: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 87.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 0.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
     32718: {
         Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -75.0,
         Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
