@@ -21,7 +21,7 @@ dependencies:
   - python==3.9*
   - dask==2.30.0
   - geopandas==0.9.*
-  - gdal
+  - gdal==3.6.2
   - pandas
   - defaults::numpy
   - numpy==1.21.5
