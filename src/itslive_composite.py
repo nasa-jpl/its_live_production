@@ -1168,7 +1168,14 @@ def weighted_linear_fit(yr, v, v_err):
         # dv_dt (slope): with NaN
         offset = np.average(v[valid], weights=w_v)
         slope = np.nan
-        error = np.sqrt((v_err[valid]**2).sum())/(valid.sum()-1)
+        # error = np.sqrt((v_err[valid]**2).sum())/(valid.sum()-1)
+
+        error = np.nan
+        if valid.sum() == 1:
+            error = np.nan
+
+        else:
+            error = np.sqrt((v_err[valid]**2).sum())/(valid.sum()-1)
 
         return offset, slope, error
 
@@ -2291,6 +2298,14 @@ class ITSLiveComposite:
         # x_start = 650
         # x_num_to_process = 100
 
+        # Debug slow_error exception: division by zero
+        # x_start = 160
+        # x_num_to_process = 10
+
+        # Debug slow_error exception: Linear Least Squares conversion error
+        # x_start = 40
+        # x_num_to_process = 10
+
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
 
         while x_num_to_process > 0:
@@ -2322,6 +2337,14 @@ class ITSLiveComposite:
             # y_num_to_process = 100
 
             # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
+
+            # Debug slow_error exception: division by zero
+            # y_start = 370
+            # y_num_to_process = 10
+
+            # Debug slow_error exception: Linear Least Squares conversion error
+            # y_start = 330
+            # y_num_to_process = 10
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -3817,9 +3840,9 @@ if __name__ == '__main__':
         help=f"Intercept date used for weighted linear fit [%(default)s]."
     )
     parser.add_argument(
-        '--enableErrorSlowUse',
-        action='store_true',
-        help=f"Enable use of valid v[xy]_error_slow instead of v[xy]_error values [False]."
+        '--disableErrorSlowUse',
+        action='store_false',
+        help=f"Disable use of valid v[xy]_error_slow instead of v[xy]_error values [False]."
     )
     parser.add_argument(
         '--numDaskThreads',
@@ -3835,7 +3858,8 @@ if __name__ == '__main__':
 
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
-    ITSLiveComposite.USE_ERROR_SLOW = args.enableErrorSlowUse
+    ITSLiveComposite.USE_ERROR_SLOW = args.disableErrorSlowUse
+    logging.info(f'Use error_slow: {ITSLiveComposite.USE_ERROR_SLOW}')
 
     if ITSLiveComposite.USE_ERROR_SLOW:
         # Extend variables to load for processing
