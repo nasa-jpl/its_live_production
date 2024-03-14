@@ -485,7 +485,7 @@ def init_lsq_fit1(v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, M
 
 # FOR_DEBUGGING_ONLY: _enable_debug = True: logging is not working with numba
 @nb.jit(nopython=True)
-def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input, mad_thresh, mad_std_ratio):
+def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, all_years, M_input, mad_thresh, mad_std_ratio, sigma):
     """
     Initialize variables for LSQ fit.
 
@@ -497,7 +497,7 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
                     This flag has to be introduced in order to use numba compilation
                     otherwise numba-compiled code fails when using empty mask (pure
                     Python code does not).
-    start_year, stop_year, v_in, v_err_in, dyr, w_v, w_d, d_obs, y1, M_in: Filtered by data
+    start_year, stop_year, v_in, dyr, w_v, w_d, d_obs, y1, M_in: Filtered by data
                     validity mask and pre-processed for LSQ fit input data variables.
     """
     _num_valid_points = 30
@@ -514,7 +514,7 @@ def init_lsq_fit2(v_median, v_input, v_err_input, start_dec_year, stop_dec_year,
     # Take median of residual, multiply median of residual * 1.4826 = sigma
     v_sigma = np.median(v_residual)*mad_std_ratio
 
-    non_outlier_mask = ~(v_residual > (2.0 * mad_thresh * v_sigma))
+    non_outlier_mask = ~(v_residual > (sigma * mad_thresh * v_sigma))
 
     # if _enable_debug:
     #     logging.info(f'non_outlier_mask.size={non_outlier_mask.shape} vs. num of valid points={np.sum(non_outlier_mask)}')
@@ -642,7 +642,7 @@ def itslive_lsqfit_annual(
 
     results_valid = True
 
-    results_valid, start_year, stop_year, v, v_err, dyr, totalnum, M = init_lsq_fit1(
+    results_valid, start_year_1, stop_year_1, v_1, v_err_1, dyr_1, totalnum, M_1 = init_lsq_fit1(
         v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, M_input
     )
 
@@ -655,83 +655,117 @@ def itslive_lsqfit_annual(
     # Compute outside of numba-compiled code as numba does not support a lot of scipy
     # functionality
     # Apply 15-point moving median to v, subtract from v to get residual
-    v_median = ndimage.median_filter(v, _mad_kernel_size)
+    v_median = ndimage.median_filter(v_1, _mad_kernel_size)
 
-    results_valid, start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1, M = init_lsq_fit2(
-        v_median, v, v_err, start_year, stop_year, dyr, all_years, M, _mad_thresh, mad_std_ratio
-    )
+    # "Bandaid" solution to the LSQ fit convergence exception we get randomly - seems to depend
+    # on the platform (and possibly some package versions???) the composites are being generated on.
+    lsq_fit_converged = False
+    max_number_attempts = 10
+    number_of_attempts = 0
+    sigma = 2.0
+    sigma_delta = 0.05
 
-    if not results_valid:
-        # There is no data to process, exit
-        return (results_valid, empty_results, global_i, global_j)
-
-    # Filter sum of each column
-    hasdata = M.sum(axis=0) > 0
-    y1 = y1[hasdata]
-    M = M[:, hasdata]
-
-    # if _enable_debug:
-    #     with open(f'{var_name}_dec_year.json', 'w') as fh:
-    #         json.dump(dyr.tolist(), fh, indent=3)
-
-    #     logging.info(f'DEBUG: dyr[:50]: {dyr[:50]}')
-
-    # logging.info(f'Finished building M and filter by M ({timeit.default_timer() - start_time} seconds)')
-    # start_time = timeit.default_timer()
-    # logging.info(f"Start 1st iteration of LSQ")
-
-    #
-    # LSQ iterations
-    # Iterative mad filter
     p = None
     d_model = None
 
-    # Last iteration of LSQ should always skip the outlier filter
-    last_iteration = _mad_filter_iterations - 1
+    results_valid = True
+    start_year = None
+    stop_year = None
+    v = None
+    v_err = None
+    dyr = None
+    w_v = None
+    w_d = None
+    d_obs = None
+    y1 = None
+    M = None
 
-    for i in range(0, _mad_filter_iterations):
-        # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-        p, d_model = itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs)
+    while (lsq_fit_converged is False) and (number_of_attempts < max_number_attempts):
+        try:
+            results_valid, start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1, M = init_lsq_fit2(
+                v_median, v_1, v_err_1, start_year_1, stop_year_1, dyr_1, all_years, M_1, _mad_thresh, mad_std_ratio, sigma
+            )
 
-        if i < last_iteration:
-            # Divide by dt to avoid penalizing long dt [asg]
-            d_resid = np.abs(d_obs - d_model)/dyr
-
-            # Robust standard deviation of errors, using median absolute deviation
-            d_sigma = np.median(d_resid)*mad_std_ratio
-
-            outliers = d_resid > (_mad_thresh * d_sigma)
-            if np.all(outliers):
-                # All are outliers, return from the function
-                results_valid = False
+            if not results_valid:
+                # There is no data to process, exit
                 return (results_valid, empty_results, global_i, global_j)
 
-            if (outliers.sum() / totalnum) < 0.01:
-                # There are less than 1% outliers, skip the rest of iterations
-                # if it's not the last iteration
-                # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
-                break
-
-            # Remove outliers
-            non_outlier_mask = ~outliers
-            start_year = start_year[non_outlier_mask]
-            stop_year = stop_year[non_outlier_mask]
-            dyr = dyr[non_outlier_mask]
-            d_obs = d_obs[non_outlier_mask]
-            w_d = w_d[non_outlier_mask]
-            w_v = w_v[non_outlier_mask]
-            M = M[non_outlier_mask]
-
-            # Remove no-data columns from M
-            hasdata = M.sum(axis=0) > 1
-
-            if not np.any(hasdata):
-                # Since we are throwing away everything, report all as outliers
-                results_valid = False
-                return (results_valid, empty_results, global_i, global_j)
-
+            # Filter sum of each column
+            hasdata = M.sum(axis=0) > 0
             y1 = y1[hasdata]
             M = M[:, hasdata]
+
+            # if _enable_debug:
+            #     with open(f'{var_name}_dec_year.json', 'w') as fh:
+            #         json.dump(dyr.tolist(), fh, indent=3)
+
+            #     logging.info(f'DEBUG: dyr[:50]: {dyr[:50]}')
+
+            # logging.info(f'Finished building M and filter by M ({timeit.default_timer() - start_time} seconds)')
+            # start_time = timeit.default_timer()
+            # logging.info(f"Start 1st iteration of LSQ")
+
+            #
+            # LSQ iterations
+
+            # Last iteration of LSQ should always skip the outlier filter
+            last_iteration = _mad_filter_iterations - 1
+
+            for i in range(0, _mad_filter_iterations):
+                # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
+                p, d_model = itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs)
+
+                if i < last_iteration:
+                    # Divide by dt to avoid penalizing long dt [asg]
+                    d_resid = np.abs(d_obs - d_model)/dyr
+
+                    # Robust standard deviation of errors, using median absolute deviation
+                    d_sigma = np.median(d_resid)*mad_std_ratio
+
+                    outliers = d_resid > (_mad_thresh * d_sigma)
+                    if np.all(outliers):
+                        # All are outliers, return from the function
+                        results_valid = False
+                        return (results_valid, empty_results, global_i, global_j)
+
+                    if (outliers.sum() / totalnum) < 0.01:
+                        # There are less than 1% outliers, skip the rest of iterations
+                        # if it's not the last iteration
+                        # logging.info(f'{outliers_fraction*100}% ({outliers.sum()} out of {totalnum}) outliers, done with first LSQ loop after {i+1} iterations')
+                        break
+
+                    # Remove outliers
+                    non_outlier_mask = ~outliers
+                    start_year = start_year[non_outlier_mask]
+                    stop_year = stop_year[non_outlier_mask]
+                    dyr = dyr[non_outlier_mask]
+                    d_obs = d_obs[non_outlier_mask]
+                    w_d = w_d[non_outlier_mask]
+                    w_v = w_v[non_outlier_mask]
+                    M = M[non_outlier_mask]
+
+                    # Remove no-data columns from M
+                    hasdata = M.sum(axis=0) > 1
+
+                    if not np.any(hasdata):
+                        # Since we are throwing away everything, report all as outliers
+                        results_valid = False
+                        return (results_valid, empty_results, global_i, global_j)
+
+                    y1 = y1[hasdata]
+                    M = M[:, hasdata]
+
+            lsq_fit_converged = True
+
+        except np.linalg.LinAlgError:
+            number_of_attempts += 1
+            logging.info(f'Got np.linalg.LinAlgError exception using sigma={sigma}, increment sigma by {sigma_delta}, retry #{number_of_attempts}...')
+            sigma += sigma_delta
+            time.sleep(5)
+
+            if number_of_attempts == max_number_attempts:
+                # Re-raise exception once achieved maximum number of retries
+                raise
 
     # logging.info(f'Size of p:{p.shape}')
 
@@ -2306,6 +2340,10 @@ class ITSLiveComposite:
         # x_start = 40
         # x_num_to_process = 10
 
+        # Debug slow_error exception: Linear Least Squares conversion error
+        # x_start = 430
+        # x_num_to_process = 1
+
         # x_num_to_process = self.cube_sizes[Coords.X] - x_start
 
         while x_num_to_process > 0:
@@ -2345,6 +2383,10 @@ class ITSLiveComposite:
             # Debug slow_error exception: Linear Least Squares conversion error
             # y_start = 330
             # y_num_to_process = 10
+
+            # Debug slow_error exception: Linear Least Squares conversion error
+            # y_start = 261
+            # y_num_to_process = 1
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
