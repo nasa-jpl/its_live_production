@@ -364,6 +364,14 @@ class RestoreM11M12Values:
 
                 # Preserve encoding attributes for M11 and M12 per original granule
                 for each_var in [DataVars.M11, DataVars.M12]:
+                    if Output.SCALE_FACTOR not in ds[each_var].encoding:
+                        msgs.append(f'ERROR: missing {each_var}:{Output.SCALE_FACTOR} encoding attribute for {original_granule_url}')
+                        return msgs
+
+                    if Output.ADD_OFFSET not in ds[each_var].encoding:
+                        msgs.append(f'ERROR: missing {each_var}:{Output.ADD_OFFSET} encoding attribute for {original_granule_url}')
+                        return msgs
+
                     granule_encoding[each_var][Output.SCALE_FACTOR] = ds[each_var].encoding[Output.SCALE_FACTOR]
                     granule_encoding[each_var][Output.ADD_OFFSET] = ds[each_var].encoding[Output.ADD_OFFSET]
 
