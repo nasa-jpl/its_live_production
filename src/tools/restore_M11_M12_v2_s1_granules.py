@@ -251,7 +251,9 @@ class RestoreM11M12Values:
                     self.find_original_granule(each),
                     each.replace(RestoreM11M12Values.TARGET_DIR, RestoreM11M12Values.RESTORED_DATA_BUCKET_DIR),
                     self.s3,
-                    RestoreM11M12Values.ZERO_PERCENT_COVERAGE_FILES
+                    RestoreM11M12Values.ZERO_PERCENT_COVERAGE_FILES,
+                    RestoreM11M12Values.TARGET_BUCKET,
+                    RestoreM11M12Values.LOCAL_DIR
                 ) for each in self.all_target_granules[start:start+num_tasks]
             ]
             results = None
@@ -276,8 +278,9 @@ class RestoreM11M12Values:
         original_granule_url: str,
         restored_granule_url: str,
         s3: s3fs.S3FileSystem,
-        restore_only: bool
-
+        restore_only: bool,
+        target_bucket_name: str,
+        local_dir: str
     ):
         """
         Crop corrsponding to "granule_url" original granule to X/Y extend of non-None "v" values,
@@ -296,6 +299,9 @@ class RestoreM11M12Values:
             s3_original (s3fs.S3FileSystem): s3fs object to access original granules stored in s3 bucket.
             restore_only (bool): Flag if cropping of the granule should be skipped when restoring M11 and M12
                 (applies to zero coverage granules only).
+            target_bucket_name: Name of target S3 bucket that stores granules to correct, and restored granules.
+            local_dir (str): local directory to store corrected granules to
+
         """
         msgs = [f'Processing {granule_url}']
 
@@ -309,7 +315,7 @@ class RestoreM11M12Values:
 
         # Write the granule locally, upload it to the bucket, remove file
         granule_basename = os.path.basename(granule_url)
-        fixed_file = os.path.join(RestoreM11M12Values.LOCAL_DIR, granule_basename)
+        fixed_file = os.path.join(local_dir, granule_basename)
 
         with s3.open(original_granule_url) as fhandle:
             with xr.open_dataset(fhandle) as ds:
@@ -382,18 +388,18 @@ class RestoreM11M12Values:
         s3_client = boto3.client('s3')
         try:
             # New location for corrected granule
-            bucket_granule = restored_granule_url.replace(RestoreM11M12Values.TARGET_BUCKET + '/', '')
-            msgs.append(f"Uploading {RestoreM11M12Values.TARGET_BUCKET}/{bucket_granule}")
+            bucket_granule = restored_granule_url.replace(target_bucket_name + '/', '')
+            msgs.append(f"Uploading {target_bucket_name}/{bucket_granule}")
 
-            s3_client.upload_file(fixed_file, RestoreM11M12Values.TARGET_BUCKET, bucket_granule)
+            s3_client.upload_file(fixed_file, target_bucket_name, bucket_granule)
 
             # msgs.append(f"Removing local {fixed_file}")
             os.unlink(fixed_file)
 
             # Original granule in S3 bucket
-            source = granule_url.replace(RestoreM11M12Values.TARGET_BUCKET+'/', '')
+            source = granule_url.replace(target_bucket_name+'/', '')
 
-            bucket = boto3.resource('s3').Bucket(RestoreM11M12Values.TARGET_BUCKET)
+            bucket = boto3.resource('s3').Bucket(target_bucket_name)
 
             # There are corresponding browse and thumbprint images to transfer
             for target_ext in ['.png', '_thumb.png']:
@@ -402,7 +408,7 @@ class RestoreM11M12Values:
                 source_key = source.replace('.nc', target_ext)
 
                 source_dict = {
-                    'Bucket': RestoreM11M12Values.TARGET_BUCKET,
+                    'Bucket': target_bucket_name,
                     'Key': source_key
                 }
                 # msgs.append(f'Uploading {source_dict} to {target_key}')
