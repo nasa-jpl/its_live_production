@@ -85,8 +85,6 @@ class RestoreM11M12Values:
         """
         self.s3 = s3fs.S3FileSystem()
 
-        self.s3_original = s3fs.S3FileSystem()
-
         # Read JSON format file that lists granules for correction - skip those granules as M11 and M12
         # will be restored for those granules during correction.
         # Original file contains "old" paths, so need to replace them with current location of
@@ -253,7 +251,6 @@ class RestoreM11M12Values:
                     self.find_original_granule(each),
                     each.replace(RestoreM11M12Values.TARGET_DIR, RestoreM11M12Values.RESTORED_DATA_BUCKET_DIR),
                     self.s3,
-                    self.s3_original,
                     RestoreM11M12Values.ZERO_PERCENT_COVERAGE_FILES
                 ) for each in self.all_target_granules[start:start+num_tasks]
             ]
@@ -279,7 +276,6 @@ class RestoreM11M12Values:
         original_granule_url: str,
         restored_granule_url: str,
         s3: s3fs.S3FileSystem,
-        s3_original: s3fs.S3FileSystem,
         restore_only: bool
 
     ):
@@ -305,108 +301,108 @@ class RestoreM11M12Values:
 
         msgs.append(f'Opening original {original_granule_url}...')
 
+        ds_target = None
         with s3.open(granule_url) as fhandle:
             with xr.open_dataset(fhandle) as ds_target:
-
                 # Load target granule that needs to restore M11 and M12
                 ds_target = ds_target.load()
 
-                with s3_original.open(original_granule_url) as fhandle:
-                    with xr.open_dataset(fhandle) as ds:
-                        cropped_ds = ds
+        # Write the granule locally, upload it to the bucket, remove file
+        granule_basename = os.path.basename(granule_url)
+        fixed_file = os.path.join(RestoreM11M12Values.LOCAL_DIR, granule_basename)
 
-                        if not restore_only:
-                            # Have to crop source data to valid X/Y extend
+        with s3.open(original_granule_url) as fhandle:
+            with xr.open_dataset(fhandle) as ds:
+                cropped_ds = ds
 
-                            # this will drop X/Y coordinates, so drop non-None values just to get X/Y extends
-                            xy_ds = ds.where(ds.v.notnull(), drop=True)
+                if not restore_only:
+                    # Have to crop source data to valid X/Y extend
 
-                            x_values = xy_ds.x.values
-                            grid_x_min, grid_x_max = x_values.min(), x_values.max()
+                    # this will drop X/Y coordinates, so drop non-None values just to get X/Y extends
+                    xy_ds = ds.where(ds.v.notnull(), drop=True)
 
-                            y_values = xy_ds.y.values
-                            grid_y_min, grid_y_max = y_values.min(), y_values.max()
+                    x_values = xy_ds.x.values
+                    grid_x_min, grid_x_max = x_values.min(), x_values.max()
 
-                            # Based on X/Y extends, mask original dataset
-                            mask_lon = (ds.x >= grid_x_min) & (ds.x <= grid_x_max)
-                            mask_lat = (ds.y >= grid_y_min) & (ds.y <= grid_y_max)
-                            mask = (mask_lon & mask_lat)
+                    y_values = xy_ds.y.values
+                    grid_y_min, grid_y_max = y_values.min(), y_values.max()
 
-                            cropped_ds = ds.where(mask, drop=True)
+                    # Based on X/Y extends, mask original dataset
+                    mask_lon = (ds.x >= grid_x_min) & (ds.x <= grid_x_max)
+                    mask_lat = (ds.y >= grid_y_min) & (ds.y <= grid_y_max)
+                    mask = (mask_lon & mask_lat)
 
-                            # We are interested in M11 and M12 only
-                            cropped_ds = cropped_ds[[DataVars.M11, DataVars.M12]].load()
+                    cropped_ds = ds.where(mask, drop=True)
 
-                        # Update target granule with original M11 and M12 values
-                        ds_target[DataVars.M11] = cropped_ds[DataVars.M11]
-                        ds_target[DataVars.M12] = cropped_ds[DataVars.M12]
+                    # We are interested in M11 and M12 only
+                    cropped_ds = cropped_ds[[DataVars.M11, DataVars.M12]].load()
 
-                        # Add date when granule was updated
-                        ds_target.attrs['date_updated'] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
+                # Update target granule with original M11 and M12 values
+                ds_target[DataVars.M11] = cropped_ds[DataVars.M11]
+                ds_target[DataVars.M12] = cropped_ds[DataVars.M12]
 
-                        # Save to local file
-                        granule_basename = os.path.basename(granule_url)
+                # Add date when granule was updated
+                ds_target.attrs['date_updated'] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
 
-                        # Write the granule locally, upload it to the bucket, remove file
-                        fixed_file = os.path.join(RestoreM11M12Values.LOCAL_DIR, granule_basename)
+                # Save to local file
 
-                        # Set chunking for 2D data variables
-                        dims = cropped_ds.dims
-                        num_x = dims[Coords.X]
-                        num_y = dims[Coords.Y]
+                # Set chunking for 2D data variables
+                dims = cropped_ds.dims
+                num_x = dims[Coords.X]
+                num_y = dims[Coords.Y]
 
-                        # Compute chunking like AutoRIFT does:
-                        # https://github.com/ASFHyP3/hyp3-autorift/blob/develop/hyp3_autorift/vend/netcdf_output.py#L410-L411
-                        chunk_lines = np.min([np.ceil(8192/num_y)*128, num_y])
-                        two_dim_chunks_settings = (chunk_lines, num_x)
+                # Compute chunking like AutoRIFT does:
+                # https://github.com/ASFHyP3/hyp3-autorift/blob/develop/hyp3_autorift/vend/netcdf_output.py#L410-L411
+                chunk_lines = np.min([np.ceil(8192/num_y)*128, num_y])
+                two_dim_chunks_settings = (chunk_lines, num_x)
 
-                        granule_encoding = Encoding.SENTINEL1.copy()
+                granule_encoding = Encoding.SENTINEL1.copy()
 
-                        for each_var, each_var_settings in granule_encoding.items():
-                            if each_var_settings[Output.FILL_VALUE_ATTR] is not None:
-                                each_var_settings[Output.CHUNKSIZES_ATTR] = two_dim_chunks_settings
+                for each_var, each_var_settings in granule_encoding.items():
+                    if each_var_settings[Output.FILL_VALUE_ATTR] is not None:
+                        each_var_settings[Output.CHUNKSIZES_ATTR] = two_dim_chunks_settings
 
-                        # Preserve encoding attributes for M11 and M12 per original granule
-                        for each_var in [DataVars.M11, DataVars.M12]:
-                            granule_encoding[each_var][Output.SCALE_FACTOR] = ds[each_var].encoding[Output.SCALE_FACTOR]
-                            granule_encoding[each_var][Output.ADD_OFFSET] = ds[each_var].encoding[Output.ADD_OFFSET]
+                # Preserve encoding attributes for M11 and M12 per original granule
+                for each_var in [DataVars.M11, DataVars.M12]:
+                    granule_encoding[each_var][Output.SCALE_FACTOR] = ds[each_var].encoding[Output.SCALE_FACTOR]
+                    granule_encoding[each_var][Output.ADD_OFFSET] = ds[each_var].encoding[Output.ADD_OFFSET]
 
-                        # Save to local file
-                        ds_target.to_netcdf(fixed_file, engine='h5netcdf', encoding=granule_encoding)
+                # Save to local file
+                ds_target.to_netcdf(fixed_file, engine='h5netcdf', encoding=granule_encoding)
 
-                        # Upload corrected granule to the bucket - format sub-directory based on new cropped values
-                        s3_client = boto3.client('s3')
-                        try:
-                            # New location for corrected granule
-                            bucket_granule = restored_granule_url.replace(RestoreM11M12Values.TARGET_BUCKET + '/', '')
-                            msgs.append(f"Uploading {RestoreM11M12Values.TARGET_BUCKET}/{bucket_granule}")
+        # Upload corrected granule to the bucket - format sub-directory based on new cropped values
+        s3_client = boto3.client('s3')
+        try:
+            # New location for corrected granule
+            bucket_granule = restored_granule_url.replace(RestoreM11M12Values.TARGET_BUCKET + '/', '')
+            msgs.append(f"Uploading {RestoreM11M12Values.TARGET_BUCKET}/{bucket_granule}")
 
-                            s3_client.upload_file(fixed_file, RestoreM11M12Values.TARGET_BUCKET, bucket_granule)
+            s3_client.upload_file(fixed_file, RestoreM11M12Values.TARGET_BUCKET, bucket_granule)
 
-                            # msgs.append(f"Removing local {fixed_file}")
-                            os.unlink(fixed_file)
+            # msgs.append(f"Removing local {fixed_file}")
+            os.unlink(fixed_file)
 
-                            # Original granule in S3 bucket
-                            source = granule_url.replace(RestoreM11M12Values.TARGET_BUCKET+'/', '')
+            # Original granule in S3 bucket
+            source = granule_url.replace(RestoreM11M12Values.TARGET_BUCKET+'/', '')
 
-                            bucket = boto3.resource('s3').Bucket(RestoreM11M12Values.TARGET_BUCKET)
+            bucket = boto3.resource('s3').Bucket(RestoreM11M12Values.TARGET_BUCKET)
 
-                            # There are corresponding browse and thumbprint images to transfer
-                            for target_ext in ['.png', '_thumb.png']:
-                                target_key = bucket_granule.replace('.nc', target_ext)
+            # There are corresponding browse and thumbprint images to transfer
+            for target_ext in ['.png', '_thumb.png']:
+                target_key = bucket_granule.replace('.nc', target_ext)
 
-                                source_key = source.replace('.nc', target_ext)
+                source_key = source.replace('.nc', target_ext)
 
-                                source_dict = {
-                                    'Bucket': RestoreM11M12Values.TARGET_BUCKET,
-                                    'Key': source_key
-                                }
-                                # msgs.append(f'Uploading {source_dict} to {target_key}')
-                                bucket.copy(source_dict, target_key)
-                                msgs.append(f'Copying {target_ext} to s3')
+                source_dict = {
+                    'Bucket': RestoreM11M12Values.TARGET_BUCKET,
+                    'Key': source_key
+                }
+                # msgs.append(f'Uploading {source_dict} to {target_key}')
+                bucket.copy(source_dict, target_key)
+                msgs.append(f'Copying {target_ext} to s3')
 
-                        except ClientError as exc:
-                            msgs.append(f"ERROR: {exc}")
+        except ClientError as exc:
+            msgs.append(f"ERROR: {exc}")
 
         return msgs
 
