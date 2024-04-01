@@ -5,7 +5,7 @@
 set -x
 
 # Specify the S3 bucket location
-bucket="s3://its-live-data/mosaics/annual/v2_slow_error/"
+bucket="s3://its-live-data/mosaics/annual/v2_slow_error"
 
 # Target S3 bucket location
 target_bucket="s3://its-live-data/velocity_mosaic/v2/annual/cog"
