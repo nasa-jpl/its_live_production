@@ -23,7 +23,7 @@ from tqdm import tqdm
 from shapely.geometry import mapping
 import xarray as xr
 
-from itscube import ITSCube
+# from itscube import ITSCube
 
 # Date format as it appears in granules filenames of optical format:
 # LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc
@@ -637,20 +637,20 @@ if __name__ == '__main__':
         infiles = [x for x in infilelist if '_P' in x and 'txt' not in x]
 
         # Skip duplicate granules (the same middle date, but different processing date) for L8/L9 data only
-        if GranuleCatalog.REMOVE_DUPLICATE_GRANULES:
-            infiles, skipped_granules = ITSCube.skip_duplicate_l89_granules(infiles)
+        # if GranuleCatalog.REMOVE_DUPLICATE_GRANULES:
+        #     infiles, skipped_granules = ITSCube.skip_duplicate_l89_granules(infiles)
 
-            granule_filename = os.path.join(args.catalog_dir, args.skipped_granules_file)
-            with s3_out.open(granule_filename, 'w') as outf:
-                geojson.dump(skipped_granules, outf)
+        #     granule_filename = os.path.join(args.catalog_dir, args.skipped_granules_file)
+        #     with s3_out.open(granule_filename, 'w') as outf:
+        #         geojson.dump(skipped_granules, outf)
 
-            logging.info(f"Wrote skipped granules to '{granule_filename}'")
+        #     logging.info(f"Wrote skipped granules to '{granule_filename}'")
 
-            # ATTN: If any of the skipped granules are already cataloged by
-            # previous catalog generation, need to exclude them from existing
-            # catalogs
-            if GranuleCatalog.EXCLUDE_GRANULES_FILE is not None and len(skipped_granules):
-                logging.info(f'WARNING: Need to check on exlusion of skipped granules from existing catalogs')
+        #     # ATTN: If any of the skipped granules are already cataloged by
+        #     # previous catalog generation, need to exclude them from existing
+        #     # catalogs
+        #     if GranuleCatalog.EXCLUDE_GRANULES_FILE is not None and len(skipped_granules):
+        #         logging.info(f'WARNING: Need to check on exlusion of skipped granules from existing catalogs')
 
         # Write all unique granules to the file
         granule_filename = os.path.join(args.catalog_dir, args.catalog_granules_file)
