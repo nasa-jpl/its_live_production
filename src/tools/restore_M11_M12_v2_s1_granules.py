@@ -4,7 +4,7 @@ Restore original M11 and M12 values for uncorrected V2 Sentinel-1 granules (that
 1. Use original granules from s3://its-live-project/velocity_image_pair/sentinel1-latest
 2. Crop original granule's M11 and M12 values to valid X/Y extends (since target granule is already cropped)
 3. Copy M11 and M12 values into target granule, preserve encoding values
-4. Copy granule with restored M11 and M12 into destination s3://its-live-data/velocity_image_pair/sentinel1-m-restored.
+4. Copy granule with restored M11 and M12 into destination s3://its-live-data/velocity_image_pair/sentinel1-restoredM/v02.
 
 For the zero coverage granules:
 1. Use original granules from s3://its-live-project/velocity_image_pair/sentinel1-latest
