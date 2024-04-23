@@ -28,3 +28,5 @@ for each_dir in $(awsv2 s3 ls "$slow_error_bucket"/ | grep '\/' | awk '{ print $
         awsv2 s3 cp $original_filename $target_filename --recursive --acl bucket-owner-full-control
     done
 done
+
+echo 'Done'
