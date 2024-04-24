@@ -23,7 +23,7 @@ for each_dir in $(awsv2 s3 ls "$slow_error_bucket"/ | grep '\/' | awk '{ print $
         slow_error_filename="$s3_dir/$each_zarr"
 
         # Backup original RGI05A and RGI19A composites that were re-generated with slow_error
-        awsv2 s3 cp --dryrun $slow_error_filename $original_filename --recursive --acl bucket-owner-full-control
+        awsv2 s3 cp $slow_error_filename $original_filename --recursive --acl bucket-owner-full-control
     done
 done
 
