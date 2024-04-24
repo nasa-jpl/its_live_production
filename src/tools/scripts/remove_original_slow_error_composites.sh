@@ -21,7 +21,7 @@ for each_dir in $(awsv2 s3 ls "$slow_error_bucket"/ | grep '\/' | awk '{ print $
         original_filename="$original_composites_bucket/$each_dir/$each_zarr"
 
         # Remove original RGI05A and RGI19A composites that were re-generated with slow_error
-        awsv2 s3 rm --dryrun $original_filename --recursive
+        awsv2 s3 rm $original_filename --recursive
     done
 done
 
