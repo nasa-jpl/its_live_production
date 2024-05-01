@@ -15,24 +15,22 @@ vs. 1.5 minutes to upload the file from laptop to the S3 bucket.
 Authors: Masha Liukis
 """
 import argparse
-import boto3
-from botocore.exceptions import ClientError
-import copy
 import dask
 from dask.diagnostics import ProgressBar
-import json
 import logging
+import numpy as np
 import os
 import s3fs
 import shutil
 import subprocess
 import xarray as xr
-import zarr
 
-from itslive_composite import SensorExcludeFilter, MissionSensor
+from itslive_composite import SensorExcludeFilter, MissionSensor, Output
 from itscube import ITSCube
 from itscube_types import DataVars, Coords
 import zarr_to_netcdf
+
+NC_ENGINE = 'h5netcdf'
 
 
 class FixDatacubes:
@@ -94,12 +92,11 @@ class FixDatacubes:
         data variable and skipped_* datacube attributes.
         """
         num_to_fix = len(self.all_zarr_datacubes)
-        start = 0
 
         logging.info(f"{num_to_fix} datacubes to fix...")
 
         if num_to_fix <= 0:
-            logging.info(f"Nothing to fix, exiting.")
+            logging.info("Nothing to fix, exiting.")
             return
 
         for each_cube in self.all_zarr_datacubes:
@@ -114,7 +111,7 @@ class FixDatacubes:
             )
             logging.info("\n-->".join(msgs))
 
-    def __call__(self, num_dask_workers: int, start_cube: int=0):
+    def __call__(self, num_dask_workers: int, start_cube: int = 0):
         """
         Restore M11 and M12 for the ITS_LIVE datacubes stored in S3 bucket.
         """
@@ -124,7 +121,7 @@ class FixDatacubes:
         logging.info(f"{num_to_fix} datacubes to fix...")
 
         if num_to_fix <= 0:
-            logging.info(f"Nothing to fix, exiting.")
+            logging.info("Nothing to fix, exiting.")
             return
 
         # For debugging
@@ -217,6 +214,12 @@ class FixDatacubes:
         with xr.open_dataset(local_original_cube, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
             msgs.apend(f'Cube dimensions: {ds.dims}')
 
+            x_values = ds.x.values
+            grid_x_min, grid_x_max = x_values.min(), x_values.max()
+
+            y_values = ds.y.values
+            grid_y_min, grid_y_max = y_values.min(), y_values.max()
+
             # Identify S1 layers within the cube
             sensors = ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
             sensors_str = SensorExcludeFilter.map_sensor_to_group(sensors)
@@ -229,8 +232,6 @@ class FixDatacubes:
             # Identify S1 layers within the cube
             sensors = ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
             sensors_str = SensorExcludeFilter.map_sensor_to_group(sensors)
-
-            sensor_shape = sensor_list.shape
 
             # Need to load all of M11/M12 data values in in order to update them. Otherwise it silently ignored values when updating (xarray bug?)
 
@@ -285,13 +286,13 @@ class FixDatacubes:
                     ds_chunking = ds[each_var].encoding['chunks']
                     chunking = ()
 
-                    if len(chunking) == 1:
+                    if len(ds_chunking) == 1:
                         chunking = chunking_1d
 
-                    elif len(chunking) == 2:
+                    elif len(ds_chunking) == 2:
                         chunking = chunking_2d
 
-                    elif len(chunking) == 3:
+                    elif len(ds_chunking) == 3:
                         chunking = chunking_3d
 
                     ds_encoding.setdefault(each_var, {})[Output.CHUNKS_ATTR] = chunking
@@ -340,6 +341,7 @@ class FixDatacubes:
 
             return msgs
 
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__.split('\n')[0],
@@ -369,14 +371,14 @@ def main():
         type=str,
         default='sandbox',
         help='Directory to store fixed datacubes before uploading them to the S3 bucket '
-            '(it is much faster to read and write fixed datacubes locally first, then upload them to s3). [%(default)s]'
+                '(it is much faster to read and write fixed datacubes locally first, then upload them to s3) [%(default)s]'
     )
     parser.add_argument(
         '-o', '--local_original_cube_dir',
         type=str,
         default='sandbox-original',
         help='Directory to store downloaded original datacubes to '
-            '(it is much faster to read and write fixed datacubes locally first, then upload them to s3). [%(default)s]'
+                '(it is much faster to read and write fixed datacubes locally first, then upload them to s3) [%(default)s]'
     )
     parser.add_argument(
         '-w', '--dask-workers',
