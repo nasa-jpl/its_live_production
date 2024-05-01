@@ -339,7 +339,7 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__.split('\n')[0],
         epilog=__doc__,
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
         '-b', '--bucket',
