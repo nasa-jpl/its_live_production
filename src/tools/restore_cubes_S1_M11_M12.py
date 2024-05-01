@@ -342,33 +342,33 @@ def main():
         '-b', '--bucket',
         type=str,
         default='its-live-data',
-        help='AWS S3 that stores ITS_LIVE datacubes to fix chunking and restore M11/M12 values for'
+        help='AWS S3 that stores ITS_LIVE datacubes to fix chunking and restore M11/M12 values for [%(default)s]'
     )
     parser.add_argument(
         '-d', '--bucket_dir',
         type=str,
         default='datacubes/v1',
-        help='AWS S3 directory that store the datacubes to fix'
+        help='AWS S3 directory that store the datacubes to fix [%(default)s]'
     )
     parser.add_argument(
         '-t', '--target_bucket_dir',
         type=str,
         default='datacubes/v1_restored_M11_M12',
-        help='AWS S3 directory to store fixed datacubes'
+        help='AWS S3 directory to store fixed datacubes [%(default)s]'
     )
     parser.add_argument(
         '-l', '--local_dir',
         type=str,
         default='sandbox',
         help='Directory to store fixed datacubes before uploading them to the S3 bucket '
-            '(it is much faster to read and write fixed datacubes locally first, then upload them to s3)'
+            '(it is much faster to read and write fixed datacubes locally first, then upload them to s3). [%(default)s]'
     )
     parser.add_argument(
         '-o', '--local_original_cube_dir',
         type=str,
         default='sandbox-original',
         help='Directory to store downloaded original datacubes to '
-            '(it is much faster to read and write fixed datacubes locally first, then upload them to s3)'
+            '(it is much faster to read and write fixed datacubes locally first, then upload them to s3). [%(default)s]'
     )
     parser.add_argument(
         '-w', '--dask-workers',
@@ -385,7 +385,7 @@ def main():
     parser.add_argument(
         '--dry',
         action='store_true',
-        help='Dry run, do not actually submit AWS push/pull commands'
+        help='Dry run, do not actually submit AWS push/pull commands.'
     )
 
     args = parser.parse_args()
