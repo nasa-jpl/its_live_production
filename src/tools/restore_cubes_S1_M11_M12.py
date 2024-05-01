@@ -201,9 +201,6 @@ class FixDatacubes:
         msgs.append(f"Creating local copy of {source_url}: {local_original_cube}")
         msgs.append(' '.join(command_line))
 
-        if FixDatacubes.DRY_RUN:
-            return msgs
-
         command_return = subprocess.run(
             command_line,
             env=env_copy,
@@ -212,7 +209,7 @@ class FixDatacubes:
             stderr=subprocess.STDOUT
         )
         if command_return.returncode != 0:
-            msgs.append(f"ERROR: Failed to copy {source_url} to {cube_basename}: {command_return.stdout}")
+            msgs.append(f"ERROR: Failed to copy {source_url} to {local_original_cube}: {command_return.stdout}")
 
         # Write datacube locally, upload it to the bucket, remove file
         fixed_file = os.path.join(local_dir, cube_basename)
@@ -306,6 +303,9 @@ class FixDatacubes:
             msgs.append(f"Saving datacube to {fixed_file}")
 
             ds.to_zarr(fixed_file, encoding=ds_encoding, consolidated=True)
+
+        if FixDatacubes.DRY_RUN:
+            return msgs
 
         if os.path.exists(fixed_file):
             # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
