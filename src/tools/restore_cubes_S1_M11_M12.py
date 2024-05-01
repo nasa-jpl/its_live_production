@@ -214,7 +214,7 @@ class FixDatacubes:
         # Write datacube locally, upload it to the bucket, remove file
         fixed_file = os.path.join(local_dir, cube_basename)
 
-        with xr.open_dataset(cube_basename, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
+        with xr.open_dataset(local_original_cube, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
             msgs.apend(f'Cube dimensions: {ds.dims}')
 
             # Identify S1 layers within the cube
