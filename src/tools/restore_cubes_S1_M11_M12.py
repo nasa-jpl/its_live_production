@@ -212,7 +212,7 @@ class FixDatacubes:
         fixed_file = os.path.join(local_dir, cube_basename)
 
         with xr.open_dataset(local_original_cube, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
-            msgs.apend(f'Cube dimensions: {ds.dims}')
+            msgs.append(f'Cube dimensions: {ds.dims}')
 
             x_values = ds.x.values
             grid_x_min, grid_x_max = x_values.min(), x_values.max()
@@ -225,7 +225,7 @@ class FixDatacubes:
             sensors_str = SensorExcludeFilter.map_sensor_to_group(sensors)
 
             s1_mask = (sensors_str == MissionSensor.SENTINEL1.mission)
-            msgs.apend(f'Identified {np.sum(s1_mask)} S1 layers in the cube')
+            msgs.append(f'Identified {np.sum(s1_mask)} S1 layers in the cube')
 
             mask_i = np.where(s1_mask == True)
 
