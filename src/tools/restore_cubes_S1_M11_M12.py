@@ -30,6 +30,7 @@ import xarray as xr
 import zarr
 
 from itslive_composite import SensorExcludeFilter, MissionSensor
+from itscube import ITSCube
 from itscube_types import DataVars, Coords
 import zarr_to_netcdf
 
@@ -103,7 +104,14 @@ class FixDatacubes:
 
         for each_cube in self.all_zarr_datacubes:
             logging.info(f"Starting {each_cube}")
-            msgs = FixDatacubes.all(each_cube, self.bucket, local_dir, self.s3)
+            msgs = FixDatacubes.all(
+                each_cube,
+                self.bucket_dir,
+                self.target_bucket_dir,
+                self.local_original_cube_dir,
+                self.local_dir,
+                self.s3
+            )
             logging.info("\n-->".join(msgs))
 
     def __call__(self, num_dask_workers: int, start_cube: int=0):
