@@ -393,7 +393,7 @@ def main():
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 
     logging.info(f"Args: {args}")
-    FixDatacubes.DRY_RUN = args.dry
+    FixDatacubes.DRY_RUN = args.dryrun
 
     fix_cubes = FixDatacubes(
         args.bucket,
