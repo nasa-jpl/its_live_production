@@ -347,13 +347,13 @@ def main():
     parser.add_argument(
         '-d', '--bucket_dir',
         type=str,
-        default='datacubes/v1',
+        default='datacubes/v2',
         help='AWS S3 directory that store the datacubes to fix [%(default)s]'
     )
     parser.add_argument(
         '-t', '--target_bucket_dir',
         type=str,
-        default='datacubes/v1_restored_M11_M12',
+        default='datacubes/v2_restored_M11_M12',
         help='AWS S3 directory to store fixed datacubes [%(default)s]'
     )
     parser.add_argument(
@@ -383,7 +383,7 @@ def main():
         help='Index for the start datacube to process (if previous processing terminated) [%(default)d]'
     )
     parser.add_argument(
-        '--dry',
+        '--dryrun',
         action='store_true',
         help='Dry run, do not actually submit AWS push/pull commands.'
     )
