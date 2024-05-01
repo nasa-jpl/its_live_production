@@ -59,7 +59,6 @@ class FixDatacubes:
             local_dir (str): Local directory to save corrected cubes to.
         """
         self.s3 = s3fs.S3FileSystem(anon=True)
-        self.bucket = bucket
         self.bucket_dir = bucket_dir
         self.target_bucket_dir = target_bucket_dir
 
@@ -130,7 +129,6 @@ class FixDatacubes:
             tasks = [
                 dask.delayed(FixDatacubes.all)(
                     each,
-                    self.bucket,
                     self.bucket_dir,
                     self.target_bucket_dir,
                     self.local_original_cube_dir,
@@ -157,7 +155,6 @@ class FixDatacubes:
     @staticmethod
     def all(
         cube_url: str,
-        bucket_name: str,
         cube_bucket_dir: str,
         target_bucket_dir: str,
         local_original_cube_dir: str,
@@ -302,7 +299,7 @@ class FixDatacubes:
 
             ds.to_zarr(fixed_file, encoding=ds_encoding, consolidated=True)
 
-        if os.path.exists(fixed_file) and len(bucket_name):
+        if os.path.exists(fixed_file):
             # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
             # resulting in as many error messages as there are files in Zarr store
             # to copy
@@ -351,13 +348,13 @@ def main():
         '-d', '--bucket_dir',
         type=str,
         default='datacubes/v1',
-        help='AWS S3 bucket and directory that store the datacubes to fix'
+        help='AWS S3 directory that store the datacubes to fix'
     )
     parser.add_argument(
         '-t', '--target_bucket_dir',
         type=str,
-        default='datacubes/v1',
-        help='AWS S3 bucket and directory that store the datacubes to fix'
+        default='datacubes/v1_restored_M11_M12',
+        help='AWS S3 directory to store fixed datacubes'
     )
     parser.add_argument(
         '-l', '--local_dir',
@@ -380,15 +377,15 @@ def main():
         help='Number of Dask parallel workers [%(default)d]'
     )
     parser.add_argument(
-        '--dry',
-        action='store_true',
-        help='Dry run, do not actually submit AWS push/pull commands'
-    )
-    parser.add_argument(
         '-s', '--start_cube',
         type=int,
         default=0,
         help='Index for the start datacube to process (if previous processing terminated) [%(default)d]'
+    )
+    parser.add_argument(
+        '--dry',
+        action='store_true',
+        help='Dry run, do not actually submit AWS push/pull commands'
     )
 
     args = parser.parse_args()
