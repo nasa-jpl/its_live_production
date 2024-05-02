@@ -28,7 +28,6 @@ import xarray as xr
 from itslive_composite import SensorExcludeFilter, MissionSensor, Output
 from itscube import ITSCube
 from itscube_types import DataVars, Coords
-import zarr_to_netcdf
 
 NC_ENGINE = 'h5netcdf'
 
@@ -272,7 +271,7 @@ class FixDatacubes:
                             # m_values = ds[each_var][each_index, :, :].values
                             # print(f'====>assigned ds {each_var}: m_values.shape={m_values.shape} min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
 
-            ds_encoding = zarr_to_netcdf.ENCODING_ZARR.copy()
+            # ds_encoding = zarr_to_netcdf.ENCODING_ZARR.copy()
 
             # Correct chunking settings in the cube, use them as golden standard for all variables
             chunking_1d = ds[DataVars.ImgPairInfo.DATE_DT].encoding[Output.CHUNKS_ATTR]
@@ -282,8 +281,8 @@ class FixDatacubes:
             # Fix chunking for mid_date, ice masks, autoRIFT_software_version, granule_url,
             # and just to be sure - for x/y (set to the full extend already)
             for each_var in ds:
-                if 'chunks' in ds[each_var].encoding:
-                    ds_chunking = ds[each_var].encoding['chunks']
+                if Output.CHUNKS_ATTR in ds[each_var].encoding:
+                    ds_chunking = ds[each_var].encoding[Output.CHUNKS_ATTR]
                     chunking = ()
 
                     if len(ds_chunking) == 1:
@@ -295,15 +294,16 @@ class FixDatacubes:
                     elif len(ds_chunking) == 3:
                         chunking = chunking_3d
 
-                    ds_encoding.setdefault(each_var, {})[Output.CHUNKS_ATTR] = chunking
+                    ds[each_var].encoding[Output.CHUNKS_ATTR] = chunking
 
             # Chunking for X and Y are set to full extend by default, set it just to be sure
-            ds_encoding[Coords.X][Output.CHUNKS_ATTR] = (len(ds.x))
-            ds_encoding[Coords.Y][Output.CHUNKS_ATTR] = (len(ds.y))
+            ds[Coords.X].encoding[Output.CHUNKS_ATTR] = (len(ds.x))
+            ds[Coords.Y].encoding[Output.CHUNKS_ATTR] = (len(ds.y))
 
             msgs.append(f"Saving datacube to {fixed_file}")
-
-            ds.to_zarr(fixed_file, encoding=ds_encoding, consolidated=True)
+            # Re-chunk xr.Dataset to avoid memory errors when writing to the ZARR store
+            ds = ds.chunk({Coords.MID_DATE: 250})
+            ds.to_zarr(fixed_file, consolidated=True)
 
         if FixDatacubes.DRY_RUN:
             return msgs
