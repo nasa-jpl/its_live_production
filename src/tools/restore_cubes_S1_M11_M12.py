@@ -233,7 +233,10 @@ class FixDatacubes:
             sensors = ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
             sensors_str = SensorExcludeFilter.map_sensor_to_group(sensors)
 
-            # Need to load all of M11/M12 data values in in order to update them. Otherwise it silently ignored values when updating (xarray bug?)
+            # Need to load all of M11/M12 data values in order to update them. Otherwise it silently ignored values when updating (xarray bug?)
+            for each_var in [DataVars.M11, DataVars.M12]:
+                m_values = ds[each_var].values
+                msgs.append(f'cube {each_var}: min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
 
             # If there are no S1 granules, we still want to rechunk 'mid_date' coordinate
             for each_index in mask_i[0]:
