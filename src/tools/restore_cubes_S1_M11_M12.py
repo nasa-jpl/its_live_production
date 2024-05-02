@@ -24,6 +24,7 @@ import s3fs
 import shutil
 import subprocess
 import xarray as xr
+import zarr
 
 from itslive_composite import SensorExcludeFilter, MissionSensor, Output
 from itscube import ITSCube
@@ -277,6 +278,7 @@ class FixDatacubes:
             chunking_1d = ds[DataVars.ImgPairInfo.DATE_DT].encoding[Output.CHUNKS_ATTR]
             chunking_2d = (len(ds.y), len(ds.x))
             chunking_3d = ds[DataVars.CHIP_SIZE_HEIGHT].encoding[Output.CHUNKS_ATTR]
+            compression_zarr = zarr.Blosc(cname='zlib', clevel=2, shuffle=1)
 
             # Fix chunking for mid_date, ice masks, autoRIFT_software_version, granule_url,
             # and just to be sure - for x/y (set to the full extend already)
@@ -296,9 +298,16 @@ class FixDatacubes:
 
                     ds[each_var].encoding[Output.CHUNKS_ATTR] = chunking
 
+                    # Apply the same compression to all data variables
+                    ds[each_var].encoding[Output.COMPRESSOR_ATTR] = compression_zarr
+
             # Chunking for X and Y are set to full extend by default, set it just to be sure
             ds[Coords.X].encoding[Output.CHUNKS_ATTR] = (len(ds.x))
             ds[Coords.Y].encoding[Output.CHUNKS_ATTR] = (len(ds.y))
+
+            # Change datatype for M11 and M12 to floating point
+            ds[DataVars.M11].encoding[Output.DTYPE_ATTR] = np.float32
+            ds[DataVars.M12].encoding[Output.DTYPE_ATTR] = np.float32
 
             msgs.append(f"Saving datacube to {fixed_file}")
             # Re-chunk xr.Dataset to avoid memory errors when writing to the ZARR store
