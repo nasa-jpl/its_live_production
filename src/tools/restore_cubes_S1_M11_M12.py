@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Restore Sentinel-1 M11 and M12 values within existing ITS_LIVE datacubes that are residing in AWS S3 bucket:
+Restore Sentinel-1 M11 and M12 values within existing ITS_LIVE datacubes that are residing in AWS S3 bucket
 
 * Copy M11 and M12 values from S1 granules into corresponding layers of the existing datacubes.
 * Re-chunk datacube's mid_date to include the whole dimension to speed up access time to the data.
@@ -12,7 +12,7 @@ ATTN: This script should run from AWS EC2 instance to have fast access to the S3
 bucket. It takes 2 seconds to upload the file to the S3 bucket from EC2 instance
 vs. 1.5 minutes to upload the file from laptop to the S3 bucket.
 
-Authors: Masha Liukis
+Authors: Masha Liukis, Alex Gardner
 """
 import argparse
 import dask
@@ -41,8 +41,6 @@ class FixDatacubes:
     * Re-chunk mid_date dimenstion to the
     * Push corrected datacubes back to the S3 bucket.
     """
-    # Suffix to remove in original granule URLs
-    SUFFIX_TO_USE = '.nc'
     S3_PREFIX = 's3://'
     DRY_RUN = False
 
@@ -229,11 +227,7 @@ class FixDatacubes:
 
             mask_i = np.where(s1_mask == True)
 
-            # Identify S1 layers within the cube
-            sensors = ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
-            sensors_str = SensorExcludeFilter.map_sensor_to_group(sensors)
-
-            # Need to load all of M11/M12 data values in order to update them. Otherwise it silently ignored values when updating (xarray bug?)
+            # Need to load all of M11/M12 data values in order to update them. Otherwise it silently ignores values when updating (xarray bug?)
             for each_var in [DataVars.M11, DataVars.M12]:
                 m_values = ds[each_var].values
                 msgs.append(f'cube {each_var}: min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
