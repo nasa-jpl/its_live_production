@@ -488,7 +488,7 @@ def main():
     parser.add_argument(
         '--dryrun',
         action='store_true',
-        help='Dry run, do not actually submit AWS push/pull commands.'
+        help='Dry run, do not actually submit AWS S3 push commands.'
     )
 
     args = parser.parse_args()
