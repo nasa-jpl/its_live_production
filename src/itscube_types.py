@@ -4,6 +4,8 @@ datacubes, composites, and mosaics.
 """
 import numpy as np
 
+from sensor_id import SENSORS, all_sensors_description
+
 
 class ShapeFile:
     """
@@ -109,7 +111,7 @@ class Coords:
 
     DESCRIPTION = {
         MID_DATE: "midpoint of image 1 and image 2 acquisition date and time "
-                  "with granule's centroid longitude and latitude as microseconds",
+                    "with granule's centroid longitude and latitude as microseconds",
         X: "x coordinate of projection",
         Y: "y coordinate of projection"
     }
@@ -162,6 +164,13 @@ class DataVars:
     VX_STABLE_SHIFT = 'vx_stable_shift'
     VY_STABLE_SHIFT = 'vy_stable_shift'
 
+    # New data variables that are added to already generated V2 datacubes
+    SENSOR_UID1 = 'sensor_uid1'
+    SENSOR_UID2 = 'sensor_uid2'
+    ASCENDING_IMG1 = 'ascending_img1'
+    ASCENDING_IMG2 = 'ascending_img2'
+
+    # Attributes
     STD_NAME = 'standard_name'
     NOTE = 'note'
 
@@ -188,6 +197,8 @@ class DataVars:
     M11 = 'M11'
     M12 = 'M12'
     # Attributes for M1* data
+    SCALE_FACTOR = 'scale_factor'
+    ADD_OFFSET = 'add_offset'
     DR_TO_VR_FACTOR = 'dr_to_vr_factor'
     DR_TO_VR_FACTOR_DESCRIPTION = 'dr_to_vr_factor_description'
 
@@ -247,9 +258,7 @@ class DataVars:
         VY: np.int16,
         V_ERROR: np.int16,
         VA: np.int16,
-        VR: np.int16,
-        M11: np.int16,
-        M12: np.int16
+        VR: np.int16
     }
 
     # Missing value for data variables of integer data type
@@ -262,9 +271,15 @@ class DataVars:
         VY: MISSING_VALUE,
         V_ERROR: MISSING_VALUE,
         VA: MISSING_VALUE,
-        VR: MISSING_VALUE,
-        M11: MISSING_VALUE,
-        M12: MISSING_VALUE
+        VR: MISSING_VALUE
+    }
+
+    # Standard names for the data variables
+    STANDARD_NAME = {
+        SENSOR_UID1: 'image1_unique_sensor_id',
+        SENSOR_UID2: 'image2_unique_sensor_id',
+        ASCENDING_IMG1: 'image1_ascending_orbit',
+        ASCENDING_IMG2: 'image2_ascending_orbit'
     }
 
     # Description strings for all data variables and some
@@ -308,7 +323,11 @@ class DataVars:
             "2 = correction from slowest 25% of overlapping velocities (second priority)",
         URL: "original granule URL",
         AUTORIFT_SOFTWARE_VERSION: "version of autoRIFT software",
-        SKIPPED_GRANULES: "skipped granules during datacube construction"
+        SKIPPED_GRANULES: "skipped granules during datacube construction",
+        SENSOR_UID1: all_sensors_description(),
+        SENSOR_UID2: all_sensors_description(),
+        ASCENDING_IMG1: 'true = ascending orbit, false = descending orbit',
+        ASCENDING_IMG2: 'true = ascending orbit, false = descending orbit'
     }
 
     class ImgPairInfo:
@@ -341,6 +360,12 @@ class DataVars:
 
         ACQUISITION_DATE_IMG1 = 'acquisition_date_img1'
         ACQUISITION_DATE_IMG2 = 'acquisition_date_img2'
+
+        FLIGHT_DIRECTION_IMG1 = 'flight_direction_img1'
+        FLIGHT_DIRECTION_IMG2 = 'flight_direction_img2'
+
+        ASCENDING = 'ascending'
+        DESCENDING = 'descending'
 
         # ATTN: Sentinel-2 granules are using satellite_img1 and satellite_img2 instead
         # of sensor_img1 and sensor_img2
@@ -382,9 +407,9 @@ class DataVars:
             DATE_DT: "time separation between acquisition of image 1 and image 2",
             DATE_CENTER: "midpoint of image 1 and image 2 acquisition date",
             ROI_VALID_PERCENTAGE: "percentage of pixels with a valid velocity "
-                                  "estimate determined for the intersection of the full image "
-                                  "pair footprint and the region of interest (roi) that defines "
-                                  "where autoRIFT tried to estimate a velocity",
+                                "estimate determined for the intersection of the full image "
+                                "pair footprint and the region of interest (roi) that defines "
+                                "where autoRIFT tried to estimate a velocity",
         }
 
         # Flag if data variable values are to be converted to the date objects
@@ -544,7 +569,9 @@ class BinaryFlag:
         DataVars.INTERP_MASK: 'measured interpolated',
         ShapeFile.LANDICE: 'non-ice ice',
         ShapeFile.FLOATINGICE: 'non-ice ice',
-        CompDataVars.SENSOR_INCLUDE: 'included excluded'
+        CompDataVars.SENSOR_INCLUDE: 'included excluded',
+        DataVars.ASCENDING_IMG1: 'descending ascending',
+        DataVars.ASCENDING_IMG2: 'descending ascending'
     }
 
 
