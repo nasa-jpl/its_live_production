@@ -108,9 +108,6 @@ class FixDatacubes:
         # (if we need to resume processing from previous interrupted run)
         self.all_zarr_datacubes.sort()
 
-        # For debugging only: test first datacube
-        # self.all_zarr_datacubes = self.all_zarr_datacubes[:1]
-
         logging.info(f"Found number of datacubes: {len(self.all_zarr_datacubes)}")
 
         if not os.path.exists(self.local_dir):
@@ -163,7 +160,7 @@ class FixDatacubes:
             return
 
         # For debugging
-        num_to_fix = 1
+        # num_to_fix = 1
 
         while num_to_fix > 0:
             num_tasks = num_dask_workers if num_to_fix > num_dask_workers else num_to_fix
