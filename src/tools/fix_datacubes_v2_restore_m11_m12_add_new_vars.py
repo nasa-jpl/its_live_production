@@ -424,6 +424,9 @@ class FixDatacubes:
             ds[Coords.X].encoding[Output.CHUNKS_ATTR] = (len(ds.x))
             ds[Coords.Y].encoding[Output.CHUNKS_ATTR] = (len(ds.y))
 
+            # Correct mid_date coordinate chunking to be consistent with other 1d data variables chunking
+            ds[Coords.MID_DATE].encoding[Output.CHUNKS_ATTR] = chunking_1d
+
             # Set encoding attributes for new data variables
             for each_var in [DataVars.SENSOR_UID1, DataVars.SENSOR_UID2]:
                 ds[each_var].encoding = {
