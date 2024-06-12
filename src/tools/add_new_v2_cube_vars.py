@@ -42,16 +42,6 @@ from sensor_id import SENSORS, all_sensors_description
 
 NC_ENGINE = 'h5netcdf'
 
-new_var_names = {
-    DataVars.ImgPairInfo.SATELLITE_IMG1: DataVars.SENSOR_UID1,
-    DataVars.ImgPairInfo.SATELLITE_IMG2: DataVars.SENSOR_UID2,
-}
-
-new_var_std_name = {
-    DataVars.ImgPairInfo.SATELLITE_IMG1: DataVars.STANDARD_NAME[DataVars.SENSOR_UID1],
-    DataVars.ImgPairInfo.SATELLITE_IMG2: DataVars.STANDARD_NAME[DataVars.SENSOR_UID2],
-}
-
 class AddDatacubesVariables:
     """
     Class to add new data variables to the V2 ITS_LIVE datacubes:
