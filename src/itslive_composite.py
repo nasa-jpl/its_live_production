@@ -1332,7 +1332,7 @@ class MissionSensor:
                 4.0:   LANDSAT45,
                 5.0:   LANDSAT45,
                 '4.0': LANDSAT45,
-                '4.0': LANDSAT45,
+                '5.0': LANDSAT45,
                 '7.':  LANDSAT7,
                 '7.0': LANDSAT7,
                 7.0:   LANDSAT7,
@@ -1413,7 +1413,7 @@ class SensorExcludeFilter:
     # Reference sensor group to compare other sensor groups to.
     # ATTN: this variable serves two purposes and has opposite meaning for two
     # filters it's used in:
-    # 1. The first exclude filter (implemented by this SensorExcludeFilter cl   ass)
+    # 1. The first exclude filter (implemented by this SensorExcludeFilter class)
     # is designed to remove L8 and S1 (and possibly other mission) data over
     # very narrow glaciers where S2 outperforms.
     # 2. The second filter (second step in LSQ fit applied to all but S2 data)
@@ -1738,7 +1738,7 @@ class StableShiftFilter:
 
     stable_shift filter prototype code is:
 
-    if (max(abs(vx_stable_shift), abs(vy_stable_shif)) .* date_dt./365.25) > threshold
+    if (max(abs(vx_stable_shift), abs(vy_stable_shift)) .* date_dt./365.25) > threshold
         if stable_shift_flag == 1
             exclude image pair
 
