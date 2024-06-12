@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Restore Sentinel-1 M11 and M12 values within existing ITS_LIVE datacubes that are residing in AWS S3 bucket
+Restore Sentinel-1 M11 and M12 values within existing ITS_LIVE datacubes that are residing in AWS S3 bucket.
 
 * Copy M11 and M12 values from S1 granules into corresponding layers of the existing datacubes.
 * Re-chunk datacube's mid_date to include the whole dimension to speed up access time to the data.
