@@ -108,6 +108,9 @@ class FixDatacubes:
         # (if we need to resume processing from previous interrupted run)
         self.all_zarr_datacubes.sort()
 
+        # For debugging only: test first datacube
+        # self.all_zarr_datacubes = self.all_zarr_datacubes[:1]
+
         logging.info(f"Found number of datacubes: {len(self.all_zarr_datacubes)}")
 
         if not os.path.exists(self.local_dir):
@@ -360,6 +363,13 @@ class FixDatacubes:
 
                             ds[each_var][each_index, :, :].loc[dict(x=cropped_ds.x, y=cropped_ds.y)] = cropped_ds[each_var]
 
+                            # Update encoding to floating point data type, remove 'missing_value', add '_FillValue'
+                            if Output.MISSING_VALUE_ATTR in ds[each_var].encoding:
+                                del ds[each_var].encoding[Output.MISSING_VALUE_ATTR]
+
+                            ds[each_var].encoding[Output.FILL_VALUE_ATTR] = DataVars.MISSING_VALUE
+                            ds[each_var].encoding[Output.DTYPE_ATTR] = np.float32
+
                             # # Show restored values
                             # m_values = ds[each_var][each_index, :, :].values
                             # print(f'====>assigned ds {each_var}: m_values.shape={m_values.shape} min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
@@ -413,10 +423,6 @@ class FixDatacubes:
             # Chunking for X and Y are set to full extend by default, set it just to be sure
             ds[Coords.X].encoding[Output.CHUNKS_ATTR] = (len(ds.x))
             ds[Coords.Y].encoding[Output.CHUNKS_ATTR] = (len(ds.y))
-
-            # Change datatype for M11 and M12 to floating point
-            ds[DataVars.M11].encoding[Output.DTYPE_ATTR] = np.float32
-            ds[DataVars.M12].encoding[Output.DTYPE_ATTR] = np.float32
 
             # Set encoding attributes for new data variables
             for each_var in [DataVars.SENSOR_UID1, DataVars.SENSOR_UID2]:
