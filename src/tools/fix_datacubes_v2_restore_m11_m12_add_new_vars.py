@@ -16,6 +16,7 @@
         9 = Landsat 9, 11 = Sentinel 1A, 12 = Sentinel 1B, 21 = Sentinel 2A, 22 = Sentinel 2B
 
 * Re-chunk datacube's mid_date to include the whole dimension to speed up access time to the data.
+* github issue #21: change datacubes names to be consistent with composites
 * Push corrected datacubes back to the S3 bucket.
 
 ATTN: This script should run from AWS EC2 instance to have fast access to the S3
@@ -38,7 +39,7 @@ import zarr
 
 from itslive_composite import SensorExcludeFilter, MissionSensor, Output
 from itscube import ITSCube
-from itscube_types import DataVars, Coords, BinaryFlag
+from itscube_types import DataVars, Coords, BinaryFlag, CubeOutput
 from sensor_id import SENSORS, all_sensors_description
 
 NC_ENGINE = 'h5netcdf'
@@ -252,8 +253,12 @@ class FixDatacubes:
         if command_return.returncode != 0:
             msgs.append(f"ERROR: Failed to copy {source_url} to {local_original_cube}: {command_return.stdout}")
 
+        # Issue #21: rename datacubes to follow the same naming convension as composites
+        new_filename = cube_basename.replace('_vel_', '_velocity_')
+        new_filename = new_filename.replace('_G0120_', '_120m_')
+
         # Write datacube locally, upload it to the bucket, remove file
-        fixed_file = os.path.join(local_dir, cube_basename)
+        fixed_file = os.path.join(local_dir, new_filename)
 
         fill_value = 0
         ascending_fill_value = DataVars.MISSING_UINT8_VALUE
@@ -440,6 +445,10 @@ class FixDatacubes:
                     Output.CHUNKS_ATTR: chunking_1d
                 }
 
+            # Update datacube attributes to capture new filename
+            ds.attrs[CubeOutput.URL] = ds.attrs[CubeOutput.URL].replace(cube_basename, new_filename)
+            ds.attrs[CubeOutput.S3] = ds.attrs[CubeOutput.S3].replace(cube_basename, new_filename)
+
             msgs.append(f"Saving datacube to {fixed_file}")
             # Re-chunk xr.Dataset to avoid memory errors when writing to the ZARR store
             ds = ds.chunk({Coords.MID_DATE: 250})
@@ -453,6 +462,7 @@ class FixDatacubes:
             # resulting in as many error messages as there are files in Zarr store
             # to copy
             target_url = cube_url.replace(cube_bucket_dir, target_bucket_dir)
+            target_url = target_url.replace(cube_basename, new_filename)
 
             if not target_url.startswith(FixDatacubes.S3_PREFIX):
                 target_url = FixDatacubes.S3_PREFIX + target_url
