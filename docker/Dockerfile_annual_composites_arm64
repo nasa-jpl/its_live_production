@@ -1,7 +1,7 @@
 # Dockerfile to produce production ITS_LIVE Docker image for datacube
 # annual composites generation
 
-FROM continuumio/miniconda3:4.9.2
+FROM --platform=linux/arm64 continuumio/miniconda3:latest
 
 # Set an encoding to make things work smoothly
 ENV LANG en_US.UTF-8
