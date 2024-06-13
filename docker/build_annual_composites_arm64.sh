@@ -9,7 +9,7 @@ Building datacube annual composites docker image...
 
 set -ex
 
-IMAGE='its_live/datacube_annual_composites'
+IMAGE='its_live/datacube_annual_composites_arm64'
 TAG=$1
 BUILD_DATE_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 
@@ -59,8 +59,8 @@ printf "build_version: ${TAG}\nbuild_datetime: ${BUILD_DATE_TIME}\n" \
 docker rmi -f ${IMAGE}:${TAG}
 
 # build the docker image
-docker build --rm --force-rm -t ${IMAGE}:${TAG} \
+docker buildx build --platform linux/arm64 --rm --force-rm --tag ${IMAGE}:${TAG} --load \
     --build-arg BUILD_DATE_TIME=${BUILD_DATE_TIME} \
     --build-arg BUILD_VERSION=${TAG} \
     --build-arg SOURCE_DIR=$(basename ${TEMP_STAGING_DIR}) \
-    -f ${WORKSPACE}/docker/Dockerfile_annual_composites ${WORKSPACE}
+    -f ${WORKSPACE}/docker/Dockerfile_annual_composites_arm64 ${WORKSPACE}

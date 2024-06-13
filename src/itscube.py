@@ -552,7 +552,7 @@ class ITSCube:
         # (self.skipped_granules[DataVars.SKIP_DUPLICATE] is set by self.request_granules())
         cube_layers_to_delete = list(set(self.skipped_granules[DataVars.SKIP_DUPLICATE]).intersection(cube_granules))
         self.logger.info(f"{len(cube_layers_to_delete)} "
-                         f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
+                            f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
 
         # Remove known duplicate middle date granules from found_urls:
         # if cube's skipped granules don't appear in found_urls.skipped_granules
@@ -571,7 +571,7 @@ class ITSCube:
         # Check if any of the skipped granules are in the cube
         cube_layers_to_delete.extend(list(set(cube_granules).intersection(skipped_landsat_granules)))
         self.logger.info(f"After (cube_granules+found_urls): total of {len(cube_layers_to_delete)} "
-                         f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
+                            f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}")
 
         # Merge two lists of skipped granules (for existing cube, new list
         # of granules from search API, and duplicate granules b/w cube and new granules)
@@ -751,7 +751,7 @@ class ITSCube:
         num_granules: int
             Number of first granules to examine.
             TODO: This is a temporary solution to a very long time to open remote granules.
-                  Should not be used when running the code in production mode.
+                    Should not be used when running the code in production mode.
         """
         self.logger.info(f"Updating {os.path.join(output_bucket, output_dir)}")
 
@@ -922,7 +922,7 @@ class ITSCube:
         num_granules: int
             Number of first granules to examine.
             TODO: This is a temporary solution to a very long time to open remote granules. Should not be used
-                  when running the code at AWS.
+                    when running the code at AWS.
         """
         self.logger.info(f"Creating {os.path.join(output_bucket, output_dir)}")
 
@@ -1000,7 +1000,7 @@ class ITSCube:
         num_granules: int
             Number of first granules to examine.
             TODO: This is a temporary solution to a very long time to open remote granules.
-                  Should not be used when running the code in production mode.
+                    Should not be used when running the code in production mode.
         """
         ITSCube.show_memory_usage('create()')
         ITSCube.init_output_store(output_dir)
@@ -1134,9 +1134,11 @@ class ITSCube:
 
             with ProgressBar():
                 # Display progress bar
-                results = dask.compute(tasks,
-                                       scheduler=ITSCube.DASK_SCHEDULER,
-                                       num_workers=ITSCube.NUM_THREADS)
+                results = dask.compute(
+                    tasks,
+                    scheduler=ITSCube.DASK_SCHEDULER,
+                    num_workers=ITSCube.NUM_THREADS
+                )
 
             for each_ds in results[0]:
                 self.add_layer(*each_ds)
@@ -1200,17 +1202,17 @@ class ITSCube:
 
         Inputs:
         =======
-        ds:            xarray.Dataset the variable belongs to.
-        ds_url:        URL of the granule that corresponds to the "ds" dataset (used for
-                       error reporting only).
-        var_name:      Name of the variable to extract attribute for.
-        attr_name:     Name of the attribute to extract value for.
+        ds: xarray.Dataset the variable belongs to.
+        ds_url: URL of the granule that corresponds to the "ds" dataset (used for
+            error reporting only).
+        var_name: Name of the variable to extract attribute for.
+        attr_name: Name of the attribute to extract value for.
         missing_value: Value to use if attribute is missing for the variable.
-                       Default is None, which will result in raising an exception
-                       if attribute is missing for the variable.
-        to_date:       Flag if attribute value should be converted to datetime object.
-                       Default is False.
-        data_dtype:    Datatype to use for the attribute value. Default is np.float32.
+            Default is None, which will result in raising an exception
+            if attribute is missing for the variable.
+        to_date: Flag if attribute value should be converted to datetime object.
+            Default is False.
+        data_dtype: Datatype to use for the attribute value. Default is np.float32.
         """
         if var_name in ds and attr_name in ds[var_name].attrs:
             value = ds[var_name].attrs[attr_name]
@@ -1999,6 +2001,20 @@ class ITSCube:
         if is_first_write:
             encoding_settings = {}
 
+            # Make sure chunking is set to full X and Y extends
+            encoding_settings.setdefault(Coords.X, {}).update(
+                {
+                    Output.COMPRESSOR_ATTR: compressor,
+                    Output.CHUNKS_ATTR: (len(self.layers.x))
+                }
+            )
+            encoding_settings.setdefault(Coords.y, {}).update(
+                {
+                    Output.COMPRESSOR_ATTR: compressor,
+                    Output.CHUNKS_ATTR: (len(self.layers.y))
+                }
+            )
+
             # ATTN: Set _FillValue for data variables of floating point data type.
             #       Must set 'missing_value' for data variables on int data type,
             #       otherwise xarray just ignores provided dtype if _FillValue is
@@ -2011,13 +2027,16 @@ class ITSCube:
                     Output.DTYPE_ATTR: np.float32
                 }
 
+            # Set chunking for 2-d variables
+            chunking_settings_2d = (len(self.layers.y), len(self.layers.x))
+
             # Settings for variables of "uint8" data type if any variables exist
-            ice_mask_vars = [ShapeFile.LANDICE, ShapeFile.FLOATINGICE]
-            for each in ice_mask_vars:
+            for each in [ShapeFile.LANDICE, ShapeFile.FLOATINGICE]:
                 encoding_settings.setdefault(each, {}).update({
                     Output.DTYPE_ATTR: np.uint8,
                     Output.COMPRESSOR_ATTR: compressor,
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                    Output.CHUNKS_ATTR: chunking_settings_2d
                 })
 
             for each in [
@@ -2097,15 +2116,19 @@ class ITSCube:
             #     encoding_settings.setdefault(each, {}).update({Output.FILL_VALUE_ATTR: None})
 
             # Set units for all datetime objects
-            for each in [DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
-                         DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
-                         DataVars.ImgPairInfo.DATE_CENTER,
-                         Coords.MID_DATE]:
+            for each in [
+                DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
+                DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
+                DataVars.ImgPairInfo.DATE_CENTER,
+                Coords.MID_DATE
+            ]:
                 encoding_settings.setdefault(each, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
             # Set array size to accomodate maximum length of the sensor
-            for each in [DataVars.ImgPairInfo.SATELLITE_IMG1,
-                         DataVars.ImgPairInfo.SATELLITE_IMG2]:
+            for each in [
+                DataVars.ImgPairInfo.SATELLITE_IMG1,
+                DataVars.ImgPairInfo.SATELLITE_IMG2
+            ]:
                 max_sensor_len = max(map(len, self.layers[each].values))
                 if max_sensor_len > ITSCube.MAX_SENSOR_LEN:
                     raise RuntimeError(
@@ -2134,17 +2157,19 @@ class ITSCube:
             )
 
             # Set chunking for writing to the store
-            for each in [DataVars.INTERP_MASK,
-                         DataVars.CHIP_SIZE_HEIGHT,
-                         DataVars.CHIP_SIZE_WIDTH,
-                         DataVars.V,
-                         DataVars.V_ERROR,
-                         DataVars.VA,
-                         DataVars.VR,
-                         DataVars.VX,
-                         DataVars.VY,
-                         DataVars.M11,
-                         DataVars.M12]:
+            for each in [
+                DataVars.INTERP_MASK,
+                DataVars.CHIP_SIZE_HEIGHT,
+                DataVars.CHIP_SIZE_WIDTH,
+                DataVars.V,
+                DataVars.V_ERROR,
+                DataVars.VA,
+                DataVars.VR,
+                DataVars.VX,
+                DataVars.VY,
+                DataVars.M11,
+                DataVars.M12
+            ]:
                 encoding_settings.setdefault(each, {})[Output.CHUNKS_ATTR] = chunking_settings_3d
 
             chunking_settings_1d = min(self.max_number_of_layers, ITSCube.TIME_CHUNK_VALUE_1D)
@@ -2153,6 +2178,8 @@ class ITSCube:
                 DataVars.FLAG_STABLE_SHIFT,
                 DataVars.STABLE_COUNT_SLOW,
                 DataVars.STABLE_COUNT_MASK,
+                DataVars.AUTORIFT_SOFTWARE_VERSION,
+                DataVars.URL,
                 'vx_' + DataVars.ERROR,
                 'vx_' + DataVars.ERROR_MASK,
                 'vx_' + DataVars.ERROR_MODELED,
@@ -2193,7 +2220,8 @@ class ITSCube:
                 DataVars.ImgPairInfo.SENSOR_IMG1,
                 DataVars.ImgPairInfo.SENSOR_IMG2,
                 DataVars.ImgPairInfo.DATE_CENTER,
-                DataVars.ImgPairInfo.DATE_DT
+                DataVars.ImgPairInfo.DATE_DT,
+                Coords.MID_DATE
             ]:
                 # Reset existing encoding settings if any for the data variable
                 self.layers[each].encoding = {}
@@ -2215,7 +2243,6 @@ class ITSCube:
 
         else:
             # Append layers to existing Zarr store
-            # self.layers.to_zarr(output_dir, append_dim=Coords.MID_DATE, consolidated=True)
             self.layers.to_zarr(output_dir, append_dim=Coords.MID_DATE, consolidated=True)
 
         time_delta = timeit.default_timer() - start_time
@@ -2514,8 +2541,10 @@ if __name__ == '__main__':
     warnings.filterwarnings('ignore')
 
     # Command-line arguments parser
-    parser = argparse.ArgumentParser(description=ITSCube.__doc__.split('\n')[0],
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=ITSCube.__doc__.split('\n')[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         '-t', '--threads',
         type=int,
@@ -2527,15 +2556,15 @@ if __name__ == '__main__':
         action='store_true',
         default=False,
         help='Flag to remove existing datacube in S3 bucket, default is to update existing datacube. '
-             'This flag is useful when we need to re-create the cube from scratch, though beware of AWS limit of push requests '
-             'when multiple datacubes are deleted at the same time.'
+            'This flag is useful when we need to re-create the cube from scratch, though beware of AWS limit of push requests '
+            'when multiple datacubes are deleted at the same time.'
     )
     parser.add_argument(
         '-n', '--numberGranules',
         type=int,
         default=None,
         help='Number of ITS_LIVE granules to consider for the cube (due to runtime limitations). '
-             'If none is provided, process all found granules.'
+            'If none is provided, process all found granules.'
     )
     # parser.add_argument(
     #     '-l', '--localPath',

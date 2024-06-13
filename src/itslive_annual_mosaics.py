@@ -6,7 +6,7 @@ Command examples
 * Generate mosaics for ALA region:
  ** use cube definitions from tools/catalog_datacubes_v02.json
  ** use only cubes which center point falls within region polygon as defined by
-   aws/regions/Alaska.geojson
+    aws/regions/Alaska.geojson
  ** create mosaics in 3413 EPSG projection code
 
 python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
@@ -20,7 +20,7 @@ python ./itslive_annual_mosaics.py -c ~/itslive_data/catalog_v2_Alaska.json
 * Generate mosaics for HMA region:
  ** use cube definitions from tools/catalog_datacubes_v02.json
  ** use only cubes as listed in HMA_datacubes.json (see extract_region_cubes.py
-   helper script to extract cubes for the region)
+    helper script to extract cubes for the region)
  ** create mosaics in 102027 ESRI projection code
 python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
     --processCubesFile HMA_datacubes.json -r HMA
@@ -29,7 +29,6 @@ python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
 Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Greene (JPL), Mark Fahnestock (UAF)
 """
 import collections
-import copy
 import datetime
 import gc
 import json
@@ -59,8 +58,9 @@ from itscube_types import \
     CubeJson, \
     ShapeFile, \
     annual_mosaics_filename_nc, \
-    composite_filename_zarr, \
     summary_mosaics_filename_nc, \
+    composite_filename_zarr, \
+    get_corresponding_static_mosaics_filename, \
     to_int_type, \
     SENSORS_ATTRS
 
@@ -122,6 +122,7 @@ class MosaicsOutputFormat:
     STATIC_TITLE = 'ITS_LIVE summary mosaics of image pair velocities'
 
     # Summary variables which dtype should be float32 in final mosaics
+    # with fill value = -32767
     FLOAT32_TYPES = [
         CompDataVars.SLOPE_V,
         CompDataVars.SLOPE_VX,
@@ -134,7 +135,8 @@ class MosaicsOutputFormat:
         DataVars.VY
     ]
 
-    # Summary variables which dtype should be uint16 in final mosaics
+    # Data variables (summary) which dtype should be uint16 in final mosaics with
+    # fill value = 32767
     UINT16_TYPES = [
         CompDataVars.V_ERROR,
         CompDataVars.VX_ERROR,
@@ -150,19 +152,34 @@ class MosaicsOutputFormat:
         CompDataVars.VY_AMP_ERROR,
         CompDataVars.V_PHASE,
         CompDataVars.VX_PHASE,
-        CompDataVars.VY_PHASE,
+        CompDataVars.VY_PHASE
+    ]
+
+    # Data variables (summary) which dtype should be uint16 in final mosaics with
+    # fill value = 0
+    UINT16_TYPES_ZERO_MISSING_VALUE = [
         CompDataVars.MAX_DT
     ]
+
+    # Data variables which dtype should be uint32 in final mosaics with
+    # fill value = 0
     UINT32_TYPES = [
         CompDataVars.COUNT0,
         CompDataVars.COUNT
     ]
 
+    # Data variables which dtype should be uint8 in final mosaics with
+    # fill value = 255
     UINT8_TYPES = [
-        CompDataVars.OUTLIER_FRAC,
-        CompDataVars.SENSOR_INCLUDE,
+        CompDataVars.OUTLIER_FRAC
+    ]
+
+    # Data variables which dtype should be uint8 in final mosaics with
+    # fill value = 0
+    UINT8_TYPES_ZERO_MISSING_VALUE = [
         ShapeFile.LANDICE,
-        ShapeFile.FLOATINGICE
+        ShapeFile.FLOATINGICE,
+        CompDataVars.SENSOR_INCLUDE
     ]
 
 
@@ -239,11 +256,15 @@ class ITSLiveAnnualMosaics:
 
     NC_ENGINE = 'h5netcdf'
 
-    # Data variables for summary mosaics
+    # Data variables for summary mosaics:
+    # ATTN!!! It's very important that "count0" is processed as very first
+    # variable when merging summary mosaics. Merged "count0" data serves
+    # as mask for the rest of data variables when merging the values of
+    # overlapped areas
     SUMMARY_VARS = [
+        CompDataVars.COUNT0,
         ShapeFile.LANDICE,
         ShapeFile.FLOATINGICE,
-        CompDataVars.COUNT0,
         CompDataVars.SLOPE_V,
         CompDataVars.SLOPE_VX,
         CompDataVars.SLOPE_VY,
@@ -296,6 +317,9 @@ class ITSLiveAnnualMosaics:
         CubeOutput.URL
     ]
 
+    # Name of new dimension to use when concatenating multiple composites into one xr.DataArray
+    CONCAT_DIM_NAME = 'new_dim'
+
     def __init__(self, epsg: int, is_dry_run: bool):
         """
         Initialize object.
@@ -331,6 +355,14 @@ class ITSLiveAnnualMosaics:
 
         # Common attributes for all mosaics
         self.attrs = {}
+
+        # Data variable used for masking when merging multiple EPGS codes mosaics:
+        # it will be set by the code that populates the mask (merge_summary_mosaics())
+        self.mask_var = None
+
+        # Data used for masking when merging multiple EPGS codes mosaics:
+        # it will be set by the code that populates the mask (merge_summary_mosaics())
+        self.mask_ds = None
 
         # Date when mosaics were created/updated
         self.date_created = datetime.datetime.now().strftime('%d-%b-%Y %H:%M:%S')
@@ -670,6 +702,11 @@ class ITSLiveAnnualMosaics:
         to add more logic when merging re-projected mosaics stored on local drive as an
         intermittent step).
 
+        When merging multi-EPGS codes mosaics into one, create mask of maximum count0 values
+        based on the static mosaics. Use that mask to select pixels (will affect overlapping regions)
+        that match maximum count. This is to avoid high noise when averaging values from multiple EPSGs
+        with low count pixels.
+
         epsg_code:      Current EPSG code the mosaics are built for.
         epsg:           Dictionary of center_x->center_y->s3_path_to_composite format to
                         provide composites that should contribute to mosaics.
@@ -982,10 +1019,10 @@ class ITSLiveAnnualMosaics:
         originate from different EPSG projections (original projections of composites).
 
         epsg_mosaics_files: Dictionary of re-projected mosaics per EPSG code. All mosaics
-                      in this dictionary correspond to the same EPSG target code.
-                      It's in the format: {epsg: {'year' or '0000': mosaic_file}}.
+                            in this dictionary correspond to the same EPSG target code.
+                            It's in the format: {epsg: {'year' or '0000': mosaic_file}}.
         s3_bucket: S3 bucket that stores all data (assumes that all datacubes,
-                   composites, and mosaics are stored in the same bucket).
+                    composites, and mosaics are stored in the same bucket).
         mosaics_dir: Directory path within S3 bucket that stores datacubes' mosaics.
         copy_to_s3: Flag if result mosaics need to be copied to the AWS S3 bucket.
         """
@@ -1087,14 +1124,36 @@ class ITSLiveAnnualMosaics:
         output_files[ITSLiveAnnualMosaics.SUMMARY_KEY] = self.merge_summary_mosaics(first_ds, s3_bucket, mosaics_dir, copy_to_s3)
 
         # Force garbage collection as it does not always kick in
+        self.raw_ds = {}
         gc.collect()
 
-        # Create annual mosaics
+        # Merge annual mosaics
+        #######################
         logging.info(f'Merging annual mosaics for {ITSLiveAnnualMosaics.REGION}')
+
+        # Have to open all static mosaics as only they have "count0" data variable: necessary
+        # to merge multiple EPSGs mosaics based on highest "count0" value for the overlapping cells
+        static_raw_ds = {}
+        logging.info(f'Open static mosaics to access {CompDataVars.COUNT0}')
+        for mosaics_dict in epsg_mosaics_files.values():
+            # Get mosaic file corresponding to '0000': must be present for each EPSG "sub_directory"
+            mosaic_file = mosaics_dict[ITSLiveAnnualMosaics.SUMMARY_KEY]
+            ds_from_nc = xr.open_dataset(mosaic_file, engine=MosaicsReproject.NC_ENGINE, decode_timedelta=False)
+
+            # Store open mosaics and corresponding metadata
+            static_raw_ds[mosaic_file] = ITSLiveAnnualMosaics.CompositeCollection(
+                ITSLiveAnnualMosaics.CompositeS3(ds_from_nc, None),
+                ds_from_nc.x.values,
+                ds_from_nc.y.values,
+                None,
+                ds_from_nc.sensor.values.tolist()
+            )
+
         for each_year in all_years:
             self.raw_ds = {}
             gc.collect()
 
+            logging.info(f'Merging {each_year} annual mosaics...')
             # If requested to merge only one year, skip the rest of the years
             if ITSLiveAnnualMosaics.MERGE_YEAR_ONLY and ITSLiveAnnualMosaics.MERGE_YEAR_ONLY != each_year:
                 logging.info(f'Skipping {each_year} as only merging for {ITSLiveAnnualMosaics.MERGE_YEAR_ONLY} is requested.')
@@ -1102,7 +1161,7 @@ class ITSLiveAnnualMosaics:
 
             # Populate raw data
             for mosaics_epsg, mosaics_dict in epsg_mosaics_files.items():
-                # Get mosaic file corresponding to '0000': must be present for each EPSG "sub_directory"
+                # Get mosaic file corresponding to the current mosaics year being merged
                 if each_year not in mosaics_dict:
                     logging.info(f'Missing {each_year} from {mosaics_epsg} re-projection')
                     continue
@@ -1127,12 +1186,120 @@ class ITSLiveAnnualMosaics:
                     None
                 )
 
-            output_files[each_year] = self.merge_annual_mosaics(first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3)
+            output_files[each_year] = self.merge_annual_mosaics(static_raw_ds, first_ds, each_year, s3_bucket, mosaics_dir, copy_to_s3)
 
-            # Force garbage collection as it does not always kick in
-            gc.collect()
+        # Force garbage collection as it does not always kick in
+        static_raw_ds = None
+        gc.collect()
 
         return output_files
+
+    def create_mask(self, ds: xr.Dataset, raw_ds: dict):
+        """
+        Create summary mask based on max_count0=max(count0) across all mosaics. This mask is used to select
+        cell values from the composites that correspond to the highest mask value when merging the rest of
+        data variables for final composites.
+
+        Args:
+            ds: Dataset to add mask to. Need to remove the mask variable from the annual mosaics dataset since
+                it is only present in summary mosaics.
+            raw_ds: Mapping of static mosaic filename to open corresponding file and its metadata.
+        """
+        # Check if mask already exists
+        if self.mask_ds:
+            logging.info(f'Summary mask {self.mask_var} already exists, skipping mask creation.')
+            return
+
+        # Concatenate data for each data variable:
+        each_var = CompDataVars.COUNT0
+
+        # Remove zeros from data variables names
+        ds_var = each_var.replace('0', '')
+
+        data_list = []
+
+        # Concatenated dataset
+        concatenated = None
+
+        two_coords = [self.y_coords, self.x_coords]
+        two_dims = [Coords.Y, Coords.X]
+        two_dims_len = (len(self.y_coords), len(self.x_coords))
+
+        # Step through all datasets and concatenate data in new dimension
+        for each_file, each_ds in raw_ds.items():
+            logging.info(f'Merging {each_var} from {each_file}')
+
+            if ds_var not in ds:
+                # Read shape of the data in dataset, and set dimensions
+                # accordingly
+                ds[ds_var] = xr.DataArray(
+                    data=np.full(two_dims_len, np.nan),
+                    coords=two_coords,
+                    dims=two_dims,
+                    attrs=each_ds.s3.ds[each_var].attrs
+                )
+
+            data_list.append(each_ds.s3.ds[each_var].load())
+
+            if len(data_list) > 1:
+                # Concatenate once we have 2 arrays
+                concatenated = xr.concat(data_list, ITSLiveAnnualMosaics.CONCAT_DIM_NAME, join="outer")
+                data_list = [concatenated]
+
+            gc.collect()
+
+        max_overlap = None
+        if concatenated is not None:
+            # Take maximum of all overlapping cells
+            logging.info(f'Taking maximum for {each_var}')
+            max_overlap = concatenated.max(ITSLiveAnnualMosaics.CONCAT_DIM_NAME, skipna=True, keep_attrs=True)
+
+        else:
+            # If there is only one mosaic contributing to the final dataset,
+            # no need to average the values
+            if len(data_list) == 0:
+                raise RuntimeError(
+                    'At least one mosaic should have contributed '
+                    'to the final dataset, none are found'
+                )
+
+            logging.info(f'Using only one available mosaic for {each_var}')
+            max_overlap = data_list[0]
+
+        # Set data values in result dataset
+        max_overlap_dims = dict(x=max_overlap.x.values, y=max_overlap.y.values)
+
+        # Convert data variable to output integer datatype
+        max_overlap = xr.DataArray(
+            data=to_int_type(max_overlap.values, data_type=np.uint32, fill_value=DataVars.MISSING_BYTE),
+            coords=max_overlap.coords,
+            dims=max_overlap.dims,
+            attrs=max_overlap.attrs
+        )
+
+        # Set data values in result dataset
+        max_overlap_dims = dict(x=max_overlap.x.values, y=max_overlap.y.values)
+
+        # Convert data variable to output integer datatype
+        max_overlap = xr.DataArray(
+            data=to_int_type(max_overlap.values, data_type=np.uint32, fill_value=DataVars.MISSING_BYTE),
+            coords=max_overlap.coords,
+            dims=max_overlap.dims,
+            attrs=max_overlap.attrs
+        )
+
+        # Set values for the output dataset
+        # Remove zeros from data variables, their standard_names and descriptions:
+        # only vx0, vy0, v0 strings should be replaced by corresponding vx, vy, v
+        ds[ds_var].loc[max_overlap_dims] = max_overlap
+
+        # Replace zeros in attributes
+        ds = ITSLiveAnnualMosaics.remove_zeros_from_metadata(ds, ds_var)
+        gc.collect()
+
+        # Save the variable name and data used for masking when merging
+        self.mask_var = ds_var
+        self.mask_ds = ds.copy(deep=True)
 
     def merge_summary_mosaics(self, first_ds, s3_bucket, mosaics_dir, copy_to_s3):
         """
@@ -1140,7 +1307,11 @@ class ITSLiveAnnualMosaics:
         target projection. Store result to NetCDF format file in S3 bucket if provided.
         Store robust attributes that contain information about all composites and datacubes
         contributed to the mosaic into separate json file (for traceability).
+        Create mask with maximum count0 across all mosaics to be merged. Add data variables
+        values for overlapping regions (by multiple EPGSs) should include pixels from the
+        EPSG with maximum count0. This mask should be applied to annual mosaics as well.
 
+        Args:
         first_ds: xarray.Dataset object that represents any (first) composite dataset.
                 It's used to collect global attributes that are applicable to the
                 mosaics.
@@ -1294,11 +1465,22 @@ class ITSLiveAnnualMosaics:
         self.attrs[CubeOutput.LATITUDE] = lat
         self.attrs[CubeOutput.LONGITUDE] = lon
 
-        _concat_dim_name = 'new_dim'
+        # 1. Create summary mask based on max_count0=max(count0) across all mosaics
+        self.create_mask(ds, self.raw_ds)
 
-        # Concatenate data for each data variable
+        # Concatenate data for each data variable:
+        # 2. Merge all other data variables based on the max_count0 mask: pick values from the
+        #    mosaics which match max_count0 value of "count0" data variable
+        _first = '_first'
+        _second = '_second'
+
         for each_var in ITSLiveAnnualMosaics.SUMMARY_VARS:
+            if each_var == CompDataVars.COUNT0:
+                # Already merged the data variable while creating the mask above
+                continue
+
             data_list = []
+            mask_list = []
 
             # Concatenated dataset
             concatenated = None
@@ -1373,11 +1555,40 @@ class ITSLiveAnnualMosaics:
 
                 # else:
                 data_list.append(each_ds.s3.ds[each_var].load())
+                mask_list.append(each_ds.s3.ds[CompDataVars.COUNT0].load())
 
                 if len(data_list) > 1:
-                    # Concatenate once we have 2 arrays
-                    concatenated = xr.concat(data_list, _concat_dim_name, join="outer")
+                    # Merge once we have 2 mosaics
+                    first_var = f'{_first}{each_var}'
+                    second_var = f'{_second}{each_var}'
+                    first_mask = f'{_first}{CompDataVars.COUNT0}'
+                    second_mask = f'{_second}{CompDataVars.COUNT0}'
+
+                    # Have to insert into dataset to make sure all coordinates are equal before
+                    # masking against max count0
+                    self.mask_ds[first_var] = data_list[0]
+                    self.mask_ds[second_var] = data_list[1]
+
+                    self.mask_ds[first_mask] = mask_list[0]
+                    self.mask_ds[second_mask] = mask_list[1]
+
+                    # Pick values that correspond to the maximum count0 values
+                    concatenated = self.mask_ds[second_var].where(self.mask_ds[self.mask_var] == self.mask_ds[second_mask], other=self.mask_ds[first_var])
+
+                    # concatenated[CompDataVars.COUNT0] = count0_concatenated.max(ITSLiveAnnualMosaics.CONCAT_DIM_NAME, skipna=True, keep_attrs=True)
+                    # concatenated[each_var] = var_masked_merged
+
+                    # Delete current datasets data from self.mask_ds
+                    del self.mask_ds[first_var]
+                    del self.mask_ds[second_var]
+                    del self.mask_ds[first_mask]
+                    del self.mask_ds[second_mask]
+
                     data_list = [concatenated]
+
+                    # Update maximum count0 for the "concatenated" to be compared with next mosaic to merge
+                    count0_concatenated = xr.concat(mask_list, ITSLiveAnnualMosaics.CONCAT_DIM_NAME, join="outer")
+                    mask_list = [count0_concatenated.max(ITSLiveAnnualMosaics.CONCAT_DIM_NAME, skipna=True)]
 
                 gc.collect()
 
@@ -1385,11 +1596,10 @@ class ITSLiveAnnualMosaics:
                 # Data variable is not added to the final dataset
                 continue
 
-            avg_overlap = None
             if concatenated is not None:
                 # Take average of all overlapping cells
-                logging.info(f'Taking average for {each_var}')
-                avg_overlap = concatenated.mean(_concat_dim_name, skipna=True)
+                logging.info(f'Done selecting values {each_var} based on max count0 mask')
+                # concatenated = concatenated[each_var]
 
             else:
                 # If there is only one mosaic contributing to the final dataset,
@@ -1400,49 +1610,59 @@ class ITSLiveAnnualMosaics:
                         'to the final dataset, none are found'
                     )
 
-                logging.info(f'Using only one available mosaic for {each_var}')
-                avg_overlap = data_list[0]
-
-            if each_var == ShapeFile.LANDICE or each_var == ShapeFile.FLOATINGICE:
-                # Need to keep the mask as binary data
-                avg_overlap_attrs = copy.deepcopy(avg_overlap.attrs)
-                avg_overlap = xr.where(avg_overlap > 0, 1, 0)
-                avg_overlap.attrs = avg_overlap_attrs
+                logging.info(f'WARNING: Should never happen when merging multi-EPGSs mosaics: using only one available mosaic for {each_var}, no need to merge mosaics for multiple EPSGs')
+                concatenated = data_list[0]
 
             # Set data values in result dataset
-            avg_overlap_dims = dict(x=avg_overlap.x.values, y=avg_overlap.y.values)
+            overlap_dims = dict(x=concatenated.x.values, y=concatenated.y.values)
             if ndim == 3:
-                avg_overlap_dims = dict(x=avg_overlap.x.values, y=avg_overlap.y.values, sensor=avg_overlap.sensor.values)
+                overlap_dims = dict(x=concatenated.x.values, y=concatenated.y.values, sensor=concatenated.sensor.values)
 
             # Convert data variable to output integer datatype if required
             if each_var in MosaicsOutputFormat.UINT16_TYPES:
-                avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values),
-                    coords=avg_overlap.coords,
-                    dims=avg_overlap.dims,
-                    attrs=avg_overlap.attrs
+                concatenated = xr.DataArray(
+                    data=to_int_type(concatenated.values),
+                    coords=concatenated.coords,
+                    dims=concatenated.dims,
+                    attrs=concatenated.attrs
+                )
+
+            elif each_var in MosaicsOutputFormat.UINT16_TYPES_ZERO_MISSING_VALUE:
+                concatenated = xr.DataArray(
+                    data=to_int_type(concatenated.values, fill_value=DataVars.MISSING_BYTE),
+                    coords=concatenated.coords,
+                    dims=concatenated.dims,
+                    attrs=concatenated.attrs
                 )
 
             elif each_var in MosaicsOutputFormat.UINT32_TYPES:
-                avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values, np.uint32, DataVars.MISSING_BYTE),
-                    coords=avg_overlap.coords,
-                    dims=avg_overlap.dims,
-                    attrs=avg_overlap.attrs
+                concatenated = xr.DataArray(
+                    data=to_int_type(concatenated.values, data_type=np.uint32, fill_value=DataVars.MISSING_BYTE),
+                    coords=concatenated.coords,
+                    dims=concatenated.dims,
+                    attrs=concatenated.attrs
                 )
 
             elif each_var in MosaicsOutputFormat.UINT8_TYPES:
-                avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values, np.uint8, DataVars.MISSING_UINT8_VALUE),
-                    coords=avg_overlap.coords,
-                    dims=avg_overlap.dims,
-                    attrs=avg_overlap.attrs
+                concatenated = xr.DataArray(
+                    data=to_int_type(concatenated.values, data_type=np.uint8, fill_value=DataVars.MISSING_UINT8_VALUE),
+                    coords=concatenated.coords,
+                    dims=concatenated.dims,
+                    attrs=concatenated.attrs
+                )
+
+            elif each_var in MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE:
+                concatenated = xr.DataArray(
+                    data=to_int_type(concatenated.values, np.uint8, DataVars.MISSING_BYTE),
+                    coords=concatenated.coords,
+                    dims=concatenated.dims,
+                    attrs=concatenated.attrs
                 )
 
             # Set values for the output dataset
             # Remove zeros from data variables, their standard_names and descriptions:
             # only vx0, vy0, v0 strings should be replaced by corresponding vx, vy, v
-            ds[ds_var].loc[avg_overlap_dims] = avg_overlap
+            ds[ds_var].loc[overlap_dims] = concatenated
 
             # Replace zeros in attributes
             ds = ITSLiveAnnualMosaics.remove_zeros_from_metadata(ds, ds_var)
@@ -1471,7 +1691,7 @@ class ITSLiveAnnualMosaics:
 
         return mosaics_filename
 
-    def merge_annual_mosaics(self, first_ds: xr.Dataset, year: str, s3_bucket, mosaics_dir: str, copy_to_s3: bool):
+    def merge_annual_mosaics(self, static_raw_ds: dict, first_ds: xr.Dataset, year: str, s3_bucket, mosaics_dir: str, copy_to_s3: bool):
         """
         Merge mosaics for a specific year that were generated by re-projection of
         EPSG mosaics into target projection. Store result to NetCDF format file in
@@ -1479,6 +1699,8 @@ class ITSLiveAnnualMosaics:
         This method relies on the fact that it's called after static mosaics were
         merged - thus all metadata is set when static mosaics are processed.
 
+        static_raw_ds: Mapping of static mosaics name to the correspondingopen file and metadata information
+                        (needed for "count0").
         first_ds: xarray.Dataset object that represents any (first) composite dataset.
                 It's used to collect global attributes that are applicable to the
                 mosaics.
@@ -1532,14 +1754,27 @@ class ITSLiveAnnualMosaics:
         ds.attrs[CubeOutput.LATITUDE] = json.dumps(self.attrs[CubeOutput.LATITUDE])
         ds.attrs[CubeOutput.LONGITUDE] = json.dumps(self.attrs[CubeOutput.LONGITUDE])
 
+        # 1. Create summary mask based on max_count0=max(count0) across all mosaics
+        self.create_mask(ds, static_raw_ds)
+
+        # Remove mask data variable from the target dataset as it should be stored in summary mosaics only
+        if self.mask_var in ds:
+            # Mask will be added if it was created outside of summary mosaics merging (run using existing files)
+            del ds[self.mask_var]
+
         two_coords = [self.y_coords, self.x_coords]
         two_dims = [Coords.Y, Coords.X]
         two_dims_len = (len(self.y_coords), len(self.x_coords))
-        _concat_dim_name = 'new_dim'
 
-        # Concatenate data for each data variable
+        # Concatenate data for each data variable:
+        # 2. Merge all other data variables based on the max_count0 mask: pick values from the
+        #    mosaics which match max_count0 value of "count0" data variable
+        _first = '_first'
+        _second = '_second'
+
         for each_var in ITSLiveAnnualMosaics.ANNUAL_VARS:
             data_list = []
+            mask_list = []
 
             # Concatenated dataset
             concatenated = None
@@ -1561,14 +1796,16 @@ class ITSLiveAnnualMosaics:
 
                 # If any of the mosaics have the variable missing, skip the whole variable
                 if skip_var:
-                    logging.info(f'WARNING: skipping {each_var} from {each_file} '
-                                f'since it is missing from previous mosaics')
+                    logging.info(
+                        f'WARNING: skipping {each_var} from {each_file} '
+                        'since it is missing from previous mosaics'
+                    )
                     continue
 
-                # # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
-                # # get mask for all valid magnitude values, then mask out corresponding
-                # # X and Y components
-                # v_valid_mask = ~np.isnan(each_ds.s3.ds[DataVars.V])
+                # Get dataset to represent corresponding static mosaic
+                static_mosaic_filename = get_corresponding_static_mosaics_filename(year, each_file, ITSLiveAnnualMosaics.SUMMARY_KEY)
+                logging.info(f'Got corresponding static mosaics" {static_mosaic_filename}...')
+                static_ds = static_raw_ds[static_mosaic_filename]
 
                 if each_var not in ds:
                     # Create data variable
@@ -1584,12 +1821,37 @@ class ITSLiveAnnualMosaics:
 
                 # else:
                 data_list.append(each_ds.s3.ds[each_var].load())
+                mask_list.append(static_ds.s3.ds[CompDataVars.COUNT0].load())
 
                 if len(data_list) > 1:
-                    # Concatenate once we have 2 arrays
-                    logging.info(f'Concatenating data for {len(data_list)} layers')
-                    concatenated = xr.concat(data_list, _concat_dim_name, join="outer")
+                    # Merge once we have 2 mosaics
+                    first_var = f'{_first}{each_var}'
+                    second_var = f'{_second}{each_var}'
+                    first_mask = f'{_first}{CompDataVars.COUNT0}'
+                    second_mask = f'{_second}{CompDataVars.COUNT0}'
+
+                    # Have to insert into dataset to make sure all coordinates are equal before
+                    # masking against max count0
+                    self.mask_ds[first_var] = data_list[0]
+                    self.mask_ds[second_var] = data_list[1]
+
+                    self.mask_ds[first_mask] = mask_list[0]
+                    self.mask_ds[second_mask] = mask_list[1]
+
+                    # Pick values that correspond to the maximum count0 values
+                    concatenated = self.mask_ds[second_var].where(self.mask_ds[self.mask_var] == self.mask_ds[second_mask], other=self.mask_ds[first_var])
+
+                    # Delete current datasets data from self.mask_ds
+                    del self.mask_ds[first_var]
+                    del self.mask_ds[second_var]
+                    del self.mask_ds[first_mask]
+                    del self.mask_ds[second_mask]
+
                     data_list = [concatenated]
+
+                    # Update maximum count0 for the "concatenated" to be compared with next mosaic to merge
+                    count0_concatenated = xr.concat(mask_list, ITSLiveAnnualMosaics.CONCAT_DIM_NAME, join="outer")
+                    mask_list = [count0_concatenated.max(ITSLiveAnnualMosaics.CONCAT_DIM_NAME, skipna=True)]
 
                 gc.collect()
 
@@ -1604,11 +1866,9 @@ class ITSLiveAnnualMosaics:
                 # Data variable is not added to the final mosaic
                 continue
 
-            avg_overlap = None
             if concatenated is not None:
                 # Take average of all overlapping cells
-                logging.info(f'Taking average for {each_var}')
-                avg_overlap = concatenated.mean(_concat_dim_name, skipna=True)
+                logging.info(f'Done selecting values {each_var} based on max count0 mask')
 
             else:
                 # If there is only one mosaic contributing to the final dataset,
@@ -1619,46 +1879,39 @@ class ITSLiveAnnualMosaics:
                         'to the final dataset, none are found'
                     )
 
-                logging.info(f'Using only one available mosaic for {each_var}')
-                avg_overlap = data_list[0]
-
-            if each_var == ShapeFile.LANDICE or each_var == ShapeFile.FLOATINGICE:
-                # Need to keep the mask as binary data
-                avg_overlap_attrs = copy.deepcopy(avg_overlap.attrs)
-                avg_overlap = xr.where(avg_overlap > 0, 1, 0)
-                avg_overlap.attrs = avg_overlap_attrs
+                logging.info(f'WARNING: Should never happen when merging multi-EPGSs mosaics: using only one available mosaic for {each_var}, no need to merge mosaics for multiple EPSGs')
+                concatenated = data_list[0]
 
             # Set data values in result dataset
-            avg_overlap_dims = dict(x=avg_overlap.x.values, y=avg_overlap.y.values)
+            overlap_dims = dict(x=concatenated.x.values, y=concatenated.y.values)
 
             # Convert data variable to output integer datatype if required
-            # Convert data variable to output integer datatype if required
             if each_var in MosaicsOutputFormat.UINT16_TYPES:
-                avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values),
-                    coords=avg_overlap.coords,
-                    dims=avg_overlap.dims,
-                    attrs=avg_overlap.attrs
+                concatenated = xr.DataArray(
+                    data=to_int_type(concatenated.values),
+                    coords=concatenated.coords,
+                    dims=concatenated.dims,
+                    attrs=concatenated.attrs
                 )
 
             elif each_var in MosaicsOutputFormat.UINT32_TYPES:
-                avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values, np.uint32, DataVars.MISSING_BYTE),
-                    coords=avg_overlap.coords,
-                    dims=avg_overlap.dims,
-                    attrs=avg_overlap.attrs
+                concatenated = xr.DataArray(
+                    data=to_int_type(concatenated.values, data_type=np.uint32, fill_value=DataVars.MISSING_BYTE),
+                    coords=concatenated.coords,
+                    dims=concatenated.dims,
+                    attrs=concatenated.attrs
                 )
 
-            elif each_var in MosaicsOutputFormat.UINT8_TYPES:
-                avg_overlap = xr.DataArray(
-                    data=to_int_type(avg_overlap.values, np.uint8, DataVars.MISSING_UINT8_VALUE),
-                    coords=avg_overlap.coords,
-                    dims=avg_overlap.dims,
-                    attrs=avg_overlap.attrs
+            elif each_var in MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE:
+                concatenated = xr.DataArray(
+                    data=to_int_type(concatenated.values, data_type=np.uint8, fill_value=DataVars.MISSING_BYTE),
+                    coords=concatenated.coords,
+                    dims=concatenated.dims,
+                    attrs=concatenated.attrs
                 )
 
             # Set values for the output dataset
-            ds[each_var].loc[avg_overlap_dims] = avg_overlap
+            ds[each_var].loc[overlap_dims] = concatenated
 
             gc.collect()
 
@@ -1830,6 +2083,84 @@ class ITSLiveAnnualMosaics:
         return mosaics_filepath
 
     @staticmethod
+    def set_int_encoding(ds: xr.Dataset, encoding_settings: dict, two_dim_chunks_settings: tuple, three_dim_chunks_settings: tuple = ()):
+        """
+        Set encoding settings for all data variables of integer data type for the input dataset.
+
+        Args:
+            ds (xr.Dataset): Dataset that stores all data variables
+            encoding_settings (dict): Dictionary to store encoding settings for all data variables.
+            two_dim_chunks_settings: Chunking for 2D data variables.
+            three_dim_chunks_settings: Chunking for 3D data variables.
+
+        Returns:
+            None: Input encoding_settings dictionary is updated with settings.
+        """
+        # Settings for "int" data types
+        for each in MosaicsOutputFormat.UINT16_TYPES:
+            if each in ds:
+                _chunks = two_dim_chunks_settings
+                if ds[each].ndim == 3:
+                    _chunks = three_dim_chunks_settings
+
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                    Output.DTYPE_ATTR: np.uint16,
+                    Output.CHUNKSIZES_ATTR: _chunks
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        for each in MosaicsOutputFormat.UINT16_TYPES_ZERO_MISSING_VALUE:
+            if each in ds:
+                _chunks = two_dim_chunks_settings
+                if ds[each].ndim == 3:
+                    _chunks = three_dim_chunks_settings
+
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
+                    Output.DTYPE_ATTR: np.uint16,
+                    Output.CHUNKSIZES_ATTR: _chunks
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        for each in MosaicsOutputFormat.UINT32_TYPES:
+            if each in ds:
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
+                    Output.DTYPE_ATTR: np.uint32,
+                    Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        for each in MosaicsOutputFormat.UINT8_TYPES:
+            if each in ds:
+                _chunks = two_dim_chunks_settings
+
+                if ds[each].ndim == 3:
+                    _chunks = three_dim_chunks_settings
+
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                    Output.DTYPE_ATTR: np.uint8,
+                    Output.CHUNKSIZES_ATTR: _chunks
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+        for each in MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE:
+            if each in ds:
+                _chunks = two_dim_chunks_settings
+
+                if ds[each].ndim == 3:
+                    _chunks = three_dim_chunks_settings
+
+                encoding_settings.setdefault(each, {}).update({
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
+                    Output.DTYPE_ATTR: np.uint8,
+                    Output.CHUNKSIZES_ATTR: _chunks
+                })
+                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+
+    @staticmethod
     def annual_mosaic_to_netcdf(ds: xr.Dataset, s3_bucket: str, bucket_dir: str, filename: str, copy_to_s3: bool):
         """
         Store datacube annual mosaics to NetCDF store.
@@ -1869,33 +2200,17 @@ class ITSLiveAnnualMosaics:
             })
             encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
-        # Settings for "int" data types
-        for each in MosaicsOutputFormat.UINT16_TYPES:
+        # Settings for "float" data types
+        for each in MosaicsOutputFormat.FLOAT32_TYPES:
             if each in ds:
                 encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
-                    Output.DTYPE_ATTR: np.uint16,
+                    Output.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
+                    Output.DTYPE_ATTR: np.float32,
                     Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
                 })
                 encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
-        for each in MosaicsOutputFormat.UINT32_TYPES:
-            if each in ds:
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
-                    Output.DTYPE_ATTR: np.uint32,
-                    Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
-
-        for each in MosaicsOutputFormat.UINT8_TYPES:
-            if each in ds:
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
-                    Output.DTYPE_ATTR: np.uint8,
-                    Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+        ITSLiveAnnualMosaics.set_int_encoding(ds, encoding_settings, two_dim_chunks_settings)
 
         # Write locally
         ds.to_netcdf(f'{filename}', engine=ITSLiveAnnualMosaics.NC_ENGINE, encoding=encoding_settings)
@@ -2018,6 +2333,9 @@ class ITSLiveAnnualMosaics:
             }
         )
 
+        # Start with all values set to "include" (1)
+        # Use new "include" value of 0 since the change is implemented in composites:
+        # values are flipped right before storing data to the file
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
             data=np.full(sensor_dims, 0, dtype=np.short),
             coords=var_coords,
@@ -2040,7 +2358,7 @@ class ITSLiveAnnualMosaics:
         for each_file, each_ds in self.raw_ds.items():
             logging.info(f'Collecting summary data from {each_file}')
 
-            # Workaround for non-masked X and Y components of V0 and V_AMP data variables:
+            # Workaround for non-masked X and Y components of V0 and V_AMP, V_AMP_ERROR data variables:
             # get mask for all valid magnitude values, then mask out corresponding
             # X and Y components
             v0_valid_mask = ~np.isnan(each_ds.s3.ds[CompDataVars.V0])
@@ -2069,7 +2387,13 @@ class ITSLiveAnnualMosaics:
                     if each_var in [CompDataVars.VX0, CompDataVars.VY0]:
                         ds[ds_var] = each_ds.s3.ds[each_var].where(v0_valid_mask, np.nan)
 
-                    elif each_var in [CompDataVars.VX_AMP, CompDataVars.VY_AMP]:
+                    elif each_var in [
+                        CompDataVars.VX_AMP,
+                        CompDataVars.VY_AMP,
+                        CompDataVars.VX_AMP_ERROR,
+                        CompDataVars.VY_AMP_ERROR,
+                        CompDataVars.V_AMP_ERROR
+                    ]:
                         ds[ds_var] = each_ds.s3.ds[each_var].where(v_amp_valid_mask, np.nan)
 
                     else:
@@ -2302,45 +2626,7 @@ class ITSLiveAnnualMosaics:
                 })
                 encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
-        # for each in [Coords.X, Coords.Y]:
-        #     encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
-
-        # Settings for "int" data types
-        for each in MosaicsOutputFormat.UINT16_TYPES:
-            if each in ds:
-                _chunks = two_dim_chunks_settings
-                if ds[each].ndim == 3:
-                    _chunks = three_dim_chunks_settings
-
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
-                    Output.DTYPE_ATTR: np.uint16,
-                    Output.CHUNKSIZES_ATTR: _chunks
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
-
-        for each in MosaicsOutputFormat.UINT32_TYPES:
-            if each in ds:
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
-                    Output.DTYPE_ATTR: np.uint32,
-                    Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
-
-        for each in MosaicsOutputFormat.UINT8_TYPES:
-            if each in ds:
-                _chunks = two_dim_chunks_settings
-
-                if ds[each].ndim == 3:
-                    _chunks = three_dim_chunks_settings
-
-                encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
-                    Output.DTYPE_ATTR: np.uint8,
-                    Output.CHUNKSIZES_ATTR: _chunks
-                })
-                encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
+        ITSLiveAnnualMosaics.set_int_encoding(ds, encoding_settings, two_dim_chunks_settings, three_dim_chunks_settings)
 
         logging.info(f'DS: {ds}')
         logging.info(f'DS encoding: {encoding_settings}')
@@ -2505,16 +2791,14 @@ def parse_args():
         type=int,
         action='store',
         default=None,
-        help='EPSG code to create intermediate mosaics for [%(default)s]. This is '
-            'lazy parallelization.'
+        help='EPSG code to create intermediate mosaics for [%(default)s] (lazy parallelization).'
     )
     parser.add_argument(
         '--mergeYear',
         type=str,
         action='store',
         default=None,
-        help="Year to merge intermediate mosaics for [%(default)s]. This is done "
-            "to do lazy parallelization."
+        help='Year to merge intermediate mosaics for [%(default)s] (lazy parallelization)'
     )
     parser.add_argument(
         '-g', '--gridCellSize',

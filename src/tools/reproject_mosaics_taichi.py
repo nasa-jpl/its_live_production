@@ -27,7 +27,7 @@ import xarray as xr
 
 from grid import Grid, Bounds
 from itscube_types import Coords, DataVars, Output, CompDataVars, to_int_type, ShapeFile
-
+from nsidc_types import Mapping
 
 # GDAL: enable exceptions and register all drivers
 gdal.UseExceptions()
@@ -79,6 +79,50 @@ ESRICode = 102027
 ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs'
 # ESRICode_Proj4 = '+proj=lcc +lat_1=15 +lat_2=65 +lat_0=30 +lon_0=95 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
 
+required_mapping_attributes = {
+    32610: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -123.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 0.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
+    32632: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 9.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 0.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
+    32638: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 45.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 0.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
+    32645: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 87.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 0.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
+    32718: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -75.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 10000000.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    },
+    32759: {
+        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 171.0,
+        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        Mapping.FALSE_EASTING: 500000.0,
+        Mapping.FALSE_NORTHING: 10000000.0,
+        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+    }
+}
 
 @ti.data_oriented
 class TiUnitVector:
@@ -94,13 +138,13 @@ class TiUnitVector:
 
     # Custom compile-time type to represent a unit vector as you can't define one
     # at runtime within the function
-    VECTOR = ti.types.vector(SIZE, float)
+    VECTOR = ti.types.vector(SIZE, ti.f32)
 
     """
     """
     def __init__(self, n: int):
         # self.vector = ti.field(dtype=float, shape=(n, TiUnitVector.SIZE))
-        self.data = ti.Vector.field(TiUnitVector.SIZE, dtype=float, shape=(n))
+        self.data = ti.Vector.field(TiUnitVector.SIZE, dtype=ti.f32, shape=(n))
         self.dataLength = n
 
     @ti.kernel
@@ -136,7 +180,7 @@ class TiTransformMatrix:
     """
     def __init__(self, n: int):
         # Declares a matrix field of n-elements, each of its elements being a 2x2 matrix
-        self.data = ti.Matrix.field(n=TiUnitVector.SIZE, m=TiUnitVector.SIZE, dtype=float, shape=(n))
+        self.data = ti.Matrix.field(n=TiUnitVector.SIZE, m=TiUnitVector.SIZE, dtype=ti.f32, shape=(n))
         self.fill_data()
 
     @ti.kernel
@@ -317,6 +361,8 @@ class MosaicsReproject:
             # Transformation matrix to rotate warped velocity components (vx* and vy*)
             # in output projection taking distortion factor into consideration
             self.transformation_matrix = None
+            self.transformation_matrix_angle = None
+            self.transformation_matrix_scale = None
 
             # Lists of valid cell indices for which transformation matrix is available
             self.valid_cell_indices_x = None
@@ -325,6 +371,7 @@ class MosaicsReproject:
             # GDAL options to use for warping to new output grid
             self.warp_options_uint8 = None
             self.warp_options_uint16 = None
+            self.warp_options_uint16_zero_missing_value = None
             self.warp_options_uint32 = None
 
             # A "pointer" to the method to invoke to process the mosaic: static or annual
@@ -391,6 +438,20 @@ class MosaicsReproject:
             errorThreshold=MosaicsReproject.WARP_ET
         )
 
+        self.warp_options_uint8_zero_missing_value = gdal.WarpOptions(
+            # format='netCDF',
+            format=MosaicsReproject.WARP_FORMAT,
+            outputBounds=(self.x0_bbox.min, self.y0_bbox.min, self.x0_bbox.max, self.y0_bbox.max),
+            xRes=self.x_size,
+            yRes=self.y_size,
+            srcSRS=f'{self.ij_epsg_str}:{self.ij_epsg}',
+            dstSRS=f'{self.xy_epsg_str}:{self.xy_epsg}',
+            srcNodata=DataVars.MISSING_BYTE,
+            dstNodata=DataVars.MISSING_BYTE,
+            resampleAlg=gdal.GRA_NearestNeighbour,
+            errorThreshold=MosaicsReproject.WARP_ET
+        )
+
         self.warp_options_uint16 = gdal.WarpOptions(
             # format='netCDF',
             format=MosaicsReproject.WARP_FORMAT,
@@ -401,6 +462,20 @@ class MosaicsReproject:
             dstSRS=f'{self.xy_epsg_str}:{self.xy_epsg}',
             srcNodata=DataVars.MISSING_POS_VALUE,
             dstNodata=DataVars.MISSING_POS_VALUE,
+            resampleAlg=gdal.GRA_NearestNeighbour,
+            errorThreshold=MosaicsReproject.WARP_ET
+        )
+
+        self.warp_options_uint16_zero_missing_value = gdal.WarpOptions(
+            # format='netCDF',
+            format=MosaicsReproject.WARP_FORMAT,
+            outputBounds=(self.x0_bbox.min, self.y0_bbox.min, self.x0_bbox.max, self.y0_bbox.max),
+            xRes=self.x_size,
+            yRes=self.y_size,
+            srcSRS=f'{self.ij_epsg_str}:{self.ij_epsg}',
+            dstSRS=f'{self.xy_epsg_str}:{self.xy_epsg}',
+            srcNodata=DataVars.MISSING_BYTE,
+            dstNodata=DataVars.MISSING_BYTE,
             resampleAlg=gdal.GRA_NearestNeighbour,
             errorThreshold=MosaicsReproject.WARP_ET
         )
@@ -478,6 +553,23 @@ class MosaicsReproject:
             }
 
         else:
+            # Example of mapping for EPGS=32632:
+            # string mapping ;
+            #     string mapping:GeoTransform = "200032.5 120.0 0 5317327.5 0 -120.0" ;
+            #     string mapping:crs_wkt = "PROJCS[\"WGS 84 / UTM zone 32N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32632\"]]" ;
+            #     mapping:false_easting = 500000. ;
+            #     mapping:false_northing = 0. ;
+            #     string mapping:grid_mapping_name = "universal_transverse_mercator" ;
+            #     mapping:inverse_flattening = 298.257223563 ;
+            #     mapping:latitude_of_projection_origin = 0. ;
+            #     mapping:longitude_of_central_meridian = 9. ;
+            #     string mapping:proj4text = "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs" ;
+            #     mapping:scale_factor_at_central_meridian = 0.9996 ;
+            #     mapping:semi_major_axis = 6378137. ;
+            #     mapping:spatial_epsg = 32632LL ;
+            #     string mapping:spatial_ref = "PROJCS[\"WGS 84 / UTM zone 32N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"32632\"]]" ;
+            #     mapping:utm_zone_number = 32. ;
+
             zone, spacial_ref_value = self.spatial_ref_32x()
 
             proj_attrs = {
@@ -485,9 +577,17 @@ class MosaicsReproject:
                 'utm_zone_number': zone,
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
-                'crs_wkt': spacial_ref_value,
-                'proj4text': f"+proj=utm +zone={zone} +datum=WGS84 +units=m +no_defs"
+                Mapping.CRS_WKT: spacial_ref_value,
+                Mapping.SPATIAL_REF: spacial_ref_value,
+                Mapping.PROJ4TEXT: f"+proj=utm +zone={zone} +datum=WGS84 +units=m +no_defs"
             }
+
+            if self.xy_epsg in required_mapping_attributes:
+                for each_attr, each_value in required_mapping_attributes[self.xy_epsg].items():
+                    proj_attrs[each_attr] = each_value
+
+            else:
+                raise RuntimeError(f'Missing definition of mapping attributes for EPSG={self.xy_epsg}: please update required_mapping_attributes')
 
         reproject_ds[DataVars.MAPPING] = xr.DataArray(
             data='',
@@ -501,7 +601,7 @@ class MosaicsReproject:
         #
         # else:
         #    reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
-        reproject_ds[DataVars.MAPPING].attrs['spatial_epsg'] = self.xy_epsg
+        reproject_ds[DataVars.MAPPING].attrs[Mapping.SPACIAL_EPSG] = self.xy_epsg
 
         # Format GeoTransform attribute:
         # x top left (cell left most boundary), grid size, 0, y top left (cell upper most boundary), 0, -grid size
@@ -727,7 +827,7 @@ class MosaicsReproject:
         self.set_mapping(reproject_ds)
 
         # Warp "dt_max" variable: per each sensor dimension
-        warp_data = self.warp_var(CompDataVars.MAX_DT, self.warp_options_uint16)
+        warp_data = self.warp_var(CompDataVars.MAX_DT, self.warp_options_uint16_zero_missing_value)
 
         if warp_data.ndim == 2:
             # If warped data is 2d array
@@ -739,13 +839,21 @@ class MosaicsReproject:
         if MosaicsReproject.VERBOSE:
             _values = self.ds[CompDataVars.MAX_DT].values
             verbose_mask = np.isfinite(_values)
-            logging.info(f"Original {CompDataVars.MAX_DT}:  min={np.nanmin(_values[verbose_mask])} max={np.nanmax(_values[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f'Original {CompDataVars.MAX_DT}: no valid data')
+
+            else:
+                logging.info(f"Original {CompDataVars.MAX_DT}:  min={np.nanmin(_values[verbose_mask])} max={np.nanmax(_values[verbose_mask])}")
 
             verbose_mask = np.isfinite(warp_data) & (warp_data != DataVars.MISSING_POS_VALUE)
-            logging.info(f"Warped {CompDataVars.MAX_DT}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f'Warped {CompDataVars.MAX_DT}: no valid data')
+
+            else:
+                logging.info(f"Warped {CompDataVars.MAX_DT}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
 
         reproject_ds[CompDataVars.MAX_DT] = xr.DataArray(
-            data=to_int_type(warp_data),
+            data=to_int_type(warp_data, fill_value=DataVars.MISSING_BYTE),
             coords=ds_coords,
             attrs=self.ds[CompDataVars.MAX_DT].attrs
         )
@@ -757,11 +865,11 @@ class MosaicsReproject:
             is_binary_data = True
             warp_data = self.warp_var(
                 ShapeFile.LANDICE,
-                self.warp_options_uint8,
+                self.warp_options_uint8_zero_missing_value,
                 is_binary_data
             )
             reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_BYTE),
                 coords=ds_coords_2d,
                 attrs=self.ds[ShapeFile.LANDICE].attrs
             )
@@ -772,11 +880,11 @@ class MosaicsReproject:
             is_binary_data = True
             warp_data = self.warp_var(
                 ShapeFile.FLOATINGICE,
-                self.warp_options_uint8,
+                self.warp_options_uint8_zero_missing_value,
                 is_binary_data
             )
             reproject_ds[ShapeFile.FLOATINGICE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_BYTE),
                 coords=ds_coords_2d,
                 attrs=self.ds[ShapeFile.FLOATINGICE].attrs
             )
@@ -786,7 +894,7 @@ class MosaicsReproject:
         # Warp "outlier_frac" variable: per each sensor dimension
         warp_data = self.warp_var(CompDataVars.OUTLIER_FRAC, self.warp_options_uint8)
         reproject_ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
-            data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+            data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_UINT8_VALUE),
             coords=ds_coords_2d,
             attrs=self.ds[CompDataVars.OUTLIER_FRAC].attrs
         )
@@ -812,7 +920,7 @@ class MosaicsReproject:
                 warp_data = warp_data.reshape((1, _y_dim, _x_dim))
 
             reproject_ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_UINT8_VALUE),
                 coords=ds_coords,
                 attrs=self.ds[CompDataVars.SENSOR_INCLUDE].attrs
             )
@@ -931,27 +1039,27 @@ class MosaicsReproject:
             is_binary_data = True
             warp_data = self.warp_var(
                 ShapeFile.LANDICE,
-                self.warp_options_uint8,
+                self.warp_options_uint8_zero_missing_value,
                 is_binary_data
             )
             reproject_ds[ShapeFile.LANDICE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_BYTE),
                 coords=ds_coords,
                 attrs=self.ds[ShapeFile.LANDICE].attrs
             )
             warp_data = None
             gc.collect()
-            
+
         # Warp "floatingice" variable (check for variable existence in older mosaics)
         if ShapeFile.FLOATINGICE in self.ds:
             is_binary_data = True
             warp_data = self.warp_var(
                 ShapeFile.FLOATINGICE,
-                self.warp_options_uint8,
+                self.warp_options_uint8_zero_missing_value,
                 is_binary_data
             )
             reproject_ds[ShapeFile.FLOATINGICE] = xr.DataArray(
-                data=to_int_type(warp_data, np.uint8, DataVars.MISSING_UINT8_VALUE),
+                data=to_int_type(warp_data, np.uint8, fill_value=DataVars.MISSING_BYTE),
                 coords=ds_coords,
                 attrs=self.ds[ShapeFile.FLOATINGICE].attrs
             )
@@ -1097,7 +1205,7 @@ class MosaicsReproject:
 
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE,
                 Output.CHUNKSIZES_ATTR: two_dim_chunks_settings
             })
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
@@ -1193,8 +1301,14 @@ class MosaicsReproject:
             if ds[each].ndim == 3:
                 _chunks = three_dim_chunks_settings
 
+            _missing_value = DataVars.MISSING_POS_VALUE
+            if each in [
+                CompDataVars.MAX_DT
+            ]:
+                _missing_value = DataVars.MISSING_BYTE
+
             encoding_settings[each] = {
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE,
+                Output.MISSING_VALUE_ATTR: _missing_value,
                 Output.DTYPE_ATTR: np.uint16,
                 Output.CHUNKSIZES_ATTR: _chunks
             }
@@ -1211,8 +1325,7 @@ class MosaicsReproject:
             CompDataVars.OUTLIER_FRAC,
             CompDataVars.SENSOR_INCLUDE,
             ShapeFile.LANDICE,
-            ShapeFile.FLOATINGICE,
-
+            ShapeFile.FLOATINGICE
         ]:
             if each not in ds:
                 continue
@@ -1222,9 +1335,17 @@ class MosaicsReproject:
             if ds[each].ndim == 3:
                 _chunks = three_dim_chunks_settings
 
+            # ice masks should use 0 as missing_value
+            _missing_value = DataVars.MISSING_UINT8_VALUE
+            if each in [
+                ShapeFile.LANDICE,
+                ShapeFile.FLOATINGICE
+            ]:
+                _missing_value = DataVars.MISSING_BYTE
+
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                Output.MISSING_VALUE_ATTR: _missing_value,
                 Output.CHUNKSIZES_ATTR: _chunks
             })
             encoding_settings[each].update(MosaicsReproject.COMPRESSION)
@@ -1342,22 +1463,46 @@ class MosaicsReproject:
 
         if MosaicsReproject.VERBOSE:
             verbose_mask = np.isfinite(_vx)
-            logging.info(f"reproject_velocity: Original {vx_var}:  min={np.nanmin(_vx[verbose_mask])} max={np.nanmax(_vx[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {vx_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {vx_var}:  min={np.nanmin(_vx[verbose_mask])} max={np.nanmax(_vx[verbose_mask])}")
 
             verbose_mask = np.isfinite(_vy)
-            logging.info(f"reproject_velocity: Original {vy_var}:  min={np.nanmin(_vy[verbose_mask])} max={np.nanmax(_vy[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {vy_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {vy_var}:  min={np.nanmin(_vy[verbose_mask])} max={np.nanmax(_vy[verbose_mask])}")
 
             verbose_mask = np.isfinite(_v)
-            logging.info(f"reproject_velocity: Original {v_var}: min={np.nanmin(_v[verbose_mask])} max={np.nanmax(_v[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {v_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {v_var}: min={np.nanmin(_v[verbose_mask])} max={np.nanmax(_v[verbose_mask])}")
 
             verbose_mask = np.isfinite(_vx_error)
-            logging.info(f"reproject_velocity: Original {vx_error_var}: min={np.nanmin(_vx_error[verbose_mask])} max={np.nanmax(_vx_error[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {vx_error_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {vx_error_var}: min={np.nanmin(_vx_error[verbose_mask])} max={np.nanmax(_vx_error[verbose_mask])}")
 
             verbose_mask = np.isfinite(_vy_error)
-            logging.info(f"reproject_velocity: Original {vy_error_var}: min={np.nanmin(_vy_error[verbose_mask])} max={np.nanmax(_vy_error[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {vy_error_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {vy_error_var}: min={np.nanmin(_vy_error[verbose_mask])} max={np.nanmax(_vy_error[verbose_mask])}")
 
             verbose_mask = np.isfinite(_v_error)
-            logging.info(f"reproject_velocity: Original {v_error_var}: min={np.nanmin(_v_error[verbose_mask])} max={np.nanmax(_v_error[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Original {v_error_var}: no valid data")
+
+            else:
+                logging.info(f"reproject_velocity: Original {v_error_var}: min={np.nanmin(_v_error[verbose_mask])} max={np.nanmax(_v_error[verbose_mask])}")
 
         for y, x in tqdm(
             zip(self.valid_cell_indices_y, self.valid_cell_indices_x),
@@ -1426,22 +1571,46 @@ class MosaicsReproject:
 
         if MosaicsReproject.VERBOSE:
             verbose_mask = np.isfinite(vx)
-            logging.info(f"reproject_velocity: Re-projected {vx_var}:  min={np.nanmin(vx[verbose_mask])} max={np.nanmax(vx[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Re-projected {vx_var}: no valid values")
+
+            else:
+                logging.info(f"reproject_velocity: Re-projected {vx_var}:  min={np.nanmin(vx[verbose_mask])} max={np.nanmax(vx[verbose_mask])}")
 
             verbose_mask = np.isfinite(vy)
-            logging.info(f"reproject_velocity: Re-projected {vy_var}:  min={np.nanmin(vy[verbose_mask])} max={np.nanmax(vy[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Re-projected {vy_var}: no valid values")
+
+            else:
+                logging.info(f"reproject_velocity: Re-projected {vy_var}:  min={np.nanmin(vy[verbose_mask])} max={np.nanmax(vy[verbose_mask])}")
 
             verbose_mask = np.isfinite(v)
-            logging.info(f"reproject_velocity: Re-projected {v_var}:  min={np.nanmin(v[verbose_mask])} max={np.nanmax(v[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Re-projected {v_var}: no valid values")
+
+            else:
+                logging.info(f"reproject_velocity: Re-projected {v_var}:  min={np.nanmin(v[verbose_mask])} max={np.nanmax(v[verbose_mask])}")
 
             verbose_mask = np.isfinite(vx_error)
-            logging.info(f"reproject_velocity: Re-projected {vx_error_var}:  min={np.nanmin(vx_error[verbose_mask])} max={np.nanmax(vx_error[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Re-projected {vx_error_var}: no valid values")
+
+            else:
+                logging.info(f"reproject_velocity: Re-projected {vx_error_var}:  min={np.nanmin(vx_error[verbose_mask])} max={np.nanmax(vx_error[verbose_mask])}")
 
             verbose_mask = np.isfinite(vy_error)
-            logging.info(f"reproject_velocity: Re-projected {vy_error_var}:  min={np.nanmin(vy_error[verbose_mask])} max={np.nanmax(vy_error[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Re-projected {vy_error_var}: no valid values")
+
+            else:
+                logging.info(f"reproject_velocity: Re-projected {vy_error_var}:  min={np.nanmin(vy_error[verbose_mask])} max={np.nanmax(vy_error[verbose_mask])}")
 
             verbose_mask = np.isfinite(v_error)
-            logging.info(f"reproject_velocity: Re-projected {v_error_var}:  min={np.nanmin(v_error[verbose_mask])} max={np.nanmax(v_error[verbose_mask])}")
+            if np.sum(verbose_mask) == 0:
+                logging.info(f"reproject_velocity: Re-projected {v_error_var}: no valid values")
+
+            else:
+                logging.info(f"reproject_velocity: Re-projected {v_error_var}:  min={np.nanmin(v_error[verbose_mask])} max={np.nanmax(v_error[verbose_mask])}")
 
         return (vx, vy, v, vx_error, vy_error, v_error)
 
@@ -1508,6 +1677,10 @@ class MosaicsReproject:
 
         # Read Y component of v_phase
         _vy_phase = self.ds[CompDataVars.VY_PHASE].values
+
+        # Read v_phase
+        # _v_phase = self.ds[CompDataVars.V_PHASE].values
+        _v_amp = self.ds[CompDataVars.V_AMP].values
 
         # Read X component of v_amp
         _vx_amp = self.ds[CompDataVars.VX_AMP].values
@@ -1611,14 +1784,20 @@ class MosaicsReproject:
                 # Apply transformation matrix to (dvx_dt, dvy_dt) vector
                 dvx_dt[y, x], dvy_dt[y, x] = np.matmul(t_matrix, dv)
 
-            # Re-project v_amp's X and Y components
-            dv = [_vx_amp[j, i], _vy_amp[j, i]]
+            # Populate v_amp's and v_phase's X and Y components with original values,
+            # they will be overwritten by reprojection
+            vx_phase[y, x] = _vx_phase[j, i]
+            vy_phase[y, x] = _vy_phase[j, i]
+            vx_amp[y, x] = _vx_amp[j, i]
+            vy_amp[y, x] = _vy_amp[j, i]
 
-            # Some points get NODATA for vx but valid vy and v.
-            # if np.all(np.isfinite(dv)):
-            if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
-                # Apply transformation matrix to (vx, vy) values
-                vx_amp[y, x], vy_amp[y, x] = np.matmul(np.abs(t_matrix), dv)
+            # dv = [_vx_amp[j, i], _vy_amp[j, i]]
+
+            # # Some points get NODATA for vx but valid vy and v.
+            # # if np.all(np.isfinite(dv)):
+            # if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
+            #     # Apply transformation matrix to (vx, vy) values
+            #     vx_amp[y, x], vy_amp[y, x] = np.matmul(np.abs(t_matrix), dv)
 
             # Re-project v_amp_error's components
             dv = [_vx_amp_error[j, i], _vy_amp_error[j, i]]
@@ -1631,13 +1810,26 @@ class MosaicsReproject:
                 # negative re-projected vx_error and vy_error values
                 vx_amp_error[y, x], vy_amp_error[y, x] = np.matmul(np.abs(t_matrix), dv)
 
-            # Re-project v_phase's components
-            dv = [_vx_phase[j, i], _vy_phase[j, i]]
+            # # Re-project v_phase's components
+            # dv = [_vx_phase[j, i], _vy_phase[j, i]]
 
-            # If any of the values is NODATA, don't re-project, leave them as NODATA
-            # if np.all(np.isfinite(dv)):
-            if(not math.isnan(dv[0])) and (not math.isnan(dv[1])):
-                vx_phase[y, x], vy_phase[y, x] = np.matmul(np.abs(t_matrix), dv)
+            # # If any of the values is NODATA, don't re-project, leave them as NODATA
+            # # if np.all(np.isfinite(dv)):
+            # if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
+            #     # vx_phase[y, x], vy_phase[y, x] = np.matmul(np.abs(t_matrix), dv)
+            #     vx_phase[y, x], vy_phase[y, x] = np.matmul(t_matrix, dv)
+
+        # DEBUG: indices into the problem cell
+        dx=369
+        dy=683
+        di=197
+        dj=726
+
+        # logging.info(f'self.transformation_matrix[y, x]')
+        # logging.info(f'GOT_ERROR v_amp_error>200: x={dx} y={dy} _vx_amp={_vx_amp[dj, di]} _vy_amp={_vy_amp[dj, di]}')
+        # logging.info(f'GOT_ERROR v_amp_error>200: x={dx} y={dy} _vx_phase={_vx_phase[dj, di]} _vy_phase={_vy_phase[dj, di]}')
+        # logging.info(f'GOT_ERROR v_amp_error>200: x={dx} y={dy} _v_phase={_v_phase[dj, di]} _v_amp={_v_amp[dj, di]}')
+
 
         # No need for some of original data, cleanup
         _dvx_dt = None
@@ -1650,12 +1842,24 @@ class MosaicsReproject:
         dv_dt = dvx_dt * uv_x
         dv_dt += dvy_dt * uv_y
 
-        # Wrap components of v_amp and v_phase to make sure they are in valid ranges
-        vx_phase, vx_amp = MosaicsReproject.wrap_amp_phase(vx_phase, vx_amp)
-        vy_phase, vy_amp = MosaicsReproject.wrap_amp_phase(vy_phase, vy_amp)
+        # Was for point with rotation matrix of positive B1
+        # dx=468
+        # dy=372
+        # di=226
+        # dj=368
 
-        # Compute v_phase and v_amp using analytical solution
-        v_phase, v_amp = MosaicsReproject.seasonal_velocity_rotation(vx0, vy0, vx_phase, vy_phase, vx_amp, vy_amp)
+        # Rotate v_phase and v_amp using analytical solution:
+        # - theta is rotation matrix as derived from the transformation matrix
+        # - vx_amp and vy_amp components are scaled by factors as derived from the transformation matrix
+        vx_phase_r, vy_phase_r, vx_amp_r, vy_amp_r = MosaicsReproject.seasonal_velocity_rotation(
+            self.transformation_matrix_angle,
+            vx_phase, vy_phase,
+            self.transformation_matrix_scale[:, :, 0]*vx_amp,
+            self.transformation_matrix_scale[:, :, 1]*vy_amp
+        )
+
+        # Now rotate in the flow direction determined by vx0 and vy0
+        v_phase, v_amp = MosaicsReproject.seasonal_velocity_rotation_x_term(vx0, vy0, vx_phase_r, vy_phase_r, vx_amp_r, vy_amp_r)
 
         # Compute v_amp_error using scale factor b/w old and newly re-projected v_amp values
         # (don't project v_amp_error in direction of unit flow vector
@@ -1695,38 +1899,45 @@ class MosaicsReproject:
                 scale_factor = v_amp_value/v_ij_value
 
             # if v_ij_value and (not np.any(np.isnan(_v_amp_error[j, i]))):
-            if v_ij_value and (not math.isnan(_v_amp_error[j, i])):
+            if (not math.isnan(v_ij_value)) and (not math.isnan(_v_amp_error[j, i])):
                 # Apply scale factor to the error value
                 v_amp_error[y, x] = _v_amp_error[j, i]*scale_factor
+
+            if math.isnan(v_amp_error[y, x]) and ~math.isnan(v_amp[y, x]):
+                logging.info(f'GOT_NAN_VAMP_ERROR: x={x} y={y} v_amp[y, x]={v_amp_value} v_ij_value={v_ij_value}')
 
         if MosaicsReproject.VERBOSE:
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_VX}:  min={np.nanmin(dvx_dt)} max={np.nanmax(dvx_dt)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_VY}:  min={np.nanmin(dvy_dt)} max={np.nanmax(dvy_dt)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_V}:  min={np.nanmin(dv_dt)} max={np.nanmax(dv_dt)}")
 
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VX_AMP}:  min={np.nanmin(vx_amp)} max={np.nanmax(vx_amp)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VY_AMP}:  min={np.nanmin(vy_amp)} max={np.nanmax(vy_amp)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP}:  min={np.nanmin(v_amp)} max={np.nanmax(v_amp)}")
 
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VX_AMP_ERROR}:  min={np.nanmin(vx_amp_error)} max={np.nanmax(vx_amp_error)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VY_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
+            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP_ERROR}:  min={np.nanmin(v_amp_error)} max={np.nanmax(v_amp_error)}")
 
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VX_PHASE}:  min={np.nanmin(vx_phase)} max={np.nanmax(vx_phase)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.VY_PHASE}:  min={np.nanmin(vy_phase)} max={np.nanmax(vy_phase)}")
-
-            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.SLOPE_V}:  min={np.nanmin(dv_dt)} max={np.nanmax(dv_dt)}")
             logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_PHASE}:  min={np.nanmin(v_phase)} max={np.nanmax(v_phase)}")
-            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP}:  min={np.nanmin(v_amp)} max={np.nanmax(v_amp)}")
-            logging.info(f"reproject_static_vars: Re-projected {CompDataVars.V_AMP_ERROR}:  min={np.nanmin(vy_amp_error)} max={np.nanmax(vy_amp_error)}")
 
         return (dvx_dt, dvy_dt, dv_dt, vx_amp, vy_amp, v_amp, vx_amp_error, vy_amp_error, v_amp_error, vx_phase, vy_phase, v_phase)
 
     @staticmethod
-    def wrap_amp_phase(v_phase_days, v_amp):
+    def wrap_amp_phase(v_phase, v_amp):
         """
         Wrap phase and amplitude to be within valid ranges.
-        """
-        # Convert phase from days to degrees
-        v_phase = v_phase_days*360/365.24
 
+        Args:
+        v_phase: Input phase in degrees.
+        v_amp: Input amplitude.
+
+        Ouputs:
+        v_phase, v_amp: Wrap-corrected input values.
+
+        """
         mask = v_amp < 0
         v_amp[mask] *= -1.0
         v_phase[mask] += 180
@@ -1766,7 +1977,127 @@ class MosaicsReproject:
         return v_phase, v_amp
 
     @staticmethod
-    def seasonal_velocity_rotation(vx0, vy0, vx_phase, vy_phase, vx_amp, vy_amp):
+    def seasonal_velocity_rotation(theta, vx_phase, vy_phase, vx_amp, vy_amp):
+        """
+        Rotate v_phase and v_amp given "theta" rotation angle and already scaled
+        vx_amp and vy_amp (according to the transformation matrix).
+
+        % seasonal_velocity_rotation gives the amplitude and phase of seasonal
+        % velocity components. (Only the x and y components change when rotation is
+        % applied, i.e., v_amp and v_phase are unchanged).
+        %
+        % Inputs:
+        % theta (degrees) rotation of the coordinate system.
+        % vx_amp (m/yr) x component of seasonal amplitude in the original coordinate system.
+        % vx_phase (doy) day of maximum x velocity in original coordinate system.
+        % vy_amp (m/yr) y component of seasonal amplitude in the original coordinate system.
+        % vy_phase (doy) day of maximum y velocity in original coordinate system.
+        %
+        % Outputs:
+        % vx_amp_r (m/yr) x component of seasonal amplitude in the original coordinate system.
+        % vx_phase_r (doy) day of maximum x velocity in original coordinate system.
+        % vy_amp_r (m/yr) y component of seasonal amplitude in the original coordinate system.
+        % vy_phase_r (doy) day of maximum y velocity in original coordinate system.
+        %
+        % Written (in Matlab) by Alex Gardner and Chad Greene, July 2022.
+
+        Returns:
+        vx_phase_r (doy) - day of maximum velocity in original coordinate system
+        vy_phase_r (doy) - day of maximum velocity in original coordinate system
+        vx_amp_r (m/yr) - x component of seasonal amplitude in the original coordinate system
+        vy_amp_r (m/yr) - y component of seasonal amplitude in the original coordinate system
+        """
+        _two_pi = np.pi * 2
+
+        # Matlab prototype code:
+        # % Convert phase values from day-of-year to degrees:
+        # vx_phase_deg = vx_phase*360/365.24;
+        # vy_phase_deg = vy_phase*360/365.24;
+        # Avoid conversion to degrees - go from day-of-year to radians
+
+        vx_phase_deg = vx_phase/365.24
+        vy_phase_deg = vy_phase/365.24
+
+        # Don't use np.nan values in calculations to avoid warnings
+        valid_mask = (~np.isnan(vx_phase_deg)) & (~np.isnan(vy_phase_deg))
+
+        # Convert degrees to radians as numpy trig. functions take angles in radians
+        # Explanation: if skipping *360.0 in vx_phase_deg, vy_phase_deg above,
+        # then to convert to radians: *np.pi/180 --> 360*np.py/180 = 2*np.pi
+        vx_phase_deg *= _two_pi
+        vy_phase_deg *= _two_pi
+
+        # Matlab prototype code:
+        # % Rotation matrix for x component:
+        # A1 =  vx_amp.*cosd(theta);
+        # B1 = -vy_amp.*sind(theta);
+
+        if np.any(theta < 0):
+            # logging.info(f'Got negative theta, converting to positive values')
+            mask = (theta < 0)
+            theta[mask] += _two_pi
+
+        sin_theta = np.sin(theta)
+        cos_theta = np.cos(theta)
+
+        # New in Python: assume clockwise rotation by theta as we need to align
+        # vector with v0 direction. Therefore  use clockwise transformation matrix
+        # for rotation, not counter-clockwise as in Matlab prototype code.
+        A1 = vx_amp*cos_theta
+        B1 = -vy_amp*sin_theta
+        # Matlab prototype:
+        # B1 = -vy_amp*sin_theta
+
+        # Matlab prototype:
+        # A2 = vx_amp*sin_theta
+        # B2 = vy_amp*cos_theta
+        A2 = vx_amp*sin_theta
+        B2 = vy_amp*cos_theta
+
+        # Matlab prototype code:
+        # % Rotation matrix for x component:
+        # vx_amp_r   =   hypot(A1.*cosd(vx_phase_deg) + B1.*cosd(vy_phase_deg),  A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg));
+        # vx_phase_r = atan2d((A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg)),(A1.*cosd(vx_phase_deg) + B1.*(cosd(vy_phase_deg))));
+
+        # % Rotation matrix for y component:
+        # A2 = vx_amp.*sind(theta);
+        # B2 = vy_amp.*cosd(theta);
+        # vy_amp_r   =   hypot(A2.*cosd(vx_phase_deg) + B2.*cosd(vy_phase_deg),  A2.*sind(vx_phase_deg) + B2.*sind(vy_phase_deg));
+        # vy_phase_r = atan2d((A2.*sind(vx_phase_deg) + B2.*sind(vy_phase_deg)),(A2.*cosd(vx_phase_deg) + B2.*(cosd(vy_phase_deg))));
+
+        # Allocate arrays
+        vx_amp_r = np.full_like(vx_phase_deg, np.nan)
+        vy_amp_r = np.full_like(vx_phase_deg, np.nan)
+        vx_phase_r = np.full_like(vx_phase_deg, np.nan)
+        vy_phase_r = np.full_like(vx_phase_deg, np.nan)
+
+        vx_amp_r[valid_mask] = np.hypot(
+            A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask]),
+            A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask])
+        )
+        # np.arctan2 returns phase in radians, convert to degrees
+        vx_phase_r[valid_mask] = np.arctan2(
+            A1[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_deg[valid_mask]),
+            A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask])
+        )*180.0/np.pi
+
+        vy_amp_r[valid_mask] = np.hypot(
+            A2[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B2[valid_mask]*np.cos(vy_phase_deg[valid_mask]),
+            A2[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B2[valid_mask]*np.sin(vy_phase_deg[valid_mask])
+        )
+        # np.arctan2 returns phase in radians, convert to degrees
+        vy_phase_r[valid_mask] = np.arctan2(
+            A2[valid_mask]*np.sin(vx_phase_deg[valid_mask]) + B2[valid_mask]*np.sin(vy_phase_deg[valid_mask]),
+            A2[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B2[valid_mask]*np.cos(vy_phase_deg[valid_mask])
+        )*180.0/np.pi
+
+        vx_phase_r, vx_amp_r = MosaicsReproject.wrap_amp_phase(vx_phase_r, vx_amp_r)
+        vy_phase_r, vy_amp_r = MosaicsReproject.wrap_amp_phase(vy_phase_r, vy_amp_r)
+
+        return vx_phase_r, vy_phase_r, vx_amp_r, vy_amp_r
+
+    @staticmethod
+    def seasonal_velocity_rotation_x_term(vx0, vy0, vx_phase, vy_phase, vx_amp, vy_amp):
         """
         Rotate v_phase and v_amp in the direction of v which is defined by vx0 and vy0.
 
@@ -1799,19 +2130,17 @@ class MosaicsReproject:
         # % Convert phase values from day-of-year to degrees:
         # vx_phase_deg = vx_phase*360/365.24;
         # vy_phase_deg = vy_phase*360/365.24;
-        # TODO: avoid conversion to degrees - go from day-of-year to radians
         vx_phase_deg = vx_phase/365.24
         vy_phase_deg = vy_phase/365.24
 
         # Don't use np.nan values in calculations to avoid warnings
         valid_mask = (~np.isnan(vx_phase_deg)) & (~np.isnan(vy_phase_deg))
 
-        # logging.info(f'Degrees: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
-
         # Convert degrees to radians as numpy trig. functions take angles in radians
+        # Explanation: if skipping *360.0 in vx_phase_deg, vy_phase_deg above,
+        # then to convert to radians: *np.pi/180 --> 360*np.py/180 = 2*np.pi
         vx_phase_deg *= _two_pi
         vy_phase_deg *= _two_pi
-        # logging.info(f'Radians: vx_phase_deg={vx_phase_deg[valid_mask]} vy_phase_deg={vy_phase_deg[valid_mask]}')
 
         # Matlab prototype code:
         # % Rotation matrix for x component:
@@ -1833,16 +2162,20 @@ class MosaicsReproject:
 
         # New in Python: assume clockwise rotation by theta as we need to align
         # vector with v0 direction. Therefore  use clockwise transformation matrix
-        # for rotation, not counter-clockwise as in Matlab prototype code.
+        # for rotation, not counter-clockwise as in Matlab prototype code when rotating
+        # both X and Y components.
         A1 = vx_amp*cos_theta
         B1 = vy_amp*sin_theta
+
+        # Matlab WAY
+        # B1 = -vy_amp*sin_theta
 
         # Matlab prototype code:
         # vx_amp_r   =   hypot(A1.*cosd(vx_phase_deg) + B1.*cosd(vy_phase_deg),  A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg));
         # vx_phase_r = atan2d((A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg)),(A1.*cosd(vx_phase_deg) + B1.*(cosd(vy_phase_deg))));
 
         # We want to retain the component only in the direction of v0,
-        # which becomes new v_amp and v_phase
+        # which becomes new v_amp and v_phase (see original itslive_composite.py code)
         v_amp = np.full_like(vx_phase_deg, np.nan)
         v_phase = np.full_like(vx_phase_deg, np.nan)
 
@@ -1856,46 +2189,7 @@ class MosaicsReproject:
             A1[valid_mask]*np.cos(vx_phase_deg[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_deg[valid_mask])
         )*180.0/np.pi
 
-        # Matlab prototype code:
-        # % Make all amplitudes positive (and reverse phase accordingly):
-        # nx = vx_amp_r<0; % indices of negative Ax_r
-        # vx_amp_r(nx) = -vx_amp_r(nx);
-        # vx_phase_r(nx) = vx_phase_r(nx)+180;
-        mask = v_amp < 0
-        v_amp[mask] *= -1.0
-        # v_phase[mask] += np.pi
-        v_phase[mask] += 180
-
-        # Matlab prototype code:
-        # % Wrap to 360 degrees:
-        # px = vx_phase_r > 0;
-        # vx_phase_r = mod(vx_phase_r, 360);
-        # vx_phase_r((vx_phase_r == 0) & px) = 360;
-        mask = v_phase > 0
-        # v_phase[mask] = np.remainder(v_phase[mask], _two_pi)
-        v_phase[mask] = np.remainder(v_phase[mask], 360.0)
-        mask = mask & (v_phase == 0)
-        # v_phase[mask] = _two_pi
-        v_phase[mask] = 360.0
-
-        # New in Python: convert all values to positive
-        mask = v_phase < 0
-        if np.any(mask):
-            # logging.info(f'Got negative phase, converting to positive values')
-            # v_phase[mask] += _two_pi
-            v_phase[mask] = np.remainder(v_phase[mask], -360.0)
-            v_phase[mask] += 360.0
-
-        # Matlab prototype code:
-        # % Convert degrees to days:
-        # vx_phase_r = vx_phase_r*365.24/360;
-        # vy_phase_r = vy_phase_r*365.24/360;
-        # Composites code does:
-        # v_phase = 365.25*((0.25 - phase_rad/_two_pi) % 1),
-        # and since vx_phase and vy_phase are already shifted by 0.25 in original projection,
-        # so we don't need to do it after rotation in direction of v0
-        # Convert phase to the day of the year:
-        v_phase = v_phase*365.24/360
+        v_phase, v_amp = MosaicsReproject.wrap_amp_phase(v_phase, v_amp)
 
         return v_phase, v_amp
 
@@ -2004,9 +2298,9 @@ class MosaicsReproject:
         This method creates transformation matrix for each point of the grid.
 
         vx_var - Name of the X component of the variable to decide if there is
-                 data in the cell.
+                data in the cell.
         vy_var - Name of the Y component of the variable to decide if there is
-                 data in the cell.
+                data in the cell.
         v_var - Name of the variable to decide if there is data in the cell.
         """
         logging.info(f'Creating trasformation matrix based on {vx_var}, {vy_var}, {v_var}...')
@@ -2065,8 +2359,10 @@ class MosaicsReproject:
             logging.info(f'Loading {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
             npzfile = np.load(MosaicsReproject.TRANSFORMATION_MATRIX_FILE, allow_pickle=True)
             self.transformation_matrix = npzfile['transformation_matrix']
+            self.transformation_matrix_angle=npzfile['transformation_matrix_angle']
+            self.transformation_matrix_scale=npzfile['transformation_matrix_scale']
             self.original_ij_index = npzfile['original_ij_index']
-            logging.info(f'Loaded transformation_matrix and original_ij_index from {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
+            logging.info(f'Loaded transformation_matrix, angle, scale and original_ij_index from {MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
 
             self.valid_cell_indices_y = npzfile['valid_cell_indices_y']
             self.valid_cell_indices_x = npzfile['valid_cell_indices_x']
@@ -2074,8 +2370,10 @@ class MosaicsReproject:
 
             # Make sure matrix dimensions correspond to the target grid
             if self.transformation_matrix.shape != (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE):
-                raise RuntimeError(f'Unexpected shape of transformation matrix: {self.transformation_matrix.shape}'
-                                   f'vs. expected {(len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE)}')
+                raise RuntimeError(
+                    f'Unexpected shape of transformation matrix: {self.transformation_matrix.shape}'
+                    f'vs. expected {(len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE)}'
+                )
 
             return
 
@@ -2083,7 +2381,7 @@ class MosaicsReproject:
 
         # Get corresponding to xy0_points in original projection
         ij0_points = xy_to_ij_transfer.TransformPoints(xy0_points)
-        xy0_points = np.array(xy0_points)
+        xy0_points = np.array(xy0_points, dtype=np.float32)
 
         logging.info('Got list of points in original projection...')
 
@@ -2096,7 +2394,7 @@ class MosaicsReproject:
         ij_unit = [[each[0] + self.x_size, each[1]] for each in ij0_points]
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit)
         # logging.info(f'Type of xy_points: {type(xy_points)}') # list
-        xy_points = np.array(xy_points)
+        xy_points = np.array(xy_points, dtype=np.float32)
 
         num_xy0_points = len(xy0_points)
 
@@ -2127,7 +2425,7 @@ class MosaicsReproject:
         # xy_points = ij_to_xy_transfer.TransformPoints(ij_unit.tolist())
         ij_unit = [[each[0], each[1] + self.y_size] for each in ij0_points]
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit)
-        xy_points = np.array(xy_points)
+        xy_points = np.array(xy_points, dtype=np.float32)
 
         # yunit_v = np.zeros((num_xy0_points, 3))
         start_time = timeit.default_timer()
@@ -2173,8 +2471,7 @@ class MosaicsReproject:
         y_index_all = (np_ij_points[:, 1] - ij_y_bbox.max) / self.y_size
 
         invalid_mask = (x_index_all < 0) | (y_index_all < 0) | \
-                       (x_index_all >= num_i) | (x_index_all < 0) | \
-                       (y_index_all >= num_j) | (y_index_all < 0)
+            (x_index_all >= num_i) | (y_index_all >= num_j)
 
         no_value_counter = np.sum(invalid_mask)
         logging.info(f'No value counter = {no_value_counter} (out of {num_xy0_points}) after setting original ij indices')
@@ -2205,7 +2502,7 @@ class MosaicsReproject:
         if use_taichi is True:
             transform_matrix = TiTransformMatrix(num_xy0_points)
 
-            # TODO: 
+            # TODO:
             # investigate why taichi code segfaults for HMA: 32642/ITS_LIVE_velocity_120m_HMA_2020_v02.nc -p 102027
             # but not ANT: 32724/ITS_LIVE_velocity_120m_ANT_2020_v02.nc -p 3031
             transform_matrix.compute(xunit_v.data, yunit_v.data, valid_indices, self.original_ij_index, v_all_values)
@@ -2213,10 +2510,23 @@ class MosaicsReproject:
             self.transformation_matrix = transform_matrix.data.to_numpy()
 
         else:
-            self.transformation_matrix = np.full((num_xy0_points, TiUnitVector.SIZE, TiUnitVector.SIZE), 
-                                                 DataVars.MISSING_VALUE,
-                                                 dtype=np.float16
-                                                )
+            self.transformation_matrix = np.full(
+                (num_xy0_points, TiUnitVector.SIZE, TiUnitVector.SIZE),
+                DataVars.MISSING_VALUE,
+                dtype=np.float32
+            )
+            # Rotation and scale factors based on computed transformation matrix
+            self.transformation_matrix_angle = np.full(
+                num_xy0_points,
+                DataVars.MISSING_VALUE,
+                dtype=np.float32
+            )
+            self.transformation_matrix_scale = np.full(
+                (num_xy0_points, 2),
+                DataVars.MISSING_VALUE,
+                dtype=np.float32
+            )
+
             xunit_v = xunit_v.data.to_numpy()
             yunit_v = yunit_v.data.to_numpy()
 
@@ -2249,9 +2559,27 @@ class MosaicsReproject:
 
                     # self.transformation_matrix[i] is a 2x2 matrix
                     denom = (yunit[0]*xunit[1] - yunit[1]*xunit[0])
-                    self.transformation_matrix[i] = [
+                    t = [
                         [-yunit[1]/denom, xunit[1]/denom],
                         [yunit[0]/denom, -xunit[0]/denom]
+                    ]
+                    self.transformation_matrix[i] = t
+
+                    # Extract rotation angle and scale factors for X and Y - to be used
+                    # to re-project amplitude and phase as can't apply transformation matrix directly,
+                    # have to use seasonal_velocity_rotation() to reproject v[xy]_amp and v[xy]_phase
+                    # M = [
+                    #       [cos(theta) * ScaleX, -sin(theta) * ScaleY],
+                    #       [ScaleX * sin(theta), ScaleY * cos(theta)]
+                    # ]
+                    self.transformation_matrix_angle[i] = np.arctan2(t[1][0], t[0][0])
+
+                    theta_cos = np.cos(self.transformation_matrix_angle[i])
+
+                    # Store scale factor for X and Y components:
+                    self.transformation_matrix_scale[i] = [
+                        t[0][0] / theta_cos,
+                        t[1][1] / theta_cos
                     ]
 
                 else:
@@ -2263,6 +2591,13 @@ class MosaicsReproject:
         self.transformation_matrix = self.transformation_matrix.reshape(
             (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE)
         )
+        self.transformation_matrix_angle = self.transformation_matrix_angle.reshape(
+            (len(self.y0_grid), len(self.x0_grid))
+        )
+        self.transformation_matrix_scale = self.transformation_matrix_scale.reshape(
+            (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE)
+        )
+
         self.original_ij_index = self.original_ij_index.reshape(
             (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE)
         )
@@ -2284,6 +2619,8 @@ class MosaicsReproject:
         np.savez(
             MosaicsReproject.TRANSFORMATION_MATRIX_FILE,
             transformation_matrix=self.transformation_matrix,
+            transformation_matrix_angle=self.transformation_matrix_angle,
+            transformation_matrix_scale=self.transformation_matrix_scale,
             original_ij_index=self.original_ij_index,
             valid_cell_indices_x=self.valid_cell_indices_x,
             valid_cell_indices_y=self.valid_cell_indices_y
@@ -2346,9 +2683,11 @@ def main(input_file: str, output_file: str, output_proj: int, matrix_file: str, 
     MosaicsReproject.COMPUTE_DEBUG_VARS = compute_debug_vars
     MosaicsReproject.TRANSFORMATION_MATRIX_FILE = matrix_file
 
-    logging.info(f'reproject_mosaics: verbose={MosaicsReproject.VERBOSE}, '
-                 f'compute_debug={MosaicsReproject.COMPUTE_DEBUG_VARS}, '
-                 f'matrix_file={MosaicsReproject.TRANSFORMATION_MATRIX_FILE}')
+    logging.info(
+        f'reproject_mosaics: verbose={MosaicsReproject.VERBOSE}, '
+        f'compute_debug={MosaicsReproject.COMPUTE_DEBUG_VARS}, '
+        f'matrix_file={MosaicsReproject.TRANSFORMATION_MATRIX_FILE}'
+    )
 
     reproject = MosaicsReproject(input_file, output_proj)
     reproject(output_file)

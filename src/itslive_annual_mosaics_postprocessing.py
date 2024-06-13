@@ -29,11 +29,10 @@ import xarray as xr
 
 # Local imports
 from grid import Bounds, Grid
-from itslive_utils import transform_coord
 
 from itscube import ITSCube
-from itscube_types import Coords, BatchVars, DataVars
-from itslive_annual_mosaics import ITSLiveAnnualMosaics
+from itscube_types import Coords, BatchVars, DataVars, ShapeFile, CompDataVars
+from itslive_annual_mosaics import ITSLiveAnnualMosaics, MosaicsOutputFormat
 
 # Set up logging
 logging.basicConfig(
@@ -41,6 +40,10 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+# Non-EPSG projection that can be provided on input
+ESRICode = 102027
+ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs'
 
 
 class ITSLiveAnnualMosaicsPostProcess:
@@ -98,12 +101,18 @@ class ITSLiveAnnualMosaicsPostProcess:
                 # Mosaic's EPSG
                 self.epsg = int(ds.mapping.attrs[ITSLiveAnnualMosaicsPostProcess.SPATIAL_EPSG_ATTR])
 
+                output_projection = osr.SpatialReference()
+
+                if self.epsg != ESRICode:
+                    output_projection.ImportFromEPSG(self.epsg)
+
+                else:
+                    output_projection.ImportFromProj4(ESRICode_Proj4)
+
                 input_projection = osr.SpatialReference()
                 input_projection.ImportFromEPSG(int(BatchVars.LON_LAT_PROJECTION))
                 input_projection.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-                output_projection = osr.SpatialReference()
-                output_projection.ImportFromEPSG(self.epsg)
 
                 # Initialize transfer from lon/lat to mosaic's EPSG
                 self.ij_to_xy_transfer = osr.CoordinateTransformation(input_projection, output_projection)
@@ -189,7 +198,7 @@ class ITSLiveAnnualMosaicsPostProcess:
 
             if mask.values.sum() == 0:
                 # One or both masks resulted in no coverage
-                logging.info(f'Skipping polygon since it does not overlap with mosaics')
+                logging.info('Skipping polygon since it does not overlap with mosaics')
 
             else:
                 # Reduce polygon to the mosaics coverage
@@ -209,13 +218,59 @@ class ITSLiveAnnualMosaicsPostProcess:
             # For debugging: plot final mask
             # self.mask_ds.data.plot(x='x', y='y')
 
-
         copy_file_to_s3 = not ITSLiveAnnualMosaicsPostProcess.DRYRUN
+
+        if ITSLiveAnnualMosaicsPostProcess.MASK_VAR not in self.mask_ds:
+            logging.info('Polygons do not overlap mosaics, just copy original mosaics to the target S3 destination')
+
+            _s3_prefix = 's3://'
+
+            # There is no polygon area that overlaps mosaics, just copy source mosaics
+            # to its target destination
+            for each_file in self.mosaics_files:
+                each_s3_path = each_file
+
+                if not each_file.startswith(_s3_prefix):
+                    each_s3_path = f'{_s3_prefix}{each_file}'
+
+                target_file = os.path.basename(each_file)
+                target_file = os.path.join(target_bucket, target_bucket_dir, target_file)
+
+                logging.info(f'Copying {each_s3_path} to {target_file}')
+
+                if copy_file_to_s3:
+                    command_line = [
+                        "awsv2", "s3", "cp",
+                        each_s3_path,
+                        target_file,
+                        "--acl", "bucket-owner-full-control"
+                    ]
+
+                    logging.info(' '.join(command_line))
+
+                    command_return = None
+                    env_copy = os.environ.copy()
+
+                    logging.info(f"Copy {each_s3_path} to {target_file}")
+
+                    command_return = subprocess.run(
+                        command_line,
+                        env=env_copy,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT
+                    )
+
+                    if command_return.returncode != 0:
+                        # Report the whole stdout stream as one logging message
+                        raise RuntimeError(f"Failed to copy {each_s3_path} to {target_file} with returncode={command_return.returncode}: {command_return.stdout}")
+
+            return
 
         # Mask out all variables data based on created mask
         for each_file in self.mosaics_files:
             with self.s3.open(each_file, mode='rb') as s3_file_obj:
-                with xr.open_dataset(s3_file_obj, engine=ITSCube.NC_ENGINE) as ds:
+                with xr.open_dataset(s3_file_obj, engine=ITSCube.NC_ENGINE, decode_timedelta=False) as ds:
                     logging.info(f'Masking values for {each_file}...')
                     basename_file = os.path.basename(each_file)
 
@@ -224,13 +279,30 @@ class ITSLiveAnnualMosaicsPostProcess:
                     for each_var in ds.keys():
                         if each_var not in [DataVars.MAPPING, ShapeFile.FLOATINGICE, ShapeFile.LANDICE]:
                             logging.info(f'--->{each_var}')
- 
+
                             other_value = np.nan
                             if each_var in [CompDataVars.SENSOR_INCLUDE]:
-                                # Use binary flag's "exclude" value to mask out the polygons
+                                # Use binary flag's "include" value for masked out polygons:
+                                # per Alex: "1 = excluded by the filtering algorithm... not the masking"
                                 other_value = 0
 
                             ds[each_var] = ds[each_var].where(~self.mask_ds[ITSLiveAnnualMosaicsPostProcess.MASK_VAR], other=other_value)
+
+                    # Change missing_value for CompDataVars.SENSOR_INCLUDE
+
+                    # Data variables which dtype should be uint8 in final mosaics with
+                    # fill value = 255
+                    MosaicsOutputFormat.UINT8_TYPES = [
+                        CompDataVars.OUTLIER_FRAC
+                    ]
+
+                    # Data variables which dtype should be uint8 in final mosaics with
+                    # fill value = 0
+                    MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE = [
+                        ShapeFile.LANDICE,
+                        ShapeFile.FLOATINGICE,
+                        CompDataVars.SENSOR_INCLUDE
+                    ]
 
                     if ITSLiveAnnualMosaics.SUMMARY_KEY in basename_file:
                         # This is a summary mosaic
@@ -270,7 +342,7 @@ def parse_args():
         type=str,
         action='store',
         default=None,
-        help="Shapefile file that stores polygon areas to mask out in mosaics [%(default)s]."
+        help="Shapefile that stores polygon areas to mask out in mosaics [%(default)s]."
     )
     parser.add_argument(
         '-m', '--mosaicsRegex',
@@ -328,8 +400,7 @@ if __name__ == '__main__':
     ITSLiveAnnualMosaicsPostProcess.DRYRUN = args.dryrun
 
     postProcess = ITSLiveAnnualMosaicsPostProcess(args.shapeFile, args.bucket, args.mosaicsRegex)
+    postProcess(args.targetBucket, args.targetBucketDir)
 
-    result_files = postProcess(args.targetBucket, args.targetBucketDir)
-
-    logging.info(f'Processed mosaics files: {json.dumps(result_files, indent=3)}')
+    logging.info(f'Processed mosaics files: {json.dumps(postProcess.mosaics_files, indent=3)}')
     logging.info("Done.")
