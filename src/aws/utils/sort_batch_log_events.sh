@@ -24,9 +24,33 @@
 # >find . -type f -exec grep -qiF 'Number of found by API granules: 0' {} \; -exec mv {} zero_granules_by_searchAPI \;
 
 # mkdir done
-# >find . -type f -exec grep -qiF 'Done\.' {} \; -exec mv {} done \;
+# >find . -type f -exec grep -qiF 'Done.' {} \; -exec mv {} done \;
+# >find . -type f -exec grep -l "Done\." {} \; | xargs -I {} mv {} done
+
+# Search only top level directory:
+# find . -maxdepth 1 -type f
+
+# Jobs that failed to get granules from the searchAPI
+# mkdir failed_searchAPI
+
+# find . -type f -exec grep -qiF 'RuntimeError: Failed to get granules from searchAPI.' {} \; -exec mv {} failed_searchAPI \;
+# Get the cubes names in JSON format
+# grep 'Cube S3: ' *log| awk -F' ' '{print $1}' >> failed_searchAPI.txt
+# cat failed_searchAPI.txt | sed 's/\.zarr.*/\.zarr",/' >> failed_searchAPI_list.json.tmp
+# cat failed_searchAPI_list.json.tmp | sed 's/ITS/"ITS/' >> failed_searchAPI_list.json
 
 # find . -type f -exec grep -qiF 'Killed' {} \; -exec mv {} killed \;
+
+# Extract number of granules as returned by the searchAPI from all log files in the directory,
+# sort them by the number of granules
+# find . -type f -name '*.log' -exec awk '/Number of found by API granules: [0-9]*/ {print $14, FILENAME}' {} + | sort -k1,1n |& tee done_number_of_granules.txt
+
+# Keep only filenames from "number_of_granules log_filename"
+# cat filename.txt | sed 's/.* \.\///' | awk -F'/' '{print $NF}'
+
+# Format logs of datacubes to the JSON list of datacubes:
+# cat failed_number_of_granules_list.txt | sed 's/\.zarr.*/\.zarr",/' >> failed_number_of_granules_list.json.tmp
+# cat failed_number_of_granules_list.json.tmp | sed 's/ITS/"ITS/' >> failed_number_of_granules_list.json
 
 # Jobs that created cubes successfully
 # mkdir wrote_cubes
@@ -50,6 +74,19 @@
 # ` done/ITS_LIVE_vel_EPSG3031_G0120_X-1050000_Y-1050000.zarr.log:2022-06-25T02:35:24.708Z 06/25/2022 02:35:24 AM - INFO - Loading vx[:, 0:100, 0:100] out of [6240, 833, 833]...`
 # grep zarr done.txt| awk -F'out of' '{print $2}' | awk -F, '{print $1}' | sed 's/\[//' | sort -nr | head -1
 
+# COMPOSITES:
+# find . -type d -exec ~/sort_composites_batch_log_events.sh \{\} \; |& tee sort_logs.log
+# find . -maxdepth 1 -type f -exec grep -l "Done\." {} \; | xargs -I {} mv {} done
+# grep -l LinAlgError ITS_LIVE_vel_EPSG3* | xargs -I {}  mv {} LinAlgError/
+# grep -l MemoryError *log | xargs -I {}  mv {}  MemoryError/
+
+# See how many layers in original cube
+# grep -o 'Total number of sensors in the cube: ([0-9]*,)' *log
+
+# Get number of layers in each input datacube, and sort files by that number - to isolate large cubes to be
+# processed with more powerful instances
+#   grep -o 'Total number of sensors in the cube: ([0-9]*,)' *log | sed -r 's/Total number of sensors in the cube: \(([0-9]*),\)/ \1/' | sort -t ':' -k 2,2n
+
 echo $1
 # Actual exported Batch log file archive
 FILE="$1/000000.gz"
@@ -63,8 +100,9 @@ if test -f $FILE; then
   find $FILE -exec zcat {} + | sed -r 's/^[0-9]+/\x0&/' | sort -z | strings | grep -v Completed >> $NEW_FILE
 
   # Extract datacube filename the log stream corresponds to
-  CUBE_NAME=$(grep Creating $NEW_FILE | awk -F/ '{print $NF}')
-  CUBE_TIME=$(grep Creating $NEW_FILE | awk -F' ' '{print $1}')
+  # CUBE_NAME=$(grep Creating $NEW_FILE | awk -F/ '{print $NF}')
+  CUBE_NAME=$(grep 'Cube S3: ' $NEW_FILE | awk -F/ '{print $NF}')
+  CUBE_TIME=$(grep 'Cube S3: ' $NEW_FILE | awk -F' ' '{print $1}')
 
   # CUBE_NAME=$(grep 'Cube S3:' $NEW_FILE | awk -F/ '{print $NF}')
 

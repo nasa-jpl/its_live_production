@@ -94,7 +94,10 @@ class DataCubeCompositeBatch:
                 #     "fill-opacity": 1.0,
                 #     "fill": "red",
                 #     "roi_percent_coverage": 0.0,
+                # Old format:
                 #     "data_epsg": "EPSG:32701",
+                #  New format:
+                #     "epsg": 32701,
                 #     "geometry_epsg": {
                 #         "type": "Polygon",
                 #         "coordinates": [
@@ -130,10 +133,10 @@ class DataCubeCompositeBatch:
                 roi = properties[CubeJson.ROI_PERCENT_COVERAGE]
                 if roi != 0.0:
                     # Submit AWS Batch to generate the cube composite
+                    # Convert int EPSG code to string
+                    epsg_code = str(properties[CubeJson.EPSG])
                     # Format filename for the cube
-                    epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
-                    # Extract int EPSG code
-                    epsg_code = epsg.replace(CubeJson.EPSG_PREFIX, '')
+                    epsg = CubeJson.EPSG_PREFIX + epsg_code
 
                     # Include only specific EPSG code(s) if specified
                     if len(BatchVars.EPSG_TO_GENERATE) and \
@@ -257,7 +260,11 @@ class DataCubeCompositeBatch:
                             },
                             # Set timeout to 72 hours
                             timeout={
-                                'attemptDurationSeconds': 259200
+                                # Change to 4 days (345600) to support very large cubes
+                                # Change to 6 days (518400)
+                                # Change to 9 days (777600)
+                                # Change to 14 days (1209600)
+                                'attemptDurationSeconds': 1209600
                             }
                         )
 
@@ -277,6 +284,21 @@ class DataCubeCompositeBatch:
                     })
 
                     jobs_files.append(os.path.join(s3_bucket, bucket_dir, cube_filename))
+
+                else:
+                    # Report the cube as being skipped due to the ROI==0 if it's one of the requested datacubes
+                    epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
+                    coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
+                    x_bounds = Bounds([each[0] for each in coords])
+                    y_bounds = Bounds([each[1] for each in coords])
+
+                    mid_x = int((x_bounds.min + x_bounds.max)/2)
+                    mid_y = int((y_bounds.min + y_bounds.max)/2)
+
+                    cube_filename = datacube_filename_zarr(epsg, self.grid_size, mid_x, mid_y)
+
+                    if len(BatchVars.CUBES_TO_GENERATE) and cube_filename in BatchVars.CUBES_TO_GENERATE:
+                        logging.info(f'ROI=0 is detected for {cube_filename}')
 
             logging.info(f"Number of batch jobs submitted: {num_jobs}")
 
@@ -329,9 +351,11 @@ def parse_args():
     )
 
     # Command-line arguments parser
-    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0],
-                                     epilog=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__.split('\n')[0],
+        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         '-c', '--cubeDefinitionFile',
         type=str,
@@ -357,21 +381,21 @@ def parse_args():
         '-u', '--urlPath',
         type=str,
         action='store',
-        default='http://its-live-data.s3.amazonaws.com',
+        default='https://its-live-data.s3.amazonaws.com',
         help="URL for the store in S3 bucket (to provide for easier download option) [%(default)s]"
     )
     parser.add_argument(
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='datacubes/v02_latest',
+        default='datacubes/v2',
         help="S3 directory for the datacubes [%(default)s]"
     )
     parser.add_argument(
         '-o', '--outputBucketDir',
         type=str,
         action='store',
-        default='composites/annual/v02_latest',
+        default='composites/annual/v2_slow_error',
         help="Destination S3 directory for the composites [%(default)s]"
     )
     parser.add_argument(
@@ -388,15 +412,19 @@ def parse_args():
         default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-64Gb:1',
         # default = 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-256Gb:2',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-128Gb:1',
+        # Use compute optimized env. to re-run composites for ANT and Greenland
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-CO-32Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-spot-8vCPU-64GB',
+        # default='datacube-spot-8vCPU-64GB',
+        default='datacube-ondemand-8vCPU-64GB',
         # default = 'datacube-ondemand-32vCPU-256GB',
         # default='datacube-spot-16vCPU-128GB',
+        # default='datacube-spot-CO-16vCPU-32GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
@@ -435,7 +463,9 @@ def parse_args():
     parser.add_argument(
         '-s', '--chunkSize',
         type=int,
-        default=100,
+        # default=100,
+        # default=50,
+        default=10,
         help="Size of x and y dimensions for the chunk of spacial points to process at one time [%(default)d]."
     )
     parser.add_argument(
