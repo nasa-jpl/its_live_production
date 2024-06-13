@@ -171,15 +171,15 @@ class MosaicsOutputFormat:
     # Data variables which dtype should be uint8 in final mosaics with
     # fill value = 255
     UINT8_TYPES = [
-        CompDataVars.OUTLIER_FRAC,
-        CompDataVars.SENSOR_INCLUDE
+        CompDataVars.OUTLIER_FRAC
     ]
 
     # Data variables which dtype should be uint8 in final mosaics with
     # fill value = 0
     UINT8_TYPES_ZERO_MISSING_VALUE = [
         ShapeFile.LANDICE,
-        ShapeFile.FLOATINGICE
+        ShapeFile.FLOATINGICE,
+        CompDataVars.SENSOR_INCLUDE
     ]
 
 
@@ -2334,9 +2334,10 @@ class ITSLiveAnnualMosaics:
         )
 
         # Start with all values set to "include" (1)
-        # TODO: Change to new "include" value of 0 once the change is implemented in composites.
+        # Use new "include" value of 0 since the change is implemented in composites:
+        # values are flipped right before storing data to the file
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
-            data=np.full(sensor_dims, 1, dtype=np.short),
+            data=np.full(sensor_dims, 0, dtype=np.short),
             coords=var_coords,
             dims=var_dims,
             attrs={
