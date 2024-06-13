@@ -1,0 +1,28 @@
+#
+# Configuration file to create conda environment to run kerchunk references related code.
+#
+# To create conda environment, run command:
+#
+# $ conda env create -f kerchunk_environment.yml
+#
+# Followed by the following command to activate the environment:
+#
+# $ conda activate itslive_kerchunk
+#
+name: itslive_kerchunk
+
+channels:
+  - defaults
+  - conda-forge
+
+dependencies:
+  - python
+  - click
+  - flake8
+  - fsspec
+  - h5py
+  - kerchunk
+  - netCDF4
+  - s3fs
+  - ujson
+  - zarr
