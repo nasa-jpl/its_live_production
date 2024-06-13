@@ -7,6 +7,14 @@ from kerchunk.hdf import SingleHdf5ToZarr
 from netCDF4 import Dataset
 import fsspec
 from typing import List, Dict, Any
+import logging
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 
 def process_granule(url: str, data: bytes) -> Dict[str, Any]:
@@ -50,7 +58,7 @@ def parse_catalogs_list_file(url: str, **storage_options) -> List[str]:
     with fsspec.open(url, mode='r', **storage_options) as f:
         catalogs = f.readlines()
     return catalogs
-    
+
 def granule_urls_from_feautures(features: List[Dict[str, Any]]) -> List[str]:
     """Build granule URLs from GeoJSON features"""
     urls = []
@@ -86,7 +94,7 @@ def process_all_granules(
     for i, url in enumerate(urls):
         granules.append(url)
         if len(granules) == batch_size or i == len(urls) - 1:
-            print(f"Processing Batch {batch}/{len(urls) // batch_size}")
+            logger.info(f"Processing Batch {batch}/{len(urls) // batch_size}")
             result = process_granules(granules)
             granules = []
             ext = "json"
@@ -98,6 +106,6 @@ def process_all_granules(
                     data = blosc.encode(data)
                 f.write(data)
             batch += 1
-            
+
 if __name__ == '__main__':
     process_all_granules()
