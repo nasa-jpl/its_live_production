@@ -69,9 +69,9 @@ def granule_urls_from_feautures(features: List[Dict[str, Any]]) -> List[str]:
     return urls
 
 @click.command()
-@click.argument("catalog_file")
-@click.argument("start_index", type=int)
-@click.argument("out_dir")
+@click.option("--catalog_file", type=str)
+@click.option("--start_index", type=int)
+@click.option("--out_dir", type=str)
 @click.option("--batch", type=int, default=1)
 @click.option("--batch_size", type=int, default=100)
 @click.option("--compress", is_flag=True, default=True)
@@ -88,6 +88,9 @@ def process_all_granules(
     with fsspec.open(catalogs[start_index]) as f:
         features = ujson.load(f)['features']
     urls = granule_urls_from_feautures(features)
+
+    logger.info(f'Got {len(urls)} granules to process, splitting them by {batch_size} batch size...')
+
     result = {}
     granules = []
     blosc = zarr.Blosc('zstd')
