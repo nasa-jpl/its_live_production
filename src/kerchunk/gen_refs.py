@@ -94,6 +94,7 @@ def process_all_granules(
     result = {}
     granules = []
     blosc = zarr.Blosc('zstd')
+
     for i, url in enumerate(urls):
         granules.append(url)
         if len(granules) == batch_size or i == len(urls) - 1:
@@ -103,7 +104,11 @@ def process_all_granules(
             ext = "json"
             if compress:
                 ext += ".zstd"
-            with fsspec.open(f"{out_dir}/{start_index}.{batch-1}.{ext}", "wb") as f:
+
+            target_file = f"{out_dir}/{start_index}.{batch-1}.{ext}"
+            logging.info(f'Writing to {target_file}...')
+
+            with fsspec.open(target_file, "wb", s3_additional_kwargs={'ACL': 'bucket-owner-full-control'}) as f:
                 data = ujson.dumps(result).encode()
                 if compress:
                     data = blosc.encode(data)
