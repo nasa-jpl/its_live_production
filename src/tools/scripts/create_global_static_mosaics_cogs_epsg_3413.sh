@@ -35,7 +35,7 @@ for var in "${variables[@]}"; do
         # Reproject to the Google Maps projection (epgs:3413)
         if [[ $output_filename == *"RGI19A"* ]]; then
             # echo "Filename includes the token 'RGI19A'."
-            gdalwarp -of COG -co "BIGTIFF=YES" "$filename" -t_srs epsg:3413 "$output_filename" -r bilinear -wm 9000 -multi -wo "NUM_THREADS=$num_threads" -te -180 -87 180 -60 -te_srs epsg:3413
+            gdalwarp -of COG -co "BIGTIFF=YES" "$filename" -t_srs epsg:3413 "$output_filename" -r bilinear -wm 9000 -multi -wo "NUM_THREADS=$num_threads" -te -180 -87 180 -60 -te_srs epsg:4326
         else
             # echo "Filename does not include the token 'RGI19A'."
             gdalwarp -of COG -co "BIGTIFF=YES" "$filename" -t_srs epsg:3413 "$output_filename" -r bilinear -wm 9000 -multi -wo "NUM_THREADS=$num_threads"
