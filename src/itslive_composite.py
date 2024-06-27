@@ -1747,6 +1747,15 @@ class StableShiftFilter:
             vy += vy_stable_shift
         end
     end
+
+    Explanation:
+
+    1. If the stable_shift is very large, and stable_shift_flag == 1, then we exclude the image pair
+    from our composite.
+    2. If the stable_shift_flag == 2, then simply remove stable_shift. The correction is subtracted in autoRIFT,
+    so we have to add it back.
+    The shift is very large over surface we are "not confident" (stable_shift_flag=2) about, so we decided to remove
+    the stable_shift (reverse it as compared to the granules).
     """
     # Thresholds for stable_shift filter
     THRESHOLD = {
@@ -1760,6 +1769,7 @@ class StableShiftFilter:
     DEC_YEAR_LEN = 365.25
 
     # If mission group is provided, then include granules for this group only.
+    # This is to include granules of a specific mission group into composites.
     KEEP_MISSION_GROUP = None
 
     # Optional list of missions to exclude from composites.
@@ -2154,6 +2164,9 @@ class ITSLiveComposite:
         logging.info("Add systematic error based on level of co-registration...")
         self.vx_error = self.stable_shift_filter.exclude(cube_ds.vx_error.astype(np.float32).values)
 
+        # Note: we discovered that when there is very little stationary ground (i.e. Greenland and Antarctica) the errors
+        # can be much too small leading to poor composites. We therefore replaced the error with slow error which does a
+        # better job at capturing true error at these locations.
         if ITSLiveComposite.USE_ERROR_SLOW:
             # Replace vx_error with valid vx_error_slow
             vx_error_slow = self.stable_shift_filter.exclude(cube_ds.vx_error_slow.astype(np.float32).values)
@@ -2171,6 +2184,8 @@ class ITSLiveComposite:
             self.vy_error[mask] = vy_error_slow[mask]
 
         stable_shift_values = self.stable_shift_filter.exclude(cube_ds[DataVars.FLAG_STABLE_SHIFT])
+        # Note: a code is written as a simple summation of errors. It might be better to add it
+        # as a root sum of squares: sqrt(v[xy]_error**2 + error**2). Something to consider for v3.
         for value, error in ITSLiveComposite.CO_REGISTRATION_ERROR.items():
             mask = (stable_shift_values == value)
             self.vx_error[mask] += error
