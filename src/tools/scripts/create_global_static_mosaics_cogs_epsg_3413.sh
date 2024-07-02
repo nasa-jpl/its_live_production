@@ -20,8 +20,8 @@ num_threads=46
 
 # Iterate over variables
 for var in "${variables[@]}"; do
-    # Array of static mosaics TIF files for the variable
-    downloaded_files=$(awsv2 s3 ls "$bucket"/ | grep v02_"$var".tif | awk '{print $NF}')
+    # Array of static mosaics TIF files for the variable, keep only selected mosaics: EPSG: 3413 = RGI 1, 3, 4, 5, 6, 7, 8, 9
+    downloaded_files=$(awsv2 s3 ls "$bucket"/ | grep v02_"$var".tif | grep -E 'RGI0[13456789]' | awk '{print $NF}')
 
     reprojected_files=()
     for filename in ${downloaded_files[@]}; do
