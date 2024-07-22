@@ -326,8 +326,8 @@ class RestoreM11M12Values:
                     bucket.copy(source_dict, target_key)
                     msgs.append(f'Copying {target_ext} to s3')
 
-        except ClientError as exc:
-            msgs.append(f"ERROR: {exc}")
+            except ClientError as exc:
+                msgs.append(f"ERROR: {exc}")
 
         return msgs
 
