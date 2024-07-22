@@ -212,10 +212,7 @@ class RestoreM11M12Values:
         ds = None
 
         # Find granule to correct in the list of existing granules
-        granule_s3 = RestoreM11M12Values.find_granule_path(granule_basename, all_original_granules)
-
-        # s3 bucket/url for the granule to correct
-        granule_s3_path = os.path.join(RestoreM11M12Values.BUCKET, granule_s3)
+        granule_s3_path = RestoreM11M12Values.find_granule_path(granule_basename, all_original_granules)
 
         # Read the granule for correction in
         with s3.open(granule_s3_path, mode='rb') as fhandle:
@@ -298,11 +295,11 @@ class RestoreM11M12Values:
         ds.to_netcdf(fixed_file, engine='h5netcdf', encoding=granule_encoding)
 
         # Upload corrected granule to the bucket - format sub-directory based on new cropped values
-        if RestoreM11M12Values.DRYRUN:
+        if not RestoreM11M12Values.DRYRUN:
             s3_client = boto3.client('s3')
             try:
                 # Upload granule to the target directory in the bucket
-                target = granule_s3.replace(RestoreM11M12Values.SOURCE_DIR, RestoreM11M12Values.TARGET_DIR)
+                target = granule_s3_path.replace(RestoreM11M12Values.SOURCE_DIR, RestoreM11M12Values.TARGET_DIR)
 
                 msgs.append(f"Uploading to {target}")
                 s3_client.upload_file(fixed_file, RestoreM11M12Values.BUCKET, target)
@@ -317,7 +314,7 @@ class RestoreM11M12Values:
                     target_key = target.replace('.nc', target_ext)
 
                     # Path to original PNG file in the S3 bucket - just copy to new location in s3
-                    source_key = granule_s3.replace('.nc', target_ext)
+                    source_key = granule_s3_path.replace('.nc', target_ext)
 
                     source_dict = {
                         'Bucket': RestoreM11M12Values.BUCKET,
