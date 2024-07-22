@@ -163,6 +163,7 @@ class RestoreM11M12Values:
             num_to_fix -= num_tasks
             start += num_tasks
 
+    @staticmethod
     def find_granule_path(self, granule_basename: str, all_original_granules: list):
         """Given granule filename find its full path in s3://its-live-data bucket.
 
