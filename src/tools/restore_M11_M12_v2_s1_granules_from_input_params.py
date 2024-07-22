@@ -72,6 +72,8 @@ class RestoreM11M12Values:
     # Number of Dask workers for parallel processing
     DASK_WORKERS = 8
 
+    DRYRUN = False
+
     def __init__(self, granule_table: str):
         """
         Initialize object.
@@ -86,9 +88,6 @@ class RestoreM11M12Values:
         self.s3_ref = s3fs.S3FileSystem()
 
         self.table = pd.read_parquet(granule_table)
-
-        # Keep rows with granules that need to be corrected
-        self.table = self.table.loc[self.table['to_correct'] == True]
 
         logging.info(f"Total number of granules to correct: {len(self.table)}")
 
@@ -139,8 +138,8 @@ class RestoreM11M12Values:
 
             tasks = [
                 dask.delayed(RestoreM11M12Values.correct)(
-                    each['v2_s3_bucket'],
-                    each['v2_s3_key'],
+                    # each['v2_s3_bucket'],
+                    os.path.basename(each['v2_s3_key']),
                     each['cor_s3_bucket'],
                     each['job_id'],
                     self.s3,
@@ -164,7 +163,7 @@ class RestoreM11M12Values:
             num_to_fix -= num_tasks
             start += num_tasks
 
-    def find_granule_path(self, granule_basename: str):
+    def find_granule_path(self, granule_basename: str, all_original_granules: list):
         """Given granule filename find its full path in s3://its-live-data bucket.
 
         Args:
@@ -173,7 +172,7 @@ class RestoreM11M12Values:
         Returns:
             Original granule S3 path that corresponds to the target URL.
         """
-        found_granule = [each for each in self.all_original_granules if os.path.basename(each) == granule_basename]
+        found_granule = [each for each in all_original_granules if os.path.basename(each) == granule_basename]
         if len(found_granule) == 0:
             raise RuntimeError(f'Could not find original granule that corresponds to {granule_basename}')
 
@@ -212,7 +211,7 @@ class RestoreM11M12Values:
         ds = None
 
         # Find granule to correct in the list of existing granules
-        granule_s3 = RestoreM11M12Values.find_granule_path(granule_basename)
+        granule_s3 = RestoreM11M12Values.find_granule_path(granule_basename, all_original_granules)
 
         # s3 bucket/url for the granule to correct
         granule_s3_path = os.path.join(RestoreM11M12Values.BUCKET, granule_s3)
@@ -222,6 +221,9 @@ class RestoreM11M12Values:
             with xr.open_dataset(fhandle, engine=RestoreM11M12Values.NC_ENGINE) as ds:
                 ds = ds.load()
 
+        # Get the date separation in days from the granule to divide M11 and M12 by
+        date_dt = ds.img_pair_info.attrs['date_dt']
+
         # Read M11 and M12 from reference TIF files
 
         # Initialize mask to correspond to the granule's X/Y extends to crop reference TIF files to
@@ -230,6 +232,7 @@ class RestoreM11M12Values:
         cropped_m11 = None
         s3_m11_file = os.path.join(ref_bucket, ref_dir, RestoreM11M12Values.M11_TIFF_FILE)
 
+        msgs.append(f'Reading: {s3_m11_file}')
         with s3_ref.open(s3_m11_file, mode='rb') as fhandle:
             with rxr.open_rasterio(fhandle, mask_and_scale=True) as m11_tiff:
                 # Crop TIFs to granule's X/Y ranges
@@ -240,16 +243,19 @@ class RestoreM11M12Values:
                 cropped_m11 = m11_tiff.where(mask, drop=True)
 
                 # Get values from TIFs
-                ds[DataVars.M11] = cropped_m11[DataVars.M11]
+                ds[DataVars.M11] = cropped_m11[DataVars.M11] / date_dt
 
         cropped_m12 = None
 
-        with s3_ref.open(os.path.join(ref_bucket, ref_dir, RestoreM11M12Values.M12_TIFF_FILE), mode='rb') as fhandle:
+        s3_m12_file = os.path.join(ref_bucket, ref_dir, RestoreM11M12Values.M12_TIFF_FILE)
+
+        msgs.append(f'Reading: {s3_m12_file}')
+        with s3_ref.open(s3_m12_file, mode='rb') as fhandle:
             with rxr.open_rasterio(fhandle, mask_and_scale=True) as m12_tiff:
                 cropped_m12 = m12_tiff.where(mask, drop=True)
 
                 # Get values from TIFs
-                ds[DataVars.M12] = cropped_m12[DataVars.M12]
+                ds[DataVars.M12] = cropped_m12[DataVars.M12] / date_dt
 
         # Add date when granule was updated
         ds.attrs['date_updated'] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
@@ -273,13 +279,13 @@ class RestoreM11M12Values:
                 each_var_settings[Output.CHUNKSIZES_ATTR] = two_dim_chunks_settings
 
         # Preserve encoding attributes for M11 and M12 per original granule
-        for each_var in [DataVars.M11, DataVars.M12]:
-            if Output.SCALE_FACTOR not in cropped_m11[each_var].encoding:
-                msgs.append(f'ERROR: missing {each_var}:{Output.SCALE_FACTOR} encoding attribute for {s3_m11_file} (to correct {granule_s3_path})')
+        for each_var, each_ds in zip([DataVars.M11, DataVars.M12], [cropped_m11, cropped_m12]):
+            if Output.SCALE_FACTOR not in each_ds[each_var].encoding:
+                msgs.append(f'ERROR: missing {each_var}:{Output.SCALE_FACTOR} encoding attribute (to correct {granule_s3_path})')
                 return msgs
 
-            if Output.ADD_OFFSET not in cropped_m11[each_var].encoding:
-                msgs.append(f'ERROR: missing {each_var}:{Output.ADD_OFFSET} encoding attribute for {s3_m11_file} (to correct {granule_s3_path})')
+            if Output.ADD_OFFSET not in each_ds[each_var].encoding:
+                msgs.append(f'ERROR: missing {each_var}:{Output.ADD_OFFSET} encoding attribute (to correct {granule_s3_path})')
                 return msgs
 
             granule_encoding[each_var][Output.SCALE_FACTOR] = cropped_m11[each_var].encoding[Output.SCALE_FACTOR]
@@ -291,33 +297,34 @@ class RestoreM11M12Values:
         ds.to_netcdf(fixed_file, engine='h5netcdf', encoding=granule_encoding)
 
         # Upload corrected granule to the bucket - format sub-directory based on new cropped values
-        s3_client = boto3.client('s3')
-        try:
-            # Upload granule to the target directory in the bucket
-            target = granule_s3.replace(RestoreM11M12Values.SOURCE_DIR, RestoreM11M12Values.TARGET_DIR)
+        if RestoreM11M12Values.DRYRUN:
+            s3_client = boto3.client('s3')
+            try:
+                # Upload granule to the target directory in the bucket
+                target = granule_s3.replace(RestoreM11M12Values.SOURCE_DIR, RestoreM11M12Values.TARGET_DIR)
 
-            msgs.append(f"Uploading to {target}")
-            s3_client.upload_file(fixed_file, RestoreM11M12Values.BUCKET, target)
+                msgs.append(f"Uploading to {target}")
+                s3_client.upload_file(fixed_file, RestoreM11M12Values.BUCKET, target)
 
-            # msgs.append(f"Removing local {fixed_file}")
-            os.unlink(fixed_file)
+                # msgs.append(f"Removing local {fixed_file}")
+                os.unlink(fixed_file)
 
-            # There are corresponding browse and thumbprint images to transfer
-            bucket = boto3.resource('s3').Bucket(RestoreM11M12Values.BUCKET)
+                # There are corresponding browse and thumbprint images to transfer
+                bucket = boto3.resource('s3').Bucket(RestoreM11M12Values.BUCKET)
 
-            for target_ext in ['.png', '_thumb.png']:
-                target_key = target.replace('.nc', target_ext)
+                for target_ext in ['.png', '_thumb.png']:
+                    target_key = target.replace('.nc', target_ext)
 
-                # Path to original PNG file in the S3 bucket - just copy to new location in s3
-                source_key = granule_s3.replace('.nc', target_ext)
+                    # Path to original PNG file in the S3 bucket - just copy to new location in s3
+                    source_key = granule_s3.replace('.nc', target_ext)
 
-                source_dict = {
-                    'Bucket': RestoreM11M12Values.BUCKET,
-                    'Key': source_key
-                }
+                    source_dict = {
+                        'Bucket': RestoreM11M12Values.BUCKET,
+                        'Key': source_key
+                    }
 
-                bucket.copy(source_dict, target_key)
-                msgs.append(f'Copying {target_ext} to s3')
+                    bucket.copy(source_dict, target_key)
+                    msgs.append(f'Copying {target_ext} to s3')
 
         except ClientError as exc:
             msgs.append(f"ERROR: {exc}")
@@ -344,7 +351,7 @@ def main():
     parser.add_argument(
         '-t', '--target_bucket_dir',
         type=str,
-        default='velocity_image_pair/sentinel1-restoredM/v02',
+        default='velocity_image_pair/sentinel1-restoredM-test/',
         help='AWS S3 bucket and directory to store corrected granules'
     )
     parser.add_argument(
@@ -376,6 +383,11 @@ def main():
         # default='fix_s1_v2_granules/correction_table/sentinel-1-correction-files.parquet',
         default='sentinel-1-correction-files.parquet',
         help='Table that provides the reference data for the granules to correct [%(default)s]'
+    )
+    parser.add_argument(
+        '--dryrun',
+        action='store_true',
+        help='Dry run, do not actually copy any data to AWS S3 bucket'
     )
 
     args = parser.parse_args()
