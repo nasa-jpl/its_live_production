@@ -33,7 +33,6 @@ import logging
 import numpy as np
 import os
 import pandas as pd
-import rioxarray as rxr
 import s3fs
 import xarray as xr
 
@@ -48,9 +47,8 @@ class RestoreM11M12Values:
     """
     NC_ENGINE = 'h5netcdf'
 
-    # Reference TIF files required for correction
-    M11_TIFF_FILE = 'm11.tif'
-    M12_TIFF_FILE = 'm12.tif'
+    # Reference file that stores M11/M12 values to restore: have to divide by date_dt when restoring
+    CONVERSION_MATRICES_NC_FILE = 'conversion_matrices.nc'
 
     # S3 bucket with granules
     BUCKET = 'its-live-data'
@@ -222,38 +220,41 @@ class RestoreM11M12Values:
         # Get the date separation in days from the granule to divide M11 and M12 by
         date_dt = ds.img_pair_info.attrs['date_dt']
 
-        # Read M11 and M12 from reference TIF files
+        # Read M11 and M12 from reference files
 
-        # Initialize mask to correspond to the granule's X/Y extends to crop reference TIF files to
+        # Initialize mask to correspond to the granule's X/Y extends to crop reference file to
         mask = None
 
-        cropped_m11 = None
-        s3_m11_file = os.path.join(ref_bucket, ref_dir, RestoreM11M12Values.M11_TIFF_FILE)
+        cropped_m11_m12 = None
+        invalid_v_mask = np.isnan(ds.v)
 
-        msgs.append(f'Reading: {s3_m11_file}')
-        with s3_ref.open(s3_m11_file, mode='rb') as fhandle:
-            with rxr.open_rasterio(fhandle, mask_and_scale=True) as m11_tiff:
-                # Crop TIFs to granule's X/Y ranges
-                mask_x = (m11_tiff.x >= ds.x.min().item()) & (m11_tiff.x <= ds.x.max().item())
-                mask_y = (m11_tiff.y >= ds.y.min().item()) & (m11_tiff.y <= ds.y.max().item())
+        s3_m11_m12_file = os.path.join(ref_bucket, ref_dir, RestoreM11M12Values.CONVERSION_MATRICES_NC_FILE)
+
+        msgs.append(f'Reading: {s3_m11_m12_file}')
+        with s3.open(s3_m11_m12_file, mode='rb') as fhandle:
+            with xr.open_dataset(fhandle, engine=RestoreM11M12Values.NC_ENGINE) as m11_m12_ds:
+                m11_m12_ds = m11_m12_ds.load()
+
+                # Crop dataset to granule's X/Y ranges
+                mask_x = (m11_m12_ds.x >= ds.x.min().item()) & (m11_m12_ds.x <= ds.x.max().item())
+                mask_y = (m11_m12_ds.y >= ds.y.min().item()) & (m11_m12_ds.y <= ds.y.max().item())
                 mask = (mask_x & mask_y)
 
-                cropped_m11 = m11_tiff.where(mask, drop=True)
+                cropped_m11_m12 = m11_m12_ds.where(mask, drop=True)
 
-                # Get values from TIFs
-                ds[DataVars.M11] = cropped_m11[DataVars.M11] / date_dt
+                # Apply valid v mask of the granule to M11 and M12 values (to have the same coverage)
+                nan_cropped_m11 = cropped_m11_m12.M11.where(~invalid_v_mask, other=np.nan)
+                ds[DataVars.M11] = nan_cropped_m11 / date_dt
 
-        cropped_m12 = None
+                nan_cropped_m12 = cropped_m11_m12.M12.where(~invalid_v_mask, other=np.nan)
+                ds[DataVars.M12] = nan_cropped_m12 / date_dt
 
-        s3_m12_file = os.path.join(ref_bucket, ref_dir, RestoreM11M12Values.M12_TIFF_FILE)
-
-        msgs.append(f'Reading: {s3_m12_file}')
-        with s3_ref.open(s3_m12_file, mode='rb') as fhandle:
-            with rxr.open_rasterio(fhandle, mask_and_scale=True) as m12_tiff:
-                cropped_m12 = m12_tiff.where(mask, drop=True)
-
-                # Get values from TIFs
-                ds[DataVars.M12] = cropped_m12[DataVars.M12] / date_dt
+                # Restore M11 and M12 values based input parameter file values / date_dt
+                for each_var in [DataVars.M11, DataVars.M12]:
+                    if Output.SCALE_FACTOR in ds[each_var].encoding:
+                        # Remove both compression encoding attributes if present
+                        del ds[each_var].encoding[Output.SCALE_FACTOR]
+                        del ds[each_var].encoding[Output.ADD_OFFSET]
 
         # Add date when granule was updated
         ds.attrs['date_updated'] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
@@ -276,18 +277,23 @@ class RestoreM11M12Values:
             if each_var_settings[Output.FILL_VALUE_ATTR] is not None:
                 each_var_settings[Output.CHUNKSIZES_ATTR] = two_dim_chunks_settings
 
-        # Preserve encoding attributes for M11 and M12 per original granule
-        for each_var, each_ds in zip([DataVars.M11, DataVars.M12], [cropped_m11, cropped_m12]):
-            if Output.SCALE_FACTOR not in each_ds[each_var].encoding:
-                msgs.append(f'ERROR: missing {each_var}:{Output.SCALE_FACTOR} encoding attribute (to correct {granule_s3_path})')
-                return msgs
+        # Set compression encoding attributes for M11 and M12: have to recompute since we divide original values by date_dt
+        # Do like hyp3 does: https://github.com/ASFHyP3/hyp3-autorift/blob/develop/src/hyp3_autorift/s1_isce2.py#L186
+        y1 = -50
+        y2 = 50
 
-            if Output.ADD_OFFSET not in each_ds[each_var].encoding:
-                msgs.append(f'ERROR: missing {each_var}:{Output.ADD_OFFSET} encoding attribute (to correct {granule_s3_path})')
-                return msgs
+        for each_var in [DataVars.M11, DataVars.M12]:
+            # Recompute compression encoding attributes for restored M11/M12 values
+            x1 = np.nanmin(ds[each_var])
+            x2 = np.nanmax(ds[each_var])
 
-            granule_encoding[each_var][Output.SCALE_FACTOR] = cropped_m11[each_var].encoding[Output.SCALE_FACTOR]
-            granule_encoding[each_var][Output.ADD_OFFSET] = cropped_m11[each_var].encoding[Output.ADD_OFFSET]
+            C = [(y2 - y1) / (x2 - x1), y1 - x1 * (y2 - y1) / (x2 - x1)]
+
+            granule_encoding[each_var][Output.SCALE_FACTOR] = np.float32(1 / C[0])
+            granule_encoding[each_var][Output.ADD_OFFSET] = np.float32(-C[1] / C[0])
+
+            no_data_mask = np.isnan(ds[each_var])
+            ds[each_var].data[no_data_mask] = DataVars.MISSING_VALUE * np.float32(1 / C[0]) + np.float32(-C[1] / C[0])
 
         fixed_file = os.path.join(RestoreM11M12Values.LOCAL_DIR, granule_basename)
 
