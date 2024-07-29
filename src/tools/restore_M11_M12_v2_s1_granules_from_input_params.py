@@ -404,6 +404,7 @@ def main():
     RestoreM11M12Values.DASK_WORKERS = args.dask_workers
     RestoreM11M12Values.TARGET_DIR = args.target_bucket_dir
     RestoreM11M12Values.LOCAL_DIR = args.local_dir
+    RestoreM11M12Values.DRYRUN = args.dryrun
 
     process_granules = RestoreM11M12Values(args.granule_table)
     process_granules(args.start_granule, args.stop_granule)
