@@ -104,6 +104,10 @@ class RestoreM11M12Values:
             self.all_original_granules = json.load(ins3file)
             logging.info(f"Loaded {len(self.all_original_granules)} original granules from '{existing_granules_file}'")
 
+        # Create a map of all basenames to the location in s3 bucket
+        self.all_original_granules_map = {os.path.basename(each): each for each in self.all_original_granules}
+        logging.info(f'Created map of granule name to the s3 location: {len(self.all_original_granules_map)} entries')
+
     def __call__(self, start_index: int = 0, stop_index: int = 0):
         """
         Restore M11 and M12 from provided input parameters files and copy restored granule along with corresponding PNG files
@@ -136,13 +140,12 @@ class RestoreM11M12Values:
 
             tasks = [
                 dask.delayed(RestoreM11M12Values.correct)(
-                    # each['v2_s3_bucket'],
-                    os.path.basename(each['v2_s3_key']),
-                    each['cor_s3_bucket'],
-                    each['job_id'],
+                    each['v2_granule'],     # granule to fix
+                    each['cor_s3_bucket'],  # reference bucket with M11/M12
+                    each['job_id'],         # sub-directory in reference bucket with M11/M12
                     self.s3,
                     self.s3_ref,
-                    self.all_original_granules
+                    self.all_original_granules_map[each['v2_granule']]  # full path of original granule in the s3 bucket
                 ) for _, each in self.table.iloc[start:start+num_tasks].iterrows()
             ]
             results = None
@@ -162,33 +165,13 @@ class RestoreM11M12Values:
             start += num_tasks
 
     @staticmethod
-    def find_granule_path(granule_basename: str, all_original_granules: list):
-        """Given granule filename find its full path in s3://its-live-data bucket.
-
-        Args:
-            granule_basename (str): Granule filename.
-
-        Returns:
-            Original granule S3 path that corresponds to the target URL.
-        """
-        found_granule = [each for each in all_original_granules if os.path.basename(each) == granule_basename]
-        if len(found_granule) == 0:
-            raise RuntimeError(f'Could not find original granule that corresponds to {granule_basename}')
-
-        if len(found_granule) > 1:
-            # Should never happen, just to be sure
-            raise RuntimeError(f'More than one granule found that corresponds to {granule_basename}: {found_granule}')
-
-        return found_granule[0]
-
-    @staticmethod
     def correct(
         granule_basename: str,
         ref_bucket: str,
         ref_dir: str,
         s3: s3fs.S3FileSystem,
         s3_ref: s3fs.S3FileSystem,
-        all_original_granules: list
+        granule_s3_path: str
     ):
         """
         Correct S1 data for the granule residing in S3 bucket. Copy corrected granule along with corresponding PNG files
@@ -196,38 +179,30 @@ class RestoreM11M12Values:
 
         Inputs:
         =======
-        bucket: S3 bucket holding granule for correction.
-        granule_path: Granule path within S3 bucket.
+        granule_basename: Granule path within S3 bucket.
         ref_bucket: S3 bucket with reference data for correction.
         ref_dir: S3 directory path that holds reference data for correction.
         s3: s3fs.S3FileSystem object to access original ITS_LIVE granules for correction.
         s3_ref: s3fs.S3FileSystem object to access data for correction.
-        all_original_granules: List of all V2 S1 granules as stored in S3 bucket (on user end).
+        granule_s3_path: full path of original granule in the s3 bucket.
         """
-        msgs = [f'Processing {granule_basename}']
+        msgs = [f'Processing {granule_s3_path}']
 
         # Read granule to correct
         ds = None
-
-        # Find granule to correct in the list of existing granules
-        granule_s3_path = RestoreM11M12Values.find_granule_path(granule_basename, all_original_granules)
 
         # Read the granule for correction in
         with s3.open(granule_s3_path, mode='rb') as fhandle:
             with xr.open_dataset(fhandle, engine=RestoreM11M12Values.NC_ENGINE) as ds:
                 ds = ds.load()
 
-        # Get the date separation in days from the granule to divide M11 and M12 by
+        # Get the date separation in days from the granule to multiply M11 and M12 by
         date_dt = ds.img_pair_info.attrs['date_dt']
 
-        # Read M11 and M12 from reference files
-
-        # Initialize mask to correspond to the granule's X/Y extends to crop reference file to
-        mask = None
-
-        cropped_m11_m12 = None
+        # Get mask for invalid "v" values, have to apply the same to restored M11 and M12
         invalid_v_mask = np.isnan(ds.v)
 
+        # Read M11 and M12 from reference file
         s3_m11_m12_file = os.path.join(ref_bucket, ref_dir, RestoreM11M12Values.CONVERSION_MATRICES_NC_FILE)
 
         msgs.append(f'Reading: {s3_m11_m12_file}')
@@ -244,22 +219,23 @@ class RestoreM11M12Values:
 
                 # Apply valid v mask of the granule to M11 and M12 values (to have the same coverage)
                 nan_cropped_m11 = cropped_m11_m12.M11.where(~invalid_v_mask, other=np.nan)
+
+                # Restore M11 and M12 values based on input parameter file values * date_dt
                 ds[DataVars.M11] = nan_cropped_m11 * date_dt
 
                 nan_cropped_m12 = cropped_m11_m12.M12.where(~invalid_v_mask, other=np.nan)
                 ds[DataVars.M12] = nan_cropped_m12 * date_dt
 
-                # Restore M11 and M12 values based input parameter file values / date_dt
                 for each_var in [DataVars.M11, DataVars.M12]:
                     if Output.SCALE_FACTOR in ds[each_var].encoding:
-                        # Remove both compression encoding attributes if present
+                        # Remove both compression encoding attributes if present as will need to calculate new ones
                         del ds[each_var].encoding[Output.SCALE_FACTOR]
                         del ds[each_var].encoding[Output.ADD_OFFSET]
 
         # Add date when granule was updated
         ds.attrs['date_updated'] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
 
-        # Save to local file
+        # Save updated granule to the local file
 
         # Set chunking for 2D data variables
         dims = ds.dims
@@ -277,7 +253,7 @@ class RestoreM11M12Values:
             if each_var_settings[Output.FILL_VALUE_ATTR] is not None:
                 each_var_settings[Output.CHUNKSIZES_ATTR] = two_dim_chunks_settings
 
-        # Set compression encoding attributes for M11 and M12: have to recompute since we divide original values by date_dt
+        # Set compression encoding attributes for M11 and M12: have to recompute since we multiply original values by date_dt
         # Do like hyp3 does: https://github.com/ASFHyP3/hyp3-autorift/blob/develop/src/hyp3_autorift/s1_isce2.py#L186
         y1 = -50
         y2 = 50
@@ -355,7 +331,7 @@ def main():
     parser.add_argument(
         '-t', '--target_bucket_dir',
         type=str,
-        default='velocity_image_pair/sentinel1-restoredM-test/',
+        default='velocity_image_pair/sentinel1-restoredM/v02',
         help='AWS S3 bucket and directory to store corrected granules'
     )
     parser.add_argument(
@@ -384,8 +360,7 @@ def main():
     )
     parser.add_argument(
         '--granule_table',
-        # default='fix_s1_v2_granules/correction_table/sentinel-1-correction-files.parquet',
-        default='sentinel-1-correction-files.parquet',
+        default='sentinel1_restore_m11m12_files_unique.parquet',
         help='Table that provides the reference data for the granules to correct [%(default)s]'
     )
     parser.add_argument(
