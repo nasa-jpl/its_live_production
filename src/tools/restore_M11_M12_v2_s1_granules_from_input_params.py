@@ -301,14 +301,16 @@ class RestoreM11M12Values:
                     target_key = target.replace('.nc', target_ext)
 
                     # Path to original PNG file in the S3 bucket - just copy to new location in s3
-                    source_key = granule_s3_path.replace('.nc', target_ext)
+                    source_key = target.replace('.nc', target_ext)
+
+                    msgs.append(f"Uploading {source_key} to {RestoreM11M12Values.BUCKET}: {target_key}")
 
                     source_dict = {
                         'Bucket': RestoreM11M12Values.BUCKET,
                         'Key': source_key
                     }
 
-                    bucket.copy(source_dict, target_key)
+                    # bucket.copy(source_dict, target_key)
                     msgs.append(f'Copying {target_ext} to s3')
 
             except ClientError as exc:
