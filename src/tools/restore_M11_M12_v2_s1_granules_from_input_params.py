@@ -283,7 +283,8 @@ class RestoreM11M12Values:
                 # Upload granule to the target directory in the bucket
                 target = granule_s3_path.replace(RestoreM11M12Values.SOURCE_DIR, RestoreM11M12Values.TARGET_DIR)
 
-                msgs.append(f"Uploading to {target}")
+                # msgs.append(f"Uploading to {target}")
+                msgs.append(f"Uploading {fixed_file} to {RestoreM11M12Values.BUCKET}: {target}")
                 s3_client.upload_file(fixed_file, RestoreM11M12Values.BUCKET, target)
 
                 # msgs.append(f"Removing local {fixed_file}")
