@@ -282,7 +282,10 @@ class RestoreM11M12Values:
             try:
                 # Upload granule to the target directory in the bucket:
                 # remove bucket name from the target path, replace with target directory for corrected granule
-                target = granule_s3_path.replace(RestoreM11M12Values.BUCKET + RestoreM11M12Values.SOURCE_DIR, RestoreM11M12Values.TARGET_DIR)
+                target = granule_s3_path.replace(
+                    RestoreM11M12Values.BUCKET + '/' + RestoreM11M12Values.SOURCE_DIR,
+                    RestoreM11M12Values.TARGET_DIR
+                )
 
                 # msgs.append(f"Uploading to {target}")
                 msgs.append(f"Uploading {fixed_file} to {RestoreM11M12Values.BUCKET}: {target}")
