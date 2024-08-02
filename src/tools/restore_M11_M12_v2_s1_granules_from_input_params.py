@@ -303,7 +303,7 @@ class RestoreM11M12Values:
                     # Path to original PNG file in the S3 bucket - just copy to new location in s3
                     source_key = target_key.replace(RestoreM11M12Values.TARGET_DIR, RestoreM11M12Values.SOURCE_DIR).replace('.nc', target_ext)
 
-                    msgs.append(f"Uploading {source_key} to {RestoreM11M12Values.BUCKET}: {target_key}")
+                    # msgs.append(f"Uploading {source_key} to {RestoreM11M12Values.BUCKET}: {target_key}")
                     source_dict = {
                         'Bucket': RestoreM11M12Values.BUCKET,
                         'Key': source_key
