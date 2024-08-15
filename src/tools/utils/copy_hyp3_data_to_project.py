@@ -48,7 +48,7 @@ def main(args):
     logging.info(f'{num_to_copy} directories to copy...')
 
     # For debugging
-    num_to_copy = 5
+    # num_to_copy = 5
 
     if num_to_copy <= 0:
         logging.info("Nothing to copy, exiting.")
