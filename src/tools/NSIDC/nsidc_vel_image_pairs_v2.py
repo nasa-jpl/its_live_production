@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError
 import collections
 import dask
 from dask.diagnostics import ProgressBar
+from dateutil.parser import parse
 from datetime import datetime
 import gc
 import json
@@ -21,6 +22,8 @@ import os
 import pyproj
 import s3fs
 import xarray as xr
+
+from itscube_types import DataVars
 
 # Date format as it appears in granules filenames of optical format:
 # LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc
@@ -116,12 +119,13 @@ class NSIDCMeta:
     NC_ENGINE = 'h5netcdf'
 
     @staticmethod
-    def create_premet_file(infile: str, url_tokens_1, url_tokens_2):
+    def create_premet_file(ds: xr.Dataset, infile: str, url_tokens_1, url_tokens_2):
         """
         Create premet file that corresponds to the input image pair velocity granule.
 
         Inputs
         ======
+        ds: xarray.Dataset object that represents the granule.
         infile: Filename of the input ITS_LIVE granule
         url_tokens_1: Parsed out filename tokens that correspond to the first image of the pair
         url_tokens_2: Parsed out filename tokens that correspond to the second image of the pair
@@ -134,14 +138,9 @@ class NSIDCMeta:
         if sensor2 not in NSIDCMeta.ShortName:
             raise RuntimeError(f'create_premet_file() got unexpected mission+sensor {sensor2} for image#2 of {infile}: one of {list(NSIDCMeta.ShortName.keys())} is supported.')
 
-        # Based on the mission/sensor combo, acquisition date will be at a different index in filename tokens list
-        date_index = 3
-        if sensor1 in [NSIDCMeta.S1A, NSIDCMeta.S1B]:
-            date_index = 4
-
         # Get acquisition dates for both images
-        begin_date = datetime.strptime(url_tokens_1[date_index], DATE_FORMAT)
-        end_date = datetime.strptime(url_tokens_2[date_index], DATE_FORMAT)
+        begin_date=parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1])
+        end_date=parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2])
 
         meta_filename = f'{infile}.premet'
         with open(meta_filename, 'w') as fh:
@@ -149,7 +148,7 @@ class NSIDCMeta:
             fh.write('VersionID_local=001\n')
             fh.write(f'Begin_date={begin_date.strftime("%Y-%m-%d")}\n')
             fh.write(f'End_date={end_date.strftime("%Y-%m-%d")}\n')
-            # Extract time stamps from filename tokens
+            # Extract time stamps
             fh.write(f'Begin_time={begin_date.strftime("%H:%M:%S")}\n')
             fh.write(f'End_time={end_date.strftime("%H:%M:%S")}\n')
 
@@ -163,46 +162,43 @@ class NSIDCMeta:
         return meta_filename
 
     @staticmethod
-    def create_spatial_file(infile: str, s3: s3fs.S3FileSystem):
+    def create_spatial_file(ds: xr.Dataset):
         """
         Create spatial file that corresponds to the input image pair velocity granule.
 
         Inputs
         ======
-        infile: Filename path of the input ITS_LIVE granule in s3 bucket.
-        s3: s3fs.S3FileSystem object to read the granule from.
+        ds: xarray.Dataset object that represents the granule.
         """
         meta_filename = f'{os.path.basename(infile)}.spatial'
 
-        with s3.open(infile, mode='rb') as fhandle:
-            with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
-                xvals = ds.x.values
-                yvals = ds.y.values
-                pix_size_x = xvals[1] - xvals[0]
-                pix_size_y = yvals[1] - yvals[0]
+        xvals = ds.x.values
+        yvals = ds.y.values
+        pix_size_x = xvals[1] - xvals[0]
+        pix_size_y = yvals[1] - yvals[0]
 
-                epsgcode = ds.mapping.attrs['spatial_epsg']
+        epsgcode = ds[DataVars.MAPPING].attrs['spatial_epsg']
 
-                # minval_x, pix_size_x, _, maxval_y, _, pix_size_y = [float(x) for x in ds['mapping'].attrs['GeoTransform'].split()]
+        # minval_x, pix_size_x, _, maxval_y, _, pix_size_y = [float(x) for x in ds['mapping'].attrs['GeoTransform'].split()]
 
-                # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
-                projection_cf_minx = xvals[0] - pix_size_x/2.0
-                projection_cf_maxx = xvals[-1] + pix_size_x/2.0
-                projection_cf_miny = yvals[-1] + pix_size_y/2.0  # pix_size_y is negative!
-                projection_cf_maxy = yvals[0] - pix_size_y/2.0   # pix_size_y is negative!
+        # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
+        projection_cf_minx = xvals[0] - pix_size_x/2.0
+        projection_cf_maxx = xvals[-1] + pix_size_x/2.0
+        projection_cf_miny = yvals[-1] + pix_size_y/2.0  # pix_size_y is negative!
+        projection_cf_maxy = yvals[0] - pix_size_y/2.0   # pix_size_y is negative!
 
-                transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True)  # ensure lonlat output order
+        transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True)  # ensure lonlat output order
 
-                # Convert coordinates to long/lat
-                ll_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_miny), decimals=2).tolist()
-                lr_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_miny), decimals=2).tolist()
-                ur_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_maxy), decimals=2).tolist()
-                ul_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_maxy), decimals=2).tolist()
+        # Convert coordinates to long/lat
+        ll_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_miny), decimals=2).tolist()
+        lr_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_miny), decimals=2).tolist()
+        ur_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_maxy), decimals=2).tolist()
+        ul_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_maxy), decimals=2).tolist()
 
-                # Write to spatial file
-                with open(meta_filename, 'w') as fh:
-                    for long, lat in [ul_lonlat, ur_lonlat, lr_lonlat, ll_lonlat]:
-                        fh.write(f"{long}\t{lat}\n")
+        # Write to spatial file
+        with open(meta_filename, 'w') as fh:
+            for long, lat in [ul_lonlat, ur_lonlat, lr_lonlat, ll_lonlat]:
+                fh.write(f"{long}\t{lat}\n")
 
         return meta_filename
 
@@ -367,17 +363,19 @@ class NSIDCFormat:
 
         s3_client = boto3.client('s3')
 
-        # Create spacial and premet metadata files locally, then copy them to S3 bucket
-        meta_file = NSIDCMeta.create_premet_file(granule_filename, url_tokens_1, url_tokens_2)
-        # TODO: This is for production run: have to use the same dir structure as original granule has
-        # msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
+        with s3.open(infilewithpath, mode='rb') as fhandle:
+            with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
+                # Create spacial and premet metadata files locally, then copy them to S3 bucket
+                meta_file = NSIDCMeta.create_premet_file(ds, granule_filename, url_tokens_1, url_tokens_2)
+                # TODO: This is for production run: have to use the same dir structure as original granule has
+                # msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
-        # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
-        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+                # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
+                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
 
-        meta_file = NSIDCMeta.create_spatial_file(infilewithpath, s3)
-        # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
-        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+                meta_file = NSIDCMeta.create_spatial_file(ds)
+                # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
+                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
 
         return msgs
 
