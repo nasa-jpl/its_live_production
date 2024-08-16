@@ -85,8 +85,10 @@ class NSIDCMeta:
 
     # Dictionary of metadata values based on the mission+sensor token
     # Optical data:
-    L9 = 'LC09'
-    L8 = 'LC08'
+    LC9 = 'LC09'
+    LO9 = 'LO09'
+    LC8 = 'LC08'
+    LO8 = 'LO08'
     L7 = 'LE07'
     L5 = 'LT05'
     L4 = 'LT04'
@@ -98,8 +100,10 @@ class NSIDCMeta:
     S1B = 'S1B'
 
     ShortName = {
-        L9: PlatformSensor('LANDSAT-9', 'OLI'),
-        L8: PlatformSensor('LANDSAT-8', 'OLI'),
+        LC9: PlatformSensor('LANDSAT-9', 'OLI'),
+        LO9: PlatformSensor('LANDSAT-9', 'OLI'),
+        LC8: PlatformSensor('LANDSAT-8', 'OLI'),
+        LO8: PlatformSensor('LANDSAT-8', 'OLI'),
         L7: PlatformSensor('LANDSAT-7', 'ETM+'),
         L5: PlatformSensor('LANDSAT-5', 'TM'),
         L4: PlatformSensor('LANDSAT-4', 'TM'),
