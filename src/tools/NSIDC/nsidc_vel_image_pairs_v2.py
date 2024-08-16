@@ -162,15 +162,16 @@ class NSIDCMeta:
         return meta_filename
 
     @staticmethod
-    def create_spatial_file(ds: xr.Dataset):
+    def create_spatial_file(ds: xr.Dataset, infile: str):
         """
         Create spatial file that corresponds to the input image pair velocity granule.
 
         Inputs
         ======
         ds: xarray.Dataset object that represents the granule.
+        infile: Basename of the granule.
         """
-        meta_filename = f'{os.path.basename(infile)}.spatial'
+        meta_filename = f'{infile}.spatial'
 
         xvals = ds.x.values
         yvals = ds.y.values
@@ -373,7 +374,7 @@ class NSIDCFormat:
                 # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
                 msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
 
-                meta_file = NSIDCMeta.create_spatial_file(ds)
+                meta_file = NSIDCMeta.create_spatial_file(ds, granule_filename)
                 # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
                 msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
 
