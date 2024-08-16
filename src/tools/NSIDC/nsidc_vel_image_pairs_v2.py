@@ -375,7 +375,7 @@ class NSIDCFormat:
         # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
         msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
 
-        meta_file = NSIDCMeta.create_spatial_file(infilewithpath, self.s3)
+        meta_file = NSIDCMeta.create_spatial_file(infilewithpath, s3)
         # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
         msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
 
