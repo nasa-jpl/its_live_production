@@ -20,12 +20,7 @@ import numpy as np
 import os
 import pyproj
 import s3fs
-import sys
 import xarray as xr
-
-# Local imports
-from itscube_types import DataVars
-from nsidc_types import Mapping
 
 # Date format as it appears in granules filenames of optical format:
 # LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc
@@ -34,6 +29,7 @@ DATE_FORMAT = "%Y%m%d"
 # Date and time format as it appears in granules filenames in radar format:
 # S1A_IW_SLC__1SSH_20170221T204710_20170221T204737_015387_0193F6_AB07_X_S1B_IW_SLC__1SSH_20170227T204628_20170227T204655_004491_007D11_6654_G0240V02_P094.nc
 DATE_TIME_FORMAT = "%Y%m%dT%H%M%S"
+
 
 def get_tokens_from_filename(filename):
     """
@@ -52,25 +48,6 @@ def get_tokens_from_filename(filename):
     url_tokens_2 = url_files[1].split('_')
 
     return (url_tokens_1, url_tokens_2)
-
-def get_attr_value(h5_attr: str):
-    """
-    Extract value of the hd5 data variable attribute.
-    """
-    value = None
-    if isinstance(h5_attr, str):
-        value = h5_attr
-
-    elif isinstance(h5_attr, bytes):
-        value = h5_attr.decode('utf-8')  # h5py returns byte values, turn into byte characters
-
-    elif h5_attr.shape == ():
-        value = h5_attr
-
-    else:
-        value = h5_attr[0] # h5py returns lists of numbers - all 1 element lists here, so dereference to number
-
-    return value
 
 
 # Collection to represent the mission and sensor combo
@@ -113,7 +90,6 @@ class NSIDCMeta:
     L7 = 'LE07'
     L5 = 'LT05'
     L4 = 'LT04'
-
     S2A = 'S2A'
     S2B = 'S2B'
 
@@ -166,7 +142,7 @@ class NSIDCMeta:
         meta_filename = f'{infile}.premet'
         with open(meta_filename, 'w') as fh:
             fh.write(f'FileName={infile}\n')
-            fh.write(f'VersionID_local=001\n')
+            fh.write('VersionID_local=001\n')
             fh.write(f'Begin_date={begin_date.strftime("%Y-%m-%d")}\n')
             fh.write(f'End_date={end_date.strftime("%Y-%m-%d")}\n')
             # Extract time stamps from filename tokens
@@ -175,7 +151,7 @@ class NSIDCMeta:
 
             # Append premet with sensor info
             for each_sensor in [sensor1, sensor2]:
-                fh.write(f"Container=AssociatedPlatformInstrumentSensor\n")
+                fh.write("Container=AssociatedPlatformInstrumentSensor\n")
                 fh.write(f"AssociatedPlatformShortName={NSIDCMeta.ShortName[each_sensor].platform}\n")
                 fh.write(f"AssociatedInstrumentShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
                 fh.write(f"AssociatedSensorShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
@@ -201,21 +177,23 @@ class NSIDCMeta:
                 pix_size_x = xvals[1] - xvals[0]
                 pix_size_y = yvals[1] - yvals[0]
 
+                epsgcode = ds.mapping.attrs['spatial_epsg']
+
                 # minval_x, pix_size_x, _, maxval_y, _, pix_size_y = [float(x) for x in ds['mapping'].attrs['GeoTransform'].split()]
 
                 # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
                 projection_cf_minx = xvals[0] - pix_size_x/2.0
                 projection_cf_maxx = xvals[-1] + pix_size_x/2.0
-                projection_cf_miny = yvals[-1] + pix_size_y/2.0 # pix_size_y is negative!
-                projection_cf_maxy = yvals[0] - pix_size_y/2.0  # pix_size_y is negative!
+                projection_cf_miny = yvals[-1] + pix_size_y/2.0  # pix_size_y is negative!
+                projection_cf_maxy = yvals[0] - pix_size_y/2.0   # pix_size_y is negative!
 
-                transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True) # ensure lonlat output order
+                transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True)  # ensure lonlat output order
 
                 # Convert coordinates to long/lat
-                ll_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_miny),decimals = 2).tolist()
-                lr_lonlat = np.round(transformer.transform(projection_cf_maxx,projection_cf_miny),decimals = 2).tolist()
-                ur_lonlat = np.round(transformer.transform(projection_cf_maxx,projection_cf_maxy),decimals = 2).tolist()
-                ul_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_maxy),decimals = 2).tolist()
+                ll_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_miny), decimals=2).tolist()
+                lr_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_miny), decimals=2).tolist()
+                ur_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_maxy), decimals=2).tolist()
+                ul_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_maxy), decimals=2).tolist()
 
                 # Write to spatial file
                 with open(meta_filename, 'w') as fh:
@@ -242,9 +220,9 @@ class NSIDCFormat:
 
     def __init__(
         self,
-        start_index: int=0,
-        stop_index: int=-1,
-        local_file_list = None
+        start_index: int = 0,
+        stop_index: int = -1,
+        local_file_list=None
     ):
         """
         Initialize the object.
@@ -306,13 +284,12 @@ class NSIDCFormat:
         init_total_files = total_num_files
 
         if total_num_files <= 0:
-            logging.info(f"Nothing to process, exiting.")
+            logging.info("Nothing to process, exiting.")
             return
 
         # Current start index into list of granules to process
         start = 0
 
-        file_list = []
         while total_num_files > 0:
             num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
 
@@ -340,7 +317,7 @@ class NSIDCFormat:
             gc.collect()
 
     @staticmethod
-    def upload_to_s3(filename: str, target_dir: str, target_bucket: str, s3_client, remove_original_file: bool=True):
+    def upload_to_s3(filename: str, target_dir: str, target_bucket: str, s3_client, remove_original_file: bool = True):
         """
         Upload file to the AWS S3 bucket.
         """
@@ -384,48 +361,19 @@ class NSIDCFormat:
 
         msgs = [f'Processing {infilewithpath}']
 
-        bucket = boto3.resource('s3').Bucket(target_bucket)
-        bucket_granule = os.path.join(target_dir, new_filename)
-
-        # Check if fixed granules already exists - ignore the check if granule
-        # is provided from local file. Granules are provided from local file only
-        # if these granules need to be re-generated.
-        # This was a hack to re-process only specific granules :)
-        # if use_local_file is None and NSIDCFormat.object_exists(bucket, bucket_granule):
-        #     msgs.append(f'WARNING: {bucket.name}/{bucket_granule} already exists, skipping granule')
-        #     return msgs
-
         s3_client = boto3.client('s3')
 
-        # Read granule from S3
-        # with s3.open(infilewithpath) as fh:
-        #     with xr.open_dataset(fh) as ds:
-        #         msgs.extend(
-        #             NSIDCFormat.process_nc_file(
-        #                 ds,
-        #                 new_filename,
-        #                 Encoding.IMG_PAIR,
-        #                 epsg_code
-        #             )
-        #         )
+        # Create spacial and premet metadata files locally, then copy them to S3 bucket
+        meta_file = NSIDCMeta.create_premet_file(granule_filename, url_tokens_1, url_tokens_2)
+        # TODO: This is for production run: have to use the same dir structure as original granule has
+        # msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
-        # Copy new granule to S3 bucket
-        # msgs.extend(
-        #     NSIDCFormat.upload_to_s3(new_filename, target_dir, target_bucket, s3_client, remove_original_file=False)
-        # )
+        # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
+        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
 
-        if create_meta_files:
-            # Create spacial and premet metadata files locally, then copy them to S3 bucket
-            meta_file = NSIDCMeta.create_premet_file(granule_filename, url_tokens_1, url_tokens_2)
-            # TODO: This is for production run: have to use the same dir structure as original granule has
-            # msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
-
-            # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
-            msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
-
-            meta_file = NSIDCMeta.create_spatial_file(infilewithpath, self.s3)
-            # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
-            msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+        meta_file = NSIDCMeta.create_spatial_file(infilewithpath, self.s3)
+        # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
+        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
 
         return msgs
 
@@ -482,8 +430,8 @@ if __name__ == '__main__':
         type=int,
         default=0,
         help="Start index for the granule to fix [%(default)d]. "
-            "Useful if need to continue previously interrupted process to prepare the granules, or need to split the load across "
-            "multiple processes."
+                "Useful if need to continue previously interrupted process to prepare the granules, or need to split the load across "
+                "multiple processes."
     )
 
     parser.add_argument(
@@ -491,8 +439,7 @@ if __name__ == '__main__':
         action='store',
         type=int,
         default=-1,
-        help="Stop index for the granules to process [%(default)d]. " \
-             "Usefull if need to split the job between multiple processes."
+        help="Stop index for the granules to process [%(default)d]. Usefull if need to split the job between multiple processes."
     )
 
     parser.add_argument(
@@ -517,12 +464,6 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '--create_meta_files',
-        action='store_true',
-        help='Flag to enable generation of NSIDC required metadata files. Default is False.'
-    )
-
-    parser.add_argument(
         '-t', '--path_token',
         type=str,
         default='',
@@ -533,7 +474,6 @@ if __name__ == '__main__':
 
     NSIDCFormat.GRANULES_FILE = os.path.join(args.bucket, args.catalog_dir, args.granules_file)
     NSIDCFormat.DRY_RUN = args.dryrun
-    NSIDCFormat.CREATE_META_FILES = args.create_meta_files
     NSIDCFormat.PATH_TOKEN = args.path_token
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
