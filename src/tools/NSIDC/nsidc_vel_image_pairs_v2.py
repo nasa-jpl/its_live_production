@@ -132,7 +132,7 @@ class NSIDCMeta:
 
         # Based on the mission/sensor combo, acquisition date will be at a different index in filename tokens list
         date_index = 3
-        if sensor1 in [S1A, S1B]:
+        if sensor1 in [NSIDCMeta.S1A, NSIDCMeta.S1B]:
             date_index = 4
 
         # Get acquisition dates for both images
