@@ -190,6 +190,10 @@ class RestoreM11M12Values:
             with xr.open_dataset(fhandle, engine=RestoreM11M12Values.NC_ENGINE) as ds:
                 ds = ds.load()
 
+        # Not sure why but attributes disappear after *dt, so save them ahead of all data resetting
+        M11_attrs = ds.M11.attrs
+        M12_attrs = ds.M12.attrs
+
         # Get the date separation in days from the granule to multiply M11 and M12 by
         date_dt = ds.img_pair_info.attrs['date_dt']
 
@@ -214,17 +218,16 @@ class RestoreM11M12Values:
                 # Apply valid v mask of the granule to M11 and M12 values (to have the same coverage)
                 nan_cropped_m11 = cropped_m11_m12.M11.where(~invalid_v_mask, other=np.nan)
 
-                # xarray does not preserve attributes, do it explicitely
-                nan_cropped_m11.attrs = cropped_m11_m12.M11.attrs
-
                 # Restore M11 and M12 values based on input parameter file values * date_dt
                 ds[DataVars.M11] = nan_cropped_m11 * date_dt
+                ds[DataVars.M11].attrs = M11_attrs
 
                 nan_cropped_m12 = cropped_m11_m12.M12.where(~invalid_v_mask, other=np.nan)
 
-                # xarray does not preserve attributes, do it explicitely
-                nan_cropped_m12.attrs = cropped_m11_m12.M12.attrs
+                # Keep original attributes
+                # does not work: nan_cropped_m12.attrs = ds.M12.attrs; ds[DataVars.M12] = nan_cropped_m12 * date_dt; attrs are empty
                 ds[DataVars.M12] = nan_cropped_m12 * date_dt
+                ds[DataVars.M12].attrs = M12_attrs
 
                 for each_var in [DataVars.M11, DataVars.M12]:
                     if Output.SCALE_FACTOR in ds[each_var].encoding:
