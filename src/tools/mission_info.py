@@ -1,6 +1,8 @@
 """
 Module to capture mission specific information used by multiple Python scripts.
 """
+import numpy as np
+
 
 class Encoding:
     """
@@ -22,8 +24,8 @@ class Encoding:
         'interp_mask':      {'_FillValue': 0.0, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
         'chip_size_height': {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
         'chip_size_width':  {'_FillValue': 0.0, 'dtype': 'ushort', "zlib": True, "complevel": 2, "shuffle": True},
-        'M11':              {'_FillValue': -32767.0, 'dtype': 'floa32', "zlib": True, "complevel": 2, "shuffle": True},
-        'M12':              {'_FillValue': -32767.0, 'dtype': 'float32', "zlib": True, "complevel": 2, "shuffle": True},
+        'M11':              {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
+        'M12':              {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
         'v':                {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
         'vx':               {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
         'vy':               {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
