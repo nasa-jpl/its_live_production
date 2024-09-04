@@ -316,7 +316,7 @@ def main():
     parser.add_argument(
         '-t', '--target_bucket_dir',
         type=str,
-        default='velocity_image_pair/sentinel1-restoredM-float/v02',
+        default='velocity_image_pair/sentinel1-restoredM-float-dtype/v02',
         help='AWS S3 bucket and directory to store corrected granules'
     )
     parser.add_argument(
