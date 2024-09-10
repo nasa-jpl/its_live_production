@@ -212,7 +212,7 @@ class RestoreM11M12Values:
 
         granule_basename = os.path.basename(granule_url)
 
-        # Read granule to correct
+        # Read granule to restore the values from
         found_granule_url = granule_url.replace(
             'its-live-data/velocity_image_pair/sentinel1/v02',
             'its-live-data/velocity_image_pair/sentinel1-restoredM/v02'
