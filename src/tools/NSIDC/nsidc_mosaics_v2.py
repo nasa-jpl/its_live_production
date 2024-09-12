@@ -7,16 +7,12 @@ Authors: Masha Liukis (JPL), Alex Gardner (JPL), Mark Fahnestock (UFA)
 
 import argparse
 import boto3
-import dask
-from dask.diagnostics import ProgressBar
 from datetime import datetime
-import json
 import logging
 import numpy as np
 import os
 import pyproj
 import s3fs
-import sys
 import xarray as xr
 
 # Local imports
@@ -87,7 +83,7 @@ class NSIDCMosaicsMeta:
         meta_filename = f'{infile}.premet'
         with open(meta_filename, 'w') as fh:
             fh.write(f'FileName={infile}\n')
-            fh.write(f'VersionID_local=002\n')
+            fh.write('VersionID_local=002\n')
             fh.write(f'Begin_date={begin_date.strftime("%Y-%m-%d")}\n')
             fh.write(f'End_date={end_date.strftime("%Y-%m-%d")}\n')
             # Hard-code the values for annual and static mosaics
@@ -108,7 +104,7 @@ class NSIDCMosaicsMeta:
                 NSIDCMeta.S2A,
                 NSIDCMeta.S2B,
             ]:
-                fh.write(f"Container=AssociatedPlatformInstrumentSensor\n")
+                fh.write("Container=AssociatedPlatformInstrumentSensor\n")
                 fh.write(f"AssociatedPlatformShortName={NSIDCMeta.ShortName[each_sensor].platform}\n")
                 fh.write(f"AssociatedInstrumentShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
                 fh.write(f"AssociatedSensorShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
@@ -137,8 +133,8 @@ class NSIDCMosaicsMeta:
         # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
         projection_cf_minx = xvals[0] - pix_size_x/2.0
         projection_cf_maxx = xvals[-1] + pix_size_x/2.0
-        projection_cf_miny = yvals[-1] + pix_size_y/2.0 # pix_size_y is negative!
-        projection_cf_maxy = yvals[0] - pix_size_y/2.0  # pix_size_y is negative!
+        projection_cf_miny = yvals[-1] + pix_size_y/2.0  # pix_size_y is negative!
+        projection_cf_maxy = yvals[0] - pix_size_y/2.0   # pix_size_y is negative!
 
         epsgcode = ds[DataVars.MAPPING].attrs['spatial_epsg']
         epsgcode_str = f'EPSG:{epsgcode}'
@@ -146,13 +142,13 @@ class NSIDCMosaicsMeta:
         if epsgcode == NSIDCFormat.ESRI_CODE:
             epsgcode_str = f'ESRI:{epsgcode}'
 
-        transformer = pyproj.Transformer.from_crs(epsgcode_str, "EPSG:4326", always_xy=True) # ensure lonlat output order
+        transformer = pyproj.Transformer.from_crs(epsgcode_str, "EPSG:4326", always_xy=True)  # ensure lonlat output order
 
         # Convert coordinates to long/lat
-        ll_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_miny),decimals = 2).tolist()
-        lr_lonlat = np.round(transformer.transform(projection_cf_maxx,projection_cf_miny),decimals = 2).tolist()
-        ur_lonlat = np.round(transformer.transform(projection_cf_maxx,projection_cf_maxy),decimals = 2).tolist()
-        ul_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_maxy),decimals = 2).tolist()
+        ll_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_miny), decimals=2).tolist()
+        lr_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_miny), decimals=2).tolist()
+        ur_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_maxy), decimals=2).tolist()
+        ul_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_maxy), decimals=2).tolist()
 
         # Write to spatial file
         with open(meta_filename, 'w') as fh:
@@ -160,6 +156,7 @@ class NSIDCMosaicsMeta:
                 fh.write(f"{long}\t{lat}\n")
 
         return meta_filename
+
 
 class NSIDCMosaicFormat:
     """
@@ -197,25 +194,23 @@ class NSIDCMosaicFormat:
         Create NSIDC meta files (spatial and premet) for ITS_LIVE v2 mosaics.
         """
         total_num_files = len(self.infiles)
-        init_total_files = total_num_files
 
         if total_num_files <= 0:
-            logging.info(f"Nothing to process, exiting.")
+            logging.info("Nothing to process, exiting.")
             return
 
         # Current start index into list of files to process
         start = 0
 
-        file_list = []
         while start < total_num_files:
-            logging.info(f"Starting {self.infiles[start]} {start} out of {init_total_files} total files")
-            results = NSIDCMosaicFormat.process_file(self.s3_bucket, self.s3_dir, self.infiles[start], self.s3)
+            logging.info(f"Starting {self.infiles[start]} {start} out of {total_num_files} total files")
+            results = NSIDCMosaicFormat.process_file(self.s3_bucket, self.infiles[start], self.s3)
             logging.info("\n-->".join(results))
 
             start += 1
 
     @staticmethod
-    def process_file(target_bucket: str, target_dir: str, infilewithpath: str, s3: s3fs.S3FileSystem):
+    def process_file(target_bucket: str, infilewithpath: str, s3: s3fs.S3FileSystem):
         """
         Fix granule format and create corresponding metadata files as required by NSIDC.
         """
@@ -236,21 +231,23 @@ class NSIDCMosaicFormat:
         with s3.open(infilewithpath, mode='rb') as fhandle:
             with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
                 # Create spacial and premet metadata files, and copy them to S3 bucket
-                meta_file = NSIDCMosaicsMeta.create_premet_file(ds, filename, year)
+                meta_file = NSIDCMosaicsMeta.create_premet_file(filename, year)
 
-                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
+                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, directory, target_bucket, s3_client))
 
-                meta_file = NSIDCMosaicsMeta.create_spatial_file(filename)
-                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
+                meta_file = NSIDCMosaicsMeta.create_spatial_file(ds, filename)
+                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, directory, target_bucket, s3_client))
 
         return msgs
 
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser( \
+    parser = argparse.ArgumentParser(
         description="""
-           Fix ITS_LIVE V1 mosaics to be CF compliant for ingestion by NSIDC.
+        Prepare ITS_LIVE V2 mosaics for ingestion by NSIDC.
         """,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
 
     parser.add_argument(
         '-bucket',
