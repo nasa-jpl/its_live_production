@@ -90,6 +90,7 @@ class NSIDCMosaicsMeta:
             fh.write("Begin_time=00:00:01.000\n")
             fh.write("End_time=23:59:59.000\n")
 
+            already_written_platform_sensor = []
             # Append premet with sensor info
             for each_sensor in [
                 NSIDCMeta.LC9,
@@ -104,10 +105,17 @@ class NSIDCMosaicsMeta:
                 NSIDCMeta.S2A,
                 NSIDCMeta.S2B,
             ]:
-                fh.write("Container=AssociatedPlatformInstrumentSensor\n")
-                fh.write(f"AssociatedPlatformShortName={NSIDCMeta.ShortName[each_sensor].platform}\n")
-                fh.write(f"AssociatedInstrumentShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
-                fh.write(f"AssociatedSensorShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
+                # Some of the platform/sensor short names are the same across mission/sensor combos (LC9 vs. LO9),
+                # so keep only unique combos in the metadata file
+                each_sensor_str = f'{NSIDCMeta.ShortName[each_sensor].platform}_{NSIDCMeta.ShortName[each_sensor].sensor}'
+
+                if each_sensor_str not in already_written_platform_sensor:
+                    already_written_platform_sensor.append(each_sensor_str)
+
+                    fh.write("Container=AssociatedPlatformInstrumentSensor\n")
+                    fh.write(f"AssociatedPlatformShortName={NSIDCMeta.ShortName[each_sensor].platform}\n")
+                    fh.write(f"AssociatedInstrumentShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
+                    fh.write(f"AssociatedSensorShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
 
         return meta_filename
 
