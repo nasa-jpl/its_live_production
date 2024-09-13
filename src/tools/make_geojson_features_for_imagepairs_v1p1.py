@@ -510,13 +510,13 @@ if __name__ == '__main__':
     parser.add_argument('-granule_dir',
                         action='store',
                         type=str,
-                        default='its-live-data/velocity_image_pair/landsat/v02',
+                        default='its-live-data/velocity_image_pair/landsatOLI/v02',
                         help='S3 path to tile catalog directories (not including the grid code for zone of tile) [%(default)s]')
 
     parser.add_argument('-catalog_dir',
                         action='store',
                         type=str,
-                        default='its-live-data/catalog_geojson/landsat/v02',
+                        default='its-live-data/catalog_geojson/landsatOLI/v02',
                         help='Output path for feature collections [%(default)s]')
 
     parser.add_argument('-chunk_by',
