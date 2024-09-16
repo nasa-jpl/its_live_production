@@ -259,6 +259,10 @@ class GranuleCatalog:
                 self.infiles = list(set(self.infiles).difference(exclude_files))
                 logging.info(f"{len(self.infiles)} new granules to catalog")
 
+        # Sort self.infiles to guarantee the same order of granules if have to pick the processing
+        # somewhere in a middle (previous processing failed due to some exception)
+        self.infiles = sorted(self.infiles)
+
         if start_index != 0:
             # Start index is provided for the granule to begin with
             self.infiles = self.infiles[start_index:]
