@@ -2019,7 +2019,7 @@ class ITSCube:
                     Output.CHUNKS_ATTR: (len(self.layers.x))
                 }
             )
-            encoding_settings.setdefault(Coords.y, {}).update(
+            encoding_settings.setdefault(Coords.Y, {}).update(
                 {
                     Output.COMPRESSOR_ATTR: compressor,
                     Output.CHUNKS_ATTR: (len(self.layers.y))
@@ -2641,7 +2641,7 @@ if __name__ == '__main__':
         '--searchAPIStartDate',
         type=lambda s: parse(s).strftime('%Y-%m-%d'),
         default='1984-01-01',
-        help='Start date in YYYY-MM-DD format to pass to search API query to get velocity pair granules'
+        help='Start date in YYYY-MM-DD format to pass to search API query to get velocity pair granules [%(default)s]'
     )
     parser.add_argument(
         '--searchAPIStopDate',
