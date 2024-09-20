@@ -665,17 +665,20 @@ class ITSCube:
         """
         cube_exists = False
 
+        cube_path = os.path.join(s3_bucket, output_dir) if len(s3_bucket) else output_dir
+
         # Check if the datacube is in the S3 bucket
         if len(s3_bucket):
-            cube_path = os.path.join(s3_bucket, output_dir)
             s3 = s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
             cube_glob = s3.glob(cube_path)
             if len(cube_glob):
                 cube_exists = True
 
         else:
-            if os.path.exists(output_dir):
+            if os.path.exists(cube_path):
                 cube_exists = True
+
+        logging.info(f'{cube_path} exists: {cube_exists == True}')
 
         return cube_exists
 
