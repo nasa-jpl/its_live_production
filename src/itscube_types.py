@@ -4,8 +4,6 @@ datacubes, composites, and mosaics.
 """
 import numpy as np
 
-from sensor_id import SENSORS, all_sensors_description
-
 
 class ShapeFile:
     """
@@ -165,8 +163,6 @@ class DataVars:
     VY_STABLE_SHIFT = 'vy_stable_shift'
 
     # New data variables that are added to already generated V2 datacubes
-    SENSOR_UID1 = 'sensor_uid1'
-    SENSOR_UID2 = 'sensor_uid2'
     ASCENDING_IMG1 = 'ascending_img1'
     ASCENDING_IMG2 = 'ascending_img2'
 
@@ -197,8 +193,6 @@ class DataVars:
     M11 = 'M11'
     M12 = 'M12'
     # Attributes for M1* data
-    SCALE_FACTOR = 'scale_factor'
-    ADD_OFFSET = 'add_offset'
     DR_TO_VR_FACTOR = 'dr_to_vr_factor'
     DR_TO_VR_FACTOR_DESCRIPTION = 'dr_to_vr_factor_description'
 
@@ -258,7 +252,10 @@ class DataVars:
         VY: np.int16,
         V_ERROR: np.int16,
         VA: np.int16,
-        VR: np.int16
+        VR: np.int16,
+        # Put back M11/M12 as int while updating cubes with new granules
+        M11: np.int16,
+        M12: np.int16
     }
 
     # Missing value for data variables of integer data type
@@ -271,13 +268,14 @@ class DataVars:
         VY: MISSING_VALUE,
         V_ERROR: MISSING_VALUE,
         VA: MISSING_VALUE,
-        VR: MISSING_VALUE
+        VR: MISSING_VALUE,
+        # Put back M11/M12 as int while updating cubes with new granules
+        M11: MISSING_VALUE,
+        M12: MISSING_VALUE
     }
 
     # Standard names for the data variables
     STANDARD_NAME = {
-        SENSOR_UID1: 'image1_unique_sensor_id',
-        SENSOR_UID2: 'image2_unique_sensor_id',
         ASCENDING_IMG1: 'image1_ascending_orbit',
         ASCENDING_IMG2: 'image2_ascending_orbit'
     }
@@ -324,8 +322,6 @@ class DataVars:
         URL: "original granule URL",
         AUTORIFT_SOFTWARE_VERSION: "version of autoRIFT software",
         SKIPPED_GRANULES: "skipped granules during datacube construction",
-        SENSOR_UID1: all_sensors_description(),
-        SENSOR_UID2: all_sensors_description(),
         ASCENDING_IMG1: 'true = ascending orbit, false = descending orbit',
         ASCENDING_IMG2: 'true = ascending orbit, false = descending orbit'
     }
