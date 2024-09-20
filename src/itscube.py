@@ -669,7 +669,9 @@ class ITSCube:
 
         # Check if the datacube is in the S3 bucket
         if len(s3_bucket):
-            s3 = s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
+            # Does not work with private buckets we use for testing
+            # s3 = s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
+            s3 = s3fs.S3FileSystem(skip_instance_cache=True)
             cube_glob = s3.glob(cube_path)
             if len(cube_glob):
                 cube_exists = True
