@@ -716,7 +716,7 @@ class ITSCube:
             logging.info(f"Reading existing {cube_path}")
 
             # Open S3FS access to S3 bucket with input datacube
-            s3_in = s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
+            s3_in = s3fs.S3FileSystem(skip_instance_cache=True)
             cube_store = s3fs.S3Map(root=cube_path, s3=s3_in, check=False)
             ds_from_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True)
 
@@ -772,7 +772,7 @@ class ITSCube:
         if s3 is None:
             # If input datacube is on the local filesystem, open S3FS for reading
             # granules from S3 bucket
-            s3 = s3fs.S3FileSystem(anon=True)
+            s3 = s3fs.S3FileSystem()
 
         self.clear()
 
@@ -943,7 +943,7 @@ class ITSCube:
             return found_urls
 
         # Parallelize layer collection
-        s3 = s3fs.S3FileSystem(anon=True)
+        s3 = s3fs.S3FileSystem()
 
         # In order to enable Dask profiling, need to create Dask client for
         # processing: using "processes" or "threads" scheduler
@@ -1020,7 +1020,7 @@ class ITSCube:
             return found_urls
 
         # Open S3FS access to public S3 bucket with input granules
-        s3 = s3fs.S3FileSystem(anon=True)
+        s3 = s3fs.S3FileSystem()
 
         is_first_write = True
         for each_url in tqdm(found_urls, ascii=True, desc='Reading and processing S3 granules'):
