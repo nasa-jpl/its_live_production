@@ -52,13 +52,17 @@ def refs_from_granule(url: str, s3_url: str = None) -> Dict[str, Any]:
     # Kerchunk can"t handle these structs properly so these are converted to
     # global attributes
     for variable in ["mapping", "img_pair_info"]:
-        obj = nc[variable]
-        for attr in obj.ncattrs():
-            val = getattr(obj, attr)
-            if hasattr(val, "item"):
-                val = val.item()
-            attrs[attr] = val
-        del refs["refs"][variable+"/.zarray"]
+        if variable in nc.variables:
+            obj = nc[variable]
+            for attr in obj.ncattrs():
+                val = getattr(obj, attr)
+                if hasattr(val, "item"):
+                    val = val.item()
+                attrs[attr] = val
+            del refs["refs"][variable+"/0"]
+            del refs["refs"][variable+"/.zattrs"]
+            del refs["refs"][variable+"/.zarray"]
+        
     refs["refs"][".zattrs"] = json.dumps(attrs)
     return refs
 
