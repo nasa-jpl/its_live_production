@@ -182,7 +182,7 @@ def refs_to_stac_item(ref: Dict[str, Any]) -> Dict[str, Any]:
 
 @click.command()
 @click.argument("path")
-@click.option("--s3_path", type=str, default=None)
+@click.option("--s3-path", type=str, default=None)
 def make_granule_stac_kerchunk(path: str, s3_path: str):
     fname = os.path.basename(path)
     refs = refs_from_granule(path, s3_path)
