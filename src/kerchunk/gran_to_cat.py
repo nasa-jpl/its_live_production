@@ -1,5 +1,6 @@
 import base64
 import functools
+import copy
 import os
 import warnings
 from io import BytesIO
@@ -12,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pyproj
 import shapely
-import ujson
+import json
 import xstac
 import zarr
 from kerchunk.hdf import SingleHdf5ToZarr
@@ -39,7 +40,7 @@ def refs_from_granule(url: str, s3_url: str = None) -> Dict[str, Any]:
         warnings.simplefilter("ignore")
         refs = SingleHdf5ToZarr(BytesIO(data), s3_url).translate()
     nc = Dataset("t", memory=data)
-    attrs = ujson.loads(refs["refs"][".zattrs"])
+    attrs = json.loads(refs["refs"][".zattrs"])
     # Inline coordinate arrays directly using delta encoding, this way
     # we don"t need to read them directly from netCDF in the future
     for c in ["x", "y"]:
@@ -58,7 +59,7 @@ def refs_from_granule(url: str, s3_url: str = None) -> Dict[str, Any]:
                 val = val.item()
             attrs[attr] = val
         del refs["refs"][variable+"/.zarray"]
-    refs["refs"][".zattrs"] = ujson.dumps(attrs)
+    refs["refs"][".zattrs"] = json.dumps(attrs)
     return refs
 
 
@@ -88,8 +89,8 @@ class DuckDataset:
         self.dims = ["y", "x"]
         self.coords = self.dims
         for v in vnames:
-            attrs = ujson.loads(r.get(f"{v}/.zattrs", "{}"))
-            zarray = ujson.loads(r[f"{v}/.zarray"])
+            attrs = json.loads(r.get(f"{v}/.zattrs", "{}"))
+            zarray = json.loads(r[f"{v}/.zarray"])
             shape = zarray["shape"]
             chunks = zarray["chunks"]
             dims = attrs.get("_ARRAY_DIMENSIONS")
@@ -118,7 +119,7 @@ def coord_from_ref(ref: Dict[str, Any], dim: str):
     
         
 def geom_from_refs(refs: Dict[str, Any]):
-    def maybe_scalar(g):
+    def ensure_scalar(g):
         if isinstance(g, tuple):
             return g[0]
         return g
@@ -127,14 +128,14 @@ def geom_from_refs(refs: Dict[str, Any]):
     bbox = dict(xmin=np.empty(n), ymin=np.empty(n),
                 xmax=np.empty(n), ymax=np.empty(n))
     for i, ref in enumerate(refs.values()):
-        attrs = ujson.loads(ref["refs"][".zattrs"])
+        attrs = json.loads(ref["refs"][".zattrs"])
         crs.append(attrs["crs_wkt"])
         coords = {dim: coord_from_ref(ref, dim) for dim in ["x", "y"]}
         for stat in ["min", "max"]:
             for dim, coord in coords.items():
                 bbox[dim+stat][i] = getattr(coord, stat)()
     geoms = pd.Series(shapely.box(**bbox), index=list(refs.keys()))
-    geoms = pd.concat([gpd.GeoSeries(geom, crs=maybe_scalar(g)).to_crs(epsg=4326)
+    geoms = pd.concat([gpd.GeoSeries(geom, crs=ensure_scalar(g)).to_crs(epsg=4326)
                        for g, geom in geoms.groupby(crs)])
     return geoms
         
@@ -149,15 +150,14 @@ def refs_to_stac_item(ref: Dict[str, Any]) -> Dict[str, Any]:
         uri = "s3://" + uri
     name = os.path.basename(uri)
     poly = geom_from_refs({name: ref}).values[0]
-    attrs = ujson.loads(ref["refs"][".zattrs"])
+    attrs = json.loads(ref["refs"][".zattrs"])
     epsg = attrs["spatial_epsg"]
     time = attrs["date_center"]
     # dateutil can"t parse ISO times ending in "."
     if time.endswith("."):
         time += "0"
-    template = ujson.loads(ujson.dumps(STAC_TEMPLATE))
+    template = copy.deepcopy(STAC_TEMPLATE)
     template["properties"]["datetime"] = time
-    template["id"] = os.path.basename(uri)
     template["id"] = name
     template["assets"] = {name: {"href": uri}}
     reference_system = _crs_json_from_epsg(epsg)
@@ -176,7 +176,7 @@ def refs_to_stac_item(ref: Dict[str, Any]) -> Dict[str, Any]:
                                 y_extent=[y.min(), y.max()],
                                 x_extent=[x.min(), x.max()])
     
-    item.geometry = ujson.loads(shapely.to_geojson(poly))
+    item.geometry = json.loads(shapely.to_geojson(poly))
     item.bbox = list(poly.bounds)
     return item.to_dict()
 
@@ -188,9 +188,9 @@ def make_granule_stac_kerchunk(path: str, s3_path: str):
     refs = refs_from_granule(path, s3_path)
     stac = refs_to_stac_item(refs)
     with open(fname + ".refs.json", "w") as f:
-        ujson.dump(refs, f, indent=4)
+        json.dump(refs, f, indent=4)
     with open(fname + ".stac.json", "w") as f:
-        ujson.dump(stac, f, indent=4)
+        json.dump(stac, f, indent=4)
         
 if __name__ == '__main__':
     make_granule_stac_kerchunk()
