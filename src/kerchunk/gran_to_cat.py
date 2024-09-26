@@ -149,7 +149,6 @@ def refs_to_stac_item(ref: Dict[str, Any]) -> Dict[str, Any]:
         uri = "s3://" + uri
     name = os.path.basename(uri)
     poly = geom_from_refs({name: ref}).values[0]
-    items = []
     attrs = ujson.loads(ref["refs"][".zattrs"])
     epsg = attrs["spatial_epsg"]
     time = attrs["date_center"]
