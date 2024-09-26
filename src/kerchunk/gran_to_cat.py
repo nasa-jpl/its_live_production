@@ -1,20 +1,20 @@
+import base64
+import functools
 import os
 import warnings
-import fsspec
-import ujson
-import pyproj
+from io import BytesIO
+from typing import Any, Dict
+
 import click
-import zarr
-import h5py
-import xstac
-import functools
-import base64
-import shapely
+import fsspec
+import geopandas as gpd
 import numpy as np
 import pandas as pd
-import geopandas as gpd
-from io import BytesIO
-from typing import Dict, Any
+import pyproj
+import shapely
+import ujson
+import xstac
+import zarr
 from kerchunk.hdf import SingleHdf5ToZarr
 from netCDF4 import Dataset
 
