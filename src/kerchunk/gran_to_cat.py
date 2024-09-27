@@ -1,9 +1,9 @@
 import base64
 import functools
 import copy
-import os
 import warnings
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict
 
 import click
@@ -152,7 +152,7 @@ def refs_to_stac_item(ref: Dict[str, Any]) -> Dict[str, Any]:
     uri = ref["refs"]["v/0.0"][0]
     if not uri.startswith("s3://"):
         uri = "s3://" + uri
-    name = os.path.basename(uri)
+    name = Path(uri).name
     poly = geom_from_refs({name: ref}).values[0]
     attrs = json.loads(ref["refs"][".zattrs"])
     epsg = attrs["spatial_epsg"]
@@ -184,17 +184,17 @@ def refs_to_stac_item(ref: Dict[str, Any]) -> Dict[str, Any]:
     item.bbox = list(poly.bounds)
     return item.to_dict()
 
+
 @click.command()
 @click.argument("path")
 @click.option("--s3-path", type=str, default=None)
 def make_granule_stac_kerchunk(path: str, s3_path: str):
-    fname = os.path.basename(path)
     refs = refs_from_granule(path, s3_path)
     stac = refs_to_stac_item(refs)
-    with open(fname + ".refs.json", "w") as f:
-        json.dump(refs, f, indent=4)
-    with open(fname + ".stac.json", "w") as f:
-        json.dump(stac, f, indent=4)
+    out_path = Path.cwd() / Path(path).name
+    out_path.with_suffix('.refs.json').write_text(json.dumps(refs, indent=2))
+    out_path.with_suffix('.stac.json').write_text(json.dumps(stac, indent=2))
+        
         
 if __name__ == '__main__':
     make_granule_stac_kerchunk()
