@@ -54,7 +54,15 @@ class DataCubeBatch:
 
         self.s3 = s3fs.S3FileSystem(anon=True)
 
-    def __call__(self, cube_file: str, s3_bucket: str, bucket_dir_path: str, job_file: str, num_cubes: int):
+    def __call__(
+        self,
+        cube_file: str,
+        s3_bucket: str,
+        bucket_dir_path: str,
+        target_bucket_dir_path: str,
+        job_file: str,
+        num_cubes: int
+    ):
         """
         Submit Batch jobs to AWS.
         """
@@ -219,6 +227,10 @@ class DataCubeBatch:
                     # if len(store_exists) != 0:
                     #     logging.info(f"Datacube {os.path.join(s3_bucket, bucket_dir, cube_filename)} exists, skipping datacube generation.")
                     #     continue
+                    target_bucket_dir_s3 = target_bucket_dir_path
+
+                    if target_bucket_dir_path is not None:
+                        target_bucket_dir_s3 = bucket_dir.replace(bucket_dir_path, target_bucket_dir_path)
 
                     cube_params = {
                         'outputStore': cube_filename,
@@ -229,6 +241,10 @@ class DataCubeBatch:
                         'chunks': str(DataCubeBatch.PARALLEL_GRANULES),
                         'numThreads': str(DataCubeBatch.NUM_DASK_THREADS)
                     }
+
+                    if target_bucket_dir_path is not None:
+                        cube_params['targetBucket'] = target_bucket_dir_s3
+
                     logging.info(f'Cube params: {cube_params}')
 
                     # Submit AWS Batch job
@@ -313,6 +329,7 @@ def main(
     batch_queue: str,
     s3_bucket: str,
     bucket_dir: str,
+    target_bucket_dir: str,
     output_job_file: str,
     number_of_cubes: int):
     """
@@ -373,6 +390,14 @@ def parse_args():
         help="Destination S3 bucket for the datacubes [%(default)s]"
     )
     parser.add_argument(
+        '-td', '--targetBucketDir',
+        type=str,
+        action='store',
+        default=None,
+        help="Target destination S3 bucket for the datacubes being updated [%(default)s]. Use this option "
+            "if datacubes are being updated and their target destination should be other than original cubes s3 location."
+    )
+    parser.add_argument(
         '-g', '--gridSize',
         type=int,
         action='store',
@@ -392,6 +417,7 @@ def parse_args():
         action='store',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-from-scratch-64Gb:1',
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-128Gb:1',   # Update datacubes and store to new s3 location
         default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-128Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
@@ -555,6 +581,8 @@ if __name__ == '__main__':
 
     args = parse_args()
 
+    # Check if target datacube location should be other than original cubes location - this is onlly when
+    # updating datacubes
     main(
         args.dryrun,
         args.cubeDefinitionFile,
@@ -563,6 +591,7 @@ if __name__ == '__main__':
         args.batchJobQueue,
         args.bucket,
         args.bucketDir,
+        args.targetBucketDir,
         args.outputJobFile,
         args.numberOfCubes
     )
