@@ -18,36 +18,43 @@ channels:
 # scipy is required by numba
 # Use MKL installation of numpy: from "defaults" channel,
 # as "conda-forge" channel provides OpenBLAS installation of numpy (slower)
+
 # Have to have specific "fiona" version (1.8.22) as geopandas.read_file(shape_file) raises an exception
 # for annual_composites Docker image:
 # ImportError: the 'read_file' function requires the 'fiona' package, but it is not installed or does not import correctly.
 # Importing fiona resulted in: libtiff.so.5: cannot open shared object file: No such file or directory
 # If specify fiona==1.8.22 in dependencies, then getting circular dependency error,
 # but specifying "defaults" channels first seems to fix the problem.
+
+# October 2, 2024: have to define specific versions for some packages as those were raising from Python interpreter:
+#    File "pandas/_libs/interval.pyx", line 1, in init pandas._libs.interval
+#    ValueError: numpy.dtype size changed, may indicate binary incompatibility. Expected 96 from C header, got 88 from PyObject
+# The reason is that latest rasterio==1.4.1 had a requirement for numpy>=1.21 which resulted in pulling numpy==2.0.2
+
 dependencies:
   - python==3.9.6
+  - defaults::numpy==1.21.5
   - dask==2.30.0
-  - geopandas==0.9.*
-  - pandas
-  - defaults::numpy
-  - numpy
+  - geopandas==0.9.0
+  - pandas==1.5.3
   - numba==0.55.0
-  - h5py
+  - h5py==3.9.0
   - h5netcdf
-  - requests
+  - requests==2.31.0
   - pyproj
   - xarray==0.20.1
   - netcdf4
-  - flake8
-  - scipy
+  - flake8==6.0.0
+  - scipy==1.9.1
   - s3fs==0.4.2
   - fsspec==0.8.3
-  - shapely
-  - tqdm
+  - shapely==2.0.1
+  - tqdm==4.65.0
   - utm
   - zarr==2.6.1
   - pip
   - pip:
-    - geojson
-    - awscliv2
-    - rioxarray
+    - geojson==3.0.1
+    - awscliv2==2.2.0
+    - rasterio==1.3.8
+    - rioxarray==0.15.0
