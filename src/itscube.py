@@ -2813,7 +2813,7 @@ if __name__ == '__main__':
 
             gc.collect()
 
-        if os.path.exists(args.outputStore) and len(args.targetBucket):
+        if len(args.targetBucket):
             # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
             # resulting in as many error messages as there are files in Zarr store
             # to copy
@@ -2833,66 +2833,87 @@ if __name__ == '__main__':
 
             env_copy = os.environ.copy()
 
-            # Allow for multiple retries to avoid AWS triggered errors
-            for each_input, each_recursive_option, each_validate_flag in zip(
-                [args.outputStore, ITSCube.SKIPPED_GRANULES_FILE],
-                [True, False],
-                [True, False]
-            ):
-                file_is_copied = False
-                num_retries = 0
-                command_return = None
+            results_files = None
+            if os.path.exists(args.outputStore):
+                # Local copy of the datacube exists, specify which files need to copy to the target s3 location
+                results_files = [args.outputStore, ITSCube.SKIPPED_GRANULES_FILE]
 
-                command_line = ["awsv2", "s3", "cp"]
+            elif ITSCube.exists(args.outputBucket, args.outputStore) and (args.outputBucket != target_bucket):
+                # Check if original datacube exists - since local copy doesn't exist, but target s3 location is specified,
+                # it's one of the cases:
+                # * cube was not generated
+                # * it was an update to existing datacube and there were no new granules to update it with (no local copy
+                #   of the cube exists).
+                # If target s3 location is other than original s3 location, then just copy the cube
+                # to new location
+                results_files = [
+                    os.path.join(args.outputBucket, args.outputStore),
+                    os.path.join(args.outputBucket, ITSCube.SKIPPED_GRANULES_FILE)
+                ]
 
-                if each_recursive_option:
-                    command_line.append('--recursive')
+            logging.info(f'Identified files to copy to the {target_bucket}: {result_files}')
 
-                command_line.extend([
-                    each_input,
-                    os.path.join(target_bucket, os.path.basename(each_input)),
-                    "--acl", "bucket-owner-full-control"
-                ])
+            if results_files is not None:
+                # Allow for multiple retries to avoid AWS triggered errors
+                for each_input, each_recursive_option, each_validate_flag in zip(
+                    results_files,
+                    [True, False],  # recursive option for copy
+                    [True, False]   # flag if need to validate the store once it's copied over to the s3 target location
+                ):
+                    file_is_copied = False
+                    num_retries = 0
+                    command_return = None
 
-                logging.info(' '.join(command_line))
+                    command_line = ["awsv2", "s3", "cp"]
 
-                while not file_is_copied and num_retries < ITSCube.NUM_AWS_COPY_RETRIES:
-                    logging.info(f"Attempt #{num_retries+1} to copy {each_input} to {target_bucket}")
+                    if each_recursive_option:
+                        command_line.append('--recursive')
 
-                    command_return = subprocess.run(
-                        command_line,
-                        env=env_copy,
-                        check=False,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT
-                    )
+                    command_line.extend([
+                        each_input,
+                        os.path.join(target_bucket, os.path.basename(each_input)),
+                        "--acl", "bucket-owner-full-control"
+                    ])
 
-                    if command_return.returncode != 0:
-                        # Report the whole stdout stream as one logging message
-                        logging.warning(f"Failed to copy {each_input} to {target_bucket} with returncode={command_return.returncode}: {command_return.stdout}")
+                    logging.info(' '.join(command_line))
 
-                        num_retries += 1
-                        # If failed due to AWS SlowDown error, retry
-                        if num_retries != ITSCube.NUM_AWS_COPY_RETRIES and \
-                                ITSCube.AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
-                            # Sleep if it's not a last attempt to copy
-                            time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
+                    while not file_is_copied and num_retries < ITSCube.NUM_AWS_COPY_RETRIES:
+                        logging.info(f"Attempt #{num_retries+1} to copy {each_input} to {target_bucket}")
+
+                        command_return = subprocess.run(
+                            command_line,
+                            env=env_copy,
+                            check=False,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT
+                        )
+
+                        if command_return.returncode != 0:
+                            # Report the whole stdout stream as one logging message
+                            logging.warning(f"Failed to copy {each_input} to {target_bucket} with returncode={command_return.returncode}: {command_return.stdout}")
+
+                            num_retries += 1
+                            # If failed due to AWS SlowDown error, retry
+                            if num_retries != ITSCube.NUM_AWS_COPY_RETRIES and \
+                                    ITSCube.AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
+                                # Sleep if it's not a last attempt to copy
+                                time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
+
+                            else:
+                                # Don't retry otherwise
+                                num_retries = ITSCube.NUM_AWS_COPY_RETRIES
 
                         else:
-                            # Don't retry otherwise
-                            num_retries = ITSCube.NUM_AWS_COPY_RETRIES
+                            file_is_copied = True
 
-                    else:
-                        file_is_copied = True
+                    if not file_is_copied:
+                        raise RuntimeError(f'Failed to copy {each_input} to {target_bucket} with command.returncode={command_return.returncode}')
 
-                if not file_is_copied:
-                    raise RuntimeError(f'Failed to copy {each_input} to {target_bucket} with command.returncode={command_return.returncode}')
-
-                elif not args.disableCubeValidation:
-                    if each_validate_flag:
-                        # Validate just copied to S3 datacube
-                        s3_in, cube_store, ds_from_zarr, _ = ITSCube.init_input_store(each_input,target_bucket, read_skipped_granules=False)
-                        ITSCube.validate_cube(ds_from_zarr, args.searchAPIStartDate, os.path.join(target_bucket, each_input))
+                    elif not args.disableCubeValidation:
+                        if each_validate_flag:
+                            # Validate just copied to S3 datacube
+                            s3_in, cube_store, ds_from_zarr, _ = ITSCube.init_input_store(each_input,target_bucket, read_skipped_granules=False)
+                            ITSCube.validate_cube(ds_from_zarr, args.searchAPIStartDate, os.path.join(target_bucket, each_input))
 
     finally:
         # Remove locally written Zarr store.
