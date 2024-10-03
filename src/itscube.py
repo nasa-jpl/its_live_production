@@ -719,6 +719,7 @@ class ITSCube:
             s3_in = s3fs.S3FileSystem(skip_instance_cache=True)
             cube_store = s3fs.S3Map(root=cube_path, s3=s3_in, check=False)
             ds_from_zarr = xr.open_dataset(cube_store, decode_timedelta=False, engine='zarr', consolidated=True)
+            logging.info(f'Dimensions for existing {cube_path}: {ds_from_zarr.dims}')
 
             if read_skipped_granules:
                 logging.info(f"Reading existing {ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]}")
@@ -2838,7 +2839,7 @@ if __name__ == '__main__':
                 # Local copy of the datacube exists, specify which files need to copy to the target s3 location
                 results_files = [args.outputStore, ITSCube.SKIPPED_GRANULES_FILE]
 
-            elif ITSCube.exists(args.outputBucket, args.outputStore) and (args.outputBucket != target_bucket):
+            elif ITSCube.exists(args.outputStore, args.outputBucket) and (args.outputBucket != target_bucket):
                 # Check if original datacube exists - since local copy doesn't exist, but target s3 location is specified,
                 # it's one of the cases:
                 # * cube was not generated
@@ -2851,7 +2852,7 @@ if __name__ == '__main__':
                     os.path.join(args.outputBucket, ITSCube.SKIPPED_GRANULES_FILE)
                 ]
 
-            logging.info(f'Identified files to copy to the {target_bucket}: {result_files}')
+            logging.info(f'Identified files to copy to the {target_bucket}: {results_files}')
 
             if results_files is not None:
                 # Allow for multiple retries to avoid AWS triggered errors
@@ -2912,7 +2913,7 @@ if __name__ == '__main__':
                     elif not args.disableCubeValidation:
                         if each_validate_flag:
                             # Validate just copied to S3 datacube
-                            s3_in, cube_store, ds_from_zarr, _ = ITSCube.init_input_store(each_input,target_bucket, read_skipped_granules=False)
+                            s3_in, cube_store, ds_from_zarr, _ = ITSCube.init_input_store(os.path.basename(each_input), target_bucket, read_skipped_granules=False)
                             ITSCube.validate_cube(ds_from_zarr, args.searchAPIStartDate, os.path.join(target_bucket, each_input))
 
     finally:
