@@ -37,10 +37,10 @@ class DataCubeBatch:
     # Number of jobs to submit to AWS at a time. This is an attempt to limit
     # number of concurrent ITS_LIVE searchAPI requests for the granules which allow only 50
     # such requests on the server side.
-    NUM_SUBMITTED = 4
+    NUM_SUBMITTED = 100
 
     # Sleep for 5 minutes between the attemps
-    NUM_SLEEP_BETWEEN_SUBMISSIONS = 300
+    NUM_SLEEP_BETWEEN_SUBMISSIONS = 30
 
     def __init__(self, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
@@ -61,10 +61,11 @@ class DataCubeBatch:
         bucket_dir_path: str,
         target_bucket_dir_path: str,
         job_file: str,
-        num_cubes: int
+        num_cubes: int,
+        cube_start_index: int
     ):
         """
-        Submit Batch jobs to AWS.
+        Submit Batch jobs to update existing ITS_LIVE datacubes to AWS.
         """
         # List of submitted datacube Batch jobs and AWS response
         jobs = []
@@ -82,12 +83,17 @@ class DataCubeBatch:
             # Number of cubes for the current batch of submissions (limited by NUM_SUBMITTED)
             num_current_jobs = 0
 
-            for each_cube in cubes[CubeJson.FEATURES]:
+            for each_cube_index, each_cube in enumerate(cubes[CubeJson.FEATURES]):
                 if num_cubes is not None and num_jobs == num_cubes:
                     # Number of datacubes to generate is provided,
                     # stop if they have been generated
                     logging.info(f'Reached number of cubes to process: {num_cubes}')
                     break
+
+                if cube_start_index is not None and (each_cube_index < cube_start_index):
+                    # Start index for the cube to process is specified, skip all cubes up to the start index
+                    logging.info(f'Skipping cube index={each_cube_index} (up to {cube_start_index})')
+                    continue
 
                 if num_current_jobs == DataCubeBatch.NUM_SUBMITTED:
                     # Need to wait with job submission to allow already submitted jobs to
@@ -325,7 +331,8 @@ def main(
     bucket_dir: str,
     target_bucket_dir: str,
     output_job_file: str,
-    number_of_cubes: int):
+    number_of_cubes: int,
+    cube_start_index: int):
     """
     Driver to submit multiple Batch jobs to AWS.
     """
@@ -336,7 +343,7 @@ def main(
         batch_queue,
         dry_run
     )
-    run_batch(cube_definition_file, s3_bucket, bucket_dir, target_bucket_dir, output_job_file, number_of_cubes)
+    run_batch(cube_definition_file, s3_bucket, bucket_dir, target_bucket_dir, output_job_file, number_of_cubes, cube_start_index)
 
 def parse_args():
     """
@@ -450,6 +457,13 @@ def parse_args():
         action='store',
         default=-1,
         help="Number of datacubes to generate [%(default)d]. If left at default value, then generate all qualifying datacubes."
+    )
+    parser.add_argument(
+        '-s', '--cubeStartIndex',
+        type=int,
+        action='store',
+        default=-1,
+        help="Start index for the datacubes to process [%(default)d]. If left at default value, then process all existing datacubes."
     )
     parser.add_argument(
         '-p', '--parallelGranules',
@@ -587,7 +601,8 @@ if __name__ == '__main__':
         args.bucketDir,
         args.targetBucketDir,
         args.outputJobFile,
-        args.numberOfCubes
+        args.numberOfCubes,
+        args.cubeStartIndex
     )
 
     logging.info(f"Done")
