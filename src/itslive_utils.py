@@ -10,8 +10,8 @@ import zipfile
 
 from grid import Bounds
 
-# BASE_URL = 'https://nsidc.org/apps/itslive-search/velocities/urls'
-BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
+BASE_URL = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+# BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
 
 
 def transform_coord(proj1, proj2, lon, lat):
