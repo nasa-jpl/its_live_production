@@ -145,12 +145,12 @@ class NSIDCMeta:
         meta_filename = f'{infile}.premet'
         with open(meta_filename, 'w') as fh:
             fh.write(f'FileName={infile}\n')
-            fh.write('VersionID_local=001\n')
+            fh.write('VersionID_local=002\n')
             fh.write(f'Begin_date={begin_date.strftime("%Y-%m-%d")}\n')
             fh.write(f'End_date={end_date.strftime("%Y-%m-%d")}\n')
             # Extract time stamps
-            fh.write(f'Begin_time={begin_date.strftime("%H:%M:%S")}\n')
-            fh.write(f'End_time={end_date.strftime("%H:%M:%S")}\n')
+            fh.write(f'Begin_time={begin_date.strftime("%H:%M:%S")}.{begin_date.microsecond // 1000:03d}\n')
+            fh.write(f'End_time={end_date.strftime("%H:%M:%S")}.{end_date.microsecond // 1000:03d}\n')
 
             # Append premet with sensor info
             for each_sensor in [sensor1, sensor2]:
