@@ -11,8 +11,9 @@ import zipfile
 
 from grid import Bounds
 
-BASE_URL = 'https://nsidc.org/apps/itslive-search/velocities/urls'
+# BASE_URL = 'https://nsidc.org/apps/itslive-search/velocities/urls'
 # BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
+BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
 
 # Number of 'aws s3 cp' retries in case of a failure
 _NUM_AWS_COPY_RETRIES = 50
@@ -113,6 +114,9 @@ def get_granule_urls_compressed(params, total_retries=1, num_seconds=30):
 
     # Add compression option
     url += 'compressed=true&'
+
+    # Add batch size and format options (just hardcode for now)
+    url += 'batch_size=20000&format=text&'
 
     # Add requested granules version (TODO: should be configurable on startup?)
     url += 'version=2'
