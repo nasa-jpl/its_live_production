@@ -116,10 +116,7 @@ def get_granule_urls_compressed(params, total_retries=1, num_seconds=30):
     url += 'compressed=true&'
 
     # Add batch size and format options (just hardcode for now)
-    url += 'batch_size=20000&format=text&'
-
-    # Add requested granules version (TODO: should be configurable on startup?)
-    url += 'version=2'
+    url += 'batch_size=20000&format=text'
 
     # Get rid of all single quotes if any in URL
     url = url.replace("'", "")
