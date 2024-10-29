@@ -804,7 +804,7 @@ class ITSCube:
 
             # Use "quiet" mode to reduce output clutter
             command_line = [
-                "awsv2", "s3", "sync", "--recursive",
+                "awsv2", "s3", "sync",
                 source_url,
                 output_dir
             ]
@@ -2840,9 +2840,8 @@ if __name__ == '__main__':
 
             if results_files is not None:
                 # Allow for multiple retries to avoid AWS triggered errors
-                for each_input, each_recursive_option, each_validate_flag in zip(
+                for each_input, each_validate_flag in zip(
                     results_files,
-                    [True, False],  # recursive option for copy
                     [True, False]   # flag if need to validate the store once it's copied over to the s3 target location
                 ):
                     file_is_copied = False
@@ -2850,9 +2849,6 @@ if __name__ == '__main__':
                     command_return = None
 
                     command_line = ["awsv2", "s3", "sync", "--quiet"]
-
-                    if each_recursive_option:
-                        command_line.append('--recursive')
 
                     command_line.extend([
                         each_input,
