@@ -7,7 +7,7 @@ import logging
 import time
 import sys
 import subprocess
-import zipfile
+import tarfile
 
 from grid import Bounds
 
@@ -126,7 +126,7 @@ def get_granule_urls_compressed(params, total_retries=1, num_seconds=30):
     data = []
 
     # Save response to local file:
-    local_path = 'searchAPI_urls.json.zip'
+    local_path = 'searchAPI_urls.json.tar.gz'
 
     logging.info(f'Submitting searchAPI request with url={url}')
 
@@ -144,12 +144,15 @@ def get_granule_urls_compressed(params, total_retries=1, num_seconds=30):
                     _ = fh.write(chunk)
 
             # Unzip the file
-            with zipfile.ZipFile(local_path, 'r') as fh:
-                zip_json_file = fh.namelist()[0]
-                logging.info(f'Extracting {zip_json_file}')
+            with tarfile.open(local_path, 'r:gz') as fh:
+                tar_json_file = fh.getmembers()[0]
+                logging.info(f'Extracting {tar_json_file}')
 
-                with fh.open(zip_json_file) as fh_json:
-                    data = json.load(fh_json)
+                with fh.tar.extractfile(tar_json_file) as fh_json:
+                    if fh_json is None:
+                        raise RuntimeError(f'Could not open {tar_json_file} for reading')
+
+                    data = json.load(fh_json.read().decode('utf-8'))
 
                     got_granules = True
 
