@@ -12,7 +12,6 @@ import tarfile
 from grid import Bounds
 
 # BASE_URL = 'https://nsidc.org/apps/itslive-search/velocities/urls'
-# BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
 BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
 
 # Number of 'aws s3 cp' retries in case of a failure
