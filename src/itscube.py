@@ -578,6 +578,9 @@ class ITSCube:
         granules = list(granules.difference(self.skipped_granules[DataVars.SKIP_DUPLICATE]))
         self.logger.info(f"Leaving {len(granules)} granules...")
 
+        # Report summary for already skipped granules for existing cube
+        self.format_stats()
+
         return granules, cube_layers_to_delete
 
     @staticmethod
