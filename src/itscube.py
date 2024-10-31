@@ -2798,7 +2798,7 @@ if __name__ == '__main__':
 
             gc.collect()
 
-        if len(args.targetBucket):
+        if len(target_bucket):
             # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
             # resulting in as many error messages as there are files in Zarr store
             # to copy
