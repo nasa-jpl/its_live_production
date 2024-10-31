@@ -804,7 +804,7 @@ class ITSCube:
 
             # Use "quiet" mode to reduce output clutter
             command_line = [
-                "awsv2", "s3", "cp", "--recursive",
+                "awsv2", "s3", "cp", "--recursive", "--transfer-acceleration",
                 source_url,
                 output_dir
             ]
@@ -2849,7 +2849,7 @@ if __name__ == '__main__':
                     num_retries = 0
                     command_return = None
 
-                    command_line = ["awsv2", "s3", "cp", "--quiet"]
+                    command_line = ["awsv2", "s3", "cp", "--transfer-acceleration"]
 
                     if each_recursive_option:
                         command_line.append('--recursive')
