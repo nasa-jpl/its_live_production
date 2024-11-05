@@ -1,15 +1,19 @@
+import boto3
 import json
 import requests
 import pyproj
 import numpy as np
 import os
 import logging
+from rtree import index
 import time
 import sys
 import subprocess
 import zipfile
 
 from grid import Bounds
+import boto3
+from rtree import index
 
 BASE_URL = 'https://nsidc.org/apps/itslive-search/velocities/urls'
 # BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
@@ -24,13 +28,59 @@ _AWS_COPY_SLEEP_SECONDS = 60
 _AWS_SLOW_DOWN_ERROR = "An error occurred (SlowDown) when calling"
 
 
-def query_rtree(rtree_idx, query_box):
+def get_min_lon_lat_max_lon_lat(coordinates: list):
+    """
+    Compute longitude and latitude extends for provided coordinates list.
+    The coordinates are given in [longitude, latitude] order.
+
+    Args:
+    coordinates: list of lists - list of coordinates in [longitude, latitude] order.
+
+    Returns: tuple of (min_lon, min_lat, max_lon, max_lat).
+    """
+    longitudes = [coord[0] for coord in coordinates]
+    latitudes = [coord[1] for coord in coordinates]
+
+    min_lon, max_lon = min(longitudes), max(longitudes)
+    min_lat, max_lat = min(latitudes), max(latitudes)
+
+    return (min_lon, min_lat, max_lon, max_lat)
+
+
+def download_rtree_from_s3(s3_bucket, s3_key, local_path: str = None):
+    """
+    Download R-tree index file from AWS S3 bucket.
+
+    Args:
+    - s3_bucket: Name of the S3 bucket.
+    - s3_key: Key of the R-tree file in the S3 bucket.
+    - local_path: Local path to save the downloaded file. If None is provided,
+            the file will be saved in the current directory with the same name as the S3 key.
+
+    Returns: R-tree index object.
+    """
+    for each_extension in ['.dat', '.idx']:
+        s3_key_with_ext = s3_key + each_extension
+        s3 = boto3.client('s3')
+
+        if local_path is None:
+            local_path = os.path.basename(s3_key_with_ext)
+
+        s3.download_file(s3_bucket, s3_key_with_ext, local_path)
+
+    # Open local version of the R-tree index
+    return index.Index(os.path.basename(s3_key))
+
+
+def query_rtree(rtree_idx, query_box, min_percent_valid_pix=1):
     """
     Query the R-tree for all files overlapping with the query bounding box.
 
     Args:
     - rtree_idx: R-tree index.
     - query_box: Bounding box to query (min_lon, min_lat, max_lon, max_lat)
+    - min_percent_valid_pix: Minimum percentage of valid pixels in the granule to be considered.
+        Default is 1%.
 
     Returns:
     - List of files names whose extents overlap with the query box.
@@ -38,8 +88,8 @@ def query_rtree(rtree_idx, query_box):
     # Query the R-tree for files that intersect with the query bounding box
     overlapping_files = list(rtree_idx.intersection(query_box, objects=True))
 
-    # Return file names that overlap the query box
-    return [item.object for item in overlapping_files]
+    # Return file names that overlap the query box and have at least 1% valid pixels
+    return [item.object[0] for item in overlapping_files if item.object[1] >= min_percent_valid_pix]
 
 
 def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool = True):
