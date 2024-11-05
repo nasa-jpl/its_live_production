@@ -24,6 +24,24 @@ _AWS_COPY_SLEEP_SECONDS = 60
 _AWS_SLOW_DOWN_ERROR = "An error occurred (SlowDown) when calling"
 
 
+def query_rtree(rtree_idx, query_box):
+    """
+    Query the R-tree for all files overlapping with the query bounding box.
+
+    Args:
+    - rtree_idx: R-tree index.
+    - query_box: Bounding box to query (min_lon, min_lat, max_lon, max_lat)
+
+    Returns:
+    - List of files names whose extents overlap with the query box.
+    """
+    # Query the R-tree for files that intersect with the query bounding box
+    overlapping_files = list(rtree_idx.intersection(query_box, objects=True))
+
+    # Return file names that overlap the query box
+    return [item.object for item in overlapping_files]
+
+
 def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool = True):
     """Copy file to/from aws s3 bucket.
 
