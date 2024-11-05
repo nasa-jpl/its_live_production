@@ -21,26 +21,6 @@ S3_GRANULES_DIRS = [
 S3_GRANULES_GLOB_PATTERN = 'imgpair*.json'
 
 
-# Function to search the R-tree index based on a polygon
-# Function to query the R-tree for overlapping files
-def query_rtree(rtree_idx, query_box):
-    """
-    Query the R-tree for all files overlapping with the query bounding box.
-
-    Args:
-    - rtree_idx: R-tree index.
-    - query_box: Bounding box to query (min_lon, min_lat, max_lon, max_lat)
-
-    Returns:
-    - List of file names whose extents overlap with the query box.
-    """
-    # Query the R-tree for files that intersect with the query bounding box
-    overlapping_files = list(rtree_idx.intersection(query_box, objects=True))
-
-    # Return file names that overlap the query box
-    return [item.object for item in overlapping_files]
-
-
 if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
@@ -104,7 +84,7 @@ if __name__ == '__main__':
                     # idx.insert(i, flat_coordinates, obj=aws_s3_path)
                     i += 1
 
-        logging.info(f'Collected {i} granules from {each_s3_dir}')
+        logging.info(f'Collected {i} granules after crawling {each_s3_dir}')
 
     # Save the R-tree index to a file:
     # creates two files with .dat and .idx extensions because it uses the R-tree spatial index structure,
@@ -117,6 +97,9 @@ if __name__ == '__main__':
     # and updating of the spatial index. The .idx file is used to quickly navigate the tree structure,
     # while the .dat file is used to access the actual data entries.
     idx.close()
+
+    # Example of reading back the R-tree index and quering it for files that ove
+    # lap with a given bounding box
 
     # Reading back r-tree
     # idx_back = index.Rtree(args.rtree_file_path)
