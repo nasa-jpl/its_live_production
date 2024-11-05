@@ -120,4 +120,4 @@ if __name__ == '__main__':
     query_results = query_rtree(idx_back, (min_lon, min_lat, max_lon, max_lat))
 
     time_delta = timeit.default_timer() - start_time
-    selt.logger.info(f'Got {len(query_results)} granules for the bounding box (took {time_delta} seconds)')
+    logging.info(f'Got {len(query_results)} granules for the bounding box (took {time_delta} seconds)')
