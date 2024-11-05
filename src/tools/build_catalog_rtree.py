@@ -8,12 +8,14 @@ import json
 import logging
 from rtree import index
 import s3fs
+import timeit
 
+from itslive_utils import query_rtree
 
 # AWS S3 locations of catalog geojsons that need to be parsed for
 # to create R-tree of granules
 S3_GRANULES_DIRS = [
-    'its-live-data/catalog_geojson/landsatOLI/v02/',
+    # 'its-live-data/catalog_geojson/landsatOLI/v02/',
     'its-live-data/catalog_geojson/sentinel1/v02/',
     # 'its-live-data/catalog_geojson/sentinel2/v02/'
 ]
@@ -79,7 +81,8 @@ if __name__ == '__main__':
                     min_lon, max_lon = min(longitudes), max(longitudes)
                     min_lat, max_lat = min(latitudes), max(latitudes)
 
-                    idx.insert(i, (min_lon, min_lat, max_lon, max_lat), obj=aws_s3_path)
+                    percent_valid_pix = each_granule['properties']['percent_valid_pix']
+                    idx.insert(i, (min_lon, min_lat, max_lon, max_lat), obj=(aws_s3_path, percent_valid_pix))
                     # Does not work - accepts only (min_lon, min_lat, max_lon, max_lat) as index
                     # idx.insert(i, flat_coordinates, obj=aws_s3_path)
                     i += 1
@@ -102,17 +105,19 @@ if __name__ == '__main__':
     # lap with a given bounding box
 
     # Reading back r-tree
-    # idx_back = index.Rtree(args.rtree_file_path)
+    idx_back = index.Rtree(args.rtree_file_path)
 
-    # # Search the tree
-    # query_box = (82.007672, 42.016033, 82.788207, 42.006526, 83.568262, 41.991717, 84.347626, 41.971618, 85.126093, 41.946244, 85.138266, 42.133812, 85.150556, 42.321371, 85.162964, 42.508921, 85.17549, 42.696462, 84.387752, 42.722508, 83.599075, 42.743139, 82.809677, 42.758341, 82.019776, 42.768101, 82.016706, 42.580093, 82.013666, 42.39208, 82.010655, 42.20406, 82.007672, 42.016033)
-    # box_lon = query_box[::2]
-    # box_lat = query_box[1::2]
+    start_time = timeit.default_timer()
+    # Search the tree
+    query_box = (82.007672, 42.016033, 82.788207, 42.006526, 83.568262, 41.991717, 84.347626, 41.971618, 85.126093, 41.946244, 85.138266, 42.133812, 85.150556, 42.321371, 85.162964, 42.508921, 85.17549, 42.696462, 84.387752, 42.722508, 83.599075, 42.743139, 82.809677, 42.758341, 82.019776, 42.768101, 82.016706, 42.580093, 82.013666, 42.39208, 82.010655, 42.20406, 82.007672, 42.016033)
+    box_lon = query_box[::2]
+    box_lat = query_box[1::2]
 
-    # min_lon, max_lon = min(box_lon), max(box_lon)
-    # min_lat, max_lat = min(box_lat), max(box_lat)
-    # logging.info(f'Got bounding box: lon={(min_lon, max_lon)} lat={(min_lat, max_lat)}')
+    min_lon, max_lon = min(box_lon), max(box_lon)
+    min_lat, max_lat = min(box_lat), max(box_lat)
+    logging.info(f'Got bounding box: lon={(min_lon, max_lon)} lat={(min_lat, max_lat)}')
 
-    # query_results = query_rtree(idx_back, (min_lon, min_lat, max_lon, max_lat))
+    query_results = query_rtree(idx_back, (min_lon, min_lat, max_lon, max_lat))
 
-    # logging.info(f'Got results: {len(query_results)}')
+    time_delta = timeit.default_timer() - start_time
+    selt.logger.info(f'Got {len(query_results)} granules for the bounding box (took {time_delta} seconds)')
