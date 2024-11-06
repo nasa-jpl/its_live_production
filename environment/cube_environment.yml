@@ -48,6 +48,7 @@ dependencies:
   - scipy==1.9.1
   - s3fs==0.4.2
   - fsspec==0.8.3
+  - rtree==1.0.1
   - shapely==2.0.1
   - tqdm==4.65.0
   - utm
