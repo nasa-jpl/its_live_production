@@ -79,6 +79,8 @@ def download_rtree_from_s3(s3_bucket, s3_key, local_path: str = None):
 def query_rtree(rtree_idx, query_box, epsg_code, min_percent_valid_pix=1):
     """
     Query the R-tree for all files overlapping with the query bounding box.
+    The query returns only files with at least min_percent_valid_pix valid pixels and
+    with the same EPSG code as the query box.
 
     Args:
     - rtree_idx: R-tree index.

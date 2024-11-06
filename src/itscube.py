@@ -357,7 +357,12 @@ class ITSCube:
         self.logger.info(f"Getting granules for the bounding box: {cube_bounding_box}")
         start_time = timeit.default_timer()
 
-        found_urls = itslive_utils.query_rtree(idx, cube_bounding_box)
+        # Get granules for the bounding box within target projection only
+        found_urls = itslive_utils.query_rtree(
+            rtree_idx=idx,
+            query_box=cube_bounding_box,
+            epsg_code=int(self.projection)
+        )
 
         time_delta = timeit.default_timer() - start_time
         self.logger.info(f'Got {len(found_urls)} granules for the bounding box (took {time_delta} seconds)')
