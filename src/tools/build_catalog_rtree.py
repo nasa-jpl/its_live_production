@@ -22,7 +22,7 @@ from itslive_utils import query_rtree
 S3_GRANULES_DIRS = [
     'its-live-data/catalog_geojson/landsatOLI/v02/',
     'its-live-data/catalog_geojson/sentinel1/v02/',
-    # 'its-live-data/catalog_geojson/sentinel2/v02/'
+    'its-live-data/catalog_geojson/sentinel2/v02/'
 ]
 
 # Glob pattern to match the granule JSON files in the S3 directories.
@@ -65,7 +65,9 @@ def read_catalog(filename: str, s3_read: s3fs.S3FileSystem):
             min_lat, max_lat = min(latitudes), max(latitudes)
 
             percent_valid_pix = each_granule['properties']['percent_valid_pix']
-            data.append([(min_lon, min_lat, max_lon, max_lat), (aws_s3_path, percent_valid_pix)])
+            data_epsg = each_granule['properties']['data_epsg']
+
+            data.append([(min_lon, min_lat, max_lon, max_lat), (aws_s3_path, percent_valid_pix, data_epsg)])
 
     return data
 
@@ -186,7 +188,8 @@ if __name__ == '__main__':
         min_lat, max_lat = min(box_lat), max(box_lat)
         logging.info(f'Got bounding box: lon={(min_lon, max_lon)} lat={(min_lat, max_lat)}')
 
-        query_results = query_rtree(idx_back, (min_lon, min_lat, max_lon, max_lat))
+        epsg = 32645
+        query_results = query_rtree(idx_back, (min_lon, min_lat, max_lon, max_lat), epsg)
 
         time_delta = timeit.default_timer() - start_time
         logging.info(f'Got {len(query_results)} granules for the bounding box (took {time_delta} seconds)')

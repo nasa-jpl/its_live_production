@@ -76,13 +76,14 @@ def download_rtree_from_s3(s3_bucket, s3_key, local_path: str = None):
     return index.Index(os.path.basename(s3_key))
 
 
-def query_rtree(rtree_idx, query_box, min_percent_valid_pix=1):
+def query_rtree(rtree_idx, query_box, epsg_code, min_percent_valid_pix=1):
     """
     Query the R-tree for all files overlapping with the query bounding box.
 
     Args:
     - rtree_idx: R-tree index.
     - query_box: Bounding box to query (min_lon, min_lat, max_lon, max_lat)
+    - epsg_code: Original EPSG code of the longitude, latitude coordinates in the query box.
     - min_percent_valid_pix: Minimum percentage of valid pixels in the granule to be considered.
         Default is 1%.
 
@@ -93,7 +94,7 @@ def query_rtree(rtree_idx, query_box, min_percent_valid_pix=1):
     overlapping_files = list(rtree_idx.intersection(query_box, objects=True))
 
     # Return file names that overlap the query box and have at least 1% valid pixels
-    return [item.object[0] for item in overlapping_files if item.object[1] >= min_percent_valid_pix]
+    return [item.object[0] for item in overlapping_files if item.object[1] >= min_percent_valid_pix and item.object[2] == epsg_code]
 
 
 def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool = True):
