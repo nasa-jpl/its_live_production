@@ -27,6 +27,8 @@ S3_GRANULES_GLOB_PATTERN = 'imgpair*.json'
 
 NUM_CATALOGS_TO_PROCESS = 16
 
+AWS_PREFIX = 'https://its-live-data.s3.amazonaws.com'
+
 def read_catalog(filename: str, s3_read: s3fs.S3FileSystem):
     """Read catalog geojson file and extract granules to build R-tree.
 
@@ -42,7 +44,11 @@ def read_catalog(filename: str, s3_read: s3fs.S3FileSystem):
             # Extract required fields
             coordinates = each_granule['geometry']['coordinates'][0]
 
-            aws_s3_path = each_granule['properties']['directory'] + each_granule['properties']['filename']
+            aws_s3_path = os.path.join(
+                AWS_PREFIX,
+                each_granule['properties']['directory'],
+                each_granule['properties']['filename']
+            )
 
             # Compute longitude and latitude extends for each granule based on coordinates
             # given in [longitude, latitude] order of coordinates list of lists, use it as R-tree index
