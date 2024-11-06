@@ -360,7 +360,7 @@ class ITSCube:
         found_urls = itslive_utils.query_rtree(idx, cube_bounding_box)
 
         time_delta = timeit.default_timer() - start_time
-        selt.logger.info(f'Got {len(found_urls)} granules for the bounding box (took {time_delta} seconds)')
+        self.logger.info(f'Got {len(found_urls)} granules for the bounding box (took {time_delta} seconds)')
 
         # Free up memory
         del idx
