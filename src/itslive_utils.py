@@ -59,15 +59,18 @@ def download_rtree_from_s3(s3_bucket, s3_key, local_path: str = None):
 
     Returns: R-tree index object.
     """
+    logging.info(f'Reading R-tree index from s3://{s3_bucket}/{s3_key}')
+
     for each_extension in ['.dat', '.idx']:
         s3_key_with_ext = s3_key + each_extension
         s3_client = boto3.resource('s3')
 
-        if local_path is None:
-            local_path = os.path.basename(s3_key_with_ext)
+        local_file = local_path
+        if local_file is None:
+            local_file = os.path.basename(s3_key_with_ext)
 
-        logging.info(f'Downloading {s3_key_with_ext} from {s3_bucket} to {local_path}')
-        s3_client.Bucket(s3_bucket).download_file(s3_key_with_ext, local_path)
+        logging.info(f'Downloading {s3_key_with_ext} from {s3_bucket} to {local_file}')
+        s3_client.Bucket(s3_bucket).download_file(s3_key_with_ext, local_file)
 
     # Open local version of the R-tree index
     return index.Index(os.path.basename(s3_key))
