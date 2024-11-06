@@ -1,4 +1,5 @@
 """Script to build rtree of all V2 ITS_LIVE granules.
+Script to build rtree of all V2 ITS_LIVE granules.
 
 This is to bypass searchAPI when building/updating datacubes to query existing
 collection for the existing granules that overlap with any given datacube.
@@ -24,11 +25,15 @@ S3_GRANULES_DIRS = [
     # 'its-live-data/catalog_geojson/sentinel2/v02/'
 ]
 
+# Glob pattern to match the granule JSON files in the S3 directories.
 S3_GRANULES_GLOB_PATTERN = 'imgpair*.json'
 
+# Number of catalogs to process concurrently.
 NUM_CATALOGS_TO_PROCESS = 16
 
+# AWS S3 URL prefix for accessing granule files.
 AWS_PREFIX = 'https://its-live-data.s3.amazonaws.com'
+
 
 def read_catalog(filename: str, s3_read: s3fs.S3FileSystem):
     """Read catalog geojson file and extract granules to build R-tree.
