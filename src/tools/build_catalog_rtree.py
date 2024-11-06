@@ -184,3 +184,6 @@ if __name__ == '__main__':
 
         time_delta = timeit.default_timer() - start_time
         logging.info(f'Got {len(query_results)} granules for the bounding box (took {time_delta} seconds)')
+
+        logging.info(f'First granule from the query: {query_results[0]}')
+
