@@ -9,6 +9,7 @@ from dask.diagnostics import ProgressBar
 import gc
 import json
 import logging
+import os
 from rtree import index
 import s3fs
 import timeit
