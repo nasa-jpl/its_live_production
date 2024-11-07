@@ -19,7 +19,7 @@ BASE_URL = 'https://nsidc.org/apps/itslive-search/velocities/urls'
 # BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
 
 # Number of 'aws s3 cp' retries in case of a failure
-_NUM_AWS_COPY_RETRIES = 50
+_NUM_AWS_COPY_RETRIES = 20
 
 # Number of seconds to sleep between 'aws s3 cp' retries
 _AWS_COPY_SLEEP_SECONDS = 60
@@ -138,8 +138,10 @@ def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool 
 
             num_retries += 1
             # If failed due to AWS SlowDown error, retry
-            if num_retries != _NUM_AWS_COPY_RETRIES and \
-                    _AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
+            if num_retries != _NUM_AWS_COPY_RETRIES:
+                # Possible to have some other types of failures that are not related to AWS SlowDown,
+                # retry the copy for any kind of failure
+                # and _AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
 
                 # Sleep if it's not a last attempt to copy
                 time.sleep(_AWS_COPY_SLEEP_SECONDS)
