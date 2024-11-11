@@ -192,7 +192,7 @@ if __name__ == '__main__':
         query_results = query_rtree(idx_back, (min_lon, min_lat, max_lon, max_lat), epsg)
 
         time_delta = timeit.default_timer() - start_time
-        logging.info(f'Got {len(query_results)} granules for the bounding box (took {time_delta} seconds)')
+        logging.info(f'Got {len(query_results)} granules for the bounding box (took {time_delta/60} minutes)')
 
         logging.info(f'First granule from the query: {query_results[0]}')
 
