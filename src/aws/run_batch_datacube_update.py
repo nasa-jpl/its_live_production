@@ -69,7 +69,7 @@ class DataCubeBatch:
             cubes = json.load(fhandle)
 
             # Number of cubes to generate
-            num_jobs = -1
+            num_jobs = 0
             logging.info(f'Total number of datacubes: {len(cubes["features"])}')
 
             logging.info(f'Starting with cube index={cube_start_index}')
