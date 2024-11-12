@@ -29,18 +29,10 @@ class DataCubeBatch:
 
     # Number of granules to process in parallel at a time (to avoid out of memory
     # failures)
-    PARALLEL_GRANULES = 500
+    PARALLEL_GRANULES = 1000
 
     # Number of Dask threads to generate datacube
     NUM_DASK_THREADS = 8
-
-    # Number of jobs to submit to AWS at a time. This is an attempt to limit
-    # number of concurrent ITS_LIVE searchAPI requests for the granules which allow only 50
-    # such requests on the server side.
-    NUM_SUBMITTED = 100
-
-    # Sleep for 5 minutes between the attemps
-    NUM_SLEEP_BETWEEN_SUBMISSIONS = 30
 
     def __init__(self, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
@@ -62,7 +54,7 @@ class DataCubeBatch:
         target_bucket_dir_path: str,
         job_file: str,
         num_cubes: int,
-        cube_start_index: int
+        cube_start_index: int=0
     ):
         """
         Submit Batch jobs to update existing ITS_LIVE datacubes to AWS.
@@ -77,53 +69,20 @@ class DataCubeBatch:
             cubes = json.load(fhandle)
 
             # Number of cubes to generate
-            num_jobs = 0
+            num_jobs = -1
             logging.info(f'Total number of datacubes: {len(cubes["features"])}')
 
-            # Number of cubes for the current batch of submissions (limited by NUM_SUBMITTED)
-            num_current_jobs = 0
+            logging.info(f'Starting with cube index={cube_start_index}')
 
-            for each_cube_index, each_cube in enumerate(cubes[CubeJson.FEATURES]):
-                if num_cubes is not None and num_jobs == num_cubes:
-                    # Number of datacubes to generate is provided,
-                    # stop if they have been generated
+            # Number of skipped cubes
+            num_skipped = 0
+
+            for current_cube_index, each_cube in enumerate(cubes[CubeJson.FEATURES][cube_start_index:]):
+                if num_cubes is not None and current_cube_index == num_cubes:
+                    # Number of datacubes to iterate through is provided,
+                    # stop if they have been iterated through
                     logging.info(f'Reached number of cubes to process: {num_cubes}')
                     break
-
-                if cube_start_index is not None and (each_cube_index < cube_start_index):
-                    # Start index for the cube to process is specified, skip all cubes up to the start index
-                    logging.info(f'Skipping cube index={each_cube_index} (up to {cube_start_index})')
-                    continue
-
-                if num_current_jobs == DataCubeBatch.NUM_SUBMITTED:
-                    # Need to wait with job submission to allow already submitted jobs to
-                    # query ITS_LIVE searchAPI for granules (hopefully - unless AWS queries
-                    # jobs for some extended time and then fires them up at the same time anyway)
-
-                    # A hack to manually check that searchAPI responded to previously submitted jobs, then continue
-                    logging.info(f'Submitted {num_jobs}, please verify that searchAPI responded to the last {DataCubeBatch.NUM_SUBMITTED} jobs')
-
-                    # Write job info to the json file
-                    logging.info(f"Writing AWS job info to the {job_file}...")
-                    with open(job_file, 'w') as output_fhandle:
-                        json.dump(jobs, output_fhandle, indent=4)
-
-                    # Write job files to the json file
-                    job_files_file = f'filenames_{job_file}'
-                    logging.info(f"Writing jobs output files to the {job_files_file}...")
-                    with open(job_files_file, 'w') as output_fhandle:
-                        json.dump(jobs_files, output_fhandle, indent=4)
-
-                    if self.is_dry_run is False:
-                        _ = input('Press enter to continue...')
-
-                    # logging.info(f'Sleeping for {DataCubeBatch.NUM_SLEEP_BETWEEN_SUBMISSIONS} seconds before next batch of jobs (submitted {num_jobs} jobs)...')
-
-                    # if self.is_dry_run is False:
-                    #     time.sleep(DataCubeBatch.NUM_SLEEP_BETWEEN_SUBMISSIONS)
-
-                    # Restart the jobs submitted counter all over for the next batch
-                    num_current_jobs = 0
 
                 # Example of data cube definition in json file
                 # "properties": {
@@ -196,11 +155,18 @@ class DataCubeBatch:
                     # to test s3fs problem: 'ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr'
                     if len(BatchVars.CUBES_TO_GENERATE) and cube_filename not in BatchVars.CUBES_TO_GENERATE:
                         logging.info(f"Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
+                        num_skipped += 1
                         continue
 
                     if len(BatchVars.CUBES_TO_EXCLUDE) and cube_filename in BatchVars.CUBES_TO_EXCLUDE:
                         logging.info(f"Skipping as provided in BatchVars.CUBES_TO_EXCLUDE")
+                        num_skipped += 1
                         continue
+
+                    # Excluded everything if anything is requested, can count qualified cubes from this point on
+                    # starting with initial value of -1, so will have at 0 for the very first cube after
+                    # this increment
+                    num_jobs += 1
 
                     target_bucket_dir_s3 = target_bucket_dir_path
 
@@ -247,7 +213,7 @@ class DataCubeBatch:
                             #     ]
                             # },
                             retryStrategy={
-                                'attempts': 1
+                                'attempts': 2
                             },
                             timeout={
                                 # 'attemptDurationSeconds': 86400
@@ -265,11 +231,6 @@ class DataCubeBatch:
                         # # Sleep for 30 seconds to make sure that all AWS Batch jobs
                         # # are not started at the same time
                         # time.sleep(30)
-
-                    num_jobs += 1
-                    num_current_jobs += 1
-
-                    logging.info(f'Submitted {num_jobs} to AWS')
 
                     # [
                     #     {
@@ -306,7 +267,8 @@ class DataCubeBatch:
 
                     jobs_files.append(os.path.join(s3_bucket, bucket_dir, cube_filename))
 
-            logging.info(f"Number of batch jobs submitted: {num_jobs}")
+            logging.info(f"Number of cubes submitted to AWS: {num_jobs}")
+            logging.info(f"Number of cubes skipped: {num_skipped}")
 
             # Write job info to the json file
             logging.info(f"Writing AWS job info to the {job_file}...")
@@ -409,7 +371,8 @@ def parse_args():
         '--numThreads',
         type=int,
         action='store',
-        default=16,
+        # default=16,
+        default=8,
         help="Number of threads to use for the datacube generation [%(default)d]"
     )
     parser.add_argument(
@@ -417,9 +380,8 @@ def parse_args():
         type=str,
         action='store',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
-        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-from-scratch-64Gb:1',
-        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-128Gb:1',   # Update datacubes and store to new s3 location
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-128Gb:1',
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-128Gb:1',   # Update datacubes with 2000 granules in parallel
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-64Gb:1',  # Update datacubes with 1000 granules in parallel
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
@@ -427,8 +389,8 @@ def parse_args():
         type=str,
         action='store',
         # default='datacube-ondemand-8vCPU-64GB',
-        # default='datacube-spot-8vCPU-64GB',
-        default='datacube-spot-16vCPU-128GB',
+        default='datacube-spot-8vCPU-64GB',
+        # default='datacube-spot-16vCPU-128GB',
         # default='datacube-ondemand-16vCPU-128GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
@@ -436,7 +398,7 @@ def parse_args():
         '-o', '--outputJobFile',
         type=str,
         action='store',
-        default='datacube_batch_jobs.json',
+        default='datacube_update_batch_jobs.json',
         help="File to capture submitted datacube AWS Batch jobs [%(default)s]"
     )
     parser.add_argument(
@@ -462,22 +424,14 @@ def parse_args():
         '-s', '--cubeStartIndex',
         type=int,
         action='store',
-        default=-1,
-        help="Start index for the datacubes to process [%(default)d]. If left at default value, then process all existing datacubes."
+        default=0,
+        help="Start index for the datacubes to process [%(default)d]."
     )
     parser.add_argument(
         '-p', '--parallelGranules',
         type=int,
         default=1000,
         help="Number of granules to process in parallel at one time [%(default)d]."
-    )
-    parser.add_argument(
-        '--numberOfCubesToAWS',
-        type=int,
-        action='store',
-        default=4,
-        help="Number of datacubes to submit to AWS in one batch [%(default)d]. The script will pause for 5 minutes before submitting next batch. "
-        "This is to allow for the searchAPI to handle multiple requests at the same time."
     )
     parser.add_argument(
         '-t', '--pathToken',
@@ -529,8 +483,6 @@ def parse_args():
 
     DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
     DataCubeBatch.NUM_DASK_THREADS = args.numThreads
-    DataCubeBatch.NUM_SUBMITTED = args.numberOfCubesToAWS
-
     BatchVars.HTTP_PREFIX           = args.urlPath
     BatchVars.PATH_TOKEN            = args.pathToken
 
