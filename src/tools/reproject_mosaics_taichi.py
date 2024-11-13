@@ -70,6 +70,17 @@ spatial_ref_102027 = "PROJCS[\"Asia_North_Lambert_Conformal_Conic\",GEOGCS[\"GCS
     "PARAMETER[\"Standard_Parallel_1\",15],PARAMETER[\"Standard_Parallel_2\",65]," \
     "PARAMETER[\"Latitude_Of_Origin\",30],UNIT[\"Meter\",1],AUTHORITY[\"ESRI\",\"102027\"]]"
 
+spatial_ref_8859 = 'PROJCRS["WGS 84 / Equal Earth Asia-Pacific",' \
+    'BASEGEOGCRS["WGS 84", DATUM["World Geodetic System 1984", ' \
+    'ELLIPSOID["WGS 84",6378137,298.257223563, LENGTHUNIT["metre",1]]], ' \
+    'PRIMEM["Greenwich",0, ANGLEUNIT["degree",0.0174532925199433]], ID["EPSG",4326]], ' \
+    'CONVERSION["Asia-Pacific Equal Earth", METHOD["Equal Earth"], ' \
+    'PARAMETER["Longitude of natural origin",150, ANGLEUNIT["degree",0.0174532925199433]], ' \
+    'PARAMETER["False easting",0, LENGTHUNIT["metre",1]], ' \
+    'PARAMETER["False northing",0, LENGTHUNIT["metre",1]], ID["EPSG",8859]], ' \
+    'CS[Cartesian,2], AXIS["easting (X)",east, ORDER[1], LENGTHUNIT["metre",1]], ' \
+    'AXIS["northing (Y)",north, ORDER[2], LENGTHUNIT["metre",1]], ID["EPSG",8859]]'
+
 PROJECTION_ATTR = 'projection'
 
 # Non-EPSG projection that can be provided on output
@@ -550,6 +561,54 @@ class MosaicsReproject:
                 'inverse_flattening': 298.257223563,
                 'crs_wkt': spatial_ref_102027,
                 'proj4text': ESRICode_Proj4
+            }
+        elif self.xy_epsg == 8859:
+            # gdalsrsinfo EPSG:8859
+
+            # PROJ.4 : +proj=eqearth +lon_0=150 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs
+
+            # OGC WKT2:2018 :
+            # PROJCRS["WGS 84 / Equal Earth Asia-Pacific",
+            #     BASEGEOGCRS["WGS 84",
+            #         DATUM["World Geodetic System 1984",
+            #             ELLIPSOID["WGS 84",6378137,298.257223563,
+            #                 LENGTHUNIT["metre",1]]],
+            #         PRIMEM["Greenwich",0,
+            #             ANGLEUNIT["degree",0.0174532925199433]],
+            #         ID["EPSG",4326]],
+            #     CONVERSION["Equal Earth Asia-Pacific",
+            #         METHOD["Equal Earth",
+            #             ID["EPSG",1078]],
+            #         PARAMETER["Longitude of natural origin",150,
+            #             ANGLEUNIT["degree",0.0174532925199433],
+            #             ID["EPSG",8802]],
+            #         PARAMETER["False easting",0,
+            #             LENGTHUNIT["metre",1],
+            #             ID["EPSG",8806]],
+            #         PARAMETER["False northing",0,
+            #             LENGTHUNIT["metre",1],
+            #             ID["EPSG",8807]]],
+            #     CS[Cartesian,2],
+            #         AXIS["(E)",east,
+            #             ORDER[1],
+            #             LENGTHUNIT["metre",1]],
+            #         AXIS["(N)",north,
+            #             ORDER[2],
+            #             LENGTHUNIT["metre",1]],
+            #     USAGE[
+            #         SCOPE["Very small scale equal-area mapping - Asia-Pacific-centred."],
+            #         AREA["World centred on Asia-Pacific."],
+            #         BBOX[-90,-29.99,90,-30.01]],
+            #     ID["EPSG",8859]]
+            proj_attrs = {
+                DataVars.GRID_MAPPING_NAME: 'equal_earth',
+                'longitude_of_projection_origin': 150.0,
+                'false_easting': 0.0,
+                'false_northing': 0.0,
+                'semi_major_axis': 6378137.0,
+                'inverse_flattening': 298.257223563,
+                'crs_wkt': spatial_ref_8859,
+                'proj4text': '+proj=eqearth +lon_0=150 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
             }
 
         else:
