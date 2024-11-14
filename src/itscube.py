@@ -896,7 +896,7 @@ class ITSCube:
             for each_ds in results[0]:
                 if len(each_ds[0]):
                     # There were exceptions reading the data, log it
-                    self.logging.info('--->'.join(each_ds[0]))
+                    self.logger.info('--->'.join(each_ds[0]))
 
                 self.add_layer(*each_ds[1:])
 
