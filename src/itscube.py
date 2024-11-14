@@ -2483,7 +2483,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--searchAPIStartDate',
         type=lambda s: parse(s).strftime('%Y-%m-%d'),
-        default='1984-01-01',
+        default='1982-01-01',
         help='Start date in YYYY-MM-DD format to pass to search API query to get velocity pair granules [%(default)s]'
     )
     parser.add_argument(
