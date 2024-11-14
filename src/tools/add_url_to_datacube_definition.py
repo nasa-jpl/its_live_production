@@ -57,9 +57,10 @@ class DataCubeGlobalDefinition:
         self.all_cubes = []
         self.all_cubes_jsons = []
         for each in s3_out.ls(DataCubeGlobalDefinition.CUBES_S3_PATH):
-            cubes = s3_out.ls(each)
-            cubes = [each_cube for each_cube in cubes if each_cube.endswith('.zarr')]
-            cubes_jsons = [each_cube for each_cube in cubes if each_cube.endswith('.json')]
+            all_files = s3_out.ls(each)
+            cubes = [each_cube for each_cube in all_files if each_cube.endswith('.zarr')]
+            cubes_jsons = [each_cube for each_cube in all_files if each_cube.endswith('.json')]
+
             self.all_cubes.extend(cubes)
             self.all_cubes_jsons.extend(cubes_jsons)
 
@@ -70,6 +71,9 @@ class DataCubeGlobalDefinition:
 
         self.all_cubes = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes]
         self.all_cubes_jsons = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes_jsons]
+
+        logging.info(f'Number of datacube in Zarr format: {len(self.all_cubes)}')
+        logging.info(f'Number of datacube json format: {len(self.all_cubes_jsons)}')
 
         logging.info(f'Number of datacubes in Zarr format: {len(self.all_cubes)}')
 
