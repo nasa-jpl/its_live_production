@@ -55,10 +55,13 @@ class DataCubeGlobalDefinition:
         s3_out = s3fs.S3FileSystem(anon=True)
 
         self.all_cubes = []
+        self.all_cubes_jsons = []
         for each in s3_out.ls(DataCubeGlobalDefinition.CUBES_S3_PATH):
             cubes = s3_out.ls(each)
             cubes = [each_cube for each_cube in cubes if each_cube.endswith('.zarr')]
+            cubes_jsons = [each_cube for each_cube in cubes if each_cube.endswith('.json')]
             self.all_cubes.extend(cubes)
+            self.all_cubes_jsons.extend(cubes_jsons)
 
         if len(self.all_cubes):
             # Write down all found datacubes to the file
@@ -66,6 +69,8 @@ class DataCubeGlobalDefinition:
                 json.dump(self.all_cubes, outfile, indent=4)
 
         self.all_cubes = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes]
+        self.all_cubes_jsons = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes_jsons]
+
         logging.info(f'Number of datacubes in Zarr format: {len(self.all_cubes)}')
 
     def __call__(self, cube_file: str, output_file: str):
@@ -180,19 +185,28 @@ class DataCubeGlobalDefinition:
 
                     cube_url = [each for each in self.all_cubes if cube_filename in each]
                     if len(cube_url):
-                        # The datacube in Zarr format exists, update GeoJson
-                        each_cube[CubeJson.PROPERTIES][CubeJson.URL] = cube_url[0]
-                        each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 1
+                        # Check if the cube has a JSON file: it's a complete cube in s3 location
+                        cube_url_json = cube_url[0].replace('.zarr', '.json')
 
-                        # Replace 'data_epsg' with 'epsg' attribute, and store value as integer type
-                        del each_cube[CubeJson.PROPERTIES][CubeJson.DATA_EPSG]
-                        each_cube[CubeJson.PROPERTIES][CubeJson.EPSG] = int(epsg_code)
+                        if cube_url_json in self.all_cubes_jsons:
+                            logging.info(f'Cube URL has corresponsing json: {cube_url[0]}')
 
-                        num_cubes += 1
+                            # The datacube in Zarr format exists, update GeoJson
+                            each_cube[CubeJson.PROPERTIES][CubeJson.URL] = cube_url[0]
+                            each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 1
 
-                        # If constructing reduced catalog, append cube to the result catalog
-                        if not DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG:
-                            output_cubes[CubeJson.FEATURES].append(each_cube)
+                            # Replace 'data_epsg' with 'epsg' attribute, and store value as integer type
+                            del each_cube[CubeJson.PROPERTIES][CubeJson.DATA_EPSG]
+                            each_cube[CubeJson.PROPERTIES][CubeJson.EPSG] = int(epsg_code)
+
+                            num_cubes += 1
+
+                            # If constructing reduced catalog, append cube to the result catalog
+                            if not DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG:
+                                output_cubes[CubeJson.FEATURES].append(each_cube)
+
+                        else:
+                            logging.info(f'Cube URL {cube_url[0]} does not have corresponsing json: {cube_url_json}')
 
             logging.info(f"Number of updated entries: {num_cubes}")
 
