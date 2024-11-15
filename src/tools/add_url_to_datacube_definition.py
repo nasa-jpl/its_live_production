@@ -72,10 +72,8 @@ class DataCubeGlobalDefinition:
         self.all_cubes = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes]
         self.all_cubes_jsons = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes_jsons]
 
-        logging.info(f'Number of datacube in Zarr format: {len(self.all_cubes)}')
-        logging.info(f'Number of datacube json format: {len(self.all_cubes_jsons)}')
-
         logging.info(f'Number of datacubes in Zarr format: {len(self.all_cubes)}')
+        logging.info(f'Number of datacubes corresponding jsons: {len(self.all_cubes_jsons)}')
 
     def __call__(self, cube_file: str, output_file: str):
         """
