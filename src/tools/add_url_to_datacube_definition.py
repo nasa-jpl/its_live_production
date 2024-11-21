@@ -16,7 +16,7 @@ import xarray as xr
 
 from grid import Bounds
 import itslive_utils
-from itscube_types import CubeJson, FilenamePrefix, BatchVars
+from itscube_types import CubeJson, FilenamePrefix, BatchVars, Coords
 
 
 class DataCubeGlobalDefinition:
@@ -218,7 +218,7 @@ class DataCubeGlobalDefinition:
                             )
 
                             with xr.open_dataset(cube_s3_url, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
-                                num_granules = len(ds.mid_date)
+                                num_granules = ds.dims[Coords.MID_DATE]
                                 each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT] = num_granules
                                 logging.info(f"Number of granules: {num_granules} for {cube_s3_url}")
 
