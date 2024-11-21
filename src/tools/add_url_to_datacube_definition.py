@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import s3fs
+import xarray as xr
 
 from grid import Bounds
 import itslive_utils
@@ -43,6 +44,9 @@ class DataCubeGlobalDefinition:
 
     # List of datacube filenames to include into catalog.
     CUBES_TO_INCLUDE = []
+
+    HTTP_PREFIX = 'http://its-live-data.s3.amazonaws.com'
+    S3_PREFIX = 's3://its-live-data'
 
     def __init__(self, grid_size: int):
         """
@@ -206,6 +210,17 @@ class DataCubeGlobalDefinition:
                             # If constructing reduced catalog, append cube to the result catalog
                             if not DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG:
                                 output_cubes[CubeJson.FEATURES].append(each_cube)
+
+                            # Write number of granules for existing cube to the catalog geojson file
+                            cube_s3_url = cube_url[0].replace(
+                                DataCubeGlobalDefinition.HTTP_PREFIX,
+                                DataCubeGlobalDefinition.S3_PREFIX
+                            )
+
+                            with xr.open_dataset(cube_s3_url, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
+                                num_granules = len(ds.mid_date)
+                                each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT] = num_granules
+                                logging.info(f"Number of granules: {num_granules} for {cube_s3_url}")
 
                         else:
                             logging.info(f'Cube URL {cube_url[0]} does not have corresponsing json: {cube_url_json}')
