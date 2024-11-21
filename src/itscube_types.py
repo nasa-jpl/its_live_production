@@ -625,6 +625,7 @@ class CubeJson:
     EPSG_PREFIX = 'EPSG'
     URL = 'zarr_url'
     EXIST_FLAG = 'datacube_exist'
+    GRANULE_COUNT = 'granule_count'
     REGION = 'region'
     REGION_ID = 'M_ID'
     RGI_CODE = 'RGI_CODE'
