@@ -59,6 +59,8 @@ class DataCubeBatch:
         """
         Submit Batch jobs to update existing ITS_LIVE datacubes to AWS.
         """
+        logging.info(f"Processing datacubes from {cube_file}: s3_bucket={s3_bucket}, bucket_dir_path={bucket_dir_path}, target_bucket_dir_path={target_bucket_dir_path}, job_file={job_file}, num_cubes={num_cubes}, cube_start_index={cube_start_index}")
+
         # List of submitted datacube Batch jobs and AWS response
         jobs = []
 
@@ -146,6 +148,11 @@ class DataCubeBatch:
                     logging.info(f'Cube name: {cube_filename}')
 
                     bucket_dir = str(PurePath(*(http_cube_filename.parts[2:-1])))
+
+                    # Hack to update already updated files that are stored in provided "bucket_dir_path":
+                    # catalog geojson for datacubes stores original location of the cubes in 'datacubes/v2
+                    bucket_dir = bucket_dir.replace('datacubes/v2', bucket_dir_path)
+
                     if len(BatchVars.PATH_TOKEN) and BatchVars.PATH_TOKEN not in bucket_dir:
                         # A way to pick specific 10x10 grid cell for the datacube
                         logging.info(f"Skipping non-{BatchVars.PATH_TOKEN}")
@@ -381,7 +388,8 @@ def parse_args():
         action='store',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-128Gb:1',   # Update datacubes with 2000 granules in parallel
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-64Gb:1',  # Update datacubes with 1000 granules in parallel
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-64Gb:1',  # Use RAM=61000MB, 1000 granules in parallel
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-64Gb:2',    # Use RAM=61140MB, 1000 granules in parallel
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
@@ -390,8 +398,10 @@ def parse_args():
         action='store',
         # default='datacube-ondemand-8vCPU-64GB',
         default='datacube-spot-8vCPU-64GB',
+        # default = 'datacube-ondemand-manual-8vCPU-64GB',   # Use this for manual submission of high volume cubes
         # default='datacube-spot-16vCPU-128GB',
         # default='datacube-ondemand-16vCPU-128GB',
+
         help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
