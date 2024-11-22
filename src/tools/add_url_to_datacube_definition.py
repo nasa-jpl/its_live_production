@@ -106,6 +106,8 @@ class DataCubeGlobalDefinition:
                 output_cubes = copy.deepcopy(cubes)
                 output_cubes[CubeJson.FEATURES] = []
 
+            s3 = s3fs.S3FileSystem(skip_instance_cache=True)
+
             for each_cube in cubes[CubeJson.FEATURES]:
                 # Example of data cube definition in json file
                 # "properties": {
@@ -212,15 +214,19 @@ class DataCubeGlobalDefinition:
                                 output_cubes[CubeJson.FEATURES].append(each_cube)
 
                             # Write number of granules for existing cube to the catalog geojson file
-                            cube_s3_url = cube_url[0].replace(
-                                DataCubeGlobalDefinition.HTTP_PREFIX,
-                                DataCubeGlobalDefinition.S3_PREFIX
+                            cube_s3_url_meta = os.path.join(
+                                cube_url[0].replace(
+                                    DataCubeGlobalDefinition.HTTP_PREFIX,
+                                    DataCubeGlobalDefinition.S3_PREFIX
+                                ),
+                                '.zmetadata'
                             )
 
-                            with xr.open_dataset(cube_s3_url, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
-                                num_granules = ds.dims[Coords.MID_DATE]
-                                each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT] = num_granules
-                                logging.info(f"Number of granules: {num_granules} for {cube_s3_url}")
+                            # Open the cube's metadata to get number of granules
+                            with s3.open(cube_s3_url_meta, 'r') as fh:
+                                meta = json.load(fh)
+                                each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT] = meta['metadata']['mid_date/.zarray']['shape'][0]
+                                logging.info(f"Number of granules: {each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT]} for {cube_s3_url}")
 
                         else:
                             logging.info(f'Cube URL {cube_url[0]} does not have corresponsing json: {cube_url_json}')
