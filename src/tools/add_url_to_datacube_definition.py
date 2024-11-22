@@ -226,7 +226,7 @@ class DataCubeGlobalDefinition:
                             with s3.open(cube_s3_url_meta, 'r') as fh:
                                 meta = json.load(fh)
                                 each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT] = meta['metadata']['mid_date/.zarray']['shape'][0]
-                                logging.info(f"Number of granules: {each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT]} for {cube_s3_url}")
+                                logging.info(f"Number of granules: {each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT]} for {cube_url[0]}")
 
                         else:
                             logging.info(f'Cube URL {cube_url[0]} does not have corresponsing json: {cube_url_json}')
