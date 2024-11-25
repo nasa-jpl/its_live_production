@@ -138,7 +138,7 @@ def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool 
 
             num_retries += 1
             # If failed due to AWS SlowDown error, retry
-            if num_retries != _NUM_AWS_COPY_RETRIES:
+            if num_retries < _NUM_AWS_COPY_RETRIES:
                 # Possible to have some other types of failures that are not related to AWS SlowDown,
                 # retry the copy for any kind of failure
                 # and _AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
