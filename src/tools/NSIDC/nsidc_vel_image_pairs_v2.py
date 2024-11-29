@@ -276,7 +276,7 @@ class NSIDCFormat:
 
         return True
 
-    def __call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
+    def __call__(self, target_bucket, chunk_size, num_dask_workers):
         """
         Prepare ITS_LIVE granules by creating corresponding NSIDC meta files (spacial
         and premet).
@@ -296,7 +296,7 @@ class NSIDCFormat:
 
             logging.info(f"Starting granules {start}:{start+num_tasks} out of {init_total_files} total granules")
             tasks = [
-                dask.delayed(NSIDCFormat.process_granule)(target_bucket, target_dir, each, self.s3)
+                dask.delayed(NSIDCFormat.process_granule)(target_bucket, each, self.s3)
                 for each in self.infiles[start:start+num_tasks]
             ]
             results = None
