@@ -344,13 +344,12 @@ class NSIDCFormat:
         return msgs
 
     @staticmethod
-    def process_granule(target_bucket: str, target_dir: str, infilewithpath: str, s3: s3fs.S3FileSystem):
+    def process_granule(target_bucket: str, infilewithpath: str, s3: s3fs.S3FileSystem):
         """
         Create corresponding metadata files for the granule as required by NSIDC.
 
         Inputs:
         target_bucket: Target AWS S3 bucket to copy metadata files to to.
-        target_dir: Directory in AWS S3 bucket to copy metadata files to.
         infilewithpath: Path to input granule file.
         """
         filename_tokens = infilewithpath.split('/')
@@ -400,13 +399,6 @@ if __name__ == '__main__':
         type=str,
         default='its-live-data',
         help='AWS S3 bucket to store ITS_LIVE granules to [%(default)s]'
-    )
-
-    parser.add_argument(
-        '-target_dir',
-        type=str,
-        default='NSIDC/velocity_image_pair_sample/',
-        help='AWS S3 directory that stores metadata files for the granules to be ingested [%(default)s]'
     )
 
     parser.add_argument(
@@ -489,12 +481,6 @@ if __name__ == '__main__':
             infiles = json.load(fh)
             logging.info(f"Loaded {len(infiles)} granules from '{args.use_granule_file}'")
 
-    # ATTN: This is to collect a list of granules from the sample set for NSIDC: disable for the production run
-    s3 = s3fs.S3FileSystem()
-    infiles = s3.glob(f'{os.path.join(args.bucket, args.target_dir)}*/*/*/*.nc')
-    logging.info(f'Got {len(infiles)} granules to process')
-    logging.info(f'First file: {infiles[0]}')
-
     nsidc_format = NSIDCFormat(
         args.start_index,
         args.stop_index,
@@ -502,7 +488,6 @@ if __name__ == '__main__':
     )
     nsidc_format(
         args.bucket,
-        args.target_dir,
         args.chunk_by,
         args.dask_workers
     )
