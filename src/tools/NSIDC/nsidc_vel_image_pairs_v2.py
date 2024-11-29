@@ -359,7 +359,7 @@ class NSIDCFormat:
         # Extract tokens from the filename
         url_tokens_1, url_tokens_2 = get_tokens_from_filename(granule_filename)
 
-        msgs = [f'Processing {infilewithpath}']
+        msgs = []
 
         s3_client = boto3.client('s3')
 
