@@ -310,7 +310,9 @@ class NSIDCFormat:
                 )
 
             for each_result in results[0]:
-                logging.info("\n-->".join(each_result))
+                if len(each_result):
+                    # If there are any messages to report
+                    logging.info("\n-->".join(each_result))
 
             total_num_files -= num_tasks
             start += num_tasks
