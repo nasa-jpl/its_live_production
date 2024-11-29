@@ -329,13 +329,13 @@ class NSIDCFormat:
             msg = ""
             if NSIDCFormat.DRY_RUN:
                 msg = "DRYRUN: "
-            msgs.append(f"{msg}Uploading {filename} to {target_bucket}/{target_filename}")
+                msgs.append(f"{msg}Uploading {filename} to {target_bucket}/{target_filename}")
 
             if not NSIDCFormat.DRY_RUN:
                 s3_client.upload_file(filename, target_bucket, target_filename)
 
                 if remove_original_file:
-                    msgs.append(f"Removing local {filename}")
+                    # msgs.append(f"Removing local {filename}")
                     os.unlink(filename)
 
         except ClientError as exc:
@@ -368,10 +368,8 @@ class NSIDCFormat:
             with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
                 # Create spacial and premet metadata files locally, then copy them to S3 bucket
                 meta_file = NSIDCMeta.create_premet_file(ds, granule_filename, url_tokens_1, url_tokens_2)
-                # TODO: This is for production run: have to use the same dir structure as original granule has
-                # msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
-                # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
+                # ATTN: Place metadata files into the same directory as granules
                 msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
 
                 meta_file = NSIDCMeta.create_spatial_file(ds, granule_filename)
