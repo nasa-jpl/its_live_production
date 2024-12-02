@@ -520,7 +520,6 @@ class ITSCube:
         mid_date - register these for deletion from the datacube if they appear
         as datacube layers.
 
-        as datacube layers.
         Return:
             granules: list
                 List of granules to update datacube with.
@@ -531,6 +530,7 @@ class ITSCube:
         self.logger.info(f"Got {len(found_urls)} total granules to consider ({len(set(found_urls))} unique granules)...")
         cube_granules = cube_ds[DataVars.URL].values.tolist()
         self.logger.info(f"Existing datacube granules: {len(cube_granules)} ({len(set(cube_granules))} unique granules)")
+
         granules = set(found_urls).difference(cube_granules)
         cube_in_found_urls = set(cube_granules).difference(found_urls)
         self.logger.info(f"Cube granules not in found_urls: ({len(cube_in_found_urls)})")
@@ -582,6 +582,20 @@ class ITSCube:
             f"After (cube_granules+found_urls): total of {len(cube_layers_to_delete)} "
             f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}"
         )
+
+        # Make sure there is only unique granules in the list
+        cube_layers_to_delete_set = set(cube_layers_to_delete)
+        cube_layers_to_delete = list(cube_layers_to_delete_set)
+        self.logger.info(
+            f"After (cube_granules+found_urls): total of {len(cube_layers_to_delete)} unique "
+            f"existing datacube layers to delete due to duplicate mid_date: {cube_layers_to_delete}"
+        )
+
+        # Disable deletion of any existing cube layers since current v2 cubes have layers with duplicate "mid_date":
+        # something to resolve in the future
+        if len(cube_layers_to_delete) != 0:
+            self.logger.info(f"WARNING: Ignoring datacube layers to delete due to duplicate mid_date (for now)...")
+            cube_layers_to_delete = []
 
         # Merge two lists of skipped granules (for existing cube, new list
         # of granules from search API, and duplicate granules b/w cube and new granules)
