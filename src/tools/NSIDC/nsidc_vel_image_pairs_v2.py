@@ -21,6 +21,7 @@ import numpy as np
 import os
 import pyproj
 import s3fs
+import time
 import xarray as xr
 
 from itscube_types import DataVars
@@ -204,6 +205,13 @@ class NSIDCMeta:
         return meta_filename
 
 
+# Number of retries when encountering AWS S3 download/upload error
+_NUM_AWS_COPY_RETRIES = 3
+
+# Number of seconds between retries to access AWS S3 bucket
+_AWS_COPY_SLEEP_SECONDS = 3
+
+
 class NSIDCFormat:
     """
     Class to prepare V2 ITS_LIVE data for ingest by NSIDC. It requires generation of
@@ -365,17 +373,41 @@ class NSIDCFormat:
 
         s3_client = boto3.client('s3')
 
-        with s3.open(infilewithpath, mode='rb') as fhandle:
-            with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
-                # Create spacial and premet metadata files locally, then copy them to S3 bucket
-                meta_file = NSIDCMeta.create_premet_file(ds, granule_filename, url_tokens_1, url_tokens_2)
+        # Automatically handle boto exceptions on file upload to s3 bucket
+        files_are_copied = False
+        num_retries = 0
 
-                # ATTN: Place metadata files into the same directory as granules
-                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+        while not files_are_copied and num_retries < _NUM_AWS_COPY_RETRIES:
+            try:
+                with s3.open(infilewithpath, mode='rb') as fhandle:
+                    with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
+                        # Create spacial and premet metadata files locally, then copy them to S3 bucket
+                        meta_file = NSIDCMeta.create_premet_file(ds, granule_filename, url_tokens_1, url_tokens_2)
 
-                meta_file = NSIDCMeta.create_spatial_file(ds, granule_filename)
-                # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
-                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+                        # ATTN: Place metadata files into the same directory as granules
+                        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+
+                        meta_file = NSIDCMeta.create_spatial_file(ds, granule_filename)
+                        # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
+                        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+
+                        files_are_copied = True
+
+            except:
+                msgs.append(f"Try #{num_retries + 1} exception processing {infilewithpath}: {sys.exc_info()}")
+                num_retries += 1
+
+                if num_retries < _NUM_AWS_COPY_RETRIES:
+                    # Possible to have some other types of failures that are not related to AWS SlowDown,
+                    # retry the copy for any kind of failure
+                    # and _AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
+
+                    # Sleep if it's not a last attempt to copy
+                    time.sleep(_AWS_COPY_SLEEP_SECONDS)
+
+                else:
+                    # Don't retry, trigger an exception
+                    num_retries = _NUM_AWS_COPY_RETRIES
 
         return msgs
 
