@@ -13,7 +13,6 @@ import collections
 import dask
 from dask.diagnostics import ProgressBar
 from dateutil.parser import parse
-from datetime import datetime
 import gc
 import json
 import logging
@@ -21,6 +20,7 @@ import numpy as np
 import os
 import pyproj
 import s3fs
+import sys
 import time
 import xarray as xr
 
@@ -140,8 +140,8 @@ class NSIDCMeta:
             raise RuntimeError(f'create_premet_file() got unexpected mission+sensor {sensor2} for image#2 of {infile}: one of {list(NSIDCMeta.ShortName.keys())} is supported.')
 
         # Get acquisition dates for both images
-        begin_date=parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1])
-        end_date=parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2])
+        begin_date = parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1])
+        end_date = parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2])
 
         meta_filename = f'{infile}.premet'
         with open(meta_filename, 'w') as fh:
