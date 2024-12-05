@@ -171,15 +171,15 @@ class MosaicsOutputFormat:
     # Data variables which dtype should be uint8 in final mosaics with
     # fill value = 255
     UINT8_TYPES = [
-        CompDataVars.OUTLIER_FRAC
+        CompDataVars.OUTLIER_FRAC,
+        CompDataVars.SENSOR_INCLUDE
     ]
 
     # Data variables which dtype should be uint8 in final mosaics with
     # fill value = 0
     UINT8_TYPES_ZERO_MISSING_VALUE = [
         ShapeFile.LANDICE,
-        ShapeFile.FLOATINGICE,
-        CompDataVars.SENSOR_INCLUDE
+        ShapeFile.FLOATINGICE
     ]
 
 
@@ -1683,11 +1683,30 @@ class ITSLiveAnnualMosaics:
         ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
         ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
 
+        # Revert values for SENSOR_INCLUDE variable per post-processing we used to apply to merged re-projected mosaics (to avoid
+        # post-processing step for static mosaics)
+        # 1. Reverse 0s and 1s in data:
+        np_sensor_flag = ds[CompDataVars.SENSOR_INCLUDE].values
+
+        mask_zeros = np_sensor_flag == 0
+        mask_ones = np_sensor_flag == 1
+        mask_missing_values = np_sensor_flag == DataVars.MISSING_UINT8_VALUE
+
+        np_sensor_flag[mask_zeros] = 1
+        np_sensor_flag[mask_ones] = 0
+        np_sensor_flag[mask_missing_values] = DataVars.MISSING_BYTE
+
+        # Reset data
+        ds[CompDataVars.SENSOR_INCLUDE].data = np_sensor_flag
+        # Update attributes - just to be sure
+        ds[CompDataVars.SENSOR_INCLUDE].attrs[DataVars.DESCRIPTION_ATTR] = CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE]
+        ds[CompDataVars.SENSOR_INCLUDE].attrs[BinaryFlag.MEANINGS_ATTR] = BinaryFlag.MEANINGS[CompDataVars.SENSOR_INCLUDE]
+
         # Convert dataset to Dask dataset not to run out of memory while writing to the file
         ds = ds.chunk(chunks={'x': ITSLiveAnnualMosaics.CHUNK_SIZE, 'y': ITSLiveAnnualMosaics.CHUNK_SIZE})
 
         # Write mosaic to NetCDF format file
-        ITSLiveAnnualMosaics.summary_mosaic_to_netcdf(ds, self.attrs, s3_bucket, mosaics_dir, mosaics_filename, copy_to_s3)
+        ITSLiveAnnualMosaics.summary_mosaic_to_netcdf(ds, self.attrs, s3_bucket, mosaics_dir, mosaics_filename, copy_to_s3, revert_sensor_flag=True)
 
         return mosaics_filename
 
@@ -2083,7 +2102,7 @@ class ITSLiveAnnualMosaics:
         return mosaics_filepath
 
     @staticmethod
-    def set_int_encoding(ds: xr.Dataset, encoding_settings: dict, two_dim_chunks_settings: tuple, three_dim_chunks_settings: tuple = ()):
+    def set_int_encoding(ds: xr.Dataset, encoding_settings: dict, two_dim_chunks_settings: tuple, three_dim_chunks_settings: tuple = (), revert_sensor_flag=False):
         """
         Set encoding settings for all data variables of integer data type for the input dataset.
 
@@ -2092,6 +2111,8 @@ class ITSLiveAnnualMosaics:
             encoding_settings (dict): Dictionary to store encoding settings for all data variables.
             two_dim_chunks_settings: Chunking for 2D data variables.
             three_dim_chunks_settings: Chunking for 3D data variables.
+            revert_sensor_flag: Flag to indicate if sensor labels should be reverted per post-processing we used to apply to generated mosaics
+                (to avoid post-processing step after mosaics re-projection). Default is False.
 
         Returns:
             None: Input encoding_settings dictionary is updated with settings.
@@ -2139,11 +2160,17 @@ class ITSLiveAnnualMosaics:
                 if ds[each].ndim == 3:
                     _chunks = three_dim_chunks_settings
 
+                _missing_value = DataVars.MISSING_UINT8_VALUE
+                if each == DataVars.SENSOR_INCLUDE and revert_sensor_flag:
+                    _missing_value = DataVars.MISSING_BYTE
+                    logging.info(f'Reverting missing_value for {each} to {DataVars.MISSING_BYTE}')
+
                 encoding_settings.setdefault(each, {}).update({
-                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                    Output.MISSING_VALUE_ATTR: _missing_value,
                     Output.DTYPE_ATTR: np.uint8,
                     Output.CHUNKSIZES_ATTR: _chunks
                 })
+
                 encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
         for each in MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE:
@@ -2337,7 +2364,7 @@ class ITSLiveAnnualMosaics:
         # Use new "include" value of 0 since the change is implemented in composites:
         # values are flipped right before storing data to the file
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
-            data=np.full(sensor_dims, 0, dtype=np.short),
+            data=np.full(sensor_dims, 1, dtype=np.short),
             coords=var_coords,
             dims=var_dims,
             attrs={
@@ -2584,10 +2611,13 @@ class ITSLiveAnnualMosaics:
         return (values, geo_polygon)
 
     @staticmethod
-    def summary_mosaic_to_netcdf(ds: xr.Dataset, mosaics_attrs: dict, s3_bucket: str, bucket_dir: str, filename: str, copy_to_s3: bool):
+    def summary_mosaic_to_netcdf(ds: xr.Dataset, mosaics_attrs: dict, s3_bucket: str, bucket_dir: str, filename: str, copy_to_s3: bool, revert_sensor_flag=False):
         """
         Store datacube summary mosaics to NetCDF store and "robust" attributes
         to standalone JSON format file (for traceability).
+
+        Args:
+        revert_sensor_flag (bool): Flag if sensor_flag values should be reverted per mosaics post-processing we used to apply. Default if False.
         """
         target_file = filename
 
@@ -2626,7 +2656,7 @@ class ITSLiveAnnualMosaics:
                 })
                 encoding_settings[each].update(ITSLiveAnnualMosaics.COMPRESSION)
 
-        ITSLiveAnnualMosaics.set_int_encoding(ds, encoding_settings, two_dim_chunks_settings, three_dim_chunks_settings)
+        ITSLiveAnnualMosaics.set_int_encoding(ds, encoding_settings, two_dim_chunks_settings, three_dim_chunks_settings, revert_sensor_flag)
 
         logging.info(f'DS: {ds}')
         logging.info(f'DS encoding: {encoding_settings}')
