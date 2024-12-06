@@ -2161,7 +2161,7 @@ class ITSLiveAnnualMosaics:
                     _chunks = three_dim_chunks_settings
 
                 _missing_value = DataVars.MISSING_UINT8_VALUE
-                if each == DataVars.SENSOR_INCLUDE and revert_sensor_flag:
+                if each == CompDataVars.SENSOR_INCLUDE and revert_sensor_flag:
                     _missing_value = DataVars.MISSING_BYTE
                     logging.info(f'Reverting missing_value for {each} to {DataVars.MISSING_BYTE}')
 
