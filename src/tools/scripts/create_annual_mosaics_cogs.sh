@@ -5,7 +5,7 @@
 set -x
 
 # Specify the S3 bucket location
-bucket="s3://its-live-data/velocity_mosaic/v2/annual"
+bucket="s3://its-live-data/test-space/v2_composites/new_multi_epsg_mosaics_high_noise"
 
 # Target S3 bucket location
 target_bucket="s3://its-live-data/velocity_mosaic/v2/annual/cog"
@@ -22,7 +22,7 @@ variables=(
 )
 
 # Iterate over static mosaics in the S3 bucket location
-for filename in $(awsv2 s3 ls "$bucket"/ | grep .nc | grep -v 2023 | awk '{print $NF}'); do
+for filename in $(awsv2 s3 ls "$bucket"/ | grep -v _0000_ | awk '{print $NF}'); do
     # Copy file locally
     awsv2 s3 cp "$bucket/$filename" "$filename"
 

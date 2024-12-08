@@ -5,7 +5,7 @@
 set -x
 
 # Specify the S3 bucket location
-bucket="s3://its-live-data/velocity_mosaic/v2/static"
+bucket="s3://its-live-data/test-space/v2_composites/new_multi_epsg_mosaics_high_noise"
 
 # Target S3 bucket location
 target_bucket="s3://its-live-data/velocity_mosaic/v2/static/cog"
@@ -37,7 +37,7 @@ variables=(
 )
 
 # Iterate over static mosaics in the S3 bucket location
-for filename in $(awsv2 s3 ls "$bucket"/ | grep .nc | awk '{print $NF}'); do
+for filename in $(awsv2 s3 ls "$bucket"/ | grep _0000_ | awk '{print $NF}'); do
     # Copy file locally
     awsv2 s3 cp "$bucket/$filename" "$filename"
 
@@ -49,7 +49,7 @@ for filename in $(awsv2 s3 ls "$bucket"/ | grep .nc | awk '{print $NF}'); do
         # Call gdal_translate for each file and variable
         gdal_translate -of COG -co "BIGTIFF=YES" NETCDF:\"$filename\":"$var" "$output_filename"
         awsv2 s3 cp "$output_filename" "$target_bucket/$output_filename"
-        # rm "$output_filename"
+        rm "$output_filename"
     done
 
     rm "$filename"
