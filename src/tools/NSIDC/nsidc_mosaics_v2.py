@@ -333,6 +333,14 @@ class NSIDCMosaicFormat:
         result_str = f"POLYGON(({result_str}))"
         ds[Output.GEOSPATIAL_BOUNDS] = result_str
 
+        epsgcode = int(ds.attrs[Output.PROJECTION])
+        epsgcode_str = f'EPSG:{epsgcode}'
+
+        if epsgcode == NSIDCFormat.ESRI_CODE:
+            epsgcode_str = f'ESRI:{epsgcode}'
+
+        ds[Output.GEOSPATIAL_BOUNDS_CRS] = f'EPSG: %s' %epsgcode_str
+
         del ds.attrs[Output.LATITUDE]
         del ds.attrs[Output.LONGITUDE]
 
