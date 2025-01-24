@@ -381,13 +381,13 @@ class NSIDCMosaicFormat:
                 'The climatology uses a time-intercept of January 1, 2018.'
 
             # Change 'v_amp' attributes
-            ds[DataVars.V_AMP].attrs[DataVars.STD_NAME] = 'climatological [2014-2022] mean seasonal amplitude'
+            ds[CompDataVars.V_AMP].attrs[DataVars.STD_NAME] = 'climatological [2014-2022] mean seasonal amplitude'
 
             # Change 'v_amp_error' attributes
-            ds[DataVars.V_AMP_ERROR].attrs[DataVars.STD_NAME] = 'v_amp error'
+            ds[CompDataVars.V_AMP_ERROR].attrs[DataVars.STD_NAME] = 'v_amp error'
 
             # Change 'v_error' attributes
-            ds[DataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v error'
+            ds[CompDataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v error'
 
         else:
             # This is annual mosaic
@@ -396,9 +396,9 @@ class NSIDCMosaicFormat:
             ds[DataVars.V].attrs[DataVars.STD_NAME] = 'mean annual velocity'
 
             # Change 'v_error' attributes
-            ds[DataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v error'
-            ds[DataVars.VX_ERROR].attrs[DataVars.STD_NAME] = 'vx error'
-            ds[DataVars.VY_ERROR].attrs[DataVars.STD_NAME] = 'vy error'
+            ds[CompDataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v error'
+            ds[CompDataVars.VX_ERROR].attrs[DataVars.STD_NAME] = 'vx error'
+            ds[CompDataVars.VY_ERROR].attrs[DataVars.STD_NAME] = 'vy error'
 
 
 if __name__ == '__main__':
