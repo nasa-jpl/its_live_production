@@ -8,6 +8,7 @@ Authors: Masha Liukis (JPL), Alex Gardner (JPL), Mark Fahnestock (UFA)
 import argparse
 import boto3
 from datetime import datetime
+import json
 import logging
 import numpy as np
 import os
@@ -16,9 +17,12 @@ import s3fs
 import xarray as xr
 
 # Local imports
-from itscube_types import DataVars
+from itscube_types import DataVars, Output, CompDataVars, BinaryFlag, ShapeFile
 from nsidc_vel_image_pairs import NSIDCFormat
 from nsidc_vel_image_pairs_v2 import NSIDCMeta
+
+# NetCDF attributes and data variables names
+SCALE_FACTOR_AT_PROJECTION_ORIGIN = 'scale_factor_at_projection_origin'
 
 
 class NSIDCMosaicsMeta:
@@ -175,6 +179,11 @@ class NSIDCMosaicFormat:
     # Pattern to collect input files in AWS S3 bucket
     GLOB_PATTERN = '*.nc'
 
+    # Re-chunk input mosaic to speed up read of the data
+    CHUNK_SIZE = 1000
+
+    LOCAL_FIX_DIR = 'fixed_mosaics'
+
     def __init__(self, s3_bucket: str, s3_dir: str):
         """
         Initialize the object.
@@ -197,9 +206,15 @@ class NSIDCMosaicFormat:
 
         logging.info(f"Got {len(self.infiles)} files to process")
 
-    def __call__(self):
+        if not os.path.exists(NSIDCMosaicFormat.LOCAL_FIX_DIR):
+            os.mkdir(NSIDCMosaicFormat.LOCAL_FIX_DIR)
+
+    def __call__(self, target_dir):
         """
         Create NSIDC meta files (spatial and premet) for ITS_LIVE v2 mosaics.
+
+        Inputs:
+        target_dir: Directory in AWS S3 bucket to store fixed mosaics to.
         """
         total_num_files = len(self.infiles)
 
@@ -212,18 +227,24 @@ class NSIDCMosaicFormat:
 
         while start < total_num_files:
             logging.info(f"Starting {self.infiles[start]} {start} out of {total_num_files} total files")
-            results = NSIDCMosaicFormat.process_file(self.s3_bucket, self.infiles[start], self.s3)
+            results = NSIDCMosaicFormat.process_file(
+                self.s3_bucket,
+                self.infiles[start],
+                self.s3,
+                target_dir
+            )
             logging.info("\n-->".join(results))
 
             start += 1
 
     @staticmethod
-    def process_file(target_bucket: str, infilewithpath: str, s3: s3fs.S3FileSystem):
+    def process_file(target_bucket: str, infilewithpath: str, s3: s3fs.S3FileSystem, target_dir: str):
         """
         Fix granule format and create corresponding metadata files as required by NSIDC.
+        Place fixed granule and metadata files in the target S3 bucket.
         """
         filename_tokens = infilewithpath.split(os.path.sep)
-        directory = os.path.sep.join(filename_tokens[1:-1])
+        # directory = os.path.sep.join(filename_tokens[1:-1])
 
         filename = filename_tokens[-1]
 
@@ -236,17 +257,140 @@ class NSIDCMosaicFormat:
 
         s3_client = boto3.client('s3')
 
-        with s3.open(infilewithpath, mode='rb') as fhandle:
-            with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
-                # Create spacial and premet metadata files, and copy them to S3 bucket
-                meta_file = NSIDCMosaicsMeta.create_premet_file(filename, year)
+        file_path = os.path.sep.join(filename_tokens[1:])
+        local_file = filename + '.local'
 
-                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, directory, target_bucket, s3_client))
+        # Download file locally - takes too long to read the whole mosaic file
+        # from S3 in order for it to write fixed dataset locally
+        s3_client.download_file(target_bucket, file_path, local_file)
 
-                meta_file = NSIDCMosaicsMeta.create_spatial_file(ds, filename)
-                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, directory, target_bucket, s3_client))
+        with xr.open_dataset(local_file, engine=NSIDCMeta.NC_ENGINE) as ds:
+            # Fix metadata for the dataset
+            NSIDCMosaicsMeta.process_nc_file(ds)
+
+            # Write fixed granule to local file
+            # Convert dataset to Dask dataset not to run out of memory while writing to the file
+            ds = ds.chunk(chunks={
+                'x': NSIDCMosaicFormat.CHUNK_SIZE,
+                'y': NSIDCMosaicFormat.CHUNK_SIZE
+            })
+
+            # Write fixed granule to local file
+            new_filename = os.path.join(NSIDCMosaicFormat.LOCAL_FIX_DIR, filename)
+            ds.to_netcdf(new_filename, engine='h5netcdf')
+
+            msgs.extend(NSIDCFormat.upload_to_s3(new_filename, target_dir, target_bucket, s3_client))
+
+            # Create spacial and premet metadata files, and copy them to S3 bucket
+            meta_file = NSIDCMosaicsMeta.create_premet_file(filename, year)
+
+            msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
+
+            meta_file = NSIDCMosaicsMeta.create_spatial_file(ds, filename)
+            msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
         return msgs
+
+    @staticmethod
+    def process_nc_file(
+        ds
+    ):
+        """
+        See github issue #38 for details on the changes required for the file
+        to be ingested by NSIDC.
+
+        Inputs:
+        ds: xarray.Dataset object that represents the NetCDF file content (granule
+            or mosaic).
+        """
+        _cf_value = 'CF-1.8'
+
+        # Add "conversion" attribute to the dataset
+        ds[Output.CONVENTIONS] = _cf_value
+
+        # Add "citation" attribute to the dataset
+        ds[Output.CITATION] = 'Gardner, A. S., Fahnestock, M., Greene, C. A., ' \
+            'Kennedy, J. H., Liukis, M., & Scambos, T. 2024. ' \
+            'MEaSUREs ITS_LIVE Regional Glacier and Ice Sheet Surface Velocities, ' \
+            'Version 2 [Indicate subset used]. Boulder, Colorado USA. ' \
+            'NASA National Snow and Ice Data Center Distributed Active Archive Center. ' \
+            'https//:doi.org/10.5067/JQ6337239C96. [Date accessed]."'
+
+        # Replace latitude and longitude attributes with geospatial_bounds and
+        # geospatial_bounds_crs.
+        # Example:
+        # :latitude = "[59.42, 60.11, 62.72]"; and
+        # :longitude = "[-146.05, -159.66, -130.11]";
+        # with
+        # :geospatial_bounds = "POLYGON((lat1 lon1, lat2 lon2,...))"; and
+        # :geospatial_bounds_crs= "EPSG:4326";
+        lat_values = json.loads(ds.attrs[Output.LATITUDE])
+        long_values = json.loads(ds.attrs[Output.LONGITUDE])
+
+        result_str = " ,".join([
+            f"{each_lat} {each_long}" for each_lat, each_long in zip(lat_values, long_values)
+        ])
+        result_str = f"POLYGON(({result_str}))"
+        ds[Output.GEOSPATIAL_BOUNDS] = result_str
+
+        del ds.attrs[Output.LATITUDE]
+        del ds.attrs[Output.LONGITUDE]
+
+        # Change value of the "title" attribute
+        ds.attrs[Output.TITLE] = 'MEaSUREs ITS_LIVE Regional Glacier and Ice Sheet Surface ' \
+            'Velocities, Version 2'
+
+        # Change datatype for mapping.scale_factor_at_projection_origin to float
+        ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN] = float(ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN])
+
+        if Output.COUNT in ds:
+            # This is static mosiac
+
+            # Change 'count' attributes
+            ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
+            del ds[Output.COUNT].attrs[DataVars.NOTE]
+
+            ds[Output.COUNT].attrs[DataVars.STANDARD_NAME] = 'number_of_observations'
+
+            # Change 'dv*_dt' attributes
+            ds[CompDataVars.SLOPE_V].attrs[DataVars.STANDARD_NAME] = 'trend [2014-2022] in v'
+            ds[CompDataVars.SLOPE_VX].attrs[DataVars.STANDARD_NAME] = 'trend [2014-2022] in vx'
+            ds[CompDataVars.SLOPE_VY].attrs[DataVars.STANDARD_NAME] = 'trend [2014-2022] in vy'
+
+            # Change 'floatingice' attributes
+            ds[CompDataVars.FLOATING_ICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
+            ds[CompDataVars.LAND_ICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
+
+            ds[ShapeFile.FLOATINGICE].attrs[Output.REFERENCES] = ds[CompDataVars.FLOATING_ICE].attrs[Output.URL]
+            del ds[CompDataVars.FLOATING_ICE].attrs[Output.URL]
+
+            ds[CompDataVars.LAND_ICE].attrs[Output.REFERENCES] = ds[CompDataVars.LAND_ICE].attrs[Output.URL]
+            del ds[CompDataVars.LAND_ICE].attrs[Output.URL]
+
+            # Change 'v' attributes
+            ds[DataVars.V].attrs[DataVars.STANDARD_NAME] = 'climatological velocity [2014-2022]'
+            ds[DataVars.V].attrs[DataVars.DESCRIPTION_ATTR] = 'determined by taking the hypotenuse of vx and vy. ' \
+                'The climatology uses a time-intercept of January 1, 2018.'
+
+            # Change 'v_amp' attributes
+            ds[DataVars.V_AMP].attrs[DataVars.STANDARD_NAME] = 'climatological [2014-2022] mean seasonal amplitude'
+
+            # Change 'v_amp_error' attributes
+            ds[DataVars.V_AMP_ERROR].attrs[DataVars.STANDARD_NAME] = 'v_amp error'
+
+            # Change 'v_error' attributes
+            ds[DataVars.V_ERROR].attrs[DataVars.STANDARD_NAME] = 'v error'
+
+        else:
+            # This is annual mosaic
+
+            # Change 'v' attributes
+            ds[DataVars.V].attrs[DataVars.STANDARD_NAME] = 'mean annual velocity'
+
+            # Change 'v_error' attributes
+            ds[DataVars.V_ERROR].attrs[DataVars.STANDARD_NAME] = 'v error'
+            ds[DataVars.VX_ERROR].attrs[DataVars.STANDARD_NAME] = 'vx error'
+            ds[DataVars.VY_ERROR].attrs[DataVars.STANDARD_NAME] = 'vy error'
 
 
 if __name__ == '__main__':
@@ -265,9 +409,16 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '-target_dir',
+        '-source_dir',
         type=str,
         default='NSIDC/velocity_mosaic_sample/v2/static',
+        help='AWS S3 directory that stores input mosaics [%(default)s]'
+    )
+
+    parser.add_argument(
+        '-target_dir',
+        type=str,
+        default='NSIDC/velocity_mosaic_sample/v2/static/fixed',
         help='AWS S3 directory that stores input mosaics [%(default)s]'
     )
 
@@ -286,7 +437,7 @@ if __name__ == '__main__':
 
     logging.info(f'Command-line args: {args}')
 
-    nsidc_format = NSIDCMosaicFormat(args.bucket, args.target_dir)
-    nsidc_format()
+    nsidc_format = NSIDCMosaicFormat(args.bucket, args.source_dir)
+    nsidc_format(args.target_dir)
 
     logging.info('Done.')
