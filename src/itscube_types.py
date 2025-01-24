@@ -41,6 +41,17 @@ class Output:
     SCALE_FACTOR = 'scale_factor'
     ADD_OFFSET = 'add_offset'
 
+    # Global attributes
+    CONVENTIONS = 'Conventions'
+    TITLE = 'title'
+    CITATION = 'citation'
+    LATITUDE = 'latitude'
+    LONGITUDE = 'longitude'
+
+    COUNT = 'count'
+    URL = 'url'
+    REFERENCES= 'references'
+
 
 class CubeOutput:
     """
@@ -63,6 +74,7 @@ class CubeOutput:
     TITLE = 'title'
     AUTHOR = 'author'
     CONVENTIONS = 'Conventions'
+    GEOSPATIAL_BOUNDS = 'geospatial_bounds'
 
     class Values:
         """
@@ -169,6 +181,7 @@ class DataVars:
     # Attributes
     STD_NAME = 'standard_name'
     NOTE = 'note'
+    COMMENT = 'comment'
 
     UNITS = 'units'
     M_Y_UNITS = 'meter/year'
@@ -483,28 +496,28 @@ class CompDataVars:
     STD_NAME = {
         DataVars.VX: 'land_ice_surface_x_velocity',
         DataVars.VY: 'land_ice_surface_y_velocity',
-        DataVars.V: 'velocity',
-        VX_ERROR: 'x_velocity_error',
-        VY_ERROR: 'y_velocity_error',
-        V_ERROR: 'velocity_error',
+        DataVars.V: 'mean annual velocity',
+        VX_ERROR: 'vx error',
+        VY_ERROR: 'vy error',
+        V_ERROR: 'v error',
         VX_AMP_ERROR: 'vx_amplitude_error',
         VY_AMP_ERROR: 'vy_amplitude_error',
-        V_AMP_ERROR: 'v_amplitude_error',
+        V_AMP_ERROR: 'v_amp error',
         VX_AMP: 'vx_amplitude',
         VY_AMP: 'vy_amplitude',
-        V_AMP: 'v_amplitude',
+        V_AMP: 'climatological [%i-%i] mean seasonal amplitude',
         VX_PHASE: 'vx_phase',
         VY_PHASE: 'vy_phase',
         V_PHASE: 'v_phase',
         SENSORS: 'sensors',
         TIME: 'time',
-        COUNT: 'count',
+        COUNT: 'number_of_observations',
         MAX_DT: 'dt_maximum',
         SENSOR_INCLUDE: 'sensor_flag',
         OUTLIER_FRAC: 'outlier_percent',
         VX0: 'climatological_x_velocity',
         VY0: 'climatological_y_velocity',
-        V0: 'climatological_velocity',
+        V0: f'climatological [%i-%i] velocity',
         COUNT0: 'count0',
         VX0_ERROR: 'vx0_velocity_error',
         VY0_ERROR: 'vy0_velocity_error',
@@ -538,7 +551,7 @@ class CompDataVars:
         SENSORS: 'combinations of unique sensors and missions that are grouped together for date_dt filtering',
         VX0: f'climatological [%i-%i] vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology uses a time-intercept of January 1, %i.',
         VY0: f'climatological [%i-%i] vy determined by a weighted least squares line fit, described by an offset and slope, to mean annual vy values. The climatology uses a time-intercept of January 1, %i.',
-        V0: f'climatological [%i-%i] v determined by taking the hypotenuse of vx0 and vy0. The climatology uses a time-intercept of January 1, %i.',
+        V0: f'determined by taking the hypotenuse of vx0 and vy0. The climatology uses a time-intercept of January 1, %i.',
         COUNT0: f'number of image pairs used for climatological [%i-%i] means',
         VX0_ERROR: 'error for vx0',
         VY0_ERROR: 'error for vy0',
@@ -558,7 +571,7 @@ class BinaryFlag:
     MEANINGS_ATTR = 'flag_meanings'
 
     # Binary mask values
-    VALUES = np.array([0, 1], dtype=np.uint8)
+    VALUES = np.array([0, 1], dtype=np.ubyte)
 
     # Binary mask meanings
     MEANINGS = {
