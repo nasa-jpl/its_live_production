@@ -358,12 +358,12 @@ class NSIDCMosaicFormat:
             ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
             del ds[Output.COUNT].attrs[DataVars.NOTE]
 
-            ds[Output.COUNT].attrs[DataVars.STANDARD_NAME] = 'number_of_observations'
+            ds[Output.COUNT].attrs[DataVars.STD_NAME] = 'number_of_observations'
 
             # Change 'dv*_dt' attributes
-            ds[CompDataVars.SLOPE_V].attrs[DataVars.STANDARD_NAME] = 'trend [2014-2022] in v'
-            ds[CompDataVars.SLOPE_VX].attrs[DataVars.STANDARD_NAME] = 'trend [2014-2022] in vx'
-            ds[CompDataVars.SLOPE_VY].attrs[DataVars.STANDARD_NAME] = 'trend [2014-2022] in vy'
+            ds[CompDataVars.SLOPE_V].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in v'
+            ds[CompDataVars.SLOPE_VX].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in vx'
+            ds[CompDataVars.SLOPE_VY].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in vy'
 
             # Change 'floatingice' attributes
             ds[CompDataVars.FLOATING_ICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
@@ -376,29 +376,29 @@ class NSIDCMosaicFormat:
             del ds[CompDataVars.LAND_ICE].attrs[Output.URL]
 
             # Change 'v' attributes
-            ds[DataVars.V].attrs[DataVars.STANDARD_NAME] = 'climatological velocity [2014-2022]'
+            ds[DataVars.V].attrs[DataVars.STD_NAME] = 'climatological velocity [2014-2022]'
             ds[DataVars.V].attrs[DataVars.DESCRIPTION_ATTR] = 'determined by taking the hypotenuse of vx and vy. ' \
                 'The climatology uses a time-intercept of January 1, 2018.'
 
             # Change 'v_amp' attributes
-            ds[DataVars.V_AMP].attrs[DataVars.STANDARD_NAME] = 'climatological [2014-2022] mean seasonal amplitude'
+            ds[DataVars.V_AMP].attrs[DataVars.STD_NAME] = 'climatological [2014-2022] mean seasonal amplitude'
 
             # Change 'v_amp_error' attributes
-            ds[DataVars.V_AMP_ERROR].attrs[DataVars.STANDARD_NAME] = 'v_amp error'
+            ds[DataVars.V_AMP_ERROR].attrs[DataVars.STD_NAME] = 'v_amp error'
 
             # Change 'v_error' attributes
-            ds[DataVars.V_ERROR].attrs[DataVars.STANDARD_NAME] = 'v error'
+            ds[DataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v error'
 
         else:
             # This is annual mosaic
 
             # Change 'v' attributes
-            ds[DataVars.V].attrs[DataVars.STANDARD_NAME] = 'mean annual velocity'
+            ds[DataVars.V].attrs[DataVars.STD_NAME] = 'mean annual velocity'
 
             # Change 'v_error' attributes
-            ds[DataVars.V_ERROR].attrs[DataVars.STANDARD_NAME] = 'v error'
-            ds[DataVars.VX_ERROR].attrs[DataVars.STANDARD_NAME] = 'vx error'
-            ds[DataVars.VY_ERROR].attrs[DataVars.STANDARD_NAME] = 'vy error'
+            ds[DataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v error'
+            ds[DataVars.VX_ERROR].attrs[DataVars.STD_NAME] = 'vx error'
+            ds[DataVars.VY_ERROR].attrs[DataVars.STD_NAME] = 'vy error'
 
 
 if __name__ == '__main__':
