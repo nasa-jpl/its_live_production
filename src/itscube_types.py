@@ -52,6 +52,10 @@ class Output:
     URL = 'url'
     REFERENCES= 'references'
 
+    GEOSPATIAL_BOUNDS = 'geospatial_bounds'
+    GEOSPATIAL_BOUNDS_CRS = 'geospatial_bounds_crs'
+    PROJECTION = 'projection'
+
 
 class CubeOutput:
     """
