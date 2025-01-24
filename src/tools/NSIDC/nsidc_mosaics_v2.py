@@ -366,14 +366,14 @@ class NSIDCMosaicFormat:
             ds[CompDataVars.SLOPE_VY].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in vy'
 
             # Change 'floatingice' attributes
-            ds[CompDataVars.FLOATING_ICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
-            ds[CompDataVars.LAND_ICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
+            ds[ShapeFile.FLOATINGICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
+            ds[ShapeFile.LANDICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
 
-            ds[ShapeFile.FLOATINGICE].attrs[Output.REFERENCES] = ds[CompDataVars.FLOATING_ICE].attrs[Output.URL]
+            ds[ShapeFile.FLOATINGICE].attrs[Output.REFERENCES] = ds[ShapeFile.FLOATINGICE].attrs[Output.URL]
             del ds[CompDataVars.FLOATING_ICE].attrs[Output.URL]
 
-            ds[CompDataVars.LAND_ICE].attrs[Output.REFERENCES] = ds[CompDataVars.LAND_ICE].attrs[Output.URL]
-            del ds[CompDataVars.LAND_ICE].attrs[Output.URL]
+            ds[ShapeFile.LANDICE].attrs[Output.REFERENCES] = ds[ShapeFile.LANDICE].attrs[Output.URL]
+            del ds[ShapeFile.LANDICE].attrs[Output.URL]
 
             # Change 'v' attributes
             ds[DataVars.V].attrs[DataVars.STD_NAME] = 'climatological velocity [2014-2022]'
