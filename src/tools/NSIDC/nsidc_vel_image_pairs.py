@@ -999,7 +999,7 @@ class NSIDCFormat:
         Upload file to the AWS S3 bucket.
         """
         msgs = []
-        target_filename = os.path.join(target_dir, filename)
+        target_filename = os.path.join(target_dir, os.path.basename(filename))
 
         try:
             msg = ""
