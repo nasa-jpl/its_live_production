@@ -370,7 +370,7 @@ class NSIDCMosaicFormat:
             ds[ShapeFile.LANDICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
 
             ds[ShapeFile.FLOATINGICE].attrs[Output.REFERENCES] = ds[ShapeFile.FLOATINGICE].attrs[Output.URL]
-            del ds[CompDataVars.FLOATING_ICE].attrs[Output.URL]
+            del ds[ShapeFile.FLOATINGICE].attrs[Output.URL]
 
             ds[ShapeFile.LANDICE].attrs[Output.REFERENCES] = ds[ShapeFile.LANDICE].attrs[Output.URL]
             del ds[ShapeFile.LANDICE].attrs[Output.URL]
