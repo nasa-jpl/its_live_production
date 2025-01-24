@@ -266,7 +266,7 @@ class NSIDCMosaicFormat:
 
         with xr.open_dataset(local_file, engine=NSIDCMeta.NC_ENGINE) as ds:
             # Fix metadata for the dataset
-            NSIDCMosaicsMeta.process_nc_file(ds)
+            NSIDCMosaicFormat.process_nc_file(ds)
 
             # Write fixed granule to local file
             # Convert dataset to Dask dataset not to run out of memory while writing to the file
