@@ -137,7 +137,8 @@ class RestoreM11M12Values:
             tasks = [
                 dask.delayed(RestoreM11M12Values.correct)(
                     # each['v2_s3_bucket'],
-                    os.path.basename(each['v2_s3_key']),
+                    each['v2_s3_key'],
+                    # os.path.basename(each['v2_s3_key']),
                     each['cor_s3_bucket'],
                     each['job_id'],
                     self.s3,
@@ -183,7 +184,7 @@ class RestoreM11M12Values:
 
     @staticmethod
     def correct(
-        granule_basename: str,
+        granule_path: str,
         ref_bucket: str,
         ref_dir: str,
         s3: s3fs.S3FileSystem,
@@ -204,7 +205,8 @@ class RestoreM11M12Values:
         s3_ref: s3fs.S3FileSystem object to access data for correction.
         all_original_granules: List of all V2 S1 granules as stored in S3 bucket (on user end).
         """
-        msgs = [f'Processing {granule_basename}']
+        msgs = [f'Processing {granule_path}']
+        granule_basename = os.path.basename(granule_path)
 
         # Read granule to correct
         ds = None
