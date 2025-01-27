@@ -352,7 +352,8 @@ class NSIDCMosaicFormat:
             'Velocities, Version 2'
 
         # Change datatype for mapping.scale_factor_at_projection_origin to float
-        ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN] = float(ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN])
+        if SCALE_FACTOR_AT_PROJECTION_ORIGIN in ds.mapping.attrs:
+            ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN] = float(ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN])
 
         if Output.COUNT in ds:
             # This is static mosiac
