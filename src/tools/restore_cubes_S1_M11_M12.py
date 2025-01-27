@@ -3,6 +3,8 @@
 Restore Sentinel-1 M11 and M12 values within existing ITS_LIVE datacubes that are residing in AWS S3 bucket.
 
 * Copy M11 and M12 values from S1 granules into corresponding layers of the existing datacubes.
+* Introduce new DataVars.ASCENDING1 and DataVars.ASCENDING2 data variables that capture flight direction of
+    the S1 data (all other missions should have them )
 * Re-chunk datacube's mid_date to include the whole dimension to speed up access time to the data.
 * Push corrected datacubes back to the S3 bucket.
 
@@ -209,6 +211,9 @@ class FixDatacubes:
         # Write datacube locally, upload it to the bucket, remove file
         fixed_file = os.path.join(local_dir, cube_basename)
 
+        # Fill value for new data variables
+        ascending_fill_value = DataVars.MISSING_UINT8_VALUE
+
         with xr.open_dataset(local_original_cube, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
             msgs.append(f'Cube dimensions: {ds.dims}')
 
@@ -225,49 +230,85 @@ class FixDatacubes:
             s1_mask = (sensors_str == MissionSensor.SENTINEL1.mission)
             msgs.append(f'Identified {np.sum(s1_mask)} S1 layers in the cube')
 
-            mask_i = np.where(s1_mask == True)
+            # Number of S1 layers in the datacube
+            num_s1_layers = np.sum(s1_mask)
 
-            # Need to load all of M11/M12 data values in order to update them. Otherwise it silently ignores values when updating (xarray bug?)
-            for each_var in [DataVars.M11, DataVars.M12]:
-                m_values = ds[each_var].values
-                msgs.append(f'cube {each_var}: min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
+            ascending_img1 = np.full((len(ds.mid_date)), ascending_fill_value, dtype=np.uint8)
+            ascending_img2 = np.full((len(ds.mid_date)), ascending_fill_value, dtype=np.uint8)
 
-            # If there are no S1 granules, we still want to rechunk 'mid_date' coordinate
-            for each_index in mask_i[0]:
-                # Read URL of the granule. For example, granules paths will be in the format:
-                # https://its-live-data.s3.amazonaws.com/velocity_image_pair/sentinel1/v02/N70W060/S1A_IW_SLC__1SSH_20160728T113645_20160728T113712_012348_0133B2_74C0_X_S1A_IW_SLC__1SSH_20160809T113646_20160809T113713_012523_013989_2C50_G0120V02_P030.nc
-                granule = str(ds.granule_url[each_index].values)
+            if num_s1_layers:
+                mask_i = np.where(s1_mask == True)
 
-                each_granule_s3 = granule.replace('https://', '')
-                each_granule_s3 = each_granule_s3.replace('.s3.amazonaws.com', '')
-                # If using new temporary location of restored S1 granules
-                each_granule_s3 = each_granule_s3.replace('/sentinel1/', '/sentinel1-restoredM/')
+                # Need to load all of M11/M12 data values in order to update them. Otherwise it silently ignores values when updating (xarray bug?)
+                for each_var in [DataVars.M11, DataVars.M12]:
+                    m_values = ds[each_var].values
+                    msgs.append(f'cube {each_var}: min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
 
-                # Open the granule
-                with s3.open(each_granule_s3, mode='rb') as fhandle:
-                    with xr.open_dataset(fhandle, engine=NC_ENGINE) as granule_ds:
-                        granule_ds = granule_ds.load()
+                # If there are no S1 granules, we still want to rechunk 'mid_date' coordinate
+                for each_index in mask_i[0]:
+                    # Read URL of the granule. For example, granules paths will be in the format:
+                    # https://its-live-data.s3.amazonaws.com/velocity_image_pair/sentinel1/v02/N70W060/S1A_IW_SLC__1SSH_20160728T113645_20160728T113712_012348_0133B2_74C0_X_S1A_IW_SLC__1SSH_20160809T113646_20160809T113713_012523_013989_2C50_G0120V02_P030.nc
+                    granule = str(ds.granule_url[each_index].values)
 
-                        msgs.append(f'Granule for index={each_index}: {each_granule_s3}; date_updated: {granule_ds.attrs["date_updated"]}')
+                    each_granule_s3 = granule.replace('https://', '')
+                    each_granule_s3 = each_granule_s3.replace('.s3.amazonaws.com', '')
+                    # If using new temporary location of restored S1 granules
+                    # each_granule_s3 = each_granule_s3.replace('/sentinel1/', '/sentinel1-restoredM/')
 
-                        # Zoom into cube polygon
-                        mask_x = (granule_ds.x >= grid_x_min) & (granule_ds.x <= grid_x_max)
-                        mask_y = (granule_ds.y >= grid_y_min) & (granule_ds.y <= grid_y_max)
-                        mask = (mask_x & mask_y)
+                    # Open the granule
+                    with s3.open(each_granule_s3, mode='rb') as fhandle:
+                        with xr.open_dataset(fhandle, engine=NC_ENGINE) as granule_ds:
+                            granule_ds = granule_ds.load()
 
-                        cropped_ds = granule_ds.where(mask, drop=True)
+                            msgs.append(f'Granule for index={each_index}: {each_granule_s3}; date_updated: {granule_ds.attrs["date_updated"]}')
 
-                        # Restore values in the datacube
-                        for each_var in [DataVars.M11, DataVars.M12]:
-                            # # Show current values
-                            # m_values = ds[each_var][each_index, :, :].values
-                            # print(f'====>before assigning ds {each_var}: m_values.shape={m_values.shape} min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
+                            # Zoom into cube polygon
+                            mask_x = (granule_ds.x >= grid_x_min) & (granule_ds.x <= grid_x_max)
+                            mask_y = (granule_ds.y >= grid_y_min) & (granule_ds.y <= grid_y_max)
+                            mask = (mask_x & mask_y)
 
-                            ds[each_var][each_index, :, :].loc[dict(x=cropped_ds.x, y=cropped_ds.y)] = cropped_ds[each_var]
+                            cropped_ds = granule_ds.where(mask, drop=True)
 
-                            # # Show restored values
-                            # m_values = ds[each_var][each_index, :, :].values
-                            # print(f'====>assigned ds {each_var}: m_values.shape={m_values.shape} min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
+                            # Restore values in the datacube
+                            for each_var in [DataVars.M11, DataVars.M12]:
+                                # # Show current values
+                                # m_values = ds[each_var][each_index, :, :].values
+                                # print(f'====>before assigning ds {each_var}: m_values.shape={m_values.shape} min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
+
+                                ds[each_var][each_index, :, :].loc[dict(x=cropped_ds.x, y=cropped_ds.y)] = cropped_ds[each_var]
+
+                                # # Show restored values
+                                # m_values = ds[each_var][each_index, :, :].values
+                                # print(f'====>assigned ds {each_var}: m_values.shape={m_values.shape} min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
+
+                            # Extract flight direction for both images of the granule
+                            ascending_img1[each_index] = granule_ds.img_pair_info.attrs[DataVars.ImgPairInfo.FLIGHT_DIRECTION_IMG1].strip() == DataVars.ImgPairInfo.ASCENDING
+                            ascending_img2[each_index] = granule_ds.img_pair_info.attrs[DataVars.ImgPairInfo.FLIGHT_DIRECTION_IMG2].strip() == DataVars.ImgPairInfo.ASCENDING
+
+            # Add new variables to the datacube - just use existing 1-d data variable coords and dims
+            ds[DataVars.ASCENDING_IMG1] = xr.DataArray(
+                data=ascending_img1,
+                coords=ds[DataVars.ImgPairInfo.SATELLITE_IMG1].coords,
+                dims=ds[DataVars.ImgPairInfo.SATELLITE_IMG1].dims
+            )
+            ds[DataVars.ASCENDING_IMG1].attrs = {
+                DataVars.STD_NAME: DataVars.STANDARD_NAME[DataVars.ASCENDING_IMG1],
+                DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.ASCENDING_IMG1],
+                BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[DataVars.ASCENDING_IMG1]
+            }
+
+            ds[DataVars.ASCENDING_IMG2] = xr.DataArray(
+                data=ascending_img2,
+                coords=ds[DataVars.ImgPairInfo.SATELLITE_IMG1].coords
+                dims=ds[DataVars.ImgPairInfo.SATELLITE_IMG1].dims
+            )
+            ds[DataVars.ASCENDING_IMG2].attrs = {
+                DataVars.STD_NAME: DataVars.STANDARD_NAME[DataVars.ASCENDING_IMG2],
+                DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.ASCENDING_IMG2],
+                BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[DataVars.ASCENDING_IMG2]
+            }
 
             # ds_encoding = zarr_to_netcdf.ENCODING_ZARR.copy()
 
@@ -305,6 +346,14 @@ class FixDatacubes:
             # Change datatype for M11 and M12 to floating point
             ds[DataVars.M11].encoding[Output.DTYPE_ATTR] = np.float32
             ds[DataVars.M12].encoding[Output.DTYPE_ATTR] = np.float32
+
+            for each_var in [DataVars.ASCENDING_IMG1, DataVars.ASCENDING_IMG2]:
+                ds[each_var].encoding = {
+                    Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE,
+                    Output.DTYPE_ATTR: np.uint8,
+                    Output.COMPRESSOR_ATTR: compression_zarr,
+                    Output.CHUNKS_ATTR: chunking_1d
+                }
 
             msgs.append(f"Saving datacube to {fixed_file}")
             # Re-chunk xr.Dataset to avoid memory errors when writing to the ZARR store

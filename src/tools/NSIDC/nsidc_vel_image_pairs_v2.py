@@ -13,7 +13,6 @@ import collections
 import dask
 from dask.diagnostics import ProgressBar
 from dateutil.parser import parse
-from datetime import datetime
 import gc
 import json
 import logging
@@ -21,6 +20,8 @@ import numpy as np
 import os
 import pyproj
 import s3fs
+import sys
+import time
 import xarray as xr
 
 from itscube_types import DataVars
@@ -139,8 +140,8 @@ class NSIDCMeta:
             raise RuntimeError(f'create_premet_file() got unexpected mission+sensor {sensor2} for image#2 of {infile}: one of {list(NSIDCMeta.ShortName.keys())} is supported.')
 
         # Get acquisition dates for both images
-        begin_date=parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1])
-        end_date=parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2])
+        begin_date = parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1])
+        end_date = parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2])
 
         meta_filename = f'{infile}.premet'
         with open(meta_filename, 'w') as fh:
@@ -202,6 +203,13 @@ class NSIDCMeta:
                 fh.write(f"{long}\t{lat}\n")
 
         return meta_filename
+
+
+# Number of retries when encountering AWS S3 download/upload error
+_NUM_AWS_COPY_RETRIES = 3
+
+# Number of seconds between retries to access AWS S3 bucket
+_AWS_COPY_SLEEP_SECONDS = 3
 
 
 class NSIDCFormat:
@@ -276,7 +284,7 @@ class NSIDCFormat:
 
         return True
 
-    def __call__(self, target_bucket, target_dir, chunk_size, num_dask_workers):
+    def __call__(self, target_bucket, chunk_size, num_dask_workers):
         """
         Prepare ITS_LIVE granules by creating corresponding NSIDC meta files (spacial
         and premet).
@@ -296,7 +304,7 @@ class NSIDCFormat:
 
             logging.info(f"Starting granules {start}:{start+num_tasks} out of {init_total_files} total granules")
             tasks = [
-                dask.delayed(NSIDCFormat.process_granule)(target_bucket, target_dir, each, self.s3)
+                dask.delayed(NSIDCFormat.process_granule)(target_bucket, each, self.s3)
                 for each in self.infiles[start:start+num_tasks]
             ]
             results = None
@@ -310,7 +318,9 @@ class NSIDCFormat:
                 )
 
             for each_result in results[0]:
-                logging.info("\n-->".join(each_result))
+                if len(each_result):
+                    # If there are any messages to report
+                    logging.info("\n-->".join(each_result))
 
             total_num_files -= num_tasks
             start += num_tasks
@@ -329,13 +339,13 @@ class NSIDCFormat:
             msg = ""
             if NSIDCFormat.DRY_RUN:
                 msg = "DRYRUN: "
-            msgs.append(f"{msg}Uploading {filename} to {target_bucket}/{target_filename}")
+                msgs.append(f"{msg}Uploading {filename} to {target_bucket}/{target_filename}")
 
             if not NSIDCFormat.DRY_RUN:
                 s3_client.upload_file(filename, target_bucket, target_filename)
 
                 if remove_original_file:
-                    msgs.append(f"Removing local {filename}")
+                    # msgs.append(f"Removing local {filename}")
                     os.unlink(filename)
 
         except ClientError as exc:
@@ -344,13 +354,12 @@ class NSIDCFormat:
         return msgs
 
     @staticmethod
-    def process_granule(target_bucket: str, target_dir: str, infilewithpath: str, s3: s3fs.S3FileSystem):
+    def process_granule(target_bucket: str, infilewithpath: str, s3: s3fs.S3FileSystem):
         """
         Create corresponding metadata files for the granule as required by NSIDC.
 
         Inputs:
         target_bucket: Target AWS S3 bucket to copy metadata files to to.
-        target_dir: Directory in AWS S3 bucket to copy metadata files to.
         infilewithpath: Path to input granule file.
         """
         filename_tokens = infilewithpath.split('/')
@@ -360,23 +369,45 @@ class NSIDCFormat:
         # Extract tokens from the filename
         url_tokens_1, url_tokens_2 = get_tokens_from_filename(granule_filename)
 
-        msgs = [f'Processing {infilewithpath}']
+        msgs = []
 
         s3_client = boto3.client('s3')
 
-        with s3.open(infilewithpath, mode='rb') as fhandle:
-            with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
-                # Create spacial and premet metadata files locally, then copy them to S3 bucket
-                meta_file = NSIDCMeta.create_premet_file(ds, granule_filename, url_tokens_1, url_tokens_2)
-                # TODO: This is for production run: have to use the same dir structure as original granule has
-                # msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
+        # Automatically handle boto exceptions on file upload to s3 bucket
+        files_are_copied = False
+        num_retries = 0
 
-                # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
-                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+        while not files_are_copied and num_retries < _NUM_AWS_COPY_RETRIES:
+            try:
+                with s3.open(infilewithpath, mode='rb') as fhandle:
+                    with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
+                        # Create spacial and premet metadata files locally, then copy them to S3 bucket
+                        meta_file = NSIDCMeta.create_premet_file(ds, granule_filename, url_tokens_1, url_tokens_2)
 
-                meta_file = NSIDCMeta.create_spatial_file(ds, granule_filename)
-                # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
-                msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+                        # ATTN: Place metadata files into the same directory as granules
+                        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+
+                        meta_file = NSIDCMeta.create_spatial_file(ds, granule_filename)
+                        # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
+                        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+
+                        files_are_copied = True
+
+            except:
+                msgs.append(f"Try #{num_retries + 1} exception processing {infilewithpath}: {sys.exc_info()}")
+                num_retries += 1
+
+                if num_retries < _NUM_AWS_COPY_RETRIES:
+                    # Possible to have some other types of failures that are not related to AWS SlowDown,
+                    # retry the copy for any kind of failure
+                    # and _AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
+
+                    # Sleep if it's not a last attempt to copy
+                    time.sleep(_AWS_COPY_SLEEP_SECONDS)
+
+                else:
+                    # Don't retry, trigger an exception
+                    num_retries = _NUM_AWS_COPY_RETRIES
 
         return msgs
 
@@ -402,13 +433,6 @@ if __name__ == '__main__':
         type=str,
         default='its-live-data',
         help='AWS S3 bucket to store ITS_LIVE granules to [%(default)s]'
-    )
-
-    parser.add_argument(
-        '-target_dir',
-        type=str,
-        default='NSIDC/velocity_image_pair_sample/',
-        help='AWS S3 directory that stores metadata files for the granules to be ingested [%(default)s]'
     )
 
     parser.add_argument(
@@ -491,12 +515,6 @@ if __name__ == '__main__':
             infiles = json.load(fh)
             logging.info(f"Loaded {len(infiles)} granules from '{args.use_granule_file}'")
 
-    # ATTN: This is to collect a list of granules from the sample set for NSIDC: disable for the production run
-    s3 = s3fs.S3FileSystem()
-    infiles = s3.glob(f'{os.path.join(args.bucket, args.target_dir)}*/*/*/*.nc')
-    logging.info(f'Got {len(infiles)} granules to process')
-    logging.info(f'First file: {infiles[0]}')
-
     nsidc_format = NSIDCFormat(
         args.start_index,
         args.stop_index,
@@ -504,7 +522,6 @@ if __name__ == '__main__':
     )
     nsidc_format(
         args.bucket,
-        args.target_dir,
         args.chunk_by,
         args.dask_workers
     )

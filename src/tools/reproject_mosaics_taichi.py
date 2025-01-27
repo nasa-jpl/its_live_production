@@ -70,6 +70,19 @@ spatial_ref_102027 = "PROJCS[\"Asia_North_Lambert_Conformal_Conic\",GEOGCS[\"GCS
     "PARAMETER[\"Standard_Parallel_1\",15],PARAMETER[\"Standard_Parallel_2\",65]," \
     "PARAMETER[\"Latitude_Of_Origin\",30],UNIT[\"Meter\",1],AUTHORITY[\"ESRI\",\"102027\"]]"
 
+# This is for testing of the reprojection to EPSG:8859 - to verify that HMA reprojected mosaic
+# to ESRI 102027 is correct.
+spatial_ref_8859 = 'PROJCRS["WGS 84 / Equal Earth Asia-Pacific",' \
+    'BASEGEOGCRS["WGS 84", DATUM["World Geodetic System 1984", ' \
+    'ELLIPSOID["WGS 84",6378137,298.257223563, LENGTHUNIT["metre",1]]], ' \
+    'PRIMEM["Greenwich",0, ANGLEUNIT["degree",0.0174532925199433]], ID["EPSG",4326]], ' \
+    'CONVERSION["Asia-Pacific Equal Earth", METHOD["Equal Earth"], ' \
+    'PARAMETER["Longitude of natural origin",150, ANGLEUNIT["degree",0.0174532925199433]], ' \
+    'PARAMETER["False easting",0, LENGTHUNIT["metre",1]], ' \
+    'PARAMETER["False northing",0, LENGTHUNIT["metre",1]], ID["EPSG",8859]], ' \
+    'CS[Cartesian,2], AXIS["easting (X)",east, ORDER[1], LENGTHUNIT["metre",1]], ' \
+    'AXIS["northing (Y)",north, ORDER[2], LENGTHUNIT["metre",1]], ID["EPSG",8859]]'
+
 PROJECTION_ATTR = 'projection'
 
 # Non-EPSG projection that can be provided on output
@@ -148,7 +161,7 @@ class TiUnitVector:
         self.dataLength = n
 
     @ti.kernel
-    def compute(self, xy: ti.types.ndarray(), xy0: ti.types.ndarray(), cell_size: ti.f32):
+    def compute(self, xy: ti.types.ndarray(), xy0: ti.types.ndarray()):
         """
         Compute 2d unit vector for each cell of the grid.
 
@@ -163,8 +176,8 @@ class TiUnitVector:
         for i in range(self.dataLength):
             # Can't slice taichi arrays, have to pass values of the array slice explicitely
             # as separate values
-            self.data[i][0] = (xy[i, 0] - xy0[i, 0])/cell_size
-            self.data[i][1] = (xy[i, 1] - xy0[i, 1])/cell_size
+            self.data[i][0] = xy[i, 0] - xy0[i, 0]
+            self.data[i][1] = xy[i, 1] - xy0[i, 1]
 
 
 @ti.data_oriented
@@ -183,6 +196,16 @@ class TiTransformMatrix:
         self.data = ti.Matrix.field(n=TiUnitVector.SIZE, m=TiUnitVector.SIZE, dtype=ti.f32, shape=(n))
         self.fill_data()
 
+        self.angle = ti.field(dtype=ti.f32, shape=(n))
+        # Initialize values
+        _values = np.full(n, DataVars.MISSING_VALUE, dtype=np.float32)
+        self.angle.from_numpy(_values)
+
+        self.scale = ti.Vector.field(TiUnitVector.SIZE, dtype=ti.f32, shape=(n))
+        # Initialize values
+        _values = np.full((n, TiUnitVector.SIZE), DataVars.MISSING_VALUE, dtype=np.float32)
+        self.scale.from_numpy(_values)
+
     @ti.kernel
     def fill_data(self):
         """
@@ -194,6 +217,7 @@ class TiTransformMatrix:
                 [DataVars.MISSING_VALUE, DataVars.MISSING_VALUE],
                 [DataVars.MISSING_VALUE, DataVars.MISSING_VALUE]
             ]
+
 
     @ti.kernel
     def compute(
@@ -241,6 +265,12 @@ class TiTransformMatrix:
                     [yunit[0]/denom_value, -xunit[0]/denom_value]
                 ]
 
+                # Compute angle and scale
+                self.angle[i] = ti.atan2(self.data[i][1, 0], self.data[i][0, 0])
+
+                theta_cos = ti.cos(self.angle[i])
+                self.scale[i][0] = self.data[i][0, 0]/theta_cos
+                self.scale[i][1] = self.data[i][1, 1]/theta_cos
 
 class MosaicsReproject:
     """
@@ -551,6 +581,54 @@ class MosaicsReproject:
                 'crs_wkt': spatial_ref_102027,
                 'proj4text': ESRICode_Proj4
             }
+        elif self.xy_epsg == 8859:
+            # gdalsrsinfo EPSG:8859
+
+            # PROJ.4 : +proj=eqearth +lon_0=150 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs
+
+            # OGC WKT2:2018 :
+            # PROJCRS["WGS 84 / Equal Earth Asia-Pacific",
+            #     BASEGEOGCRS["WGS 84",
+            #         DATUM["World Geodetic System 1984",
+            #             ELLIPSOID["WGS 84",6378137,298.257223563,
+            #                 LENGTHUNIT["metre",1]]],
+            #         PRIMEM["Greenwich",0,
+            #             ANGLEUNIT["degree",0.0174532925199433]],
+            #         ID["EPSG",4326]],
+            #     CONVERSION["Equal Earth Asia-Pacific",
+            #         METHOD["Equal Earth",
+            #             ID["EPSG",1078]],
+            #         PARAMETER["Longitude of natural origin",150,
+            #             ANGLEUNIT["degree",0.0174532925199433],
+            #             ID["EPSG",8802]],
+            #         PARAMETER["False easting",0,
+            #             LENGTHUNIT["metre",1],
+            #             ID["EPSG",8806]],
+            #         PARAMETER["False northing",0,
+            #             LENGTHUNIT["metre",1],
+            #             ID["EPSG",8807]]],
+            #     CS[Cartesian,2],
+            #         AXIS["(E)",east,
+            #             ORDER[1],
+            #             LENGTHUNIT["metre",1]],
+            #         AXIS["(N)",north,
+            #             ORDER[2],
+            #             LENGTHUNIT["metre",1]],
+            #     USAGE[
+            #         SCOPE["Very small scale equal-area mapping - Asia-Pacific-centred."],
+            #         AREA["World centred on Asia-Pacific."],
+            #         BBOX[-90,-29.99,90,-30.01]],
+            #     ID["EPSG",8859]]
+            proj_attrs = {
+                DataVars.GRID_MAPPING_NAME: 'equal_earth',
+                'longitude_of_projection_origin': 150.0,
+                'false_easting': 0.0,
+                'false_northing': 0.0,
+                'semi_major_axis': 6378137.0,
+                'inverse_flattening': 298.257223563,
+                'crs_wkt': spatial_ref_8859,
+                'proj4text': '+proj=eqearth +lon_0=150 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
+            }
 
         else:
             # Example of mapping for EPGS=32632:
@@ -655,6 +733,18 @@ class MosaicsReproject:
         v0 = None
         gc.collect()
 
+        reproject_ds[CompDataVars.VX0] = xr.DataArray(
+            data=vx0,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VX0].attrs
+        )
+
+        reproject_ds[CompDataVars.VY0] = xr.DataArray(
+            data=vy0,
+            coords=ds_coords_2d,
+            attrs=self.ds[CompDataVars.VY0].attrs
+        )
+
         # Convert v0 error variables to uint16 type
         reproject_ds[CompDataVars.V0_ERROR] = xr.DataArray(
             data=to_int_type(v0_error),
@@ -701,20 +791,10 @@ class MosaicsReproject:
         vy_phase, \
         v_phase = self.reproject_static_vars(vx0, vy0)
 
-        # No more need for vx0 and vy0,
-        reproject_ds[CompDataVars.VX0] = xr.DataArray(
-            data=vx0,
-            coords=ds_coords_2d,
-            attrs=self.ds[CompDataVars.VX0].attrs
-        )
+        # No more need for vx0 and vy0, delete them
         vx0 = None
         gc.collect()
 
-        reproject_ds[CompDataVars.VY0] = xr.DataArray(
-            data=vy0,
-            coords=ds_coords_2d,
-            attrs=self.ds[CompDataVars.VY0].attrs
-        )
         vy0 = None
         gc.collect()
 
@@ -1504,6 +1584,13 @@ class MosaicsReproject:
             else:
                 logging.info(f"reproject_velocity: Original {v_error_var}: min={np.nanmin(_v_error[verbose_mask])} max={np.nanmax(_v_error[verbose_mask])}")
 
+        # debug_y = 7915
+        # debug_x = 3701
+
+        # debug_esri_index = 54748893
+        # debug_esri_x = 4269
+        # debug_esri_y = 7752
+
         for y, x in tqdm(
             zip(self.valid_cell_indices_y, self.valid_cell_indices_x),
             ascii=True,
@@ -1517,6 +1604,11 @@ class MosaicsReproject:
             # Re-project velocity variables
             dv = [_vx[j, i], _vy[j, i]]
 
+            # if y == debug_esri_y and x == debug_esri_x:
+            #     logging.info(f'--->DEBUG_HMA (reproject {vx_var}, {vy_var}: i={i} j={j} based on x={x} y={y}')
+            #     logging.info(f'--->DEBUG_HMA (reproject {vx_var}, {vy_var}: t_matrix={t_matrix}')
+            #     logging.info(f'--->DEBUG_HMA (reproject {vx_var}, {vy_var}: dv={dv}')
+
             # Some points get NODATA for vx but valid vy and vx.
             if (not math.isnan(dv[0])) and (not math.isnan(dv[1])):
                 # Apply transformation matrix to (vx, vy) values converted to pixel displacement
@@ -1524,6 +1616,8 @@ class MosaicsReproject:
 
                 vx[y, x] = xy_v[0]
                 vy[y, x] = xy_v[1]
+                # if y == debug_esri_y and x == debug_esri_x:
+                #     logging.info(f'--->DEBUG_HMA (reproject {vx_var}, {vy_var}: reprojected vx={vx[y, x]} vy={vy[y, x]}')
 
                 # # Compute v: sqrt(vx^2 + vy^2)
                 v[y, x] = np.sqrt(xy_v[0]**2 + xy_v[1]**2)
@@ -1820,10 +1914,10 @@ class MosaicsReproject:
             #     vx_phase[y, x], vy_phase[y, x] = np.matmul(t_matrix, dv)
 
         # DEBUG: indices into the problem cell
-        dx=369
-        dy=683
-        di=197
-        dj=726
+        # dx=369
+        # dy=683
+        # di=197
+        # dj=726
 
         # logging.info(f'self.transformation_matrix[y, x]')
         # logging.info(f'GOT_ERROR v_amp_error>200: x={dx} y={dy} _vx_amp={_vx_amp[dj, di]} _vy_amp={_vy_amp[dj, di]}')
@@ -2377,6 +2471,7 @@ class MosaicsReproject:
 
             return
 
+        # Returns a list of (x, y) pairs for the whole grid
         xy0_points = MosaicsReproject.dims_to_grid(self.x0_grid, self.y0_grid)
 
         # Get corresponding to xy0_points in original projection
@@ -2391,7 +2486,7 @@ class MosaicsReproject:
         # ij_unit = np.array(ij0_points)
         # ij_unit[:, 0] += self.x_size
         # xy_points = ij_to_xy_transfer.TransformPoints(ij_unit.tolist())
-        ij_unit = [[each[0] + self.x_size, each[1]] for each in ij0_points]
+        ij_unit = [[each[0] + 1, each[1]] for each in ij0_points]
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit)
         # logging.info(f'Type of xy_points: {type(xy_points)}') # list
         xy_points = np.array(xy_points, dtype=np.float32)
@@ -2407,7 +2502,7 @@ class MosaicsReproject:
         xunit_v = TiUnitVector(num_xy0_points)
         # unit_vectors.compute_xunit(xy_points, xy0_points, self.x_size)
         # unit_vector.compute(xy_points, xy0_points, self.x_size)
-        xunit_v.compute(xy_points, xy0_points, float(self.x_size))
+        xunit_v.compute(xy_points, xy0_points)
 
         # xunit_v = unit_vector.vector.to_numpy()
         logging.info(f'Computed xunit (took {timeit.default_timer() - start_time} seconds)')
@@ -2423,7 +2518,7 @@ class MosaicsReproject:
         # ij_unit = np.array(ij0_points)
         # ij_unit[:, 1] += self.y_size
         # xy_points = ij_to_xy_transfer.TransformPoints(ij_unit.tolist())
-        ij_unit = [[each[0], each[1] + self.y_size] for each in ij0_points]
+        ij_unit = [[each[0], each[1] + 1] for each in ij0_points]
         xy_points = ij_to_xy_transfer.TransformPoints(ij_unit)
         xy_points = np.array(xy_points, dtype=np.float32)
 
@@ -2431,7 +2526,7 @@ class MosaicsReproject:
         start_time = timeit.default_timer()
         yunit_v = TiUnitVector(num_xy0_points)
         # unit_vector.compute(xy_points, xy0_points, np.abs(self.y_size))
-        yunit_v.compute(xy_points, xy0_points, float(np.abs(self.y_size)))
+        yunit_v.compute(xy_points, xy0_points)
         # yunit_v = unit_vector.vector.to_numpy()
         logging.info(f'Computed yunit (took {timeit.default_timer() - start_time} seconds)')
 
@@ -2498,6 +2593,15 @@ class MosaicsReproject:
         logging.info('Creating transformation matrix...')
         t1 = timeit.default_timer()
 
+        # vx_all_values = self.ds[vx_var].values
+        # vy_all_values = self.ds[vy_var].values
+
+        # debug_y = 7915
+        # debug_x = 3701
+        # debug_esri_index = 54748893
+        # debug_esri_x = 4269
+        # debug_esri_y = 7752
+
         use_taichi = False
         if use_taichi is True:
             transform_matrix = TiTransformMatrix(num_xy0_points)
@@ -2508,6 +2612,8 @@ class MosaicsReproject:
             transform_matrix.compute(xunit_v.data, yunit_v.data, valid_indices, self.original_ij_index, v_all_values)
 
             self.transformation_matrix = transform_matrix.data.to_numpy()
+            self.transformation_matrix_angle = transform_matrix.angle.to_numpy()
+            self.transformation_matrix_scale = transform_matrix.scale.to_numpy()
 
         else:
             self.transformation_matrix = np.full(
@@ -2542,6 +2648,13 @@ class MosaicsReproject:
                     xunit = xunit_v[i]
                     yunit = yunit_v[i]
 
+                    # if debug_esri_index == i:
+                    #     logging.info(f'DEBUG_HMA ({i}): xunit={xunit}')
+                    #     logging.info(f'DEBUG_HMA ({i}): yunit={yunit}')
+
+                    #     logging.info(f'DEBUG_HMA ({i}): Original index: x_index={x_index}, y_index={y_index}, v_value={v_value}, debug_esri_index={debug_esri_index}')
+                    #     logging.info(f'DEBUG_HMA ({i}): vx_all_values={vx_all_values[y_index, x_index]}, vy_all_values={vy_all_values[y_index, x_index]}')
+
                     # See (A9)-(A15) in Yang's autoRIFT paper:
                     # a = normal[2]*yunit[0]-normal[0]*yunit[2]
                     # b = normal[2]*yunit[1]-normal[1]*yunit[2]
@@ -2557,6 +2670,15 @@ class MosaicsReproject:
                     # self.transformation_matrix[each_index] = np.array([[-b*f, d*e], [a*f, -c*e]])
                     # self.transformation_matrix[each_index] /= (a*d - b*c)
 
+                    # Yan's code:
+                    # denominator = (xunit[0])*(yunit[1])-(yunit[0])*(xunit[1])
+                    # which translates to negative of the denominater in the paper:
+                    # denominator = c*b - a*d
+                    # raster1a[jj] = (yunit[1])/((xunit[0])*(normal[2]*yunit[1]-normal[1]*yunit[2])-(normal[2]*yunit[0]-normal[0]*yunit[2])*(normal[2]*xunit[1]-normal[1]*xunit[2]));
+                    # raster1b[jj] = -(xunit[1])/((xunit[0])*(normal[2]*yunit[1]-normal[1]*yunit[2])-(normal[2]*yunit[0]-normal[0]*yunit[2])*(normal[2]*xunit[1]-normal[1]*xunit[2]));
+                    # raster2a[jj] = -(yunit[0])/((xunit[0])*(normal[2]*yunit[1]-normal[1]*yunit[2])-(normal[2]*yunit[0]-normal[0]*yunit[2])*(normal[2]*xunit[1]-normal[1]*xunit[2]));
+                    # raster2b[jj] = (xunit[0])/((normal[2]*xunit[0]-normal[0]*xunit[2])*(normal[2]*yunit[1]-normal[1]*yunit[2])-(normal[2]*yunit[0]-normal[0]*yunit[2])*(normal[2]*xunit[1]-normal[1]*xunit[2]));
+                    # Yan's code has all factors as negatives of paper's A, B, C, D values, so it's all consistent with this code
                     # self.transformation_matrix[i] is a 2x2 matrix
                     denom = (yunit[0]*xunit[1] - yunit[1]*xunit[0])
                     t = [
@@ -2564,6 +2686,9 @@ class MosaicsReproject:
                         [yunit[0]/denom, -xunit[0]/denom]
                     ]
                     self.transformation_matrix[i] = t
+
+                    # if debug_esri_index == i:
+                    #     logging.info(f'DEBUG_HMA ({i}): Transformation matrix: {t}')
 
                     # Extract rotation angle and scale factors for X and Y - to be used
                     # to re-project amplitude and phase as can't apply transformation matrix directly,
@@ -2591,6 +2716,9 @@ class MosaicsReproject:
         self.transformation_matrix = self.transformation_matrix.reshape(
             (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE, TiUnitVector.SIZE)
         )
+
+        # logging.info(f'DEBUG_HMA (x={debug_esri_x} y={debug_esri_y}) matrix from reshaped array: {self.transformation_matrix[debug_esri_y, debug_esri_x]}')
+
         self.transformation_matrix_angle = self.transformation_matrix_angle.reshape(
             (len(self.y0_grid), len(self.x0_grid))
         )
@@ -2601,6 +2729,9 @@ class MosaicsReproject:
         self.original_ij_index = self.original_ij_index.reshape(
             (len(self.y0_grid), len(self.x0_grid), TiUnitVector.SIZE)
         )
+
+        # logging.info(f'DEBUG_HMA (x={debug_esri_x} y={debug_esri_y}) original_ij_index from reshaped array: {self.original_ij_index[debug_esri_y, debug_esri_x]}')
+
         logging.info(f"Number of points with no transformation matrix: {no_value_counter} out of {num_xy0_points} points ({no_value_counter/num_xy0_points*100.0}%)")
 
         # TODO: Collect indices of cells with valid transformation matrix - to avoid look up

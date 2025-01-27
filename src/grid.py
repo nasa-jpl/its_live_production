@@ -32,8 +32,8 @@ class Bounds:
         Returns new Bounds object.
         """
         return Bounds(
-            min_value = math.floor(self.min/resolution)*resolution,
-            max_value = math.ceil(self.max/resolution)*resolution
+            min_value=math.floor(self.min/resolution)*resolution,
+            max_value=math.ceil(self.max/resolution)*resolution
         )
 
     def middle_point(self):
@@ -41,7 +41,6 @@ class Bounds:
         Return middle point coordinate for the bounds.
         """
         return (self.min + self.max)/2
-
 
 
 class Grid:
@@ -80,8 +79,7 @@ class Grid:
         # print("bounding_box: x_in: ", x)
         # print("bounding_box: y_in: ", y)
         #
-        return Bounds(min_value=x0_min, max_value=x0_max), \
-               Bounds(min_value=y0_min, max_value=y0_max)
+        return Bounds(min_value=x0_min, max_value=x0_max), Bounds(min_value=y0_min, max_value=y0_max)
 
     @staticmethod
     def create(x: Bounds, y: Bounds, grid_spacing):

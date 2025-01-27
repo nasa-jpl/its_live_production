@@ -243,7 +243,7 @@ class DataCubeBatch:
                     }
 
                     if target_bucket_dir_path is not None:
-                        cube_params['targetBucket'] = target_bucket_dir_s3
+                        cube_params['targetBucket'] = os.path.join(s3_bucket, target_bucket_dir_s3)
 
                     logging.info(f'Cube params: {cube_params}')
 
@@ -293,6 +293,28 @@ class DataCubeBatch:
 
                     logging.info(f'Submitted {num_jobs} to AWS')
 
+                    # [
+                    #     {
+                    #         "filename": "https://its-live-data.s3.amazonaws.com/datacubes/v2/S50W070/ITS_LIVE_vel_EPSG32718_G0120_X450000_Y4450000.zarr",
+                    #         "s3_filename": "s3://its-live-data/datacubes/v2/S50W070/ITS_LIVE_vel_EPSG32718_G0120_X450000_Y4450000.zarr",
+                    #         "roi_percent": 1.5133544414164224,
+                    #         "aws_params": {
+                    #             "outputStore": "ITS_LIVE_vel_EPSG32718_G0120_X450000_Y4450000.zarr",
+                    #             "outputBucket": "s3://its-live-data/datacubes/v2/S50W070",
+                    #             "targetProjection": "32718",
+                    #             "polygon": "[[400000, 4400000], [500000, 4400000], [500000, 4500000], [400000, 4500000], [400000, 4400000]]",
+                    #             "gridCellSize": "120",
+                    #             "chunks": "1000",
+                    #             "numThreads": "16",
+                    #             "targetBucket": "s3://its-live-data/datacubes/v2-updated-10012024/S50W070"
+                    #         },
+                    #         "aws": {
+                    #             "queue": "datacube-spot-16vCPU-128GB",
+                    #             "job_definition": "arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-128Gb:1",
+                    #             "response": null
+                    #         }
+                    #     }
+                    # ]
                     jobs.append({
                         'filename': os.path.join(BatchVars.HTTP_PREFIX, bucket_dir, cube_filename),
                         's3_filename': os.path.join(s3_bucket, bucket_dir, cube_filename),
@@ -342,7 +364,7 @@ def main(
         batch_queue,
         dry_run
     )
-    run_batch(cube_definition_file, s3_bucket, bucket_dir, output_job_file, number_of_cubes)
+    run_batch(cube_definition_file, s3_bucket, bucket_dir, target_bucket_dir, output_job_file, number_of_cubes)
 
 def parse_args():
     """

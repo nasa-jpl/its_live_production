@@ -12,10 +12,11 @@ import math
 import os
 from pathlib import Path
 import s3fs
+import xarray as xr
 
 from grid import Bounds
 import itslive_utils
-from itscube_types import CubeJson, FilenamePrefix, BatchVars
+from itscube_types import CubeJson, FilenamePrefix, BatchVars, Coords
 
 
 class DataCubeGlobalDefinition:
@@ -44,6 +45,9 @@ class DataCubeGlobalDefinition:
     # List of datacube filenames to include into catalog.
     CUBES_TO_INCLUDE = []
 
+    HTTP_PREFIX = 'http://its-live-data.s3.amazonaws.com'
+    S3_PREFIX = 's3://its-live-data'
+
     def __init__(self, grid_size: int):
         """
         Initialize object.
@@ -55,10 +59,14 @@ class DataCubeGlobalDefinition:
         s3_out = s3fs.S3FileSystem(anon=True)
 
         self.all_cubes = []
+        self.all_cubes_jsons = []
         for each in s3_out.ls(DataCubeGlobalDefinition.CUBES_S3_PATH):
-            cubes = s3_out.ls(each)
-            cubes = [each_cube for each_cube in cubes if each_cube.endswith('.zarr')]
+            all_files = s3_out.ls(each)
+            cubes = [each_cube for each_cube in all_files if each_cube.endswith('.zarr')]
+            cubes_jsons = [each_cube for each_cube in all_files if each_cube.endswith('.json')]
+
             self.all_cubes.extend(cubes)
+            self.all_cubes_jsons.extend(cubes_jsons)
 
         if len(self.all_cubes):
             # Write down all found datacubes to the file
@@ -66,7 +74,10 @@ class DataCubeGlobalDefinition:
                 json.dump(self.all_cubes, outfile, indent=4)
 
         self.all_cubes = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes]
+        self.all_cubes_jsons = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes_jsons]
+
         logging.info(f'Number of datacubes in Zarr format: {len(self.all_cubes)}')
+        logging.info(f'Number of datacubes corresponding jsons: {len(self.all_cubes_jsons)}')
 
     def __call__(self, cube_file: str, output_file: str):
         """
@@ -94,6 +105,8 @@ class DataCubeGlobalDefinition:
             if not DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG:
                 output_cubes = copy.deepcopy(cubes)
                 output_cubes[CubeJson.FEATURES] = []
+
+            s3 = s3fs.S3FileSystem(skip_instance_cache=True)
 
             for each_cube in cubes[CubeJson.FEATURES]:
                 # Example of data cube definition in json file
@@ -180,19 +193,43 @@ class DataCubeGlobalDefinition:
 
                     cube_url = [each for each in self.all_cubes if cube_filename in each]
                     if len(cube_url):
-                        # The datacube in Zarr format exists, update GeoJson
-                        each_cube[CubeJson.PROPERTIES][CubeJson.URL] = cube_url[0]
-                        each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 1
+                        # Check if the cube has a JSON file: it's a complete cube in s3 location
+                        cube_url_json = cube_url[0].replace('.zarr', '.json')
 
-                        # Replace 'data_epsg' with 'epsg' attribute, and store value as integer type
-                        del each_cube[CubeJson.PROPERTIES][CubeJson.DATA_EPSG]
-                        each_cube[CubeJson.PROPERTIES][CubeJson.EPSG] = int(epsg_code)
+                        if cube_url_json in self.all_cubes_jsons:
+                            logging.info(f'Cube URL has corresponsing json: {cube_url[0]}')
 
-                        num_cubes += 1
+                            # The datacube in Zarr format exists, update GeoJson
+                            each_cube[CubeJson.PROPERTIES][CubeJson.URL] = cube_url[0]
+                            each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 1
 
-                        # If constructing reduced catalog, append cube to the result catalog
-                        if not DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG:
-                            output_cubes[CubeJson.FEATURES].append(each_cube)
+                            # Replace 'data_epsg' with 'epsg' attribute, and store value as integer type
+                            del each_cube[CubeJson.PROPERTIES][CubeJson.DATA_EPSG]
+                            each_cube[CubeJson.PROPERTIES][CubeJson.EPSG] = int(epsg_code)
+
+                            num_cubes += 1
+
+                            # If constructing reduced catalog, append cube to the result catalog
+                            if not DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG:
+                                output_cubes[CubeJson.FEATURES].append(each_cube)
+
+                            # Write number of granules for existing cube to the catalog geojson file
+                            cube_s3_url_meta = os.path.join(
+                                cube_url[0].replace(
+                                    DataCubeGlobalDefinition.HTTP_PREFIX,
+                                    DataCubeGlobalDefinition.S3_PREFIX
+                                ),
+                                '.zmetadata'
+                            )
+
+                            # Open the cube's metadata to get number of granules
+                            with s3.open(cube_s3_url_meta, 'r') as fh:
+                                meta = json.load(fh)
+                                each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT] = meta['metadata']['mid_date/.zarray']['shape'][0]
+                                logging.info(f"Number of granules: {each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT]} for {cube_url[0]}")
+
+                        else:
+                            logging.info(f'Cube URL {cube_url[0]} does not have corresponsing json: {cube_url_json}')
 
             logging.info(f"Number of updated entries: {num_cubes}")
 
