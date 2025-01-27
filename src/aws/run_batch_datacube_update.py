@@ -29,7 +29,7 @@ class DataCubeBatch:
 
     # Number of granules to process in parallel at a time (to avoid out of memory
     # failures)
-    PARALLEL_GRANULES = 1000
+    PARALLEL_GRANULES = 750
 
     # Number of Dask threads to generate datacube
     NUM_DASK_THREADS = 8
@@ -220,14 +220,15 @@ class DataCubeBatch:
                             #     ]
                             # },
                             retryStrategy={
-                                'attempts': 2
+                                'attempts': 1
                             },
                             timeout={
                                 # 'attemptDurationSeconds': 86400
                                 # Change to 48 hours (172800)
                                 # Change to 72 hours (259200) for very large cubes
                                 # Change to 4 days (345600) to support very large cubes
-                                'attemptDurationSeconds': 345600
+                                 # Change to 14 days (1209600)
+                                'attemptDurationSeconds': 1209600
                             }
                         )
 
