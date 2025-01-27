@@ -316,6 +316,7 @@ class NSIDCMosaicFormat:
             'NASA National Snow and Ice Data Center Distributed Active Archive Center. ' \
             'https//:doi.org/10.5067/JQ6337239C96. [Date accessed]."'
 
+        # These are not bounding polygon - centers of polygons for multi-EPSG mosaics
         # Replace latitude and longitude attributes with geospatial_bounds and
         # geospatial_bounds_crs.
         # Example:
@@ -324,25 +325,27 @@ class NSIDCMosaicFormat:
         # with
         # :geospatial_bounds = "POLYGON((lat1 lon1, lat2 lon2,...))"; and
         # :geospatial_bounds_crs= "EPSG:4326";
-        lat_values = json.loads(ds.attrs[Output.LATITUDE])
-        long_values = json.loads(ds.attrs[Output.LONGITUDE])
+        # lat_values = json.loads(ds.attrs[Output.LATITUDE])
+        # long_values = json.loads(ds.attrs[Output.LONGITUDE])
 
-        result_str = " ,".join([
-            f"{each_lat} {each_long}" for each_lat, each_long in zip(lat_values, long_values)
-        ])
-        result_str = f"POLYGON(({result_str}))"
-        ds[Output.GEOSPATIAL_BOUNDS] = result_str
+        # # Create POLYGON string for geospatial_bounds attribute:
+        # # https://wiki.esipfed.org/Attribute_Convention_for_Data_Discovery_1-3#Global_Attributes:~:text=110.29%2C%2040.26%20%2D111.29))%27.-,geospatial_bounds_crs,-The%20coordinate%20reference
+        # result_str = " ,".join([
+        #     f"{each_lat} {each_long}" for each_lat, each_long in zip(lat_values, long_values)
+        # ])
+        # result_str = f"POLYGON(({result_str}))"
+        # ds[Output.GEOSPATIAL_BOUNDS] = result_str
 
-        epsgcode = int(ds.attrs[Output.PROJECTION])
-        epsgcode_str = f'EPSG:{epsgcode}'
+        # epsgcode = int(ds.attrs[Output.PROJECTION])
+        # epsgcode_str = f'EPSG:{epsgcode}'
 
-        if epsgcode == NSIDCFormat.ESRI_CODE:
-            epsgcode_str = f'ESRI:{epsgcode}'
+        # if epsgcode == NSIDCFormat.ESRI_CODE:
+        #     epsgcode_str = f'ESRI:{epsgcode}'
 
-        ds[Output.GEOSPATIAL_BOUNDS_CRS] = f'EPSG: %s' %epsgcode_str
+        # ds[Output.GEOSPATIAL_BOUNDS_CRS] = f'EPSG: %s' %epsgcode_str
 
-        del ds.attrs[Output.LATITUDE]
-        del ds.attrs[Output.LONGITUDE]
+        # del ds.attrs[Output.LATITUDE]
+        # del ds.attrs[Output.LONGITUDE]
 
         # Change value of the "title" attribute
         ds.attrs[Output.TITLE] = 'MEaSUREs ITS_LIVE Regional Glacier and Ice Sheet Surface ' \
