@@ -172,6 +172,7 @@ def cube_filter_iteration(vp, dt, mad_std_ratio):
     """
     # Filter parameters for dt bins:
     # used to determine if dt means are significantly different
+    # Note for v3: revisit it as (mad_std_ratio*_dtbin_mad_thresh) ~ 1.0
     _dtbin_mad_thresh = 0.67
 
     _dtbin_ratio = _dtbin_mad_thresh * mad_std_ratio
@@ -1716,6 +1717,7 @@ class SensorExcludeFilter:
                 delta = bindicts[sen]['vbin'][covalid] - bindicts[refsensor]['vbin'][covalid]
                 stats[sen]['mean'] = np.mean(delta)
                 stats[sen]['se'] = np.std(delta)/np.sqrt((sum(covalid)-1))
+                # TODO: Should use absolute difference for sigma comparison?
                 stats[sen]['disagree_with_refsensor'] = (stats[sen]['mean'] + (stats[sen]['se'] * SensorExcludeFilter.SESCALE)) < 0
                 if stats[sen]['disagree_with_refsensor']:
                     sensors_to_exclude.append(sen)
@@ -2541,7 +2543,10 @@ class ITSLiveComposite:
 
         start_time = timeit.default_timer()
         logging.info('Project velocity to median flow unit vector...')
-        # Project velocity to median flow unit vector using only valid sensors
+        # Note for v3:
+        # Project velocity to median flow unit vector using only valid sensors: this is
+        # pre-processing step for the dt_max filter, not used anywhere else.
+        # Note: make it part of the cube_filter(), rename to dt_max_filter().
         vp = ITSLiveComposite.project_v_to_median_flow(
             vx,
             vy,
@@ -2584,6 +2589,7 @@ class ITSLiveComposite:
         logging.info('Compute invalid mask...')
         start_time = timeit.default_timer()
 
+        # Note for v3: exclude v > 20000 right before any analysis (before SensorExcludeFilter)
         invalid = v_invalid | (np.hypot(vx, vy) > ITSLiveComposite.V_LIMIT)
 
         # Mask data
@@ -3140,7 +3146,7 @@ class ITSLiveComposite:
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_AMP],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_AMP] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_AMP] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
@@ -3389,8 +3395,8 @@ class ITSLiveComposite:
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V0],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1], CENTER_DATE.year),
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1],
+                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V0] %(CENTER_DATE.year),
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
             }
