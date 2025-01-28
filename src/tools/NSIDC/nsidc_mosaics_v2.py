@@ -347,10 +347,6 @@ class NSIDCMosaicFormat:
         if SCALE_FACTOR_AT_PROJECTION_ORIGIN in ds.mapping.attrs:
             ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN] = float(ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN])
 
-        # Change datatype for sensor dimension to ushort
-        if DataVars.SENSOR in ds:
-            ds[DataVars.SENSOR] = ds[DataVars.SENSOR].astype('uint8')
-
         # Change 'floatingice' attributes
         ds[ShapeFile.FLOATINGICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
         ds[ShapeFile.LANDICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
