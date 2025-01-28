@@ -17,7 +17,7 @@ import xarray as xr
 
 # Local imports
 from itscube_types import DataVars, Output, CompDataVars, BinaryFlag, ShapeFile
-from itslive_composites import MissionSensor
+from itslive_composite import MissionSensor
 from nsidc_vel_image_pairs import NSIDCFormat
 from nsidc_vel_image_pairs_v2 import NSIDCMeta
 
