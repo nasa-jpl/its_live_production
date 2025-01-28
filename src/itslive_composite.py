@@ -3406,7 +3406,7 @@ class ITSLiveComposite:
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1],
+                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V0] %(CENTER_DATE.year),
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 DataVars.UNITS: DataVars.M_Y_UNITS
