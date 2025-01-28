@@ -358,7 +358,7 @@ class NSIDCMosaicFormat:
         del ds[ShapeFile.LANDICE].attrs[Output.URL]
 
         # Changes for the static or annual mosaics
-        if Output.COUNT in ds:
+        if CompDataVars.SENSORS in ds:
             # This is static mosiac
 
             # Change "sensor" dimension
