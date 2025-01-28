@@ -307,14 +307,14 @@ class NSIDCMosaicFormat:
         _cf_value = 'CF-1.8'
 
         # Add "conversion" attribute to the dataset
-        ds[Output.CONVENTIONS] = _cf_value
+        ds.attrs[Output.CONVENTIONS] = _cf_value
 
         # Change value of the "title" attribute
         ds.attrs[Output.TITLE] = 'MEaSUREs ITS_LIVE Regional Glacier and Ice Sheet Surface ' \
             'Velocities, Version 2'
 
         # Add "citation" attribute to the dataset
-        ds[Output.CITATION] = 'Gardner, A. S., Fahnestock, M., Greene, C. A., ' \
+        ds.attrs[Output.CITATION] = 'Gardner, A. S., Fahnestock, M., Greene, C. A., ' \
             'Kennedy, J. H., Liukis, M., & Scambos, T. 2024. ' \
             'MEaSUREs ITS_LIVE Regional Glacier and Ice Sheet Surface Velocities, ' \
             'Version 2 [Indicate subset used]. Boulder, Colorado USA. ' \
@@ -322,7 +322,7 @@ class NSIDCMosaicFormat:
             'https//:doi.org/10.5067/JQ6337239C96. [Date accessed]."'
 
         # Add "publisher_name" attribute to the dataset
-        ds[Output.PUBLISHER_NAME] = 'NASA National Snow and Ice Data Center Distributed Active Archive Center'
+        ds.attrs[Output.PUBLISHER_NAME] = 'NASA National Snow and Ice Data Center Distributed Active Archive Center'
 
         # These are not bounding polygon - centers of polygons for multi-EPSG mosaics
         # Replace latitude and longitude attributes with geospatial_bounds and
