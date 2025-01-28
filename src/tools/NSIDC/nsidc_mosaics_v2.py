@@ -378,8 +378,8 @@ class NSIDCMosaicFormat:
             ds = ds.assign_coords(sensor=sensor_array)
 
             # Set attributes for the sensor dimension
-            ds[DataVars.SENSOR].attrs[BinaryFlag.VALUES_ATTR] = sensor_array
-            ds[DataVars.SENSOR].attrs[BinaryFlag.MEANINGS_ATTR] = sensor_description
+            ds[CompDataVars.SENSOR].attrs[BinaryFlag.VALUES_ATTR] = sensor_array
+            ds[CompDataVars.SENSOR].attrs[BinaryFlag.MEANINGS_ATTR] = sensor_description
 
             # Change 'count' attributes
             ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
