@@ -1318,11 +1318,11 @@ class MissionSensor:
     # Define the mapping of mission group to the "sensor" dimension values (to be used by
     # sensor_flag and max_dt data variables in composites and mosaics)
     SENSOR_DIMENSION_MAPPING = {
-        LANDSAT45.mission: 1,
-        LANDSAT7.mission: 2,
-        LANDSAT89.mission: 3,
-        SENTINEL1.mission: 4,
-        SENTINEL2.mission: 5
+        LANDSAT45.sensors_label: 1,
+        LANDSAT7.sensors_label: 2,
+        LANDSAT89.sensors_label: 3,
+        SENTINEL1.sensors_label: 4,
+        SENTINEL2.sensors_label: 5
     }
 
     # Mapping of sensor to the group
