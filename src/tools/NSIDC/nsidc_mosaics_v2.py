@@ -8,7 +8,6 @@ Authors: Masha Liukis (JPL), Alex Gardner (JPL), Mark Fahnestock (UFA)
 import argparse
 import boto3
 from datetime import datetime
-import json
 import logging
 import numpy as np
 import os
@@ -18,6 +17,7 @@ import xarray as xr
 
 # Local imports
 from itscube_types import DataVars, Output, CompDataVars, BinaryFlag, ShapeFile
+from itslive_composites import MissionSensor
 from nsidc_vel_image_pairs import NSIDCFormat
 from nsidc_vel_image_pairs_v2 import NSIDCMeta
 
@@ -266,7 +266,7 @@ class NSIDCMosaicFormat:
 
         with xr.open_dataset(local_file, engine=NSIDCMeta.NC_ENGINE) as ds:
             # Fix metadata for the dataset
-            NSIDCMosaicFormat.process_nc_file(ds)
+            msgs.extend(NSIDCMosaicFormat.process_nc_file(ds))
 
             # Write fixed granule to local file
             # Convert dataset to Dask dataset not to run out of memory while writing to the file
@@ -303,10 +303,15 @@ class NSIDCMosaicFormat:
         ds: xarray.Dataset object that represents the NetCDF file content (granule
             or mosaic).
         """
+        msgs = []
         _cf_value = 'CF-1.8'
 
         # Add "conversion" attribute to the dataset
         ds[Output.CONVENTIONS] = _cf_value
+
+        # Change value of the "title" attribute
+        ds.attrs[Output.TITLE] = 'MEaSUREs ITS_LIVE Regional Glacier and Ice Sheet Surface ' \
+            'Velocities, Version 2'
 
         # Add "citation" attribute to the dataset
         ds[Output.CITATION] = 'Gardner, A. S., Fahnestock, M., Greene, C. A., ' \
@@ -315,6 +320,9 @@ class NSIDCMosaicFormat:
             'Version 2 [Indicate subset used]. Boulder, Colorado USA. ' \
             'NASA National Snow and Ice Data Center Distributed Active Archive Center. ' \
             'https//:doi.org/10.5067/JQ6337239C96. [Date accessed]."'
+
+        # Add "publisher_name" attribute to the dataset
+        ds[Output.PUBLISHER_NAME] = 'NASA National Snow and Ice Data Center Distributed Active Archive Center'
 
         # These are not bounding polygon - centers of polygons for multi-EPSG mosaics
         # Replace latitude and longitude attributes with geospatial_bounds and
@@ -330,33 +338,52 @@ class NSIDCMosaicFormat:
 
         # # Create POLYGON string for geospatial_bounds attribute:
         # # https://wiki.esipfed.org/Attribute_Convention_for_Data_Discovery_1-3#Global_Attributes:~:text=110.29%2C%2040.26%20%2D111.29))%27.-,geospatial_bounds_crs,-The%20coordinate%20reference
-        # result_str = " ,".join([
-        #     f"{each_lat} {each_long}" for each_lat, each_long in zip(lat_values, long_values)
-        # ])
-        # result_str = f"POLYGON(({result_str}))"
-        # ds[Output.GEOSPATIAL_BOUNDS] = result_str
 
-        # epsgcode = int(ds.attrs[Output.PROJECTION])
-        # epsgcode_str = f'EPSG:{epsgcode}'
-
-        # if epsgcode == NSIDCFormat.ESRI_CODE:
-        #     epsgcode_str = f'ESRI:{epsgcode}'
-
-        # ds[Output.GEOSPATIAL_BOUNDS_CRS] = f'EPSG: %s' %epsgcode_str
-
-        # del ds.attrs[Output.LATITUDE]
-        # del ds.attrs[Output.LONGITUDE]
-
-        # Change value of the "title" attribute
-        ds.attrs[Output.TITLE] = 'MEaSUREs ITS_LIVE Regional Glacier and Ice Sheet Surface ' \
-            'Velocities, Version 2'
+        # Remove latitude and longitude attributes - not used by any tools
+        del ds.attrs[Output.LATITUDE]
+        del ds.attrs[Output.LONGITUDE]
 
         # Change datatype for mapping.scale_factor_at_projection_origin to float
         if SCALE_FACTOR_AT_PROJECTION_ORIGIN in ds.mapping.attrs:
             ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN] = float(ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN])
 
+        # Change datatype for sensor dimension to ushort
+        if DataVars.SENSOR in ds:
+            ds[DataVars.SENSOR] = ds[DataVars.SENSOR].astype('uint8')
+
+        # Change 'floatingice' attributes
+        ds[ShapeFile.FLOATINGICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
+        ds[ShapeFile.LANDICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
+
+        ds[ShapeFile.FLOATINGICE].attrs[Output.REFERENCES] = ds[ShapeFile.FLOATINGICE].attrs[Output.URL]
+        del ds[ShapeFile.FLOATINGICE].attrs[Output.URL]
+
+        ds[ShapeFile.LANDICE].attrs[Output.REFERENCES] = ds[ShapeFile.LANDICE].attrs[Output.URL]
+        del ds[ShapeFile.LANDICE].attrs[Output.URL]
+
+        # Changes for the static or annual mosaics
         if Output.COUNT in ds:
             # This is static mosiac
+
+            # Change "sensor" dimension
+            # * Change dtype to ubyte
+            # * Add new attribute: flag_values = 1B, 2B, 3B, 4B, 5B; // ubyte
+            # * Add new attribute: flag_meanings = "L4_L5 L7 L8_L9 S1A_S1B S2A_S2B";`
+            sensor_description = []
+            sensor_values = []
+            for each in ds.sensor.values:
+                sensor_values.append(MissionSensor.SENSOR_DIMENSION_MAPPING[each])
+                sensor_description.append(each)
+
+            sensor_description = ' '.join(sensor_description)
+            msgs.append(f'Got sensors: {sensor_values=} corresponding to {sensor_description=} ')
+
+            sensor_array = np.array(sensor_values, dtype=np.ubyte)
+            ds = ds.assign_coords(sensor=sensor_array)
+
+            # Set attributes for the sensor dimension
+            ds[DataVars.SENSOR].attrs[BinaryFlag.VALUES_ATTR] = sensor_array
+            ds[DataVars.SENSOR].attrs[BinaryFlag.MEANINGS_ATTR] = sensor_description
 
             # Change 'count' attributes
             ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
@@ -368,16 +395,6 @@ class NSIDCMosaicFormat:
             ds[CompDataVars.SLOPE_V].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in v'
             ds[CompDataVars.SLOPE_VX].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in vx'
             ds[CompDataVars.SLOPE_VY].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in vy'
-
-            # Change 'floatingice' attributes
-            ds[ShapeFile.FLOATINGICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
-            ds[ShapeFile.LANDICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
-
-            ds[ShapeFile.FLOATINGICE].attrs[Output.REFERENCES] = ds[ShapeFile.FLOATINGICE].attrs[Output.URL]
-            del ds[ShapeFile.FLOATINGICE].attrs[Output.URL]
-
-            ds[ShapeFile.LANDICE].attrs[Output.REFERENCES] = ds[ShapeFile.LANDICE].attrs[Output.URL]
-            del ds[ShapeFile.LANDICE].attrs[Output.URL]
 
             # Change 'v' attributes
             ds[DataVars.V].attrs[DataVars.STD_NAME] = 'climatological velocity [2014-2022]'
@@ -403,6 +420,8 @@ class NSIDCMosaicFormat:
             ds[CompDataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v error'
             ds[CompDataVars.VX_ERROR].attrs[DataVars.STD_NAME] = 'vx error'
             ds[CompDataVars.VY_ERROR].attrs[DataVars.STD_NAME] = 'vy error'
+
+        return msgs
 
 
 if __name__ == '__main__':
