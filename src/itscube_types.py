@@ -51,10 +51,8 @@ class Output:
     COUNT = 'count'
     URL = 'url'
     REFERENCES= 'references'
-
-    GEOSPATIAL_BOUNDS = 'geospatial_bounds'
-    GEOSPATIAL_BOUNDS_CRS = 'geospatial_bounds_crs'
     PROJECTION = 'projection'
+    PUBLISHER_NAME = 'publisher_name'
 
 
 class CubeOutput:

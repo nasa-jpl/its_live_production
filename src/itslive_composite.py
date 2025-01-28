@@ -1285,6 +1285,7 @@ class MissionSensor:
     Group together:
     Sentinel1: 1A and 1B sensors
     Sentinel2: 2A and 2B sensors
+    Landsat4 and Landsat5
     Landsat8 and Landsat9
     """
     # Tuple to keep mission, sensors and string representation of the grouped
@@ -1312,6 +1313,16 @@ class MissionSensor:
         LANDSAT89.mission: LANDSAT89,
         SENTINEL1.mission: SENTINEL1,
         SENTINEL2.mission: SENTINEL2
+    }
+
+    # Define the mapping of mission group to the "sensor" dimension values (to be used by
+    # sensor_flag and max_dt data variables in composites and mosaics)
+    SENSOR_DIMENSION_MAPPING = {
+        LANDSAT45.mission: 1,
+        LANDSAT7.mission: 2,
+        LANDSAT89.mission: 3,
+        SENTINEL1.mission: 4,
+        SENTINEL2.mission: 5
     }
 
     # Mapping of sensor to the group
