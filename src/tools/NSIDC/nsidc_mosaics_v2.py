@@ -396,7 +396,7 @@ class NSIDCMosaicFormat:
             ds[CompDataVars.SLOPE_VY].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in vy'
 
             # Change 'v' attributes
-            ds[DataVars.V].attrs[DataVars.STD_NAME] = 'climatological velocity [2014-2022]'
+            ds[DataVars.V].attrs[DataVars.STD_NAME] = 'climatological [2014-2022] velocity'
             ds[DataVars.V].attrs[DataVars.DESCRIPTION_ATTR] = 'determined by taking the hypotenuse of vx and vy. ' \
                 'The climatology uses a time-intercept of January 1, 2018.'
 
