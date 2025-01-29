@@ -266,18 +266,19 @@ class NSIDCMosaicFormat:
 
         with xr.open_dataset(local_file, engine=NSIDCMeta.NC_ENGINE) as ds:
             # Fix metadata for the dataset
-            msgs.extend(NSIDCMosaicFormat.process_nc_file(ds))
+            fixed_ds, fixed_ds_msgs = NSIDCMosaicFormat.process_nc_file(ds)
+            msgs.extend(fixed_ds_msgs)
 
             # Write fixed granule to local file
             # Convert dataset to Dask dataset not to run out of memory while writing to the file
-            ds = ds.chunk(chunks={
+            fixed_ds = fixed_ds.chunk(chunks={
                 'x': NSIDCMosaicFormat.CHUNK_SIZE,
                 'y': NSIDCMosaicFormat.CHUNK_SIZE
             })
 
             # Write fixed granule to local file
             new_filename = os.path.join(NSIDCMosaicFormat.LOCAL_FIX_DIR, filename)
-            ds.to_netcdf(new_filename, engine='h5netcdf')
+            fixed_ds.to_netcdf(new_filename, engine='h5netcdf')
 
             msgs.extend(NSIDCFormat.upload_to_s3(new_filename, target_dir, target_bucket, s3_client))
 
@@ -375,6 +376,8 @@ class NSIDCMosaicFormat:
             msgs.append(f'Got sensors: {sensor_values=} corresponding to {sensor_description=} ')
 
             sensor_array = np.array(sensor_values, dtype=np.ubyte)
+
+            # This won't overwrite input "ds" object
             ds = ds.assign_coords(sensor=sensor_array)
 
             # Set attributes for the sensor dimension
@@ -417,7 +420,7 @@ class NSIDCMosaicFormat:
             ds[CompDataVars.VX_ERROR].attrs[DataVars.STD_NAME] = 'vx error'
             ds[CompDataVars.VY_ERROR].attrs[DataVars.STD_NAME] = 'vy error'
 
-        return msgs
+        return ds, msgs
 
 
 if __name__ == '__main__':
