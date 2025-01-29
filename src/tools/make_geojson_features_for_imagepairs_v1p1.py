@@ -5,6 +5,7 @@ Authors: Mark Fahnestock, Masha Liukis
 """
 
 import argparse
+import boto3
 import dask
 from dask.diagnostics import ProgressBar
 from datetime import datetime
@@ -14,16 +15,16 @@ import json
 import logging
 import numpy as np
 import os
-import psutil
+# import psutil
 import pyproj
 import s3fs
-import sys
 import time
 from tqdm import tqdm
 from shapely.geometry import mapping
-import xarray as xr
 
-# from itscube import ITSCube
+# Local imports
+import nsidc_meta_files
+
 
 # Date format as it appears in granules filenames of optical format:
 # LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc
@@ -32,6 +33,13 @@ DATE_FORMAT = "%Y%m%d"
 # Date and time format as it appears in granules filenames or radar format:
 # S1A_IW_SLC__1SSH_20170221T204710_20170221T204737_015387_0193F6_AB07_X_S1B_IW_SLC__1SSH_20170227T204628_20170227T204655_004491_007D11_6654_G0240V02_P094.nc
 DATE_TIME_FORMAT = "%Y%m%dT%H%M%S"
+
+# Number of retries when encountering AWS S3 download/upload error
+_NUM_AWS_COPY_RETRIES = 3
+
+# Number of seconds between retries to access AWS S3 bucket
+_AWS_COPY_SLEEP_SECONDS = 3
+
 
 def get_tokens_from_filename(filename):
     """
@@ -83,6 +91,7 @@ def get_tokens_from_filename(filename):
         key_2 = url_tokens[-3]
 
     return is_optical, first_date_1, second_date_1, key_1, first_date_2, second_date_2, key_2
+
 
 def skip_duplicate_granules(found_urls: list):
     """
@@ -199,27 +208,27 @@ def skip_duplicate_granules(found_urls: list):
     return granules, skipped_double_granules
 
 
-class memtracker:
+# class memtracker:
 
-    def __init__(self, include_time=True):
-        self.output_time = include_time
-        if include_time:
-            self.start_time = time.time()
-        self.process = psutil.Process()
-        self.startrss = self.process.memory_info().rss
-        self.startvms = self.process.memory_info().vms
+#     def __init__(self, include_time=True):
+#         self.output_time = include_time
+#         if include_time:
+#             self.start_time = time.time()
+#         self.process = psutil.Process()
+#         self.startrss = self.process.memory_info().rss
+#         self.startvms = self.process.memory_info().vms
 
-    def meminfo(self, message):
-        if self.output_time:
-            time_elapsed_seconds = time.time() - self.start_time
-            print(f'{message:<30}:  time: {time_elapsed_seconds:8.2f} seconds    mem_percent {self.process.memory_percent()} ' +
-                    f'delrss={self.process.memory_info().rss - self.startrss:16,}    ' +
-                    f'delvms={self.process.memory_info().vms - self.startvms:16,}',
-                    flush=True)
-        else: # don't output time
-            print(f'{message:<30}:  delrss={self.process.memory_info().rss - self.startrss:16,}   mem_percent {self.process.memory_percent()} ' +
-                    f'delvms={self.process.memory_info().vms - self.startvms:16,}',
-                    flush=True)
+#     def meminfo(self, message):
+#         if self.output_time:
+#             time_elapsed_seconds = time.time() - self.start_time
+#             print(f'{message:<30}:  time: {time_elapsed_seconds:8.2f} seconds    mem_percent {self.process.memory_percent()} ' +
+#                     f'delrss={self.process.memory_info().rss - self.startrss:16,}    ' +
+#                     f'delvms={self.process.memory_info().vms - self.startvms:16,}',
+#                     flush=True)
+#         else: # don't output time
+#             print(f'{message:<30}:  delrss={self.process.memory_info().rss - self.startrss:16,}   mem_percent {self.process.memory_percent()} ' +
+#                     f'delvms={self.process.memory_info().vms - self.startvms:16,}',
+#                     flush=True)
 
 # mt = memtracker()
 
@@ -233,7 +242,7 @@ class GranuleCatalog:
     EXCLUDE_GRANULES_FILE = None
     REMOVE_DUPLICATE_GRANULES = False
 
-    def __init__(self, granules_file: str, features_per_file: int, catalog_dir: str, start_index: int=0):
+    def __init__(self, granules_file: str, features_per_file: int, catalog_dir: str, start_index: int = 0):
         """
         Initialize the object.
         """
@@ -282,7 +291,7 @@ class GranuleCatalog:
         init_total_files = total_num_files
 
         if total_num_files <= 0:
-            logging.info(f"Nothing to catalog, exiting.")
+            logging.info("Nothing to catalog, exiting.")
             return
 
         start = 0                              # Current start index into global list
@@ -297,14 +306,19 @@ class GranuleCatalog:
             num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
 
             logging.info(f"Starting granules {start}:{start+num_tasks} out of {init_total_files} total granules")
-            tasks = [dask.delayed(GranuleCatalog.image_pair_feature_from_path)(each, self.s3) for each in self.infiles[start:start+num_tasks]]
+            tasks = [
+                dask.delayed(GranuleCatalog.image_pair_feature_from_path)(each, self.s3) for
+                each in self.infiles[start:start+num_tasks]
+            ]
             results = None
 
             with ProgressBar():
                 # Display progress bar
-                results = dask.compute(tasks,
-                                       scheduler="processes",
-                                       num_workers=num_dask_workers)
+                results = dask.compute(
+                    tasks,
+                    scheduler="processes",
+                    num_workers=num_dask_workers
+                )
 
             feature_list.extend(results[0])
 
@@ -351,15 +365,29 @@ class GranuleCatalog:
             value = h5_attr
 
         else:
-            value = h5_attr[0] # h5py returns lists of numbers - all 1 element lists here, so dereference to number
+            value = h5_attr[0]  # h5py returns lists of numbers - all 1 element lists here, so dereference to number
 
         return value
 
     @staticmethod
-    def image_pair_feature_from_path(infilewithpath: str, s3):
+    def image_pair_feature_from_path(infilewithpath: str, s3: s3fs.S3FileSystem):
+        """Generate geojson feature for the image pair, and create NSIDC metadata files.
+           Publish metadata files to the target directory in S3 bucket.
+
+        Args:
+            infilewithpath (str): Fullpath to the granule file in S3 bucket.
+            s3 (s3fs.S3FileSystem): s3fs object to access S3 bucket.
+
+        Returns:
+            geojson.Feature: Geojson feature for the granule.
+
+        Raises:
+            RuntimeError: If an error occurs while processing the granule file.
+        """
         filename_tokens = infilewithpath.split('/')
         directory = '/'.join(filename_tokens[1:-1])
         filename = filename_tokens[-1]
+        target_bucket = filename_tokens[0]
 
         data_version = GranuleCatalog.DATA_VERSION
         if data_version is None:
@@ -369,7 +397,7 @@ class GranuleCatalog:
         v_error_max = np.nan
 
         with s3.open(f"s3://{infilewithpath}", "rb") as ins3:
-            inh5 = h5py.File(ins3, mode = 'r')
+            inh5 = h5py.File(ins3, mode='r')
             # netCDF4/HDF5 cf 1.6 has x and y vectors of array pixel CENTERS
             xvals = np.array(inh5.get('x'))
             yvals = np.array(inh5.get('y'))
@@ -395,9 +423,6 @@ class GranuleCatalog:
             except Exception as exc:
                 raise RuntimeError(f'Error processing {infilewithpath}: img_pair_info.{k}: {imginfo_attrs[k]} type={type(imginfo_attrs[k])} exc={exc} ({imginfo_attrs})')
 
-            num_pix_x = len(xvals)
-            num_pix_y = len(yvals)
-
             minval_x, pix_size_x, rot_x_ignored, maxval_y, rot_y_ignored, pix_size_y = [float(x) for x in projection_cf.attrs['GeoTransform'].split()]
 
             epsgcode = int(GranuleCatalog.get_h5_attribute_value(projection_cf.attrs['spatial_epsg']))
@@ -419,55 +444,54 @@ class GranuleCatalog:
         # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
         projection_cf_minx = xvals[0] - pix_size_x/2.0
         projection_cf_maxx = xvals[-1] + pix_size_x/2.0
-        projection_cf_miny = yvals[-1] + pix_size_y/2.0 # pix_size_y is negative!
-        projection_cf_maxy = yvals[0] - pix_size_y/2.0  # pix_size_y is negative!
+        projection_cf_miny = yvals[-1] + pix_size_y/2.0  # pix_size_y is negative!
+        projection_cf_maxy = yvals[0] - pix_size_y/2.0   # pix_size_y is negative!
 
+        transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True)  # ensure lonlat output order
 
-        transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True) # ensure lonlat output order
-
-        ll_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_miny),decimals = 7).tolist()
-        lr_lonlat = np.round(transformer.transform(projection_cf_maxx,projection_cf_miny),decimals = 7).tolist()
-        ur_lonlat = np.round(transformer.transform(projection_cf_maxx,projection_cf_maxy),decimals = 7).tolist()
-        ul_lonlat = np.round(transformer.transform(projection_cf_minx,projection_cf_maxy),decimals = 7).tolist()
+        ll_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_miny), decimals=7).tolist()
+        lr_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_miny), decimals=7).tolist()
+        ur_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_maxy), decimals=7).tolist()
+        ul_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_maxy), decimals=7).tolist()
 
         # find center lon lat for inclusion in feature (to determine lon lat grid cell directory)
         #     projection_cf_centerx = (xvals[0] + xvals[-1])/2.0
         #     projection_cf_centery = (yvals[0] + yvals[-1])/2.0
-        center_lonlat = np.round(transformer.transform((xvals[0] + xvals[-1])/2.0,(yvals[0] + yvals[-1])/2.0 ),decimals = 7).tolist()
+        center_lonlat = np.round(transformer.transform((xvals[0] + xvals[-1])/2.0, (yvals[0] + yvals[-1])/2.0), decimals=7).tolist()
 
         if GranuleCatalog.FIVE_POINTS_PER_SIDE:
             fracs = [0.25, 0.5, 0.75]
-            polylist = [] # ring in counterclockwise order
+            polylist = []  # ring in counterclockwise order
 
             polylist.append(ll_lonlat)
             dx = projection_cf_maxx - projection_cf_minx
             dy = projection_cf_miny - projection_cf_miny
             for frac in fracs:
-                polylist.append(np.round(transformer.transform(projection_cf_minx + (frac * dx), projection_cf_miny + (frac * dy)),decimals = 7).tolist())
+                polylist.append(np.round(transformer.transform(projection_cf_minx + (frac * dx), projection_cf_miny + (frac * dy)), decimals=7).tolist())
 
             polylist.append(lr_lonlat)
             dx = projection_cf_maxx - projection_cf_maxx
             dy = projection_cf_maxy - projection_cf_miny
             for frac in fracs:
-                polylist.append(np.round(transformer.transform(projection_cf_maxx + (frac * dx), projection_cf_miny + (frac * dy)),decimals = 7).tolist())
+                polylist.append(np.round(transformer.transform(projection_cf_maxx + (frac * dx), projection_cf_miny + (frac * dy)), decimals=7).tolist())
 
             polylist.append(ur_lonlat)
             dx = projection_cf_minx - projection_cf_maxx
             dy = projection_cf_maxy - projection_cf_maxy
             for frac in fracs:
-                polylist.append(np.round(transformer.transform(projection_cf_maxx + (frac * dx), projection_cf_maxy + (frac * dy)),decimals = 7).tolist())
+                polylist.append(np.round(transformer.transform(projection_cf_maxx + (frac * dx), projection_cf_maxy + (frac * dy)), decimals=7).tolist())
 
             polylist.append(ul_lonlat)
             dx = projection_cf_minx - projection_cf_minx
             dy = projection_cf_miny - projection_cf_maxy
             for frac in fracs:
-                polylist.append(np.round(transformer.transform(projection_cf_minx + (frac * dx), projection_cf_maxy + (frac * dy)),decimals = 7).tolist())
+                polylist.append(np.round(transformer.transform(projection_cf_minx + (frac * dx), projection_cf_maxy + (frac * dy)), decimals=7).tolist())
 
             polylist.append(ll_lonlat)
 
         else:
             # only the corner points
-            polylist = [ ll_lonlat, lr_lonlat, ur_lonlat, ul_lonlat, ll_lonlat ]
+            polylist = [ll_lonlat, lr_lonlat, ur_lonlat, ul_lonlat, ll_lonlat]
 
         poly = geojson.Polygon([polylist])
 
@@ -475,41 +499,81 @@ class GranuleCatalog:
         deldays = img_pair_info_dict['date_dt']
         percent_valid_pix = img_pair_info_dict['roi_valid_percentage']
 
-        feat = geojson.Feature( geometry=poly,
-                                properties={
-                                            'filename': filename,
-                                            'directory': directory,
-                                            'middate':middate,
-                                            'deldays':deldays,
-                                            'percent_valid_pix': percent_valid_pix,
-                                            'center_lonlat':center_lonlat,
-                                            'data_epsg':epsgcode,
-                                            # date_deldays_strrep is a string version of center date and time interval that will sort by date and then by interval length (shorter intervals first) - relies on "string" comparisons by byte
-                                            'date_deldays_strrep': img_pair_info_dict['date_center'] + f"{img_pair_info_dict['date_dt']:07.1f}".replace('.',''),
-                                            'img_pair_info_dict': img_pair_info_dict,
-                                            'v_error_max': v_error_max,
-                                            'stable_shift': stable_shift_value,
-                                            'version': data_version
-                                            }
-                                )
-        return(feat)
+        feat = geojson.Feature(
+            geometry=poly,
+            properties={
+                'filename': filename,
+                'directory': directory,
+                'middate': middate,
+                'deldays': deldays,
+                'percent_valid_pix': percent_valid_pix,
+                'center_lonlat': center_lonlat,
+                'data_epsg': epsgcode,
+                # date_deldays_strrep is a string version of center date and time interval
+                # that will sort by date and then by interval length (shorter intervals first) -
+                # relies on "string" comparisons by byte
+                'date_deldays_strrep': img_pair_info_dict['date_center'] + f"{img_pair_info_dict['date_dt']:07.1f}".replace('.', ''),
+                'img_pair_info_dict': img_pair_info_dict,
+                'v_error_max': v_error_max,
+                'stable_shift': stable_shift_value,
+                'version': data_version
+            }
+        )
+
+        # Create NSIDC metadata files and copy them to the
+        # granule directory in S3 bucket
+
+        # Automatically handle aws exceptions on file read and upload from/to s3 bucket
+        files_are_copied = False
+        num_retries = 0
+
+        while not files_are_copied and num_retries < _NUM_AWS_COPY_RETRIES:
+            try:
+                meta_files = nsidc_meta_files.create_nsidc_meta_files(infilewithpath, s3)
+
+                s3_client = boto3.client('s3')
+
+                for each_file in meta_files:
+                    # Place metadata files into the same s3 directory as the granule
+                    nsidc_meta_files.upload_to_s3(each_file, directory, target_bucket, s3_client)
+
+                files_are_copied = True
+
+            except:
+                # msgs.append(f"Try #{num_retries + 1} exception processing {infilewithpath}: {sys.exc_info()}")
+                num_retries += 1
+
+                if num_retries < _NUM_AWS_COPY_RETRIES:
+                    # Retry the copy for any kind of failure
+
+                    # Sleep if it's not a last attempt to copy
+                    time.sleep(_AWS_COPY_SLEEP_SECONDS)
+
+                else:
+                    # Don't retry, trigger an exception
+                    num_retries = _NUM_AWS_COPY_RETRIES
+                    raise
+
+        return (feat)
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser( \
+    parser = argparse.ArgumentParser(
         description="""make_geojson_features_for_imagepairs_v1.py
 
-           produces output geojson FeatureCollection for each nn image_pairs from a directory.
-           v1 adds 5 points per side to geom (so 3 interior and the two corners from v0)
-           and the ability to stop the chunks (in addition to the start allowed in v0)
-           so that the code can be run on a range of chunks.
+        Produces output geojson FeatureCollection for each nn image_pairs from a directory.
+        v1 adds 5 points per side to geom (so 3 interior and the two corners from v0)
+        and the ability to stop the chunks (in addition to the start allowed in v0)
+        so that the code can be run on a range of chunks.
         """,
         epilog="""
     There are two steps to create geojson catalogs:
     1. Create a list of granules to be used for catalog generation. The file that stores
-       URLs of such granules is placed in the destination S3 bucket.
+        URLs of such granules is placed in the destination S3 bucket.
     2. Create geojson catalogs using a list of granules as generated by step #1. The list of
-       granules is read from the file stored in the destination S3 bucket.""",
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        granules is read from the file stored in the destination S3 bucket.""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
 
     parser.add_argument('-granule_dir',
                         action='store',
@@ -557,19 +621,20 @@ if __name__ == '__main__':
                         action='store',
                         type=int,
                         default=0,
-                        help="Start index to use when formatting first catalog geojson filename [%(default)d]. " \
-                             "Usefull if adding new granules to existing set of catalog geojson files.")
+                        help="Start index to use when formatting first catalog geojson filename [%(default)d]. "
+                                "Usefull if adding new granules to existing set of catalog geojson files.")
 
     parser.add_argument('-granule_start_index',
                         action='store',
                         type=int,
                         default=0,
-                        help="Start index for the granule to begin cataloging with [%(default)d]. " \
-                             "Useful if continuing interrupted process cataloging the files.")
+                        help="Start index for the granule to begin cataloging with [%(default)d]. "
+                                "Useful if continuing interrupted process cataloging the files.")
 
     parser.add_argument('-c', '--create_catalog_list',
                         action='store_true',
-                        help='build a list of granules for catalog generation [%(default)s], otherwise read the list of granules from catalog_granules_file')
+                        help='build a list of granules for catalog generation [%(default)s], '
+                                'otherwise read the list of granules from catalog_granules_file')
 
     parser.add_argument('-glob',
                         action='store',
@@ -581,17 +646,18 @@ if __name__ == '__main__':
                         help='Define 5 points per side before re-projecting granule polygon to longitude/latitude coordinates')
 
     parser.add_argument('-remove-duplicate-granules', action='store_true',
-                        help='Remove duplicate granules based on processing date within granule filename. This option should be used for Landsat8 data only.')
+                        help='Remove duplicate granules based on processing date within granule filename. '
+                            'This option should be used for Landsat8 data only.')
 
     parser.add_argument('-data_version',
                         default=None,
                         type=str,
-                        help='Data version to be recorded for each granule [%(default)s]. If none is provided, immediate parent directory of the granule is used as its version.')
+                        help='Data version to be recorded for each granule [%(default)s]. '
+                            'If none is provided, immediate parent directory of the granule is used as its version.')
 
     parser.add_argument('-w', '--dask_workers', type=int,
                         default=4,
                         help='Number of Dask parallel workers [%(default)d]')
-
 
     args = parser.parse_args()
 
@@ -631,9 +697,11 @@ if __name__ == '__main__':
 
         # Create a list of granules to catalog and store it in S3 bucket
         # use a glob to list directory
-        logging.info(f"Creating a list of granules to catalog")
+        logging.info("Creating a list of granules to catalog")
+
         logging.info(f"Glob {granules_dir}/{args.glob}")
         infilelist = s3_out.glob(f'{granules_dir}/{args.glob}')
+
         logging.info(f"Got {len(infilelist)} granules")
 
         # check for '_P' in filename - filters out temp.nc files that can be left by bad transfers
@@ -662,6 +730,5 @@ if __name__ == '__main__':
             geojson.dump(infiles, outf)
 
         logging.info(f"Wrote catalog granules to '{granule_filename}'")
-
 
     logging.info('Done.')
