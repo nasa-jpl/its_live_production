@@ -19,7 +19,7 @@ import xarray as xr
 from itscube_types import DataVars, Output, CompDataVars, BinaryFlag, ShapeFile
 from itslive_composite import MissionSensor
 from nsidc_vel_image_pairs import NSIDCFormat
-from nsidc_vel_image_pairs_v2 import NSIDCMeta
+from nsidc_meta_files import NSIDCMeta
 
 # NetCDF attributes and data variables names
 SCALE_FACTOR_AT_PROJECTION_ORIGIN = 'scale_factor_at_projection_origin'
@@ -343,6 +343,7 @@ class NSIDCMosaicFormat:
         # Remove latitude and longitude attributes - not used by any tools
         del ds.attrs[Output.LATITUDE]
         del ds.attrs[Output.LONGITUDE]
+        del ds.attrs[CompOutput.SENSORS_LABELS]
 
         # Change datatype for mapping.scale_factor_at_projection_origin to float
         if SCALE_FACTOR_AT_PROJECTION_ORIGIN in ds.mapping.attrs:
@@ -383,6 +384,10 @@ class NSIDCMosaicFormat:
             # Set attributes for the sensor dimension
             ds[CompDataVars.SENSORS].attrs[BinaryFlag.VALUES_ATTR] = sensor_array
             ds[CompDataVars.SENSORS].attrs[BinaryFlag.MEANINGS_ATTR] = sensor_description
+
+            # Delete old sensor description attribute (was for the user convenience)
+            del ds[CompDataVars.SENSOR_INCLUDE].attrs[CompOutput.SENSORS_LABELS]
+            del ds[CompDataVars.MAX_DT].attrs[CompOutput.SENSORS_LABELS]
 
             # Change 'count' attributes
             ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
