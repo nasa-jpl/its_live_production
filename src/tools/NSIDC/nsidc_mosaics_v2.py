@@ -262,16 +262,16 @@ class NSIDCMosaicFormat:
         # Check if granule is already fixed and metadata files
         # are already created
         bucket = boto3.resource('s3').Bucket(target_bucket)
-        bucket_granule = os.path.join(target_dir, file_path)
+        bucket_granule = os.path.join(target_dir, filename)
 
         if NSIDCFormat.object_exists(bucket, bucket_granule):
             # Check for metadata files
             # Premet file
-            bucket_granule = os.path.join(target_dir, f'{file_path}{NSIDCMeta.PREMET_EXT}')
+            bucket_granule = os.path.join(target_dir, f'{filename}{NSIDCMeta.PREMET_EXT}')
 
             if NSIDCFormat.object_exists(bucket, bucket_granule):
                 # Spatial file
-                bucket_granule = os.path.join(target_dir, f'{file_path}{NSIDCMeta.SPATIAL_EXT}')
+                bucket_granule = os.path.join(target_dir, f'{filename}{NSIDCMeta.SPATIAL_EXT}')
 
                 if NSIDCFormat.object_exists(bucket, bucket_granule):
                     msgs.append('File is already processed, skipping.')
