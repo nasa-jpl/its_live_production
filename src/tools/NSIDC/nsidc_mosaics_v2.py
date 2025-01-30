@@ -309,7 +309,7 @@ class NSIDCMosaicFormat:
             meta_file = NSIDCMosaicsMeta.create_spatial_file(ds, filename)
             msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
 
-            os.unlink(new_filename)
+        os.unlink(local_file)
 
         return msgs
 
