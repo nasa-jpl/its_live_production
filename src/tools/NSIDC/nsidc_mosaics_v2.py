@@ -258,6 +258,25 @@ class NSIDCMosaicFormat:
         s3_client = boto3.client('s3')
 
         file_path = os.path.sep.join(filename_tokens[1:])
+
+        # Check if granule is already fixed and metadata files
+        # are already created
+        bucket = boto3.resource('s3').Bucket(target_bucket)
+        bucket_granule = os.path.join(target_dir, file_path)
+
+        if NSIDCFormat.object_exists(bucket, bucket_granule):
+            # Check for metadata files
+            # Premet file
+            bucket_granule = os.path.join(target_dir, f'{file_path}{NSIDCMeta.PREMET_EXT}')
+
+            if NSIDCFormat.object_exists(bucket, bucket_granule):
+                # Spatial file
+                bucket_granule = os.path.join(target_dir, f'{file_path}{NSIDCMeta.SPATIAL_EXT}')
+
+                if NSIDCFormat.object_exists(bucket, bucket_granule):
+                    msgs.append('File is already processed, skipping.')
+                    return msgs
+
         local_file = filename + '.local'
 
         # Download file locally - takes too long to read the whole mosaic file
@@ -289,6 +308,8 @@ class NSIDCMosaicFormat:
 
             meta_file = NSIDCMosaicsMeta.create_spatial_file(ds, filename)
             msgs.extend(NSIDCFormat.upload_to_s3(meta_file, target_dir, target_bucket, s3_client))
+
+            os.unlink(new_filename)
 
         return msgs
 

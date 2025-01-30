@@ -101,6 +101,9 @@ class NSIDCMeta:
 
    NC_ENGINE = 'h5netcdf'
 
+   PREMET_EXT = '.premet'
+   SPATIAL_EXT = '.spatial'
+
    @staticmethod
    def create_premet_file(ds: xr.Dataset, infile: str):
       """
@@ -132,7 +135,7 @@ class NSIDCMeta:
       begin_date = parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1])
       end_date = parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2])
 
-      meta_filename = f'{infile}.premet'
+      meta_filename = f'{infile}{NSIDCMeta.PREMET_EXT}'
       with open(meta_filename, 'w') as fh:
          fh.write(f'FileName={infile}\n')
          fh.write('VersionID_local=002\n')
@@ -161,7 +164,7 @@ class NSIDCMeta:
       ds: xarray.Dataset object that represents the granule.
       infile: Basename of the granule.
       """
-      meta_filename = f'{infile}.spatial'
+      meta_filename = f'{infile}{NSIDCMeta.SPATIAL_EXT}'
 
       xvals = ds.x.values
       yvals = ds.y.values
