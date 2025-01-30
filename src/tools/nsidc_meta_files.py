@@ -244,9 +244,6 @@ def create_nsidc_meta_files(infilewithpath: str, s3: s3fs.S3FileSystem = None):
       filename_tokens = infilewithpath.split('/')
       granule_filename = filename_tokens[-1]
 
-   # Extract tokens from the filename
-   sensor1, sensor2 = get_sensor_tokens_from_filename(granule_filename)
-
    if s3 is None:
       s3 = s3fs.S3FileSystem(anon=False)
 

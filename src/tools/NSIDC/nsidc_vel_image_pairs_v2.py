@@ -9,22 +9,18 @@ Authors: Masha Liukis (JPL), Alex Gardner (JPL), Mark Fahnestock (UFA)
 import argparse
 import boto3
 from botocore.exceptions import ClientError
-import collections
 import dask
 from dask.diagnostics import ProgressBar
-from dateutil.parser import parse
 import gc
 import json
 import logging
-import numpy as np
 import os
-import pyproj
 import s3fs
 import sys
 import time
-import xarray as xr
 
-from itscube_types import DataVars
+# Local imports
+import nsidc_meta_files
 
 # Date format as it appears in granules filenames of optical format:
 # LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc
@@ -33,177 +29,6 @@ DATE_FORMAT = "%Y%m%d"
 # Date and time format as it appears in granules filenames in radar format:
 # S1A_IW_SLC__1SSH_20170221T204710_20170221T204737_015387_0193F6_AB07_X_S1B_IW_SLC__1SSH_20170227T204628_20170227T204655_004491_007D11_6654_G0240V02_P094.nc
 DATE_TIME_FORMAT = "%Y%m%dT%H%M%S"
-
-
-def get_tokens_from_filename(filename):
-    """
-    Extract acquisition/processing dates and path/row for two images from the
-    optical granule filename, or start/end date/time and product unique ID for
-    radar granule filename.
-    """
-    # ATTN: Optical format granules have different file naming convention than radar
-    # format granules
-    url_files = os.path.basename(filename).split('_X_')
-
-    # Get tokens for the first image
-    url_tokens_1 = url_files[0].split('_')
-
-    # Extract info from second part of the granule's filename: corresponds to the second image
-    url_tokens_2 = url_files[1].split('_')
-
-    return (url_tokens_1, url_tokens_2)
-
-
-# Collection to represent the mission and sensor combo
-PlatformSensor = collections.namedtuple("PM", ['platform', 'sensor'])
-
-
-class NSIDCMeta:
-    """
-    Class to create premet and spacial files for each of the granules.
-
-    Example of premet file:
-    =======================
-    FileName=LC08_L1GT_001111_20140217_20170425_01_T2_X_LC08_L1GT_001111_20131113_20170428_01_T2_G0240V01_P006.nc
-    VersionID_local=001
-    Begin_date=2013-11-13
-    End_date=2017-04-28
-    Begin_time=00:00:01.000
-    End_time=23:59:59.000
-    Container=AssociatedPlatformInstrumentSensor
-    AssociatedPlatformShortName=LANDSAT-8
-    AssociatedInstrumentShortName=OLI
-    AssociatedSensorShortName=OLI
-    Container=AssociatedPlatformInstrumentSensor
-    AssociatedPlatformShortName=LANDSAT-8
-    AssociatedInstrumentShortName=TIRS
-    AssociatedSensorShortName=TIRS
-
-    Example of spatial file:
-    ========================
-    -94.32	71.86
-    -99.41	71.67
-    -94.69	73.3
-    -100.22	73.09
-    """
-
-    # Dictionary of metadata values based on the mission+sensor token
-    # Optical data:
-    LC9 = 'LC09'
-    LO9 = 'LO09'
-    LC8 = 'LC08'
-    LO8 = 'LO08'
-    L7 = 'LE07'
-    L5 = 'LT05'
-    L4 = 'LT04'
-    S2A = 'S2A'
-    S2B = 'S2B'
-
-    # Radar data:
-    S1A = 'S1A'
-    S1B = 'S1B'
-
-    ShortName = {
-        LC9: PlatformSensor('LANDSAT-9', 'OLI'),
-        LO9: PlatformSensor('LANDSAT-9', 'OLI'),
-        LC8: PlatformSensor('LANDSAT-8', 'OLI'),
-        LO8: PlatformSensor('LANDSAT-8', 'OLI'),
-        L7: PlatformSensor('LANDSAT-7', 'ETM+'),
-        L5: PlatformSensor('LANDSAT-5', 'TM'),
-        L4: PlatformSensor('LANDSAT-4', 'TM'),
-        S1A: PlatformSensor('SENTINEL-1', 'Sentinel-1A'),
-        S1B: PlatformSensor('SENTINEL-1', 'Sentinel-1B'),
-        S2A: PlatformSensor('SENTINEL-2', 'Sentinel-2A'),
-        S2B: PlatformSensor('SENTINEL-2', 'Sentinel-2B')
-    }
-
-    NC_ENGINE = 'h5netcdf'
-
-    @staticmethod
-    def create_premet_file(ds: xr.Dataset, infile: str, url_tokens_1, url_tokens_2):
-        """
-        Create premet file that corresponds to the input image pair velocity granule.
-
-        Inputs
-        ======
-        ds: xarray.Dataset object that represents the granule.
-        infile: Filename of the input ITS_LIVE granule
-        url_tokens_1: Parsed out filename tokens that correspond to the first image of the pair
-        url_tokens_2: Parsed out filename tokens that correspond to the second image of the pair
-        """
-        sensor1 = url_tokens_1[0]
-        if sensor1 not in NSIDCMeta.ShortName:
-            raise RuntimeError(f'create_premet_file(): got unexpected mission+sensor {sensor1} for image#1 of {infile}: one of {list(NSIDCMeta.ShortName.keys())} is supported.')
-
-        sensor2 = url_tokens_2[0]
-        if sensor2 not in NSIDCMeta.ShortName:
-            raise RuntimeError(f'create_premet_file() got unexpected mission+sensor {sensor2} for image#2 of {infile}: one of {list(NSIDCMeta.ShortName.keys())} is supported.')
-
-        # Get acquisition dates for both images
-        begin_date = parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1])
-        end_date = parse(ds[DataVars.ImgPairInfo.NAME].attrs[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2])
-
-        meta_filename = f'{infile}.premet'
-        with open(meta_filename, 'w') as fh:
-            fh.write(f'FileName={infile}\n')
-            fh.write('VersionID_local=002\n')
-            fh.write(f'Begin_date={begin_date.strftime("%Y-%m-%d")}\n')
-            fh.write(f'End_date={end_date.strftime("%Y-%m-%d")}\n')
-            # Extract time stamps
-            fh.write(f'Begin_time={begin_date.strftime("%H:%M:%S")}.{begin_date.microsecond // 1000:03d}\n')
-            fh.write(f'End_time={end_date.strftime("%H:%M:%S")}.{end_date.microsecond // 1000:03d}\n')
-
-            # Append premet with sensor info
-            for each_sensor in [sensor1, sensor2]:
-                fh.write("Container=AssociatedPlatformInstrumentSensor\n")
-                fh.write(f"AssociatedPlatformShortName={NSIDCMeta.ShortName[each_sensor].platform}\n")
-                fh.write(f"AssociatedInstrumentShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
-                fh.write(f"AssociatedSensorShortName={NSIDCMeta.ShortName[each_sensor].sensor}\n")
-
-        return meta_filename
-
-    @staticmethod
-    def create_spatial_file(ds: xr.Dataset, infile: str):
-        """
-        Create spatial file that corresponds to the input image pair velocity granule.
-
-        Inputs
-        ======
-        ds: xarray.Dataset object that represents the granule.
-        infile: Basename of the granule.
-        """
-        meta_filename = f'{infile}.spatial'
-
-        xvals = ds.x.values
-        yvals = ds.y.values
-        pix_size_x = xvals[1] - xvals[0]
-        pix_size_y = yvals[1] - yvals[0]
-
-        epsgcode = ds[DataVars.MAPPING].attrs['spatial_epsg']
-
-        # minval_x, pix_size_x, _, maxval_y, _, pix_size_y = [float(x) for x in ds['mapping'].attrs['GeoTransform'].split()]
-
-        # NOTE: these are pixel center values, need to modify by half the grid size to get bounding box/geotransform values
-        projection_cf_minx = xvals[0] - pix_size_x/2.0
-        projection_cf_maxx = xvals[-1] + pix_size_x/2.0
-        projection_cf_miny = yvals[-1] + pix_size_y/2.0  # pix_size_y is negative!
-        projection_cf_maxy = yvals[0] - pix_size_y/2.0   # pix_size_y is negative!
-
-        transformer = pyproj.Transformer.from_crs(f"EPSG:{epsgcode}", "EPSG:4326", always_xy=True)  # ensure lonlat output order
-
-        # Convert coordinates to long/lat
-        ll_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_miny), decimals=2).tolist()
-        lr_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_miny), decimals=2).tolist()
-        ur_lonlat = np.round(transformer.transform(projection_cf_maxx, projection_cf_maxy), decimals=2).tolist()
-        ul_lonlat = np.round(transformer.transform(projection_cf_minx, projection_cf_maxy), decimals=2).tolist()
-
-        # Write to spatial file
-        with open(meta_filename, 'w') as fh:
-            for long, lat in [ul_lonlat, ur_lonlat, lr_lonlat, ll_lonlat]:
-                fh.write(f"{long}\t{lat}\n")
-
-        return meta_filename
-
 
 # Number of retries when encountering AWS S3 download/upload error
 _NUM_AWS_COPY_RETRIES = 3
@@ -238,8 +63,10 @@ class NSIDCFormat:
 
         Arguments:
         start_index - Start index into the list of granules to process. Default is 0.
-        stop_index - Stop index into the list of granules to process. Default is -1 meaning to process to the end of the list.
-        local_file_list - List of granules to process. This is a "hack" to run the script for specific set of granules such as sample set for NSIDC.
+        stop_index - Stop index into the list of granules to process. Default is -1
+            meaning to process to the end of the list.
+        local_file_list - List of granules to process. This is a "hack" to run
+            the script for specific set of granules such as sample set for NSIDC.
             Default is None.
         """
         # S3FS to access files stored in S3 bucket
@@ -328,9 +155,23 @@ class NSIDCFormat:
             gc.collect()
 
     @staticmethod
-    def upload_to_s3(filename: str, target_dir: str, target_bucket: str, s3_client, remove_original_file: bool = True):
+    def upload_to_s3(
+        filename: str,
+        target_dir: str,
+        target_bucket: str,
+        s3_client,
+        remove_original_file: bool = True
+    ):
         """
-        Upload file to the AWS S3 bucket.
+        Upload file to the AWS S3 bucket. If dryrun is enabled,
+        just report the action.
+
+        Inputs:
+        filename: Filename to be uploaded.
+        target_dir: Target directory in the S3 bucket.
+        target_bucket: Target bucket in the S3.
+        s3_client: S3 client object.
+        remove_original_file: Flag to remove the original file after uploading. Default is True.
         """
         msgs = []
         target_filename = os.path.join(target_dir, filename)
@@ -364,14 +205,8 @@ class NSIDCFormat:
         """
         filename_tokens = infilewithpath.split('/')
         granule_directory = '/'.join(filename_tokens[1:-1])
-        granule_filename = filename_tokens[-1]
-
-        # Extract tokens from the filename
-        url_tokens_1, url_tokens_2 = get_tokens_from_filename(granule_filename)
 
         msgs = []
-
-        s3_client = boto3.client('s3')
 
         # Automatically handle boto exceptions on file upload to s3 bucket
         files_are_copied = False
@@ -379,19 +214,15 @@ class NSIDCFormat:
 
         while not files_are_copied and num_retries < _NUM_AWS_COPY_RETRIES:
             try:
-                with s3.open(infilewithpath, mode='rb') as fhandle:
-                    with xr.open_dataset(fhandle, engine=NSIDCMeta.NC_ENGINE) as ds:
-                        # Create spacial and premet metadata files locally, then copy them to S3 bucket
-                        meta_file = NSIDCMeta.create_premet_file(ds, granule_filename, url_tokens_1, url_tokens_2)
+                meta_files = nsidc_meta_files.create_nsidc_meta_files(infilewithpath, s3)
 
-                        # ATTN: Place metadata files into the same directory as granules
-                        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+                s3_client = boto3.client('s3')
 
-                        meta_file = NSIDCMeta.create_spatial_file(ds, granule_filename)
-                        # ATTN: This is for sample dataset to be tested by NSIDC only: places meta file in the same s3 directory as granule
-                        msgs.extend(NSIDCFormat.upload_to_s3(meta_file, granule_directory, target_bucket, s3_client))
+                for each_file in meta_files:
+                    # Place metadata files into the same s3 directory as the granule
+                    NSIDCFormat.upload_to_s3(each_file, granule_directory, target_bucket, s3_client)
 
-                        files_are_copied = True
+                files_are_copied = True
 
             except:
                 msgs.append(f"Try #{num_retries + 1} exception processing {infilewithpath}: {sys.exc_info()}")
@@ -457,8 +288,8 @@ if __name__ == '__main__':
         type=int,
         default=0,
         help="Start index for the granule to fix [%(default)d]. "
-                "Useful if need to continue previously interrupted process to prepare the granules, or need to split the load across "
-                "multiple processes."
+             "Useful if need to continue previously interrupted process to prepare the granules, "
+             "or need to split the load across multiple processes."
     )
 
     parser.add_argument(
