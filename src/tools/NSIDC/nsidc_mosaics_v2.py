@@ -343,7 +343,6 @@ class NSIDCMosaicFormat:
         # Remove latitude and longitude attributes - not used by any tools
         del ds.attrs[Output.LATITUDE]
         del ds.attrs[Output.LONGITUDE]
-        del ds.attrs[CompOutput.SENSORS_LABELS]
 
         # Change datatype for mapping.scale_factor_at_projection_origin to float
         if SCALE_FACTOR_AT_PROJECTION_ORIGIN in ds.mapping.attrs:
@@ -362,6 +361,7 @@ class NSIDCMosaicFormat:
         # Changes for the static or annual mosaics
         if CompDataVars.SENSORS in ds:
             # This is static mosiac
+            del ds.attrs[CompOutput.SENSORS_LABELS]
 
             # Change "sensor" dimension
             # * Change dtype to ubyte
