@@ -67,7 +67,7 @@ def download_datacube_latest_chunks(
     store = zarr.open_consolidated(
         store=bucket_url,
         mode='r',
-        storage_options={'anon': True}
+        # storage_options={'anon': True}
     )
 
     # Identify last chunk for each data variable in the zarr store
