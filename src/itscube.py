@@ -813,29 +813,16 @@ class ITSCube:
 
         # If datacube resides in AWS S3 bucket, copy it locally - initial datacube to begin with
         if not os.path.exists(output_dir):
-            # Copy datacube locally using AWS CLI to take advantage of parallel copy:
-            # have to include "max_concurrent_requests" option for the
-            # configuration in ~/.aws/config
-            # [default]
-            # region = us-west-2
-            # output = json
-            # s3 =
-            #    max_concurrent_requests = 100
-            #
-            env_copy = os.environ.copy()
-            source_url = os.path.join(output_bucket, output_dir)
-            if not source_url.startswith(ITSCube.S3_PREFIX):
-                source_url = ITSCube.S3_PREFIX + source_url
+            # Copy datacube locally. Bring only datacube metadata files and latest chunk for each of the
+            # data variables of the cube. To avoid large runtime overhead for the copy, we need to
+            # copy only latest chunks that are going to be updated with new data.
+            cube_url = os.path.join(output_bucket, output_dir)
+            self.logger.info(f"Creating local copy of {cube_url}: {output_dir=}")
 
-            command_line = [
-                "awsv2", "s3", "cp", "--recursive",
-                source_url,
-                output_dir
-            ]
-
-            self.logger.info(f"Creating local copy of {source_url}: {output_dir}")
-
-            itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
+            download_datacube_latest_chunks(
+                cube_url,
+                os.path.basename(output_dir)
+            )
 
         elif len(output_bucket):
             # datacube exists on local file system even though S3 bucket for the
@@ -846,6 +833,8 @@ class ITSCube:
         is_first_write = False
 
         if len(cube_layers_to_delete):
+            raise RuntimeError(f'Deletion of existing layers is not supported, exiting...')
+
             self.logger.info(f"Deleting {len(cube_layers_to_delete)} layers from total {num_cube_layers} layers of {output_dir}")
 
             if len(cube_layers_to_delete) == num_cube_layers:
