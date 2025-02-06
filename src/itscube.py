@@ -837,6 +837,7 @@ class ITSCube:
         is_first_write = False
 
         if len(cube_layers_to_delete):
+            # For now we need to disable support for deletion of existing layers
             raise RuntimeError('Deletion of existing layers is not supported, exiting...')
 
             self.logger.info(f"Deleting {len(cube_layers_to_delete)} layers from "
