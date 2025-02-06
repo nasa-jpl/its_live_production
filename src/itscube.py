@@ -830,7 +830,8 @@ class ITSCube:
         elif len(output_bucket):
             # datacube exists on local file system even though S3 bucket for the
             # datacube is provided.
-            raise RuntimeError(f'Local copy of {output_dir} already exists though {output_bucket} is provided, remove datacube first')
+            raise RuntimeError(f'Local copy of {output_dir} already exists though '
+                               f'{output_bucket} is provided, remove datacube first')
 
         # Delete identified layers of the cube if any
         is_first_write = False
@@ -838,7 +839,8 @@ class ITSCube:
         if len(cube_layers_to_delete):
             raise RuntimeError('Deletion of existing layers is not supported, exiting...')
 
-            self.logger.info(f"Deleting {len(cube_layers_to_delete)} layers from total {num_cube_layers} layers of {output_dir}")
+            self.logger.info(f"Deleting {len(cube_layers_to_delete)} layers from "
+                             f"total {num_cube_layers} layers of {output_dir}")
 
             if len(cube_layers_to_delete) == num_cube_layers:
                 # If all layers need to be deleted, just delete the cube and start from
@@ -878,6 +880,8 @@ class ITSCube:
 
         start = 0
         num_to_process = len(found_urls)
+
+        # For debugging only:
         # num_to_process = 500
 
         while num_to_process > 0:
@@ -926,7 +930,7 @@ class ITSCube:
             cube_path = os.path.basename(output_dir)
 
             for each_var, chunk_info in existing_chunks.items():
-                self.logger.info(f'Deleting previous chunks for {each_var}')
+                self.logger.info(f'Deleting previous chunks for {each_var} with {chunk_info=}')
                 prior_chunks_files = []
 
                 # Create all possible combinations if there are ranges
@@ -939,13 +943,28 @@ class ITSCube:
                     # Exclude the given last chunk (at a time of cube download) itself
                     prior_chunks.remove(chunk_info.last_chunk)
 
-                    # Convert chunk indices to string representation of the file
-                    prior_chunks_files = [".".join(map(str, each)) for each in prior_chunks]
+                    if len(prior_chunks):
+                        self.logger.info(f'Chunks to delete: {prior_chunks[0]}...{prior_chunks[-1]}')
 
-                if len(prior_chunks_files):
-                    with suppress(FileNotFoundError):
-                        for each_file in prior_chunks_files:
-                            os.remove(os.path.join(var_path, each_file))
+                        # Convert chunk indices to string representation of the file
+                        prior_chunks_files = [".".join(map(str, each)) for each in prior_chunks]
+
+                        for each_chunk_file in prior_chunks_files:
+                            each_chunk_file_path = os.path.join(var_path, each_chunk_file)
+
+                            if os.path.exists(each_chunk_file_path):
+                                # Check if chunk exists. If so, delete it.
+                                # Seems like zarr is generating "bogus" chunks for the first range
+                                # dimension and updates latest chunk. For example, if M11 chunks
+                                # dimensions are (4, 83,83), zarr will generate all prior chunks
+                                # for 4.*.* and update only 4.83.83. Need to delete all prior chunks.
+                                self.logger.info(f'Deleting {os.path.join(var_path, each_chunk_file)}')
+                                os.remove(each_chunk_file_path)
+
+                # if len(prior_chunks_files):
+                #     with suppress(FileNotFoundError):
+                #         for each_file in prior_chunks_files:
+                #             os.remove(os.path.join(var_path, each_file))
 
         return found_urls
 
