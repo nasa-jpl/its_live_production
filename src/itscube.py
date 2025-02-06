@@ -4,12 +4,12 @@ bounding polygon and datetime period provided by the caller.
 
 Authors: Masha Liukis, Alex Gardner, Mark Fahnestock
 """
-import copy
+from contextlib import suppress
 from dateutil.parser import parse
 from datetime import datetime, timedelta
 import gc
 import geopandas as gpd
-import glob
+import itertools
 import json
 import logging
 import os
@@ -160,7 +160,6 @@ class ITSCube:
     # Token to split image pair filename into two image names
     SPLIT_IMAGES_TOKEN = '_X_'
     IMAGE_TOKEN = '_'
-
 
     # If a list of granules to generate datacube from is provided through input
     # JSON file.
@@ -364,20 +363,21 @@ class ITSCube:
             epsg_code=int(self.projection)
         )
 
+        total_num = len(found_urls)
         time_delta = timeit.default_timer() - start_time
-        self.logger.info(f'Got {len(found_urls)} granules for the bounding box (took {time_delta} seconds)')
+        self.logger.info(f'Got {total_num} granules for the bounding box (took {time_delta} seconds)')
 
         # Free up memory
         del idx
         idx = None
         gc.collect()
 
-        if len(found_urls) == 0:
-            self.logger.info(
-                f"No granules are found, skipping datacube generation or update")
+        if total_num == 0:
+            self.logger.info("No granules are found, skipping datacube generation or update")
+
             return found_urls
 
-        self.max_number_of_layers = len(found_urls)
+        self.max_number_of_layers = total_num
 
         # Number of granules to examine is specified
         # ATTN: just a way to limit number of granules to be considered for the
@@ -594,7 +594,7 @@ class ITSCube:
         # Disable deletion of any existing cube layers since current v2 cubes have layers with duplicate "mid_date":
         # something to resolve in the future
         if len(cube_layers_to_delete) != 0:
-            self.logger.info(f"WARNING: Ignoring datacube layers to delete due to duplicate mid_date (for now)...")
+            self.logger.info("WARNING: Ignoring datacube layers to delete due to duplicate mid_date (for now)...")
             cube_layers_to_delete = []
 
         # Merge two lists of skipped granules (for existing cube, new list
@@ -811,6 +811,9 @@ class ITSCube:
         cube_ds = None
         gc.collect()
 
+        # Map of existing data chunks for the cube if it exists in s3 bucket
+        existing_chunks = None
+
         # If datacube resides in AWS S3 bucket, copy it locally - initial datacube to begin with
         if not os.path.exists(output_dir):
             # Copy datacube locally. Bring only datacube metadata files and latest chunk for each of the
@@ -819,7 +822,7 @@ class ITSCube:
             cube_url = os.path.join(output_bucket, output_dir)
             self.logger.info(f"Creating local copy of {cube_url}: {output_dir=}")
 
-            download_datacube_latest_chunks(
+            existing_chunks = itslive_utils.download_datacube_latest_chunks(
                 cube_url,
                 os.path.basename(output_dir)
             )
@@ -833,7 +836,7 @@ class ITSCube:
         is_first_write = False
 
         if len(cube_layers_to_delete):
-            raise RuntimeError(f'Deletion of existing layers is not supported, exiting...')
+            raise RuntimeError('Deletion of existing layers is not supported, exiting...')
 
             self.logger.info(f"Deleting {len(cube_layers_to_delete)} layers from total {num_cube_layers} layers of {output_dir}")
 
@@ -875,6 +878,7 @@ class ITSCube:
 
         start = 0
         num_to_process = len(found_urls)
+        # num_to_process = 500
 
         while num_to_process > 0:
             # How many tasks to process at a time
@@ -915,7 +919,33 @@ class ITSCube:
             num_to_process -= num_tasks
             start += num_tasks
 
-        # Remove existing granules with older processing dates if any
+        # Remove original datacube chunks if any as they won't contain
+        # valid data since only latest chunks were copied locally from s3
+        if existing_chunks is not None:
+            # Local copy of the datacube
+            cube_path = os.path.basename(output_dir)
+
+            for each_var, chunk_info in existing_chunks.items():
+                self.logger.info(f'Deleting previous chunks for {each_var}')
+                prior_chunks_files = []
+
+                # Create all possible combinations if there are ranges
+                if len(chunk_info.ranges):
+                    # Path to the variable directory with chunks
+                    var_path = os.path.join(cube_path, each_var)
+
+                    prior_chunks = list(itertools.product(*chunk_info.ranges))
+
+                    # Exclude the given last chunk (at a time of cube download) itself
+                    prior_chunks.remove(chunk_info.last_chunk)
+
+                    # Convert chunk indices to string representation of the file
+                    prior_chunks_files = [".".join(map(str, each)) for each in prior_chunks]
+
+                if len(prior_chunks_files):
+                    with suppress(FileNotFoundError):
+                        for each_file in prior_chunks_files:
+                            os.remove(os.path.join(var_path, each_file))
 
         return found_urls
 
@@ -2405,16 +2435,18 @@ if __name__ == '__main__':
         '-r', '--removeExistingCube',
         action='store_true',
         default=False,
-        help='Flag to remove existing datacube in S3 bucket, default is to update existing datacube. '
-            'This flag is useful when we need to re-create the cube from scratch, though beware of AWS limit of push requests '
-            'when multiple datacubes are deleted at the same time.'
+        help='Flag to remove existing datacube in S3 bucket, '
+             'default is to update existing datacube. '
+             'This flag is useful when we need to re-create the cube from scratch, '
+             'though beware of AWS limit of push requests '
+             'when multiple datacubes are deleted at the same time.'
     )
     parser.add_argument(
         '-n', '--numberGranules',
         type=int,
         default=None,
         help='Number of ITS_LIVE granules to consider for the cube (due to runtime limitations). '
-            'If none is provided, process all found granules.'
+             'If none is provided, process all found granules.'
     )
     parser.add_argument(
         '-rtree_s3_bucket',
@@ -2439,14 +2471,17 @@ if __name__ == '__main__':
         '-tb', '--targetBucket',
         type=str,
         default=None,
-        help='Target full path to write cube data to if it should be other than original "outputBucket" s3 location [%(default)s].'
-            'This is used when datacubes are being updated and original datacubes should be preserved, serving as a temporary cube location.'
+        help='Target full path to write cube data to if it should be other than original '
+             '"outputBucket" s3 location [%(default)s]. '
+             'This is used when datacubes are being updated and original datacubes should '
+             'be preserved, serving as a temporary cube location.'
     )
     parser.add_argument(
         '-b', '--outputBucket',
         type=str,
         default='',
-        help='S3 bucket to copy Zarr format of the datacube to (for example, s3://its-live-data) [%(default)s].'
+        help='S3 bucket to copy Zarr format of the datacube to '
+             '(for example, s3://its-live-data) [%(default)s].'
     )
     parser.add_argument(
         '-c', '--chunks',
@@ -2475,32 +2510,37 @@ if __name__ == '__main__':
     parser.add_argument(
         '--fivePointsPerPolygonSide',
         action='store_true',
-        help='Define 5 points per side before re-projecting granule polygon to longitude/latitude coordinates'
+        help='Define 5 points per side before re-projecting granule polygon '
+             'to longitude/latitude coordinates'
     )
     parser.add_argument(
         '--useGranulesFile',
         type=Path,
         default=None,
-        help='Json file that stores a list of ITS_LIVE image velocity granules to build datacube from [%(default)s].'
+        help='Json file that stores a list of ITS_LIVE image velocity granules '
+             'to build datacube from [%(default)s].'
     )
     parser.add_argument(
         '--searchAPIStartDate',
         type=lambda s: parse(s).strftime('%Y-%m-%d'),
         default='1982-01-01',
-        help='Start date in YYYY-MM-DD format to pass to search API query to get velocity pair granules [%(default)s]'
+        help='Start date in YYYY-MM-DD format to pass to search API query '
+             'to get velocity pair granules [%(default)s]'
     )
     parser.add_argument(
         '--searchAPIStopDate',
         action='store',
         type=lambda s: parse(s).strftime('%Y-%m-%d'),
         default=datetime.now().strftime('%Y-%m-%d'),
-        help='Stop date in YYYY-MM-DD format to pass to search API query to get velocity pair granules. Use "now" if not provided [default: %(default)s]'
+        help='Stop date in YYYY-MM-DD format to pass to search API query '
+             'to get velocity pair granules. Use "now" if not provided [default: %(default)s]'
     )
     parser.add_argument(
         '--disableCubeValidation',
         action='store_true',
         default=False,
-        help='Disable datetime validation for created datacube. This is to identify corrupted Zarr stores at the time of creation.'
+        help='Disable datetime validation for created datacube. '
+             'This is to identify corrupted Zarr stores at the time of creation.'
     )
     parser.add_argument(
         '-s', '--shapeFile',
@@ -2512,7 +2552,8 @@ if __name__ == '__main__':
         '-p', '--pathURLToken',
         type=str,
         default='.s3.amazonaws.com',
-        help='Path URL token to remove from each of the input granules URLs to allow S3 access [%(default)s].'
+        help='Path URL token to remove from each of the input granules URLs '
+             'to allow S3 access [%(default)s].'
     )
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
@@ -2521,14 +2562,17 @@ if __name__ == '__main__':
         '--centroid',
         type=str,
         action='store',
-        help='JSON 2-element list for centroid point (x, y) of the datacube in target EPSG code projection. '
-            'Polygon vertices are calculated based on the centroid and cube dimension arguments.'
+        help='JSON 2-element list for centroid point (x, y) of the datacube in '
+             'target EPSG code projection. '
+             'Polygon vertices are calculated based on the centroid and '
+             'cube dimension arguments.'
     )
     group.add_argument(
         '--polygon',
         type=str,
         action='store',
-        help='JSON list of polygon points ((x1, y1), (x2, y2),... (x1, y1)) to define datacube in target EPSG code projection.'
+        help='JSON list of polygon points ((x1, y1), (x2, y2),... (x1, y1)) to '
+             'define datacube in target EPSG code projection.'
     )
 
     args = parser.parse_args()

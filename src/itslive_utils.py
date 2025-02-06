@@ -1,4 +1,5 @@
 import boto3
+import collections
 import json
 import requests
 import pyproj
@@ -30,6 +31,18 @@ _AWS_SLOW_DOWN_ERROR = "An error occurred (SlowDown) when calling"
 # data variable sub-directory.
 CUBE_META = ['.zattrs', '.zgroup', '.zmetadata']
 VAR_META = ['.zarray', '.zattrs']
+
+# Collection to record chunk information for each data variable in
+# existing Zarr store:
+# - ranges: list of ranges for each dimension
+# - last_chunk: tuple of last chunk indices
+# - last_chunk_key: string representation of the last chunk indices
+#   (as it appears in the Zarr store)
+ZarrChunk = collections.namedtuple(
+    "ZarrChunk",
+    ['ranges', 'last_chunk', 'last_chunk_key']
+)
+
 
 def bucket_cube_name_from_url(source_url: str) -> str:
     """Extract bucket name and file URL from the given datacube URL.
@@ -63,6 +76,10 @@ def download_datacube_latest_chunks(
             datacube in Zarr format.
         local_path (str): Local directory to save the downloaded files to
             (should be a name of the datacube).
+
+    Returns:
+        Map of data variable to the ranges for existing data chunks,
+        and the last chunk key that exists in the zarr store.
     """
     store = zarr.open_consolidated(
         store=bucket_url,
@@ -80,20 +97,30 @@ def download_datacube_latest_chunks(
         # Compute total number of chunks along each axis
         num_chunks = (shape + chunk_shape - 1) // chunk_shape - 1  # Zero-based indexing
 
+        # Generate all prior indices per dimension
+        dim_ranges = [range(0, idx + 1) for idx in num_chunks]
+
         if len(num_chunks) == 0:
             # For variables with no chunking, just set last chunk to '0'
             # as it exists
-            last_chunk_map[var_name] = '0'
+            last_chunk_map[var_name] = ZarrChunk([], (0,), '0')
             logging.info(f'No chunking for {var_name=}, setting last chunk to zero')
 
         else:
             last_chunk_key = ".".join(map(str, num_chunks))
             logging.info(f'{var_name=} {last_chunk_key=}')
-            last_chunk_map[var_name] = last_chunk_key
+            # Convert last chunk indices to tuple to be able to remove
+            # the last element from the previous list when iterating
+            # over the dimensions ranges
+            last_chunk_map[var_name] = ZarrChunk(
+                dim_ranges,
+                tuple(num_chunks.tolist()),
+                last_chunk_key
+            )
 
     bucket_name, source_url = bucket_cube_name_from_url(bucket_url)
 
-    # Initialize S3 bucket to cope files from
+    # Initialize S3 bucket to copy files from
     s3_bucket = boto3.resource('s3').Bucket(bucket_name)
 
     # Get rid of 's3://' prefix and bucket name if present in the source URL
@@ -113,7 +140,9 @@ def download_datacube_latest_chunks(
         s3_bucket.download_file(s3_key, local_key)
 
     # Download latest chunks and metadata files for each data variable
-    for each_var, each_last_chunk in last_chunk_map.items():
+    for each_var, each_chunk_info in last_chunk_map.items():
+        each_last_chunk = each_chunk_info.last_chunk_key
+
         local_var_path = os.path.join(local_path, each_var)
 
         if not os.path.exists(local_var_path):
@@ -135,6 +164,8 @@ def download_datacube_latest_chunks(
             # Download the file
             logging.info(f'Downloading {s3_key=} to {local_key}')
             s3_bucket.download_file(s3_key, local_key)
+
+    return last_chunk_map
 
 
 def get_min_lon_lat_max_lon_lat(coordinates: list):
