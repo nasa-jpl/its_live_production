@@ -432,7 +432,7 @@ class NSIDCMosaicFormat:
 
             # Remove missing_value attribute for the masks as all values
             # are populated in binary masks
-            del ds[ShapeFile.SENSOR_INCLUDE].encoding[Output.MISSING_VALUE_ATTR]
+            del ds[CompDataVars.SENSOR_INCLUDE].encoding[Output.MISSING_VALUE_ATTR]
 
             # Change 'count' attributes
             ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
