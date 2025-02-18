@@ -16,7 +16,13 @@ import s3fs
 import xarray as xr
 
 # Local imports
-from itscube_types import DataVars, Output, CompDataVars, BinaryFlag, ShapeFile, CompOutput
+from itscube_types import DataVars, \
+    Output, \
+    CompDataVars, \
+    BinaryFlag, \
+    ShapeFile, \
+    CompOutput, \
+    Coords
 from itslive_composite import MissionSensor
 from nsidc_vel_image_pairs import NSIDCFormat
 from nsidc_meta_files import NSIDCMeta
@@ -297,8 +303,8 @@ class NSIDCMosaicFormat:
 
             # Remove fill values from the dataset's X and Y dimensions - gets set
             # to NaN (may be by chunking above?)
-            fixed_ds.x.encoding[Output.FILL_VALUE_ATTR] = None
-            fixed_ds.y.encoding[Output.FILL_VALUE_ATTR] = None
+            fixed_ds[Coords.X].encoding[Output.FILL_VALUE_ATTR] = None
+            fixed_ds[Coords.Y].encoding[Output.FILL_VALUE_ATTR] = None
 
             # Write fixed granule to local file
             new_filename = os.path.join(NSIDCMosaicFormat.LOCAL_FIX_DIR, filename)
@@ -389,8 +395,8 @@ class NSIDCMosaicFormat:
 
         # Remove missing_value attribute for the masks as all values
         # are populated in binary masks
-        del ds[ShapeFile.LANDICE].encoding.attrs[Output.MISSING_VALUE]
-        del ds[ShapeFile.FLOATINGICE].encoding.attrs[Output.MISSING_VALUE]
+        del ds[ShapeFile.LANDICE].encoding[Output.MISSING_VALUE]
+        del ds[ShapeFile.FLOATINGICE].encoding[Output.MISSING_VALUE]
 
         # Changes for the static or annual mosaics
         if CompDataVars.SENSORS in ds:
@@ -426,7 +432,7 @@ class NSIDCMosaicFormat:
 
             # Remove missing_value attribute for the masks as all values
             # are populated in binary masks
-            del ds[ShapeFile.SENSOR_INCLUDE].encoding.attrs[Output.MISSING_VALUE]
+            del ds[ShapeFile.SENSOR_INCLUDE].encoding[Output.MISSING_VALUE]
 
             # Change 'count' attributes
             ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
