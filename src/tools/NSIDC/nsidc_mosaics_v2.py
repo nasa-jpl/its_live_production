@@ -295,6 +295,11 @@ class NSIDCMosaicFormat:
                 'y': NSIDCMosaicFormat.CHUNK_SIZE
             })
 
+            # Remove fill values from the dataset's X and Y dimensions - gets set
+            # to NaN (may be by chunking above?)
+            fixed_ds.x.encoding[Output.FILL_VALUE_ATTR] = None
+            fixed_ds.y.encoding[Output.FILL_VALUE_ATTR] = None
+
             # Write fixed granule to local file
             new_filename = os.path.join(NSIDCMosaicFormat.LOCAL_FIX_DIR, filename)
             fixed_ds.to_netcdf(new_filename, engine='h5netcdf')
@@ -369,7 +374,7 @@ class NSIDCMosaicFormat:
         if SCALE_FACTOR_AT_PROJECTION_ORIGIN in ds.mapping.attrs:
             ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN] = float(ds.mapping.attrs[SCALE_FACTOR_AT_PROJECTION_ORIGIN])
 
-        # Change 'floatingice' attributes
+        # Change 'floatingice' and 'landice' attributes
         ds[ShapeFile.FLOATINGICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
         ds[ShapeFile.LANDICE].attrs[BinaryFlag.VALUES_ATTR] = BinaryFlag.VALUES
 
@@ -378,6 +383,14 @@ class NSIDCMosaicFormat:
 
         ds[ShapeFile.LANDICE].attrs[Output.REFERENCES] = ds[ShapeFile.LANDICE].attrs[Output.URL]
         del ds[ShapeFile.LANDICE].attrs[Output.URL]
+
+        ds[ShapeFile.LANDICE].attrs[DataVars.STD_NAME] = ShapeFile.Name[ShapeFile.LANDICE]
+        ds[ShapeFile.FLOATINGICE].attrs[DataVars.STD_NAME] = ShapeFile.Name[ShapeFile.FLOATINGICE]
+
+        # Remove missing_value attribute for the masks as all values
+        # are populated in binary masks
+        del ds[ShapeFile.LANDICE].encoding.attrs[Output.MISSING_VALUE]
+        del ds[ShapeFile.FLOATINGICE].encoding.attrs[Output.MISSING_VALUE]
 
         # Changes for the static or annual mosaics
         if CompDataVars.SENSORS in ds:
@@ -405,10 +418,15 @@ class NSIDCMosaicFormat:
             # Set attributes for the sensor dimension
             ds[CompDataVars.SENSORS].attrs[BinaryFlag.VALUES_ATTR] = sensor_array
             ds[CompDataVars.SENSORS].attrs[BinaryFlag.MEANINGS_ATTR] = sensor_description
+            ds[CompDataVars.SENSORS].attrs[DataVars.STD_NAME] = 'sensors'
 
             # Delete old sensor description attribute (was for the user convenience)
             del ds[CompDataVars.SENSOR_INCLUDE].attrs[CompOutput.SENSORS_LABELS]
             del ds[CompDataVars.MAX_DT].attrs[CompOutput.SENSORS_LABELS]
+
+            # Remove missing_value attribute for the masks as all values
+            # are populated in binary masks
+            del ds[ShapeFile.SENSOR_INCLUDE].encoding.attrs[Output.MISSING_VALUE]
 
             # Change 'count' attributes
             ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
@@ -417,23 +435,32 @@ class NSIDCMosaicFormat:
             ds[Output.COUNT].attrs[DataVars.STD_NAME] = 'number_of_observations'
 
             # Change 'dv*_dt' attributes
-            ds[CompDataVars.SLOPE_V].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in v'
-            ds[CompDataVars.SLOPE_VX].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in vx'
-            ds[CompDataVars.SLOPE_VY].attrs[DataVars.STD_NAME] = 'trend [2014-2022] in vy'
+            ds[CompDataVars.SLOPE_V].attrs[DataVars.STD_NAME] = 'trend_[2014-2022]_in_v'
+            ds[CompDataVars.SLOPE_VX].attrs[DataVars.STD_NAME] = 'trend_[2014-2022]_in_vx'
+            ds[CompDataVars.SLOPE_VY].attrs[DataVars.STD_NAME] = 'trend_[2014-2022]_in_vy'
 
             # Change 'v' attributes
-            ds[DataVars.V].attrs[DataVars.STD_NAME] = 'climatological [2014-2022] velocity'
+            ds[DataVars.V].attrs[DataVars.STD_NAME] = 'climatological_[2014-2022]_velocity'
             ds[DataVars.V].attrs[DataVars.DESCRIPTION_ATTR] = 'determined by taking the hypotenuse of vx and vy. ' \
                 'The climatology uses a time-intercept of January 1, 2018.'
 
             # Change 'v_amp' attributes
-            ds[CompDataVars.V_AMP].attrs[DataVars.STD_NAME] = 'climatological [2014-2022] mean seasonal amplitude'
+            ds[CompDataVars.V_AMP].attrs[DataVars.STD_NAME] = 'climatological_[2014-2022]_mean_seasonal_amplitude'
 
             # Change 'v_amp_error' attributes
-            ds[CompDataVars.V_AMP_ERROR].attrs[DataVars.STD_NAME] = 'v_amp error'
+            ds[CompDataVars.V_AMP_ERROR].attrs[DataVars.STD_NAME] = 'v_amp_error'
 
             # Change 'v_error' attributes
-            ds[CompDataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v error'
+            ds[CompDataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v_error'
+
+            # Change units="day of year" to units='1' and update description
+            ds[CompDataVars.VX_PHASE].attrs[DataVars.UNITS] = '1'
+            ds[CompDataVars.VY_PHASE].attrs[DataVars.UNITS] = '1'
+            ds[CompDataVars.V_PHASE].attrs[DataVars.UNITS] = '1'
+
+            ds[CompDataVars.VX_PHASE].attrs[DataVars.DESCRIPTION_ATTR] += '; Values represent numerical day of the year;'
+            ds[CompDataVars.VY_PHASE].attrs[DataVars.DESCRIPTION_ATTR] += '; Values represent numerical day of the year;'
+            ds[CompDataVars.V_PHASE].attrs[DataVars.DESCRIPTION_ATTR] += '; Values represent numerical day of the year;'
 
         else:
             # This is annual mosaic

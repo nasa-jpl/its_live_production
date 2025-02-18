@@ -2,6 +2,7 @@
 Classes that define data variables and attributes for the ITS_LIVE data sets:
 datacubes, composites, and mosaics.
 """
+from collections import namedtuple
 import numpy as np
 
 
@@ -15,8 +16,8 @@ class ShapeFile:
     FLOATINGICE = 'floatingice'
 
     Name = {
-        LANDICE: 'land ice mask',
-        FLOATINGICE: 'floating ice mask',
+        LANDICE: 'land_ice_mask',
+        FLOATINGICE: 'floating_ice_mask',
     }
     Description = {
         LANDICE: 'land ice mask, 0 = non-land-ice, 1 = land-ice',
@@ -136,6 +137,16 @@ class FileExtension:
     ZARR = '.zarr'
     JSON = '.json'
 
+_Mapping = namedtuple("Mapping", ["name", "attrs"])
+_MappingAttributes = namedtuple("MappingAttributes", ["spatial_epsg"])
+
+# Mapping instance to store mapping attributes
+MappingInstance = _Mapping(
+    name='mapping',
+    attrs=_MappingAttributes(
+        spatial_epsg='spatial_epsg'
+    )
+)
 
 class DataVars:
     """
@@ -378,6 +389,19 @@ class DataVars:
         ASCENDING = 'ascending'
         DESCENDING = 'descending'
 
+        # Attributes for radar granules
+        ABSOLUTE_ORBIT_NUMBER_IMG1 = 'absolute_orbit_number_img1'
+        ABSOLUTE_ORBIT_NUMBER_IMG2 = 'absolute_orbit_number_img2'
+
+        ID_IMG1 = 'id_img1'
+        ID_IMG2 = 'id_img2'
+
+        PRODUCT_UNIQUE_ID_IMG1 = 'product_unique_ID_img1'
+        PRODUCT_UNIQUE_ID_IMG2 = 'product_unique_ID_img2'
+
+        MISSION_DATA_TAKE_ID_IMG1 = 'mission_data_take_ID_img1'
+        MISSION_DATA_TAKE_ID_IMG2 = 'mission_data_take_ID_img2'
+
         # ATTN: Sentinel-2 granules are using satellite_img1 and satellite_img2 instead
         # of sensor_img1 and sensor_img2
         ALL = [
@@ -543,9 +567,9 @@ class CompDataVars:
         VX_AMP: f'climatological [%i-%i] mean seasonal amplitude of sinusoidal fit to vx',
         VY_AMP: f'climatological [%i-%i] mean seasonal amplitude in sinusoidal fit in vy',
         V_AMP: f'climatological [%i-%i] mean seasonal amplitude in the direction of mean flow as defined by vx0 and vy0',
-        VX_PHASE: f'climatological [%i-%i] day of seasonal maximum velocity of sinusoidal fit to vx',
-        VY_PHASE: f'climatological [%i-%i] day of seasonal maximum velocity of sinusoidal fit to vy',
-        V_PHASE: f'day of maximum climatological [%i-%i] seasonal velocity determined from sinusoidal fit to vx and vy',
+        VX_PHASE: f'climatological [%i-%i] day of seasonal maximum velocity of sinusoidal fit to vx; Values represent numerical day of the year;',
+        VY_PHASE: f'climatological [%i-%i] day of seasonal maximum velocity of sinusoidal fit to vy; Values represent numerical day of the year;',
+        V_PHASE: f'day of maximum climatological [%i-%i] seasonal velocity determined from sinusoidal fit to vx and vy; Values represent numerical day of the year;',
         COUNT: 'number of image pairs used in error weighted least squares fit',
         MAX_DT: 'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
         SENSOR_INCLUDE: 'flag = 0 if sensor group is included, flag = 1 if sensor group (see sensor variable) is excluded',
