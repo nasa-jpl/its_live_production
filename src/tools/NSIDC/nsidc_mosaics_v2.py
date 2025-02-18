@@ -396,7 +396,10 @@ class NSIDCMosaicFormat:
         # Remove missing_value attribute for the masks as all values
         # are populated in binary masks
         del ds[ShapeFile.LANDICE].encoding[Output.MISSING_VALUE_ATTR]
+        ds[ShapeFile.LANDICE].encoding[Output.FILL_VALUE_ATTR] = None
+
         del ds[ShapeFile.FLOATINGICE].encoding[Output.MISSING_VALUE_ATTR]
+        ds[ShapeFile.FLOATINGICE].encoding[Output.FILL_VALUE_ATTR] = None
 
         # Changes for the static or annual mosaics
         if CompDataVars.SENSORS in ds:
@@ -433,6 +436,8 @@ class NSIDCMosaicFormat:
             # Remove missing_value attribute for the masks as all values
             # are populated in binary masks
             del ds[CompDataVars.SENSOR_INCLUDE].encoding[Output.MISSING_VALUE_ATTR]
+            ds[CompDataVars.SENSOR_INCLUDE].encoding[Output.FILL_VALUE_ATTR] = None
+
 
             # Change 'count' attributes
             ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
