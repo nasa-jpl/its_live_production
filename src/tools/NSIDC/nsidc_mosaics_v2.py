@@ -438,7 +438,6 @@ class NSIDCMosaicFormat:
             del ds[CompDataVars.SENSOR_INCLUDE].encoding[Output.MISSING_VALUE_ATTR]
             ds[CompDataVars.SENSOR_INCLUDE].encoding[Output.FILL_VALUE_ATTR] = None
 
-
             # Change 'count' attributes
             ds[Output.COUNT].attrs[DataVars.COMMENT] = ds[Output.COUNT].attrs[DataVars.NOTE]
             del ds[Output.COUNT].attrs[DataVars.NOTE]
@@ -469,9 +468,9 @@ class NSIDCMosaicFormat:
             ds[CompDataVars.VY_PHASE].attrs[DataVars.UNITS] = '1'
             ds[CompDataVars.V_PHASE].attrs[DataVars.UNITS] = '1'
 
-            ds[CompDataVars.VX_PHASE].attrs[DataVars.DESCRIPTION_ATTR] += '; Values represent numerical day of the year;'
-            ds[CompDataVars.VY_PHASE].attrs[DataVars.DESCRIPTION_ATTR] += '; Values represent numerical day of the year;'
-            ds[CompDataVars.V_PHASE].attrs[DataVars.DESCRIPTION_ATTR] += '; Values represent numerical day of the year;'
+            ds[CompDataVars.VX_PHASE].attrs[DataVars.DESCRIPTION_ATTR] += '; Values represent numerical day of the year.'
+            ds[CompDataVars.VY_PHASE].attrs[DataVars.DESCRIPTION_ATTR] += '; Values represent numerical day of the year.'
+            ds[CompDataVars.V_PHASE].attrs[DataVars.DESCRIPTION_ATTR] += '; Values represent numerical day of the year.'
 
         else:
             # This is annual mosaic
