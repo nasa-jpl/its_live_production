@@ -479,9 +479,9 @@ class NSIDCMosaicFormat:
             ds[DataVars.V].attrs[DataVars.STD_NAME] = 'mean annual velocity'
 
             # Change 'v_error' attributes
-            ds[CompDataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v error'
-            ds[CompDataVars.VX_ERROR].attrs[DataVars.STD_NAME] = 'vx error'
-            ds[CompDataVars.VY_ERROR].attrs[DataVars.STD_NAME] = 'vy error'
+            ds[CompDataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v_error'
+            ds[CompDataVars.VX_ERROR].attrs[DataVars.STD_NAME] = 'vx_error'
+            ds[CompDataVars.VY_ERROR].attrs[DataVars.STD_NAME] = 'vy_error'
 
         return ds, msgs
 
