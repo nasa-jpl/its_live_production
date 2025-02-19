@@ -1,5 +1,9 @@
 import boto3
 import collections
+import dask
+from dask.diagnostics import ProgressBar
+import gc
+import itertools
 import json
 import requests
 import pyproj
@@ -35,12 +39,13 @@ VAR_META = ['.zarray', '.zattrs']
 # Collection to record chunk information for each data variable in
 # existing Zarr store:
 # - ranges: list of ranges for each dimension
-# - last_chunk: tuple of last chunk indices
-# - last_chunk_key: string representation of the last chunk indices
-#   (as it appears in the Zarr store)
+# - last_dimension_ranges: tuple of chunk indices for the last dimension chunk
+#   For example, for 3D chunks, it will be a tuple of ranges for 3 indices with the
+#  first index being the last chunk index in the first dimension (mid_date for datacubes).
+#  For 1D chunks, it will be one tuple to represent one index range.
 ZarrChunk = collections.namedtuple(
     "ZarrChunk",
-    ['ranges', 'last_chunk', 'last_chunk_key']
+    ['ranges', 'last_dim_ranges']
 )
 
 
@@ -63,9 +68,28 @@ def bucket_cube_name_from_url(source_url: str) -> str:
 
     return bucket_name, file_url
 
+
+def download_chunk(s3_bucket, s3_path, each_chunk, local_path):
+    """Helper function to download Zarr chunk from S3.
+
+    Args:
+        s3_bucket (boto3.resource): S3 bucket object.
+        s3_path (str): Path to the datacube in S3.
+        s3_key (str): Key of the chunk to download.
+        local_path (str): Local path to save the downloaded chunk.
+    """
+    # logging.info(f'Downloading {s3_key=} to {local_key}')
+    s3_bucket.download_file(
+        os.path.join(s3_path, each_chunk),
+        os.path.join(local_path, each_chunk)
+    )
+
+
 def download_datacube_latest_chunks(
     bucket_url: str,
-    local_path: str
+    local_path: str,
+    dask_scheduler: str = 'processes',
+    num_threads: int = 4
 ):
     """
     Download metadata files and latest chunks for each of the data
@@ -79,7 +103,7 @@ def download_datacube_latest_chunks(
 
     Returns:
         Map of data variable to the ranges for existing data chunks,
-        and the last chunk key that exists in the zarr store.
+        and the last chunk ranges for each data variable.
     """
     store = zarr.open_consolidated(
         store=bucket_url,
@@ -103,19 +127,43 @@ def download_datacube_latest_chunks(
         if len(num_chunks) == 0:
             # For variables with no chunking, just set last chunk to '0'
             # as it exists
-            last_chunk_map[var_name] = ZarrChunk([], (0,), '0')
-            logging.info(f'No chunking for {var_name=}, setting last chunk to zero')
+            last_chunk_map[var_name] = ZarrChunk([range(0, 1)], [range(0, 1)])
+            logging.info(
+                f'No chunking for {var_name=}, setting last chunk to {last_chunk_map[var_name]}'
+            )
 
         else:
-            last_chunk_key = ".".join(map(str, num_chunks))
-            logging.info(f'{var_name=} {last_chunk_key=}')
-            # Convert last chunk indices to tuple to be able to remove
-            # the last element from the previous list when iterating
-            # over the dimensions ranges
+            # last_chunk_key = ".".join(map(str, num_chunks))
+            logging.info(f'{var_name=} {dim_ranges=}')
+
+            # Keep only last chunk for the mid_date dimension
+            last_mid_date = num_chunks[0]
+            last_chunks = [range(last_mid_date, last_mid_date+1)]
+
+            # There are only 1D, 2D or 3D variables, nothing to do for 1D variables
+            if len(num_chunks) == 2:
+                # For 2D data variables, have to download all chunks since
+                # it corresponds to the whole x/y spatial coverage
+                last_chunks = dim_ranges
+
+            elif len(num_chunks) == 3:
+                # For 3D data variables, have to download all chunks that correspond
+                # to the last chunk in first dimension (mid_date for datacubes)
+
+                # Get list of all chunks that correspond to the last mid_date
+                # dimension
+                last_chunks.extend(
+                    [
+                        dim_ranges[1],
+                        dim_ranges[2]
+                    ]
+                )
+
+            logging.info(f'{var_name=} {last_chunks=}')
+
             last_chunk_map[var_name] = ZarrChunk(
                 dim_ranges,
-                tuple(num_chunks.tolist()),
-                last_chunk_key
+                last_chunks
             )
 
     bucket_name, source_url = bucket_cube_name_from_url(bucket_url)
@@ -139,22 +187,51 @@ def download_datacube_latest_chunks(
         logging.info(f'Downloading {s3_key=} to {local_key}')
         s3_bucket.download_file(s3_key, local_key)
 
+    chunk_size = 100
+
     # Download latest chunks and metadata files for each data variable
     for each_var, each_chunk_info in last_chunk_map.items():
-        each_last_chunk = each_chunk_info.last_chunk_key
-
         local_var_path = os.path.join(local_path, each_var)
+        s3_var_path = os.path.join(s3_path, each_var)
 
         if not os.path.exists(local_var_path):
             os.mkdir(local_var_path)
 
-        # Copy last chuck for the data variable
-        s3_key = os.path.join(s3_path, each_var, each_last_chunk)
-        local_key = os.path.join(local_var_path, each_last_chunk)
+        # Copy last chunks for the data variable
+        logging.info(f'Downloading {each_var}: {each_chunk_info.last_dim_ranges=}')
 
-        # Download the file
-        logging.info(f'Downloading {s3_key=} to {local_key}')
-        s3_bucket.download_file(s3_key, local_key)
+        chunk_iterator = itertools.product(*each_chunk_info.last_dim_ranges)
+
+        for chunk in iter(lambda: list(itertools.islice(chunk_iterator, chunk_size)), []):
+            # Download the chunks
+            tasks = [dask.delayed(download_chunk)(
+                s3_bucket,
+                s3_var_path,
+                ".".join(map(str, each_chunk)),
+                local_var_path
+            ) for each_chunk in chunk]
+
+            with ProgressBar():  # Does not work with Client() scheduler
+                _ = dask.compute(
+                    tasks,
+                    scheduler=dask_scheduler,
+                    num_workers=num_threads
+                )
+
+            logging.info(f'Completed downloading {each_var} chunks: {chunk[0]=} to {chunk[-1]=}')
+
+            del tasks
+            gc.collect()
+
+        # for each_chunk_indices in itertools.product(*each_chunk_info.last_dim_ranges):
+        #     each_chunk = ".".join(map(str, each_chunk_indices))
+
+        #     s3_key = os.path.join(s3_path, each_var, each_chunk)
+        #     local_key = os.path.join(local_var_path, each_chunk)
+
+        #     # Download the file
+        #     logging.info(f'Downloading {s3_key=} to {local_key}')
+        #     s3_bucket.download_file(s3_key, local_key)
 
         # Copy variable metadata
         for each_meta in VAR_META:
