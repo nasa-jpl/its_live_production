@@ -476,7 +476,7 @@ class NSIDCMosaicFormat:
             # This is annual mosaic
 
             # Change 'v' attributes
-            ds[DataVars.V].attrs[DataVars.STD_NAME] = 'mean annual velocity'
+            ds[DataVars.V].attrs[DataVars.STD_NAME] = 'mean_annual_velocity'
 
             # Change 'v_error' attributes
             ds[CompDataVars.V_ERROR].attrs[DataVars.STD_NAME] = 'v_error'
