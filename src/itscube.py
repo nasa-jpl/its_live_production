@@ -4,12 +4,10 @@ bounding polygon and datetime period provided by the caller.
 
 Authors: Masha Liukis, Alex Gardner, Mark Fahnestock
 """
-from contextlib import suppress
 from dateutil.parser import parse
 from datetime import datetime, timedelta
 import gc
 import geopandas as gpd
-import itertools
 import json
 import logging
 import os
@@ -259,6 +257,12 @@ class ITSCube:
 
         # Constructed cube
         self.layers = None
+
+        # Number of layers in the cube - this will be the same as the number of granules
+        # if datacube exists. If datacube is being created from scratch, this number
+        # will be zero. This number indicates starting index when appending new layers
+        # to the existing datacube.
+        self.current_cube_layers = 0
 
         # Dates when datacube was created or updated
         self.date_created = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
@@ -784,6 +788,9 @@ class ITSCube:
         ITSCube.show_memory_usage('update()')
         s3, cube_store_in, cube_ds, skipped_granules = ITSCube.init_input_store(output_dir, output_bucket)
 
+        # Update with number of layers in existing datacube
+        self.current_cube_layers = cube_ds.dims[Coords.MID_DATE]
+
         self.date_updated = self.date_created
         self.date_created = cube_ds.attrs['date_created']
 
@@ -824,7 +831,8 @@ class ITSCube:
 
             existing_chunks = itslive_utils.download_datacube_latest_chunks(
                 cube_url,
-                os.path.basename(output_dir)
+                os.path.basename(output_dir),
+                num_threads=ITSCube.NUM_THREADS
             )
 
         elif len(output_bucket):
@@ -837,7 +845,10 @@ class ITSCube:
         is_first_write = False
 
         if len(cube_layers_to_delete):
-            # For now we need to disable support for deletion of existing layers
+            # For now we need to disable support for deletion of existing layers.
+            # The reason is that current datacubes have duplicate "mid_date" layers
+            # which need to be resolved in the future if we need to support deletion
+            # of existing layers.
             raise RuntimeError('Deletion of existing layers is not supported, exiting...')
 
             self.logger.info(f"Deleting {len(cube_layers_to_delete)} layers from "
@@ -923,49 +934,6 @@ class ITSCube:
 
             num_to_process -= num_tasks
             start += num_tasks
-
-        # Remove original datacube chunks if any as they won't contain
-        # valid data since only latest chunks were copied locally from s3
-        if existing_chunks is not None:
-            # Local copy of the datacube
-            cube_path = os.path.basename(output_dir)
-
-            for each_var, chunk_info in existing_chunks.items():
-                self.logger.info(f'Deleting previous chunks for {each_var} with {chunk_info=}')
-                prior_chunks_files = []
-
-                # Create all possible combinations if there are ranges
-                if len(chunk_info.ranges):
-                    # Path to the variable directory with chunks
-                    var_path = os.path.join(cube_path, each_var)
-
-                    prior_chunks = list(itertools.product(*chunk_info.ranges))
-
-                    # Exclude the given last chunk (at a time of cube download) itself
-                    prior_chunks.remove(chunk_info.last_chunk)
-
-                    if len(prior_chunks):
-                        self.logger.info(f'Chunks to delete: {prior_chunks[0]}...{prior_chunks[-1]}')
-
-                        # Convert chunk indices to string representation of the file
-                        prior_chunks_files = [".".join(map(str, each)) for each in prior_chunks]
-
-                        for each_chunk_file in prior_chunks_files:
-                            each_chunk_file_path = os.path.join(var_path, each_chunk_file)
-
-                            if os.path.exists(each_chunk_file_path):
-                                # Check if chunk exists. If so, delete it.
-                                # Seems like zarr is generating "bogus" chunks for the first range
-                                # dimension and updates latest chunk. For example, if M11 chunks
-                                # dimensions are (4, 83,83), zarr will generate all prior chunks
-                                # for 4.*.* and update only 4.83.83. Need to delete all prior chunks.
-                                self.logger.info(f'Deleting {os.path.join(var_path, each_chunk_file)}')
-                                os.remove(each_chunk_file_path)
-
-                # if len(prior_chunks_files):
-                #     with suppress(FileNotFoundError):
-                #         for each_file in prior_chunks_files:
-                #             os.remove(os.path.join(var_path, each_file))
 
         return found_urls
 
@@ -2681,6 +2649,9 @@ if __name__ == '__main__':
 
     cube = None
     gc.collect()
+
+    # Debugging only: don't remove local copy of the cube and don't copy to s3
+    # sys.exit()
 
     ITSCube.show_memory_usage('at the end of datacube generation')
 
