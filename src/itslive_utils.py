@@ -69,16 +69,20 @@ def bucket_cube_name_from_url(source_url: str) -> str:
     return bucket_name, file_url
 
 
-def download_chunk(s3_bucket, s3_path, each_chunk, local_path):
+def download_chunk(bucket_name, s3_path, each_chunk, local_path):
     """Helper function to download Zarr chunk from S3.
 
     Args:
-        s3_bucket (boto3.resource): S3 bucket object.
-        s3_path (str): Path to the datacube in S3.
-        s3_key (str): Key of the chunk to download.
-        local_path (str): Local path to save the downloaded chunk.
+        bucket_name (str): Name of the S3 bucket.
+        s3_path (str): Path to the datacube or its variable in S3.
+        each_chunk (str): Key of the chunk to download.
+        local_path (str): Local path to save the downloaded chunk to.
     """
     # logging.info(f'Downloading {s3_key=} to {local_key}')
+
+    # Initialize S3 bucket to copy files from
+    s3_bucket = boto3.resource('s3').Bucket(bucket_name)
+
     s3_bucket.download_file(
         os.path.join(s3_path, each_chunk),
         os.path.join(local_path, each_chunk)
@@ -88,8 +92,8 @@ def download_chunk(s3_bucket, s3_path, each_chunk, local_path):
 def download_datacube_latest_chunks(
     bucket_url: str,
     local_path: str,
-    dask_scheduler: str = 'processes',
-    num_threads: int = 4
+    num_threads: int = 4,
+    dask_scheduler: str = 'threads'
 ):
     """
     Download metadata files and latest chunks for each of the data
@@ -180,14 +184,12 @@ def download_datacube_latest_chunks(
 
     # Download metadata files
     for each_meta in CUBE_META:
-        s3_key = os.path.join(s3_path, each_meta)
-        local_key = os.path.join(local_path, each_meta)
-
         # Download the file
-        logging.info(f'Downloading {s3_key=} to {local_key}')
-        s3_bucket.download_file(s3_key, local_key)
+        logging.info(f'Downloading {os.path.join(s3_path, each_meta)} to {local_path}')
+        download_chunk(bucket_name, s3_path, each_meta, local_path)
 
-    chunk_size = 100
+    # Number of chunks to download in parallel
+    num_chunks_in_parallel = 500
 
     # Download latest chunks and metadata files for each data variable
     for each_var, each_chunk_info in last_chunk_map.items():
@@ -202,45 +204,36 @@ def download_datacube_latest_chunks(
 
         chunk_iterator = itertools.product(*each_chunk_info.last_dim_ranges)
 
-        for chunk in iter(lambda: list(itertools.islice(chunk_iterator, chunk_size)), []):
-            # Download the chunks
+        for chunks in iter(lambda: list(itertools.islice(chunk_iterator, num_chunks_in_parallel)), []):
             tasks = [dask.delayed(download_chunk)(
-                s3_bucket,
+                bucket_name,
                 s3_var_path,
                 ".".join(map(str, each_chunk)),
                 local_var_path
-            ) for each_chunk in chunk]
+            ) for each_chunk in chunks]
 
-            with ProgressBar():  # Does not work with Client() scheduler
+            with ProgressBar():
                 _ = dask.compute(
                     tasks,
                     scheduler=dask_scheduler,
                     num_workers=num_threads
                 )
 
-            logging.info(f'Completed downloading {each_var} chunks: {chunk[0]=} to {chunk[-1]=}')
+            logging.info(f'Completed downloading {each_var} {len(chunks)} chunks: {chunks[0]=} to {chunks[-1]=}')
 
             del tasks
             gc.collect()
 
-        # for each_chunk_indices in itertools.product(*each_chunk_info.last_dim_ranges):
-        #     each_chunk = ".".join(map(str, each_chunk_indices))
-
-        #     s3_key = os.path.join(s3_path, each_var, each_chunk)
-        #     local_key = os.path.join(local_var_path, each_chunk)
-
-        #     # Download the file
-        #     logging.info(f'Downloading {s3_key=} to {local_key}')
-        #     s3_bucket.download_file(s3_key, local_key)
-
-        # Copy variable metadata
+        # Copy variable metadata files
         for each_meta in VAR_META:
-            s3_key = os.path.join(s3_path, each_var, each_meta)
-            local_key = os.path.join(local_path, each_var, each_meta)
-
             # Download the file
-            logging.info(f'Downloading {s3_key=} to {local_key}')
-            s3_bucket.download_file(s3_key, local_key)
+            logging.info(f'Downloading {each_meta=} to {os.path.join(local_path, each_var)}')
+            download_chunk(
+                bucket_name,
+                s3_var_path,
+                each_meta,
+                local_var_path
+            )
 
     return last_chunk_map
 
