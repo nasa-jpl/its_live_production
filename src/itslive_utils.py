@@ -265,7 +265,7 @@ def download_datacube_latest_chunks(
             )
 
         # Debugger
-        break
+        # break
 
     return last_chunk_map
 
