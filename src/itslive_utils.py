@@ -36,10 +36,37 @@ _AWS_SLOW_DOWN_ERROR = "An error occurred (SlowDown) when calling"
 CUBE_META = ['.zattrs', '.zgroup', '.zmetadata']
 VAR_META = ['.zarray', '.zattrs']
 
+import time
+
+def timing_decorator(func):
+    """Decorator to time function execution.
+
+    Args:
+        func: Function to invoke.
+    """
+    def wrapper(*args, **kwargs):
+        # Start the timer
+        start_time = time.time()
+
+        # Call the function
+        result = func(*args, **kwargs)
+
+        # Stop the timer
+        end_time = time.time()
+
+          # Calculate elapsed time
+        elapsed_time = end_time - start_time
+        logging.info(f"'{func.__name__}' executed in {elapsed_time:.6f} seconds ({elapsed_time/60:.6f} minutes)")
+
+        return result
+
+    return wrapper
+
+
 # Collection to record chunk information for each data variable in
 # existing Zarr store:
 # - ranges: list of ranges for each dimension
-# - last_dimension_ranges: tuple of chunk indices for the last dimension chunk
+# - last_dim_ranges: tuple of chunk indices for the last dimension chunk
 #   For example, for 3D chunks, it will be a tuple of ranges for 3 indices with the
 #  first index being the last chunk index in the first dimension (mid_date for datacubes).
 #  For 1D chunks, it will be one tuple to represent one index range.
@@ -89,6 +116,8 @@ def download_chunk(bucket_name, s3_path, each_chunk, local_path):
     )
 
 
+# Usage Example
+@timing_decorator
 def download_datacube_latest_chunks(
     bucket_url: str,
     local_path: str,
@@ -188,7 +217,7 @@ def download_datacube_latest_chunks(
         logging.info(f'Downloading {os.path.join(s3_path, each_meta)} to {local_path}')
         download_chunk(bucket_name, s3_path, each_meta, local_path)
 
-    # Number of chunks to download in parallel
+    # Number of chunks to download in parallel - should make it configurable?
     num_chunks_in_parallel = 500
 
     # Download latest chunks and metadata files for each data variable
@@ -234,6 +263,9 @@ def download_datacube_latest_chunks(
                 each_meta,
                 local_var_path
             )
+
+        # Debugger
+        break
 
     return last_chunk_map
 
