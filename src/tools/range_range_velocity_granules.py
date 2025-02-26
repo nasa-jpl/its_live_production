@@ -811,8 +811,8 @@ if __name__ == '__main__':
    logging.info('Finding qualifying pairs for range-range velocities...')
    overlap_df = get_granule_image_pairs(pd_d_orbits, pd_a_orbits)
 
-   # total_pairs = len(overlap_df)
-   total_pairs = 1  # For testing
+   total_pairs = len(overlap_df)
+   # total_pairs = 1  # For testing
 
    if total_pairs == 0:
       logging.info('No qualifying pairs found. Exiting.')
