@@ -138,13 +138,22 @@ class FileExtension:
     JSON = '.json'
 
 _Mapping = namedtuple("Mapping", ["name", "attrs"])
-_MappingAttributes = namedtuple("MappingAttributes", ["spatial_epsg"])
+
+# Initialize "mapping"  name and attributes
+_MappingAttributes = namedtuple(
+    "MappingAttributes",
+    [
+        "spatial_epsg",
+        "geo_transform"
+    ]
+)
 
 # Mapping instance to store mapping attributes
 MappingInstance = _Mapping(
     name='mapping',
     attrs=_MappingAttributes(
-        spatial_epsg='spatial_epsg'
+        spatial_epsg='spatial_epsg',
+        geo_transform = 'GeoTransform'
     )
 )
 
