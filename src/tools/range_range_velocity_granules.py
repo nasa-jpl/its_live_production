@@ -32,9 +32,9 @@ import pyproj
 import sys
 import xarray as xr
 import warnings
-warnings.filterwarnings('ignore')
 
 from mission_info import Encoding
+from itslive_composite import SensorExcludeFilter, MissionSensor
 from itscube import ITSCube
 import grid
 from itscube_types import \
@@ -44,6 +44,8 @@ from itscube_types import \
    CubeOutput, \
    MappingInstance
 
+warnings.filterwarnings('ignore')
+
 # Set up logging
 logging.basicConfig(
    level=logging.INFO,
@@ -51,7 +53,6 @@ logging.basicConfig(
    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-DASK_CHUNKS = 20000
 NC_ENGINE = 'h5netcdf'
 
 ascending = "ascending"
@@ -112,7 +113,8 @@ def compute_velocity_based_on_m11_m12(
    trans1,
    trans2):
    """
-   Compute velocity fields in map coordinates based on LOS (slant range) measurements of pixel displacement.
+   Compute velocity fields in map coordinates based on LOS (slant range)
+   measurements of pixel displacement.
 
    vr_a and vr_b can be scalar values or 2D arrays.
    """
@@ -240,15 +242,16 @@ def get_granule_image_pairs(pd_d_orbits, pd_a_orbits, threshold=0.6, num_days=24
             max_overlap = max(max_overlap, common_overlap)
 
             # if len(x_intersection) > 1 and len(y_intersection) > 1 and total_num_intersection_percent > threshold:
-            if len(x_intersection) > 1 and len(y_intersection) > 1 and common_overlap > threshold:
-                  overlap_df = overlap_df.append(
-                     {
-                        'd_url': row1.url,
-                        'a_url': row2.url,
-                        'xy_overlap_percent': common_overlap
-                     },
-                     ignore_index=True
-                  )
+            if len(x_intersection) > 1 and len(y_intersection) > 1 and \
+               common_overlap > threshold:
+               overlap_df = overlap_df.append(
+                  {
+                     'd_url': row1.url,
+                     'a_url': row2.url,
+                     'xy_overlap_percent': common_overlap
+                  },
+                  ignore_index=True
+               )
 
    logging.info(f'Maximum % overlap detected: {max_overlap*100}')
    return overlap_df
@@ -713,6 +716,38 @@ def process_pair(bucket: str, target_bucket_dir: str, row: pd.Series, s3: s3fs.S
    return msgs
 
 
+def get_granule_info(granule_ds):
+   """
+   Collect granule information.
+   """
+   img_pair_attrs = granule_ds.img_pair_info.attrs
+
+   return (
+      img_pair_attrs['flight_direction_img1'].strip(),
+      {
+            DataVars.ImgPairInfo.DATE_CENTER: parse(img_pair_attrs[DataVars.ImgPairInfo.DATE_CENTER]),
+            'date_dt': img_pair_attrs['date_dt'],
+            'lat': img_pair_attrs['latitude'],
+            'lon': img_pair_attrs['longitude'],
+            'x': granule_ds.x.values,
+            'y': granule_ds.y.values
+      }
+   )
+
+
+def process_granule(granule: str, s3=None):
+   """
+   Extract S1 granule information for range-range velocity calculations.
+   """
+   # Open the granule
+   each_granule_s3 = granule.replace('https://', '')
+   each_granule_s3 = each_granule_s3.replace('.s3.amazonaws.com', '')
+
+   with s3.open(each_granule_s3, mode='rb') as fhandle:
+      with xr.open_dataset(fhandle, engine=NC_ENGINE) as granule_ds:
+         return (granule,) + get_granule_info(granule_ds)
+
+
 if __name__ == '__main__':
    # Initialize CL arguments parser
    parser = argparse.ArgumentParser(description='Generate range-range velocity granules from the given Zarr datacube.')
@@ -738,7 +773,7 @@ if __name__ == '__main__':
    parser.add_argument(
       '-t', '--target_bucket_dir',
       type=str,
-      default='test-space/range_range/Malaspina',
+      default='test-space/range_range',
       help='AWS S3 bucket and directory to store range-range velocity granules to [%(default)s]'
    )
    parser.add_argument(
@@ -765,10 +800,6 @@ if __name__ == '__main__':
       with open(ascending_json, 'r') as fh:
          ascending_orbit = json.load(fh)
 
-      # Convert datetime string to object
-      for each_key, each_val in ascending_orbit.items():
-         each_val['date_center'] = datetime.datetime.strptime(each_val[DataVars.ImgPairInfo.DATE_CENTER], "%Y-%m-%d %H:%M:%S.%f")
-
       logging.info(f'{len(ascending_orbit)} ascending granules are provided.')
 
    # Format filename for the descending granule json file
@@ -779,15 +810,111 @@ if __name__ == '__main__':
       with open(descending_json, 'r') as fh:
          descending_orbit = json.load(fh)
 
-      for each_key, each_val in descending_orbit.items():
-         each_val['date_center'] = datetime.datetime.strptime(each_val[DataVars.ImgPairInfo.DATE_CENTER], "%Y-%m-%d %H:%M:%S.%f")
-
       logging.info(f'{len(descending_orbit)} descending granules are provided.')
 
    if len(ascending_orbit) == 0 or len(descending_orbit) == 0:
       logging.info('No ascending or descending granules are provided. Need to generate them first.')
-      # TODO: add the code that searches for ascending and descending granules in datacube
-      sys.exit(1)
+
+      # Search for ascending and descending granules in datacube
+      # Read local cube
+      datacube_zarr = args.input
+      logging.info(f'Reading {datacube_zarr} layers...')
+
+      granule_urls = None
+      s3 = s3fs.S3FileSystem()
+
+      with xr.open_dataset(datacube_zarr, decode_timedelta=False, engine='zarr', consolidated=True) as ds:
+         logging.info(f'Cube dimensions: {ds.dims}')
+
+         # Identify S1 layers within the cube
+         sensors = ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
+         sensors_str = SensorExcludeFilter.map_sensor_to_group(sensors)
+
+         s1_mask = (sensors_str == MissionSensor.SENTINEL1.mission)
+         total_num_files = np.sum(s1_mask)
+         logging.info(f'Identified {total_num_files} S1 layers in the cube')
+
+         mask_i = np.where(s1_mask == True)
+         granule_urls = ds.granule_url[mask_i].values
+         logging.info(f'Got {len(granule_urls)=} urls: first granule={granule_urls[0]}')
+
+         # Current start index into list of S1 granules to process
+         start = 0
+         chunk_size = args.dask_workers
+
+         total_num_files = len(granule_urls)
+         init_total_files = len(granule_urls)
+
+         while total_num_files > 0:
+            num_tasks = chunk_size if total_num_files > chunk_size else total_num_files
+
+            # logging.info(f"Starting layers {start}:{start+num_tasks} out of {init_total_files} total layers")
+            tasks = [
+               dask.delayed(process_granule)(each_granule_url, s3)
+               for each_granule_url in granule_urls[start:start+num_tasks]
+            ]
+
+            results = None
+
+            with ProgressBar():
+               # Display progress bar
+               results = dask.compute(
+                     tasks,
+                     scheduler="processes",
+                     num_workers=args.dask_workers
+               )
+
+            for each_result in results[0]:
+               each_granule, orbit_dir, result_dict = each_result
+               orbit = ascending_orbit
+               # If orbit is descending than populate corresponding dict
+               if orbit_dir == descending:
+                  orbit = descending_orbit
+
+               orbit[each_granule] = result_dict
+
+            total_num_files -= num_tasks
+            start += num_tasks
+
+            _ = gc.collect()
+
+      # Report number of found granules
+      logging.info(f'Got {len(ascending_orbit)=}')
+      logging.info(f'Got {len(descending_orbit)=}')
+
+      # Save ascending and descending granules to json files
+      # Convert datetime objects to string as json can't serialize datetime,
+      # and convert x and y arrays to lists
+      for each_key, each_val in ascending_orbit.items():
+         each_val[DataVars.ImgPairInfo.DATE_CENTER] = each_val[DataVars.ImgPairInfo.DATE_CENTER].strftime("%Y-%m-%d %H:%M:%S.%f")
+         each_val[Coords.X] = list(each_val[Coords.X])
+         each_val[Coords.Y] = list(each_val[Coords.Y])
+
+      with open(ascending_json, 'w') as fh:
+         json.dump(ascending_orbit, fh, indent=3)
+
+      # Convert datetime objects to string as json can't serialize datetime
+      for each_key, each_val in descending_orbit.items():
+         each_val[DataVars.ImgPairInfo.DATE_CENTER] = each_val[DataVars.ImgPairInfo.DATE_CENTER].strftime("%Y-%m-%d %H:%M:%S.%f")
+         each_val[Coords.X] = list(each_val[Coords.X])
+         each_val[Coords.Y] = list(each_val[Coords.Y])
+
+      with open(descending_json, 'w') as fh:
+         json.dump(descending_orbit, fh, indent=3)
+      logging.info(f'Wrote {ascending_json} and {descending_json} files.')
+
+   # Convert datetime strings back to objects
+   for each_key, each_val in ascending_orbit.items():
+      each_val[DataVars.ImgPairInfo.DATE_CENTER] = datetime.datetime.strptime(
+         each_val[DataVars.ImgPairInfo.DATE_CENTER],
+         "%Y-%m-%d %H:%M:%S.%f"
+      )
+
+   for each_key, each_val in descending_orbit.items():
+      each_val[DataVars.ImgPairInfo.DATE_CENTER] = datetime.datetime.strptime(
+         each_val[DataVars.ImgPairInfo.DATE_CENTER],
+         "%Y-%m-%d %H:%M:%S.%f"
+      )
 
    # Create pandas.DataFrames for easier lookup
    pd_a_orbits = pd.DataFrame(ascending_orbit)
