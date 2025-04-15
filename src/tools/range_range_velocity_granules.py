@@ -840,7 +840,7 @@ if __name__ == '__main__':
 
          # Current start index into list of S1 granules to process
          start = 0
-         chunk_size = args.dask_workers
+         chunk_size = args.chunk_size
 
          total_num_files = len(granule_urls)
          init_total_files = len(granule_urls)
