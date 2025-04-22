@@ -95,6 +95,10 @@ class ITSCube:
     # STAC catalog URL for the ITS_LIVE granules
     STAC_CATALOG = "https://stac.itslive.cloud"
 
+    # Start and end dates for the catalog search
+    START_DATE = '1982-01-01'
+    END_DATE = None
+
     # For testing Malaspina cube with latest updates to granules - using file of granules
     # to use instead of queueing searchAPI
     # PATH_URL = '.s3.us-west-2.amazonaws.com'
@@ -354,6 +358,8 @@ class ITSCube:
         found_urls = itslive_utils.search_stac_catalog(
             epsg_code=self.projection,
             stac_catalog=ITSCube.STAC_CATALOG,
+            start_date=ITSCube.START_DATE,
+            end_date=ITSCube.END_DATE,
             intersects=roi
         )
 
@@ -2483,21 +2489,21 @@ if __name__ == '__main__':
         '--fivePointsPerPolygonSide',
         action='store_true',
         help='Define 5 points per side before re-projecting granule polygon '
-             'to longitude/latitude coordinates'
+            'to longitude/latitude coordinates'
     )
     parser.add_argument(
         '--useGranulesFile',
         type=Path,
         default=None,
         help='Json file that stores a list of ITS_LIVE image velocity granules '
-             'to build datacube from [%(default)s].'
+            'to build datacube from [%(default)s].'
     )
     parser.add_argument(
         '--searchAPIStartDate',
         type=lambda s: parse(s).strftime('%Y-%m-%d'),
         default='1982-01-01',
         help='Start date in YYYY-MM-DD format to pass to search API query '
-             'to get velocity pair granules [%(default)s]'
+            'to get velocity pair granules [%(default)s]'
     )
     parser.add_argument(
         '--searchAPIStopDate',
@@ -2505,14 +2511,14 @@ if __name__ == '__main__':
         type=lambda s: parse(s).strftime('%Y-%m-%d'),
         default=datetime.now().strftime('%Y-%m-%d'),
         help='Stop date in YYYY-MM-DD format to pass to search API query '
-             'to get velocity pair granules. Use "now" if not provided [default: %(default)s]'
+            'to get velocity pair granules. Use "now" if not provided [default: %(default)s]'
     )
     parser.add_argument(
         '--disableCubeValidation',
         action='store_true',
         default=False,
         help='Disable datetime validation for created datacube. '
-             'This is to identify corrupted Zarr stores at the time of creation.'
+            'This is to identify corrupted Zarr stores at the time of creation.'
     )
     parser.add_argument(
         '-s', '--shapeFile',
@@ -2525,7 +2531,7 @@ if __name__ == '__main__':
         type=str,
         default='.s3.amazonaws.com',
         help='Path URL token to remove from each of the input granules URLs '
-             'to allow S3 access [%(default)s].'
+            'to allow S3 access [%(default)s].'
     )
 
     # One of --centroid or --polygon options is allowed for the datacube coordinates
@@ -2535,16 +2541,16 @@ if __name__ == '__main__':
         type=str,
         action='store',
         help='JSON 2-element list for centroid point (x, y) of the datacube in '
-             'target EPSG code projection. '
-             'Polygon vertices are calculated based on the centroid and '
-             'cube dimension arguments.'
+            'target EPSG code projection. '
+            'Polygon vertices are calculated based on the centroid and '
+            'cube dimension arguments.'
     )
     group.add_argument(
         '--polygon',
         type=str,
         action='store',
-        help='JSON list of polygon points ((x1, y1), (x2, y2),... (x1, y1)) to '
-             'define datacube in target EPSG code projection.'
+        help='JSON list of polygon points [[x1, y1], [x2, y2],... [x1, y1]] to '
+            'define datacube in target EPSG code projection.'
     )
 
     args = parser.parse_args()
@@ -2565,6 +2571,8 @@ if __name__ == '__main__':
     ITSCube.CELL_SIZE = args.gridCellSize
     ITSCube.PATH_URL = args.pathURLToken
     ITSCube.STAC_CATALOG = args.stacCatalog
+    ITSCube.START_DATE = args.searchAPIStartDate
+    ITSCube.STOP_DATE = args.searchAPIStopDate
 
     if args.useGranulesFile:
         # Check for this option first as another mutually exclusive option has a default value

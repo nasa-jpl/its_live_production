@@ -56,7 +56,7 @@ def timing_decorator(func):
 
         # Calculate elapsed time
         elapsed_time = end_time - start_time
-        logging.info(f"'{func.__name__}' executed in {elapsed_time:.6f} seconds ({elapsed_time/60:.6f} minutes)")
+        logging.info(f"Function {func.__name__}() executed in {elapsed_time:.6f} seconds ({elapsed_time/60:.6f} minutes)")
 
         return result
 
@@ -398,6 +398,8 @@ def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool 
 @timing_decorator
 def search_stac_catalog(epsg_code: str,
                         stac_catalog: str,
+                        start_date: str,
+                        end_date: str,
                         page_size: int = 2000,
                         percent_valid_pixels: int = 1,
                         **kwargs):
@@ -407,6 +409,8 @@ def search_stac_catalog(epsg_code: str,
     Args:
         epsg_code (int): EPSG code of the projection to search for.
         stac_catalog (str): URL to the STAC catalog.
+        start_date (str): Start date for the search in 'YYYY-MM-DD' format.
+        end_date (str): End date for the search in 'YYYY-MM-DD' format.
         page_size (int): Number of items to return per page. Default is 2000.
         percent_valid_pixels (float): Minimum percentage of valid pixels
             in the granule. Default is None, which means no filtering.
@@ -420,6 +424,7 @@ def search_stac_catalog(epsg_code: str,
     search_kwargs = {
         "collections": ["itslive-granules"],
         "limit": page_size,
+        "datetime": f"{start_date}/{end_date}",
         **kwargs
     }
 
