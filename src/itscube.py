@@ -2572,7 +2572,7 @@ if __name__ == '__main__':
     ITSCube.PATH_URL = args.pathURLToken
     ITSCube.STAC_CATALOG = args.stacCatalog
     ITSCube.START_DATE = args.searchAPIStartDate
-    ITSCube.STOP_DATE = args.searchAPIStopDate
+    ITSCube.END_DATE = args.searchAPIStopDate
 
     if args.useGranulesFile:
         # Check for this option first as another mutually exclusive option has a default value
