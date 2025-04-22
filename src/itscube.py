@@ -92,8 +92,8 @@ class ITSCube:
     PATH_URL = ".s3.amazonaws.com"
     SHAPE_PATH_URL = '.s3.amazonaws.com'
 
-    # Path to R-tree index file for all available ITS_LIVE granules
-    RTREE_FILE = 'catalog_geojson/rtree/its_live_rtree_v02'
+    # STAC catalog URL for the ITS_LIVE granules
+    STAC_CATALOG = "https://stac.itslive.cloud"
 
     # For testing Malaspina cube with latest updates to granules - using file of granules
     # to use instead of queueing searchAPI
@@ -344,37 +344,24 @@ class ITSCube:
             self.max_number_of_layers = len(found_urls)
             return found_urls
 
-        # Open R-tree
         self.logger.info(f'Getting granules for the polygon: {self.polygon_coords}')
-        start_time = timeit.default_timer()
 
-        idx = itslive_utils.download_rtree_from_s3(ITSCube.RTREE_S3_BUCKET, ITSCube.RTREE_FILE)
+        roi = {
+            "type": "Polygon",
+            "coordinates": [self.polygon_coords]
+        }
 
-        time_delta = timeit.default_timer() - start_time
-        self.logger.info(f"Opened R-tree: {os.path.join(ITSCube.RTREE_S3_BUCKET, ITSCube.RTREE_FILE)} (took {time_delta} seconds)")
-
-        # Get bounding box for the self.polygon_coords
-        cube_bounding_box = itslive_utils.get_min_lon_lat_max_lon_lat(self.polygon_coords)
-
-        # Get granules for the bounding box
-        self.logger.info(f"Getting granules for the bounding box: {cube_bounding_box}")
-        start_time = timeit.default_timer()
-
-        # Get granules for the bounding box within target projection only
-        found_urls = itslive_utils.query_rtree(
-            rtree_idx=idx,
-            query_box=cube_bounding_box,
-            epsg_code=int(self.projection)
+        found_urls = itslive_utils.search_stac_catalog(
+            epsg_code=self.projection,
+            stac_catalog=ITSCube.STAC_CATALOG,
+            intersects=roi
         )
 
         total_num = len(found_urls)
-        time_delta = timeit.default_timer() - start_time
-        self.logger.info(f'Got {total_num} granules for the bounding box (took {time_delta} seconds)')
 
-        # Free up memory
-        del idx
-        idx = None
-        gc.collect()
+        # DEBUG: Save found granules to the json file for testing of STAC catalog
+        with open('found_granules_stac.json', 'w') as f:
+            json.dump(found_urls, f, indent=4)
 
         if total_num == 0:
             self.logger.info("No granules are found, skipping datacube generation or update")
@@ -396,7 +383,11 @@ class ITSCube:
 
         urls, self.skipped_granules[DataVars.SKIP_DUPLICATE] = ITSCube.skip_duplicate_l89_granules(found_urls)
 
-        return urls
+        # DEBUG: pick only S1 granules to test
+        sentinel_granules = [each for each in urls if os.path.basename(each).startswith('S1')]
+        self.logger.info(f'Leaving {len(sentinel_granules)} Sentinel granules out of {len(urls)} granules for testing')
+        # return urls
+        return sentinel_granules
 
     @staticmethod
     def skip_duplicate_l89_granules(found_urls):
@@ -2437,18 +2428,11 @@ if __name__ == '__main__':
              'If none is provided, process all found granules.'
     )
     parser.add_argument(
-        '-rtree_s3_bucket',
+        '-stacCatalog',
         type=str,
-        default='its-live-data',
-        help='AWS S3 bucket to store RTree index files [%(default)s].'
+        default='https://stac.itslive.cloud',
+        help='ITS_LIVE granule STAC catalog URL [%(default)s].'
     )
-    parser.add_argument(
-        '-rtree_s3_file',
-        type=str,
-        default='catalog_geojson/rtree/its_live_rtree_v02',
-        help='AWS S3 bucket to store RTree index files [%(default)s].'
-    )
-
     parser.add_argument(
         '-o', '--outputStore',
         type=str,
@@ -2580,8 +2564,7 @@ if __name__ == '__main__':
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
     ITSCube.PATH_URL = args.pathURLToken
-    ITSCube.RTREE_S3_BUCKET = args.rtree_s3_bucket
-    ITSCube.RTREE_S3_FILE = args.rtree_s3_file
+    ITSCube.STAC_CATALOG = args.stacCatalog
 
     if args.useGranulesFile:
         # Check for this option first as another mutually exclusive option has a default value

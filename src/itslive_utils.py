@@ -7,6 +7,7 @@ import itertools
 import json
 import requests
 import pyproj
+from pystac_client import Client
 import numpy as np
 import os
 import logging
@@ -36,7 +37,6 @@ _AWS_SLOW_DOWN_ERROR = "An error occurred (SlowDown) when calling"
 CUBE_META = ['.zattrs', '.zgroup', '.zmetadata']
 VAR_META = ['.zarray', '.zattrs']
 
-import time
 
 def timing_decorator(func):
     """Decorator to time function execution.
@@ -54,7 +54,7 @@ def timing_decorator(func):
         # Stop the timer
         end_time = time.time()
 
-          # Calculate elapsed time
+        # Calculate elapsed time
         elapsed_time = end_time - start_time
         logging.info(f"'{func.__name__}' executed in {elapsed_time:.6f} seconds ({elapsed_time/60:.6f} minutes)")
 
@@ -116,7 +116,6 @@ def download_chunk(bucket_name, s3_path, each_chunk, local_path):
     )
 
 
-# Usage Example
 @timing_decorator
 def download_datacube_latest_chunks(
     bucket_url: str,
@@ -200,9 +199,6 @@ def download_datacube_latest_chunks(
             )
 
     bucket_name, source_url = bucket_cube_name_from_url(bucket_url)
-
-    # Initialize S3 bucket to copy files from
-    s3_bucket = boto3.resource('s3').Bucket(bucket_name)
 
     # Get rid of 's3://' prefix and bucket name if present in the source URL
     s3_path = source_url.replace('s3://' + bucket_name + '/', '')
@@ -397,6 +393,74 @@ def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool 
 
     if not file_is_copied:
         raise RuntimeError(f"Failed to invoke {' '.join(command_line)} with command.returncode={command_return.returncode}")
+
+
+@timing_decorator
+def search_stac_catalog(epsg_code: str,
+                        stac_catalog: str,
+                        page_size: int = 2000,
+                        percent_valid_pixels: int = 1,
+                        **kwargs):
+    """
+    Search STAC catalog for granules. The code is provided by Luis Lopez.
+
+    Args:
+        epsg_code (int): EPSG code of the projection to search for.
+        stac_catalog (str): URL to the STAC catalog.
+        page_size (int): Number of items to return per page. Default is 2000.
+        percent_valid_pixels (float): Minimum percentage of valid pixels
+            in the granule. Default is None, which means no filtering.
+        **kwargs: Additional search parameters.
+    Returns:
+        list: List of granule URLs.
+    """
+    # Open the STAC catalog
+    logging.info(f"Searching STAC catalog: {stac_catalog}")
+    catalog = Client.open(stac_catalog)
+    search_kwargs = {
+        "collections": ["itslive-granules"],
+        "limit": page_size,
+        **kwargs
+    }
+
+    # Add more filters and flexibility if needed
+    if percent_valid_pixels is not None:
+        search_kwargs["filter"] = {
+            "op": ">=",
+            "args": [{"property": "percent_valid_pixels"}, percent_valid_pixels]
+        }
+        search_kwargs["filter_lang"] = "cql2-json"
+
+    search = catalog.search(**search_kwargs)
+
+    hrefs = []
+    pages_count = 0
+    epsg_str = f'EPSG:{epsg_code}'
+    skipped_wrong_epsg = 0
+    skipped_epsgs = set()
+
+    for page in search.pages():
+        pages_count += 1
+        for item in page:
+            if item.properties.get("proj:code") != epsg_str:
+                # Skip items that do not match the requested projection
+                skipped_wrong_epsg += 1
+                # Record which EPSG codes were skipped
+                skipped_epsgs.add(item.properties.get("proj:code"))
+                continue
+
+            # Check if the item has the requested projection
+            for asset in item.assets.values():
+                if "data" in asset.roles and asset.href.endswith(".nc"):
+                    hrefs.append(asset.href)
+
+    logging.info(
+        f'STAC catalog query results: {pages_count=} pages, '
+        f'{len(hrefs)=} found granules, {skipped_wrong_epsg=} granules, '
+        f'{skipped_epsgs=}'
+    )
+
+    return hrefs
 
 
 def transform_coord(proj1, proj2, lon, lat):
