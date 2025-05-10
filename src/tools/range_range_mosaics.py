@@ -575,9 +575,9 @@ if __name__ == '__main__':
    )
    parser.add_argument(
       '--startDate',
-      type=lambda s: parse(s).strftime(DATE_FORMAT),
-      help='Start date in YYYY-MM-DD format to pass to search API query '
-           'to get velocity pair granules [%(default)s]'
+      type=lambda s: parse(s),
+      help='Start date for search API query to get velocity pair '
+            'granules [%(default)s]'
    )
    parser.add_argument(
       '--numDays',
