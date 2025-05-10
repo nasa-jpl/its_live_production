@@ -646,6 +646,7 @@ if __name__ == '__main__':
    }
 
    date_str = f"{start_date.strftime(DATE_FORMAT)}/{end_date.strftime(DATE_FORMAT)}"
+   logging.info(f'Got {date_str=}')
 
    # Full list of properties can be found by inspecting a STAC item from the collection
    # e.g. https://stac.itslive.cloud/collections/itslive-granules/items/S2B_MSIL1C_20250410T133729_N0511_R067_T33XXK_20250410T171508_X_S2A_MSIL1C_20250417T133731_N0511_R067_T33XXK_20250417T205237_G0120V02_P054
