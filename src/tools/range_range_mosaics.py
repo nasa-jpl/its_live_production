@@ -106,7 +106,7 @@ def load_polygon(granule_file: str):
    return granules_info['features'][0]['geometry']['coordinates']
 
 
-def search_stac(
+def dont_search_stac(
    stac_catalog="https://stac.itslive.cloud",
    page_size=100,
    filter_list=[],
@@ -126,7 +126,6 @@ def search_stac(
       if not filters_list:
          return None
       return filters_list[0] if len(filters_list) == 1 else {"op": "and", "args": filters_list}
-
    if filter_list:
       filters = build_cql2_filter(filter_list)
       search_kwargs["filter"] = build_cql2_filter(filters)
@@ -150,6 +149,43 @@ def search_stac(
    logging.info(f"Requested pages: {pages_count}")
    return hrefs
 
+def search_stac(stac_catalog="https://stac.itslive.cloud", page_size=100, filter_list=[], **kwargs):
+   """
+   Returns only the url to the data asset, for ITS_LIVE a netcdf file.
+   """
+   catalog = Client.open(stac_catalog)
+   search_kwargs = {
+      "collections": ["itslive-granules"],
+      "limit": page_size,
+      **kwargs
+   }
+
+   def build_cql2_filter(filters_list):
+      if not filters_list:
+         return None
+      return filters_list[0] if len(filters_list) == 1 else {"op": "and", "args": filters_list}
+   if filter_list:
+      filters = build_cql2_filter(filter_list)
+      search_kwargs["filter"] = build_cql2_filter(filters)
+      search_kwargs["filter_lang"] = "cql2-json"
+
+   search = catalog.search(**search_kwargs)
+   logging.info(search.get_parameters())
+
+   hrefs = []
+   pages_count = 0
+   proj_matches = 0
+   for page in search.pages():
+      pages_count += 1
+      for item in page:
+         if kwargs.get("debug"):
+               logging.info(f"fetching page {page_count}")
+         for asset in item.assets.values():
+               if "data" in asset.roles and asset.href.endswith(".nc"):
+                  hrefs.append(asset.href)
+      time.sleep(0.1) # we can remove this one, just to avoid overwhelming the server
+   logging.info(f"Requested pages: {pages_count}")
+   return hrefs
 
 def create_new_granule(x, y):
    """
