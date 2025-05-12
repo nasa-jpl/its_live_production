@@ -322,6 +322,9 @@ def build_mosaics(granules, orbit_dir):
    # Collect dr_to_vr_factor to compute average
    scalar_factors = []
 
+   # Step through all granules and concatenate data in new dimension
+   # DEBUG: process only first 10 granules to make sure code is working
+
    # Iterate over granules
    for each in granules:
       each_s3 = each.replace('https://its-live-data.s3.amazonaws.com', 's3://its-live-data')
@@ -458,14 +461,13 @@ def build_mosaics(granules, orbit_dir):
 
    dr_to_vr_factor = []
 
-   for each_var in ['M11', 'M12', 'vr', 'vx', 'vy', dr_to_vr_factor_var]:
+   for each_var in ['M11', 'M12', 'vr', 'vx', 'vy', 'v', dr_to_vr_factor_var]:
       data_list = []
       mask_list = []
 
       # Concatenated dataset
       concatenated = None
 
-      # Step through all granules and concatenate data in new dimension
       for each_file, each_ds in raw_ds.items():
          logging.info(f'Merging {each_var=} from {each_file}')
 
@@ -484,7 +486,8 @@ def build_mosaics(granules, orbit_dir):
             dr_to_vr_factor.append(each_ds.M11.attrs['dr_to_vr_factor'])
 
          data_list.append(each_ds[each_var])
-         # Have to match v_error values in mosaics mask which is constructed of min v_error values in overlapping areas
+         # Have to match v_error values in mosaics mask which is constructed
+         # of min v_error values in overlapping areas
          mask_list.append(each_ds[mask_var])
 
          if len(data_list) > 1:
@@ -494,8 +497,8 @@ def build_mosaics(granules, orbit_dir):
             first_mask = f'{_first}{mask_var}'
             second_mask = f'{_second}{mask_var}'
 
-            # Have to insert into dataset to make sure all coordinates are equal before
-            # masking against min v_error
+            # Have to insert into dataset to make sure all coordinates are
+            # equal before masking against min v_error
             # ATTN: ds[mask_var] is the mask
             mask_ds[first_var] = data_list[0]
             mask_ds[second_var] = data_list[1]
@@ -504,10 +507,8 @@ def build_mosaics(granules, orbit_dir):
             mask_ds[second_mask] = mask_list[1]
 
             # Pick values that correspond to the minimum v_error values
-            concatenated = mask_ds[second_var].where(mask_ds[mask_var] == mask_ds[second_mask], other=mask_ds[first_var])
-
-            # concatenated[CompDataVars.COUNT0] = count0_concatenated.max(ITSLiveAnnualMosaics.CONCAT_DIM_NAME, skipna=True, keep_attrs=True)
-            # concatenated[each_var] = var_masked_merged
+            concatenated = mask_ds[second_var].where(mask_ds[mask_var] ==
+                              mask_ds[second_mask], other=mask_ds[first_var])
 
             # Delete current datasets data from self.mask_ds
             del mask_ds[first_var]
@@ -517,21 +518,27 @@ def build_mosaics(granules, orbit_dir):
 
             data_list = [concatenated]
 
-            # Update min v_error for the "concatenated" to be compared with next granule to merge
-            verror_concatenated = xr.concat(mask_list, CONCAT_DIM_NAME, join="outer")
-            mask_list = [verror_concatenated.min(CONCAT_DIM_NAME, skipna=True)]
+            # Update min v_error for the "concatenated" to be compared with
+            # next granule to merge
+            verror_concatenated = xr.concat(mask_list,
+                                    CONCAT_DIM_NAME,
+                                    join="outer")
+            mask_list = [verror_concatenated.min(
+                              CONCAT_DIM_NAME,
+                              skipna=True
+                           )
+                        ]
 
             gc.collect()
 
       if concatenated is not None:
-         logging.info(f'Done merging values for {each_var} based on min v_error mask')
+         logging.info(f'Done merging values for {each_var} based on '
+                        'min v_error mask')
 
       # Set data values in result dataset
       overlap_dims = dict(x=concatenated.x.values, y=concatenated.y.values)
 
       # Set values for the output dataset
-      # Remove zeros from data variables, their standard_names and descriptions:
-      # only vx0, vy0, v0 strings should be replaced by corresponding vx, vy, v
       ds[each_var].loc[overlap_dims] = concatenated
 
       gc.collect()
@@ -607,7 +614,8 @@ if __name__ == '__main__':
       '-t', '--target_bucket_dir',
       type=str,
       default='test-space/range_range/Greenland-mosaics',
-      help='AWS S3 bucket and directory to store range-range velocity granules to [%(default)s]'
+      help='AWS S3 bucket and directory to store range-range velocity '
+            'granules to [%(default)s]'
    )
    parser.add_argument(
       '-w', '--dask-workers',
@@ -637,7 +645,8 @@ if __name__ == '__main__':
    end_date = start_date + datetime.timedelta(days=12)
    logging.info(f'Got {start_date=} {end_date=}')
 
-   logging.info(f'Querying for ascending granules between {start_date} and {end_date}')
+   logging.info(f'Querying for ascending granules between {start_date} and '
+                  f'{end_date}')
 
    roi = {
       "type": "Polygon",
