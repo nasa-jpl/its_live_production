@@ -220,10 +220,12 @@ def compute_velocity_based_on_m11_m12(
    vr_1 = np.full(dims, np.nan)
    M11_1 = np.full(dims, np.nan)
    M12_1 = np.full(dims, np.nan)
+   dr_to_vr_1 = np.full(dims, np.nan)
 
    vr_2 = np.full(dims, np.nan)
    M11_2 = np.full(dims, np.nan)
    M12_2 = np.full(dims, np.nan)
+   dr_to_vr_2 = np.full(dims, np.nan)
 
    x1a = int(np.round((trans1[0] - W) / trans1[1]))
    x1b = x1a + xsize1
@@ -236,10 +238,12 @@ def compute_velocity_based_on_m11_m12(
    y2b = y2a + ysize2
 
    vr_1[y1a:y1b, x1a:x1b] = vr_a
+   dr_to_vr_1[y1a:y1b, x1a:x1b] = dr_to_vr_factor_a
    M11_1[y1a:y1b, x1a:x1b] = m11_a
    M12_1[y1a:y1b, x1a:x1b] = m12_a
 
    vr_2[y2a:y2b, x2a:x2b] = vr_d
+   dr_to_vr_2[y2a:y2b, x2a:x2b] = dr_to_vr_factor_d
    M11_2[y2a:y2b, x2a:x2b] = m11_d
    M12_2[y2a:y2b, x2a:x2b] = m12_d
 
@@ -247,8 +251,8 @@ def compute_velocity_based_on_m11_m12(
    zero_mask = (scale_factor == 0)
    scale_factor[zero_mask] = np.nan
 
-   vx = (M12_2 * vr_1 / dr_to_vr_factor_a - M12_1 * vr_2 / dr_to_vr_factor_d) / scale_factor
-   vy = (-M11_2 * vr_1 / dr_to_vr_factor_a + M11_1 * vr_2 / dr_to_vr_factor_d) / scale_factor
+   vx = (M12_2 * vr_1 / dr_to_vr_1 - M12_1 * vr_2 / dr_to_vr_2) / scale_factor
+   vy = (-M11_2 * vr_1 / dr_to_vr_1 + M11_1 * vr_2 / dr_to_vr_2) / scale_factor
 
    return vx, vy, xsize, ysize, trans
 
@@ -434,7 +438,6 @@ def build_mosaics(granules, orbit_dir):
       if len(data_list) > 1:
          # Concatenate once we have 2 arrays
          concatenated = xr.concat(data_list, CONCAT_DIM_NAME, join="outer")
-         # data_list = [concatenated]
          data_list = [concatenated.min(CONCAT_DIM_NAME, skipna=True, keep_attrs=True)]
 
       gc.collect()
@@ -599,12 +602,24 @@ if __name__ == '__main__':
       help='Path to the input file storing ascending granules mosaics [%(default)s].'
    )
    parser.add_argument(
+      '-d', '--descendingNetCDF',
+      type=str,
+      default=None,
+      help='Path to the input file storing descending granules mosaics [%(default)s].'
+   )
+   parser.add_argument(
       '-f', '--ascendingFactor',
       type=float,
       default=None,
       help='Ascending dr_to_vr_factor to use for range-range computations [%(default)s].'
          ' (the value should be used only if ascendingNetCDF is provided).'
    )
+   parser.add_argument(
+      '--useFactorRaster',
+      action='store_true',
+      default=False,
+      help='Use dr_to_vr_factor raster as stored in the ascending/descending'
+            'mosaics for the range-range computations. [%(default)s]')
    parser.add_argument(
       '--startDate',
       type=lambda s: parse(s),
@@ -631,19 +646,6 @@ if __name__ == '__main__':
       help='Number of granules to process in parallel [%(default)d]'
    )
    parser.add_argument(
-      '-b', '--bucket',
-      type=str,
-      default='its-live-data',
-      help='AWS S3 bucket that stores ITS_LIVE V2 data [%(default)s]'
-   )
-   parser.add_argument(
-      '-t', '--target_bucket_dir',
-      type=str,
-      default='test-space/range_range/Greenland-mosaics',
-      help='AWS S3 bucket and directory to store range-range velocity '
-            'granules to [%(default)s]'
-   )
-   parser.add_argument(
       '-w', '--dask-workers',
       type=int,
       default=8,
@@ -651,10 +653,6 @@ if __name__ == '__main__':
    )
 
    args = parser.parse_args()
-
-   # S3 args
-   target_bucket = args.bucket
-   target_bucket_dir = args.target_bucket_dir
 
    # Load polygon
    coordinates = load_polygon(args.polygonGeoJSON)
@@ -719,14 +717,38 @@ if __name__ == '__main__':
          asc_ds = ids[['M11', 'M12', 'vr', 'dr_to_vr_factor', 'mapping']].load()
          logging.info(f'Got {list(asc_ds.keys())} variables from dataset.')
 
-      asc_factor = args.ascendingFactor
-      logging.info(f'Got {asc_factor=}')
+      if args.ascendingFactor:
+         asc_factor = args.ascendingFactor
+         logging.info(f'Got {asc_factor=}')
+
+      else:
+         # Compute average dr_to_vr_factor from the raster
+         asc_factor = np.nanmean(asc_ds['dr_to_vr_factor'].values)
+         logging.info(f'Computed {asc_factor=} from dr_to_vr_factor raster')
 
    else:
       # Create ascending granules mosaics
       asc_factor, asc_ds = build_mosaics(items[ascending], ascending)
 
-   des_factor, des_ds = build_mosaics(items[descending], descending)
+   if args.descendingNetCDF:
+      # Use provided descending granules
+      logging.info(f'Using provided descending granules {args.descendingNetCDF}')
+      with xr.open_dataset(args.descendingNetCDF, engine=NC_ENGINE) as ids:
+         des_ds = ids[['M11', 'M12', 'vr', 'dr_to_vr_factor', 'mapping']].load()
+         logging.info(f'Got {list(des_ds.keys())} variables from dataset.')
+
+      if 'dr_to_vr_factor' in des_ds:
+         des_factor = np.nanmean(des_ds['dr_to_vr_factor'].values)
+         logging.info(f'Got {des_factor=} from dr_to_vr_factor raster')
+
+      else:
+         # Compute average dr_to_vr_factor from the raster
+         des_factor = np.nanmean(des_ds['dr_to_vr_factor'].values)
+         logging.info(f'Computed {des_factor=} from dr_to_vr_factor raster')
+
+   else:
+      # Create descending granules mosaics
+      des_factor, des_ds = build_mosaics(items[descending], descending)
 
    # Build range-range mosaics based on ascending and descending mosaics
    d_ds_m11 = des_ds['M11'].values
@@ -735,6 +757,7 @@ if __name__ == '__main__':
 
    logging.info(f'MIN/MAX vr_descending: {np.nanmin(d_ds_vr)}, {np.nanmax(d_ds_vr)}')
    d_dr_to_vr_factor = des_factor
+
    d_trans = np.array(str.split(des_ds['mapping'].GeoTransform)).astype(float)
 
    a_ds_m11 = asc_ds['M11'].values
@@ -744,6 +767,12 @@ if __name__ == '__main__':
 
    a_dr_to_vr_factor = asc_factor
    a_trans = np.array(str.split(asc_ds['mapping'].GeoTransform)).astype(float)
+
+   if args.useFactorRaster:
+      # Use dr_to_vr_factor raster from the descending granules
+      a_dr_to_vr_factor = asc_ds['dr_to_vr_factor'].values
+      d_dr_to_vr_factor = des_ds['dr_to_vr_factor'].values
+      logging.info(f'Using dr_to_vr_factor rasters.')
 
    vx, vy, x_size, y_size, trans = compute_velocity_based_on_m11_m12(
       a_ds_m11, a_ds_m12,
