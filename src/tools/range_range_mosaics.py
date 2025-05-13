@@ -710,7 +710,7 @@ if __name__ == '__main__':
    asc_ds = None
    asc_factor = None
 
-   var_list = ['vx', 'vy', 'M11', 'M12', 'vr', 'dr_to_vr_factor', 'mapping']
+   var_list = ['vx', 'vy', 'v', 'M11', 'M12', 'vr', 'dr_to_vr_factor', 'mapping']
 
    if args.ascendingNetCDF:
       # Use provided ascending granules
