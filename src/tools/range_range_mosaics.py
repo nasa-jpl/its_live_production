@@ -451,6 +451,9 @@ def build_mosaics(granules, orbit_dir):
    # Add min v_error for the output dataset
    ds[ds_var].loc[max_overlap_dims] = max_overlap
 
+   del max_overlap
+   gc.collect()
+
    # Concatenate data for each data variable:
    # 2. Merge all other data variables based on the v_error mask: pick
    # values from the mosaics which match v_error value
@@ -463,10 +466,6 @@ def build_mosaics(granules, orbit_dir):
 
    # Name of the variable that should be used for masking of the rest of the variables
    mask_var = 'v_error'
-
-   # Save Dataset with mask as separate object - to insert/delete data for merging
-   # into it.
-   mask_ds = ds.copy(deep=True)
 
    dr_to_vr_factor = []
 
@@ -509,21 +508,22 @@ def build_mosaics(granules, orbit_dir):
             # Have to insert into dataset to make sure all coordinates are
             # equal before masking against min v_error
             # ATTN: ds[mask_var] is the mask
-            mask_ds[first_var] = data_list[0]
-            mask_ds[second_var] = data_list[1]
+            ds[first_var] = data_list[0]
+            ds[second_var] = data_list[1]
 
-            mask_ds[first_mask] = mask_list[0]
-            mask_ds[second_mask] = mask_list[1]
+            ds[first_mask] = mask_list[0]
+            ds[second_mask] = mask_list[1]
 
             # Pick values that correspond to the minimum v_error values
-            concatenated = mask_ds[second_var].where(mask_ds[mask_var] ==
-                              mask_ds[second_mask], other=mask_ds[first_var])
+            concatenated = ds[second_var].where(ds[mask_var] ==
+                              ds[second_mask], other=ds[first_var])
 
-            # Delete current datasets data from self.mask_ds
-            del mask_ds[first_var]
-            del mask_ds[second_var]
-            del mask_ds[first_mask]
-            del mask_ds[second_mask]
+            # Delete temporary datasets
+            del ds[first_var]
+            del ds[second_var]
+            del ds[first_mask]
+            del ds[second_mask]
+            gc.collect()
 
             data_list = [concatenated]
 
@@ -537,7 +537,7 @@ def build_mosaics(granules, orbit_dir):
                               skipna=True
                            )
                         ]
-
+            del verror_concatenated
             gc.collect()
 
          # Done with variable in the granule dataset, free up memory
