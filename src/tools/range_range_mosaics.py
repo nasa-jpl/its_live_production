@@ -335,7 +335,9 @@ def build_mosaics(granules, orbit_dir):
             x_coords.append(ds.x.values)
             y_coords.append(ds.y.values)
 
-            raw_ds[each_s3] = ds.load()
+            # raw_ds[each_s3] = ds.load()
+            # Load only the data variables we need
+            raw_ds[each_s3] = ds[['vx', 'vy', 'v', 'M11', 'M12', 'vr', 'mapping']].load()
 
             # Add "dr_to_vr_factor" raster to each of them as it's a scalar and will
             # need to be set based on the minimum v_error
@@ -706,6 +708,7 @@ if __name__ == '__main__':
       logging.info(f'Using provided ascending granules {args.ascendingNetCDF}')
       with xr.open_dataset(args.ascendingNetCDF, engine=NC_ENGINE) as ids:
          asc_ds = ids[['M11', 'M12', 'vr', 'dr_to_vr_factor']].load()
+         logging.info(f'Got {list(asc_ds.keys())} variables from dataset.')
 
       asc_factor = args.ascendingFactor
       logging.info(f'Got {asc_factor=}')
