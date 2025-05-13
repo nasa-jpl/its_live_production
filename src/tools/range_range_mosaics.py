@@ -420,7 +420,9 @@ def build_mosaics(granules, orbit_dir):
                attrs=each_ds[ds_var].attrs
          )
 
-      logging.info(f'-->appending to overlap: {np.nanmin(each_ds[ds_var].values)=} {np.nanmax(each_ds[ds_var].values)=}')
+      logging.info(f'-->appending to overlap: '
+                     f'{np.nanmin(each_ds[ds_var].values)=} '
+                     f'{np.nanmax(each_ds[ds_var].values)=}')
       data_list.append(each_ds[ds_var])
 
       if len(data_list) > 1:
@@ -443,8 +445,8 @@ def build_mosaics(granules, orbit_dir):
    ds[ds_var].loc[max_overlap_dims] = max_overlap
 
    # Concatenate data for each data variable:
-   # 2. Merge all other data variables based on the v_error mask: pick values from the
-   #    mosaics which match v_error value
+   # 2. Merge all other data variables based on the v_error mask: pick
+   # values from the mosaics which match v_error value
    _first = '_first'
    _second = '_second'
 
@@ -580,6 +582,19 @@ if __name__ == '__main__':
       help='Path to the input Geojson file storing region polygon.'
    )
    parser.add_argument(
+      '-a', '--ascendingNetCDF',
+      type=str,
+      default=None,
+      help='Path to the input file storing ascending granules mosaics [%(default)s].'
+   )
+   parser.add_argument(
+      '-f', '--ascendingFactor',
+      type=float,
+      default=None,
+      help='Ascending dr_to_vr_factor to use for range-range computations [%(default)s].'
+         ' (the value should be used only if ascendingNetCDF is provided).'
+   )
+   parser.add_argument(
       '--startDate',
       type=lambda s: parse(s),
       help='Start date for search API query to get velocity pair '
@@ -681,7 +696,24 @@ if __name__ == '__main__':
    # Create mosaics for ascending and descending granules
    s3 = s3fs.S3FileSystem(anon=False, skip_instance_cache=True)
 
-   asc_factor, asc_ds = build_mosaics(items[ascending], ascending)
+   # This is to save on interrupted workflow (due to out of memory issues)
+   # to load already created ascending granules mosaics
+   asc_ds = None
+   asc_factor = None
+
+   if args.ascendingNetCDF:
+      # Use provided ascending granules
+      logging.info(f'Using provided ascending granules {args.ascendingNetCDF}')
+      with xr.open_dataset(args.ascendingNetCDF, engine=NC_ENGINE) as ids:
+         asc_ds = ids(['M11', 'M12', 'vr', 'dr_to_vr_factor']).load()
+
+      asc_factor = args.ascendingFactor
+      logging.info(f'Got {asc_factor=}')
+
+   else:
+      # Create ascending granules mosaics
+      asc_factor, asc_ds = build_mosaics(items[ascending], ascending)
+
    des_factor, des_ds = build_mosaics(items[descending], descending)
 
    # Build range-range mosaics based on ascending and descending mosaics
