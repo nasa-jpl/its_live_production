@@ -63,7 +63,7 @@ SENTINEL1_ENCODING = {
    'vy':                     {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
    'v_error':                {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
    'vr':                     {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
-   DataVars.DR_TO_VR_FACTOR: {'_FillValue': -32767.0, 'dtype': 'short', "zlib": True, "complevel": 2, "shuffle": True},
+   DataVars.DR_TO_VR_FACTOR: {'_FillValue': -32767.0, 'dtype': np.float32, "zlib": True, "complevel": 2, "shuffle": True},
    'x':                      {'_FillValue': None},
    'y':                      {'_FillValue': None}
 }
