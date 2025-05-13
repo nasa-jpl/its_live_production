@@ -705,7 +705,7 @@ if __name__ == '__main__':
       # Use provided ascending granules
       logging.info(f'Using provided ascending granules {args.ascendingNetCDF}')
       with xr.open_dataset(args.ascendingNetCDF, engine=NC_ENGINE) as ids:
-         asc_ds = ids(['M11', 'M12', 'vr', 'dr_to_vr_factor']).load()
+         asc_ds = ids[['M11', 'M12', 'vr', 'dr_to_vr_factor']].load()
 
       asc_factor = args.ascendingFactor
       logging.info(f'Got {asc_factor=}')
