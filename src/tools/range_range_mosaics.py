@@ -323,9 +323,9 @@ def build_mosaics(granules, orbit_dir):
    scalar_factors = []
 
    # Step through all granules and concatenate data in new dimension
-   # DEBUG: process only first 10 granules to make sure code is working
 
-   # Iterate over granules
+   # Iterate over granules to introduce dr_to_vr_factor raster to each
+   # of granules based on the M11 attribute
    for each in granules:
       each_s3 = each.replace('https://its-live-data.s3.amazonaws.com', 's3://its-live-data')
 
@@ -335,7 +335,6 @@ def build_mosaics(granules, orbit_dir):
             x_coords.append(ds.x.values)
             y_coords.append(ds.y.values)
 
-            # raw_ds[each_s3] = ds.load()
             # Load only the data variables we need
             raw_ds[each_s3] = ds[['vx', 'vy', 'v', 'M11', 'M12',
                                     'vr', 'v_error', 'mapping']].load()
@@ -435,15 +434,16 @@ def build_mosaics(granules, orbit_dir):
       if len(data_list) > 1:
          # Concatenate once we have 2 arrays
          concatenated = xr.concat(data_list, CONCAT_DIM_NAME, join="outer")
-         data_list = [concatenated]
+         # data_list = [concatenated]
+         data_list = [concatenated.min(CONCAT_DIM_NAME, skipna=True, keep_attrs=True)]
 
       gc.collect()
 
-   max_overlap = None
+   max_overlap = data_list[0]
 
    # 1a. Take minimum of all overlapping cells
-   logging.info(f'Taking minimum for {ds_var}')
-   max_overlap = concatenated.min(CONCAT_DIM_NAME, skipna=True, keep_attrs=True)
+   logging.info(f'Adding minimum for {ds_var} to dataset')
+   # max_overlap = concatenated.min(CONCAT_DIM_NAME, skipna=True, keep_attrs=True)
 
    # Set data values in result dataset
    max_overlap_dims = dict(x=max_overlap.x.values, y=max_overlap.y.values)
