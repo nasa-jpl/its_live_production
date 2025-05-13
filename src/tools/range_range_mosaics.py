@@ -710,11 +710,13 @@ if __name__ == '__main__':
    asc_ds = None
    asc_factor = None
 
+   var_list = ['vx', 'vy', 'M11', 'M12', 'vr', 'dr_to_vr_factor', 'mapping']
+
    if args.ascendingNetCDF:
       # Use provided ascending granules
       logging.info(f'Using provided ascending granules {args.ascendingNetCDF}')
       with xr.open_dataset(args.ascendingNetCDF, engine=NC_ENGINE) as ids:
-         asc_ds = ids[['M11', 'M12', 'vr', 'dr_to_vr_factor', 'mapping']].load()
+         asc_ds = ids[var_list].load()
          logging.info(f'Got {list(asc_ds.keys())} variables from dataset.')
 
       if args.ascendingFactor:
@@ -734,7 +736,7 @@ if __name__ == '__main__':
       # Use provided descending granules
       logging.info(f'Using provided descending granules {args.descendingNetCDF}')
       with xr.open_dataset(args.descendingNetCDF, engine=NC_ENGINE) as ids:
-         des_ds = ids[['M11', 'M12', 'vr', 'dr_to_vr_factor', 'mapping']].load()
+         des_ds = ids[var_list].load()
          logging.info(f'Got {list(des_ds.keys())} variables from dataset.')
 
       if 'dr_to_vr_factor' in des_ds:
