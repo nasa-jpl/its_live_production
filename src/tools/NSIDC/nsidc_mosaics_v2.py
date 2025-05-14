@@ -190,6 +190,10 @@ class NSIDCMosaicFormat:
 
     LOCAL_FIX_DIR = 'fixed_mosaics'
 
+    # Flag to indicate if the files should be overwritten if they
+    # already exist in the target directory in s3 bucket
+    OVERWRITE_EXISTING_FILES = False
+
     def __init__(self, s3_bucket: str, s3_dir: str):
         """
         Initialize the object.
@@ -270,18 +274,26 @@ class NSIDCMosaicFormat:
         bucket = boto3.resource('s3').Bucket(target_bucket)
         bucket_granule = os.path.join(target_dir, filename)
 
-        if NSIDCFormat.object_exists(bucket, bucket_granule):
-            # Check for metadata files
-            # Premet file
-            bucket_granule = os.path.join(target_dir, f'{filename}{NSIDCMeta.PREMET_EXT}')
-
+        # Check if should overwrite existing files
+        if NSIDCMosaicFormat.OVERWRITE_EXISTING_FILES is False:
             if NSIDCFormat.object_exists(bucket, bucket_granule):
-                # Spatial file
-                bucket_granule = os.path.join(target_dir, f'{filename}{NSIDCMeta.SPATIAL_EXT}')
+                # Check for metadata files
+                # Premet file
+                bucket_granule = os.path.join(
+                    target_dir,
+                    f'{filename}{NSIDCMeta.PREMET_EXT}'
+                )
 
                 if NSIDCFormat.object_exists(bucket, bucket_granule):
-                    msgs.append('File is already processed, skipping.')
-                    return msgs
+                    # Spatial file
+                    bucket_granule = os.path.join(
+                        target_dir,
+                        f'{filename}{NSIDCMeta.SPATIAL_EXT}'
+                    )
+
+                    if NSIDCFormat.object_exists(bucket, bucket_granule):
+                        msgs.append('File is already processed, skipping.')
+                        return msgs
 
         local_file = filename + '.local'
 
@@ -295,7 +307,8 @@ class NSIDCMosaicFormat:
             msgs.extend(fixed_ds_msgs)
 
             # Write fixed granule to local file
-            # Convert dataset to Dask dataset not to run out of memory while writing to the file
+            # Convert dataset to Dask dataset not to run out of memory
+            # while writing to the file
             fixed_ds = fixed_ds.chunk(chunks={
                 'x': NSIDCMosaicFormat.CHUNK_SIZE,
                 'y': NSIDCMosaicFormat.CHUNK_SIZE
@@ -521,9 +534,19 @@ if __name__ == '__main__':
         help='Dry run, do not actually process any granules'
     )
 
+    parser.add_argument(
+        '-o', '--overwriteExistingFiles',
+        action='store_true',
+        default=False,
+        help='Flag to overwrite existing files in the target directory if '
+                'they already exist. This is useful when we need to re-create'
+                'metadata files [%(default)s].'
+    )
+
     args = parser.parse_args()
 
     NSIDCFormat.DRY_RUN = args.dryrun
+    NSIDCMosaicFormat.OVERWRITE_EXISTING_FILES = args.overwriteExistingFiles
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
