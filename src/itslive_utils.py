@@ -436,6 +436,7 @@ def search_stac_catalog(epsg_code: str,
         }
         search_kwargs["filter_lang"] = "cql2-json"
 
+    logging.info(f'Using STAC search criteria: {search_kwargs=}')
     search = catalog.search(**search_kwargs)
 
     hrefs = []
