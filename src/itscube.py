@@ -365,10 +365,6 @@ class ITSCube:
 
         total_num = len(found_urls)
 
-        # DEBUG: Save found granules to the json file for testing of STAC catalog
-        with open('found_granules_stac.json', 'w') as f:
-            json.dump(found_urls, f, indent=4)
-
         if total_num == 0:
             self.logger.info("No granules are found, skipping datacube generation or update")
 
@@ -390,10 +386,11 @@ class ITSCube:
         urls, self.skipped_granules[DataVars.SKIP_DUPLICATE] = ITSCube.skip_duplicate_l89_granules(found_urls)
 
         # DEBUG: pick only S1 granules to test
-        sentinel_granules = [each for each in urls if os.path.basename(each).startswith('S1')]
-        self.logger.info(f'Leaving {len(sentinel_granules)} Sentinel granules out of {len(urls)} granules for testing')
-        # return urls
-        return sentinel_granules
+        # sentinel_granules = [each for each in urls if os.path.basename(each).startswith('S1')]
+        # self.logger.info(f'Leaving {len(sentinel_granules)} Sentinel granules out of {len(urls)} granules for testing')
+        # return sentinel_granules
+
+        return urls
 
     @staticmethod
     def skip_duplicate_l89_granules(found_urls):
