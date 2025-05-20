@@ -38,8 +38,7 @@ class Output:
     CHUNKS_ATTR = 'chunks'
     CHUNKSIZES_ATTR = 'chunksizes'
 
-    # These encoding attributes are for M11 and M12 variables in radar granules
-    SCALE_FACTOR = 'scale_factor'
+    # These encoding attributes are for M11 and M12 variables in radar granules    SCALE_FACTOR = 'scale_factor'
     ADD_OFFSET = 'add_offset'
 
     # Global attributes
@@ -51,7 +50,7 @@ class Output:
 
     COUNT = 'count'
     URL = 'url'
-    REFERENCES= 'references'
+    REFERENCES = 'references'
     PROJECTION = 'projection'
     PUBLISHER_NAME = 'publisher_name'
 
@@ -124,7 +123,8 @@ class Coords:
 
     DESCRIPTION = {
         MID_DATE: "midpoint of image 1 and image 2 acquisition date and time "
-                    "with granule's centroid longitude and latitude as microseconds",
+                  "with granule's centroid longitude and latitude as "
+                  "microseconds",
         X: "x coordinate of projection",
         Y: "y coordinate of projection"
     }
@@ -137,7 +137,9 @@ class FileExtension:
     ZARR = '.zarr'
     JSON = '.json'
 
+
 _Mapping = namedtuple("Mapping", ["name", "attrs"])
+
 
 # Initialize "mapping"  name and attributes
 _MappingAttributes = namedtuple(
@@ -153,9 +155,10 @@ MappingInstance = _Mapping(
     name='mapping',
     attrs=_MappingAttributes(
         spatial_epsg='spatial_epsg',
-        geo_transform = 'GeoTransform'
+        geo_transform='GeoTransform'
     )
 )
+
 
 class DataVars:
     """
@@ -450,11 +453,12 @@ class DataVars:
             ACQUISITION_DATE_IMG2: "acquisition date and time of image 2",
             DATE_DT: "time separation between acquisition of image 1 and image 2",
             DATE_CENTER: "midpoint of image 1 and image 2 acquisition date",
-            ROI_VALID_PERCENTAGE: "percentage of pixels with a valid velocity "
-                                "estimate determined for the intersection of the full image "
-                                "pair footprint and the region of interest (roi) that defines "
-                                "where autoRIFT tried to estimate a velocity",
-        }
+            ROI_VALID_PERCENTAGE:
+            "percentage of pixels with a valid velocity "
+            "estimate determined for the intersection of the full image "
+            "pair footprint and the region of interest (roi) that defines "
+            "where autoRIFT tried to estimate a velocity",
+            }
 
         # Flag if data variable values are to be converted to the date objects
         CONVERT_TO_DATE = {
