@@ -38,7 +38,8 @@ class Output:
     CHUNKS_ATTR = 'chunks'
     CHUNKSIZES_ATTR = 'chunksizes'
 
-    # These encoding attributes are for M11 and M12 variables in radar granules    SCALE_FACTOR = 'scale_factor'
+    # These encoding attributes are for M11 and M12 variables in radar granules
+    SCALE_FACTOR = 'scale_factor'
     ADD_OFFSET = 'add_offset'
 
     # Global attributes
