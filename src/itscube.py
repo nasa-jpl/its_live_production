@@ -1017,6 +1017,16 @@ class ITSCube:
             itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
             logging.info("Done copying datacube locally.")
 
+            # Make sure cube's metadata exists in the local directory
+            for each_meta in itslive_utils.CUBE_META:
+                if not os.path.exists(
+                    os.path.join(os.path.basename(output_dir), each_meta)
+                ):
+                    raise RuntimeError(
+                        f"Missing {each_meta} in {os.path.basename(output_dir)}"
+                        f" after copying from {backup_url}"
+                    )
+
         elif len(output_bucket):
             # datacube exists on local file system even though S3 bucket for
             # the datacube is provided.

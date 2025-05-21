@@ -11,7 +11,6 @@ from pystac_client import Client
 import numpy as np
 import os
 import logging
-from rtree import index
 import time
 import sys
 import subprocess
@@ -120,8 +119,7 @@ def bucket_cube_name_from_url(source_url: str) -> str:
 
     # Split bucket name and file URL
     bucket_name, file_url = source_url.split('/', 1)
-
-    print(f'bucket_name, file_url: {bucket_name}, {file_url}')
+    logging.info(f'{bucket_name=} {file_url=}')
 
     return bucket_name, file_url
 
@@ -247,7 +245,7 @@ def identify_datacube_latest_chunks(bucket_url: str):
 @timing_decorator
 def backup_datacube_latest_chunks(
     bucket_url: str,
-    backup_path: str,
+    backup_url: str,
     num_threads: int = 4,
     dask_scheduler: str = 'threads'
 ):
@@ -256,10 +254,9 @@ def backup_datacube_latest_chunks(
     variables from the given datacube s3 URL.
 
     Args:
-        bucket_url (str): Name of the S3 bucket and full path to the
-            datacube in Zarr format.
-        backup_path (str): s3 bucket path for the datacube to backup latest
-            chunks of the datacube to.
+        bucket_url (str): s3 bucket path for the datacube to backup.
+        backup_url (str): s3 bucket path for the datacube to backup latest
+            Zarr chunks to.
         num_threads (int): Number of threads to use for the backup copy.
             Default is 4.
         dask_scheduler (str): Dask scheduler to use for parallel downloads.
@@ -269,42 +266,47 @@ def backup_datacube_latest_chunks(
         Map of data variable to the ranges for existing data chunks,
         and the last chunk ranges for each data variable.
     """
-    # Identify last chunk for each data variable in the zarr store
+    logging.info(f'Backing up {bucket_url} to {backup_url}...')
+
+    # Identify last chunk for each data variable in the cube
     last_chunk_map = identify_datacube_latest_chunks(bucket_url)
 
+    # Isolate bucket name and file path from the given S3 URLs
     bucket_name, source_url = bucket_cube_name_from_url(bucket_url)
+    _, target_url = bucket_cube_name_from_url(backup_url)
 
     # Save identified chunks to the local file
-    local_filename = os.path.basename(backup_path) + CHUNKS_FILE_EXTENSION
-    with open(local_filename, 'w') as outfile:
+    local_filename = os.path.basename(source_url) + CHUNKS_FILE_EXTENSION
+    logging.info(f'Saving identified chunks to {local_filename}')
+    with open(local_filename, 'w') as fhandle:
         json.dump(
             to_serializable(last_chunk_map),
-            outfile,
+            fhandle,
             indent=3
         )
-
-    # Get rid of 's3://' prefix and bucket name if present in the source URL
-    s3_path = source_url.replace('s3://' + bucket_name + '/', '')
 
     s3 = boto3.resource('s3')
     s3_bucket = s3.Bucket(bucket_name)
 
     # Upload chunk information file to the backup path
-    s3_bucket.upload_file(local_filename, backup_path + CHUNKS_FILE_EXTENSION)
+    logging.info(f'Backup {local_filename} to {target_url+CHUNKS_FILE_EXTENSION}')
+    s3_bucket.upload_file(local_filename, target_url + CHUNKS_FILE_EXTENSION)
 
     # Backup metadata files
     for each_meta in CUBE_META:
         # Backup the file
-        logging.info(f'Backup {os.path.join(s3_path, each_meta)} to {backup_path}')
-        backup_chunk(s3_bucket, s3_path, each_meta, backup_path)
+        logging.info(
+            f'Backup cube {each_meta} to {target_url}'
+        )
+        backup_chunk(s3_bucket, source_url, each_meta, target_url)
 
     # Number of chunks to backup in parallel - should make it configurable?
     num_chunks_in_parallel = 500
 
     # Backup latest chunks and metadata files for each data variable
     for each_var, each_chunk_info in last_chunk_map.items():
-        s3_var_path = os.path.join(s3_path, each_var)
-        backup_var_path = os.path.join(backup_path, each_var)
+        s3_var_path = os.path.join(source_url, each_var)
+        s3_target = os.path.join(target_url, each_var)
 
         logging.info(f'Backup {each_var}: {each_chunk_info.last_dim_ranges=}')
 
@@ -323,7 +325,7 @@ def backup_datacube_latest_chunks(
                 s3_bucket,
                 s3_var_path,
                 ".".join(map(str, each_chunk)),
-                backup_path,
+                s3_target,
             ) for each_chunk in chunks]
 
             with ProgressBar():
@@ -344,16 +346,13 @@ def backup_datacube_latest_chunks(
         # Copy variable metadata files
         for each_meta in VAR_META:
             # Download the file
-            logging.info(f'Backup {each_meta=} to {backup_path}')
+            logging.info(f'Backup {each_meta=} to {s3_target}')
             backup_chunk(
                 s3_bucket,
                 s3_var_path,
                 each_meta,
-                backup_var_path
+                s3_target
             )
-
-        # Debugger
-        # break
 
     return last_chunk_map
 
