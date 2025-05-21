@@ -472,58 +472,6 @@ def get_min_lon_lat_max_lon_lat(coordinates: list):
     return (min_lon, min_lat, max_lon, max_lat)
 
 
-def download_rtree_from_s3(s3_bucket, s3_key, local_path: str = None):
-    """
-    Download R-tree index file from AWS S3 bucket.
-
-    Args:
-    - s3_bucket: Name of the S3 bucket.
-    - s3_key: Key of the R-tree file in the S3 bucket.
-    - local_path: Local path to save the downloaded file. If None is provided,
-            the file will be saved in the current directory with the same name as the S3 key.
-
-    Returns: R-tree index object.
-    """
-    logging.info(f'Reading R-tree index from s3://{s3_bucket}/{s3_key}')
-
-    for each_extension in ['.dat', '.idx']:
-        s3_key_with_ext = s3_key + each_extension
-        s3_client = boto3.resource('s3')
-
-        local_file = local_path
-        if local_file is None:
-            local_file = os.path.basename(s3_key_with_ext)
-
-        logging.info(f'Downloading {s3_key_with_ext} from {s3_bucket} to {local_file}')
-        s3_client.Bucket(s3_bucket).download_file(s3_key_with_ext, local_file)
-
-    # Open local version of the R-tree index
-    return index.Index(os.path.basename(s3_key))
-
-
-def query_rtree(rtree_idx, query_box, epsg_code, min_percent_valid_pix=1):
-    """
-    Query the R-tree for all files overlapping with the query bounding box.
-    The query returns only files with at least min_percent_valid_pix valid pixels and
-    with the same EPSG code as the query box.
-
-    Args:
-    - rtree_idx: R-tree index.
-    - query_box: Bounding box to query (min_lon, min_lat, max_lon, max_lat)
-    - epsg_code: Original EPSG code of the longitude, latitude coordinates in the query box.
-    - min_percent_valid_pix: Minimum percentage of valid pixels in the granule to be considered.
-        Default is 1%.
-
-    Returns:
-    - List of files names whose extents overlap with the query box.
-    """
-    # Query the R-tree for files that intersect with the query bounding box
-    overlapping_files = list(rtree_idx.intersection(query_box, objects=True))
-
-    # Return file names that overlap the query box and have at least 1% valid pixels
-    return [item.object[0] for item in overlapping_files if item.object[1] >= min_percent_valid_pix and item.object[2] == epsg_code]
-
-
 def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool = True):
     """Copy file to/from aws s3 bucket.
 
