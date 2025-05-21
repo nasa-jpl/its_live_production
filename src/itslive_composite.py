@@ -2192,7 +2192,7 @@ class ITSLiveComposite:
         self.s3, self.cube_store_in, self.cube_ds, _ = ITSCube.init_input_store(
             cube_store,
             s3_bucket,
-            read_skipped_granules_flag
+            read_skipped_granules = read_skipped_granules_flag
         )
 
         cube_projection = int(self.cube_ds.attrs[CubeOutput.PROJECTION])
