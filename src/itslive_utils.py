@@ -615,33 +615,37 @@ def search_stac_catalog(epsg_code: str,
         **kwargs
     }
 
+    def build_cql2_filter(filters_list):
+        if not filters_list:
+            return None
+        return filters_list[0] if len(filters_list) == 1 else \
+            {"op": "and", "args": filters_list}
+
     # Add more filters and flexibility if needed
-    if percent_valid_pixels is not None:
-        search_kwargs["filter"] = {
+    filter_list = [
+        {
             "op": ">=",
             "args": [{"property": "percent_valid_pixels"}, percent_valid_pixels]
+        },
+        {
+            "op": "=",
+            "args": [{"property": "proj:code"}, f'EPSG:{epsg_code}']
         }
-        search_kwargs["filter_lang"] = "cql2-json"
+    ]
+
+    filters = build_cql2_filter(filter_list)
+    search_kwargs["filter"] = build_cql2_filter(filters)
+    search_kwargs["filter_lang"] = "cql2-json"
 
     logging.info(f'Using STAC search criteria: {search_kwargs=}')
     search = catalog.search(**search_kwargs)
 
     hrefs = []
     pages_count = 0
-    epsg_str = f'EPSG:{epsg_code}'
-    skipped_wrong_epsg = 0
-    skipped_epsgs = set()
 
     for page in search.pages():
         pages_count += 1
         for item in page:
-            if item.properties.get("proj:code") != epsg_str:
-                # Skip items that do not match the requested projection
-                skipped_wrong_epsg += 1
-                # Record which EPSG codes were skipped
-                skipped_epsgs.add(item.properties.get("proj:code"))
-                continue
-
             # Check if the item has the requested projection
             for asset in item.assets.values():
                 if "data" in asset.roles and asset.href.endswith(".nc"):
@@ -649,8 +653,7 @@ def search_stac_catalog(epsg_code: str,
 
     logging.info(
         f'STAC catalog query results: {pages_count=} pages, '
-        f'{len(hrefs)=} found granules, {skipped_wrong_epsg=} granules, '
-        f'{skipped_epsgs=}'
+        f'{len(hrefs)=} found granules '
     )
 
     return hrefs
