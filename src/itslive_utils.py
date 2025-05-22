@@ -247,6 +247,7 @@ def backup_datacube_latest_chunks(
     bucket_url: str,
     backup_url: str,
     num_threads: int = 4,
+    num_chunks_in_parallel: int = 500,
     dask_scheduler: str = 'threads'
 ):
     """
@@ -299,9 +300,6 @@ def backup_datacube_latest_chunks(
             f'Backup cube {each_meta} to {target_url}'
         )
         backup_chunk(s3_bucket, source_url, each_meta, target_url)
-
-    # Number of chunks to backup in parallel - should make it configurable?
-    num_chunks_in_parallel = 500
 
     # Backup latest chunks and metadata files for each data variable
     for each_var, each_chunk_info in last_chunk_map.items():

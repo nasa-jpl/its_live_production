@@ -77,6 +77,10 @@ class ITSCube:
     # Number of threads for parallel processing
     NUM_THREADS = 4
 
+    # Number of chunks to backup in parallel if updating
+    # the datacube in S3 bucket
+    NUM_CHUNKS_TO_BACKUP = 1000
+
     # Dask scheduler for parallel processing
     DASK_SCHEDULER = "processes"
 
@@ -991,7 +995,8 @@ class ITSCube:
             _ = itslive_utils.backup_datacube_latest_chunks(
                 cube_url,
                 backup_url,
-                num_threads=ITSCube.NUM_THREADS
+                num_threads=ITSCube.NUM_THREADS,
+                num_chunks_in_parallel=ITSCube.NUM_CHUNKS_TO_BACKUP,
             )
 
             # Download chunks per just created backup (to guarantee that
@@ -2663,6 +2668,13 @@ if __name__ == '__main__':
              'granules.'
     )
     parser.add_argument(
+        '-bc', '--numberBackupChunks',
+        type=int,
+        default=500,
+        help='Number of Zarr chunks to backup in parallel when updating '
+             'existing datacube residing in s3 bucket [%(default)d].'
+    )
+    parser.add_argument(
         '-stacCatalog',
         type=str,
         default='https://stac.itslive.cloud',
@@ -2806,6 +2818,7 @@ if __name__ == '__main__':
         raise RuntimeError(f'Output Zarr store is expected to have {FileExtension.ZARR} extension, got {args.outputStore}')
 
     ITSCube.NUM_THREADS = args.threads
+    ITSCube.NUM_CHUNKS_TO_BACKUP = args.numberBackupChunks
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
     ITSCube.PATH_URL = args.pathURLToken
