@@ -296,9 +296,9 @@ def backup_datacube_latest_chunks(
     # Backup metadata files
     for each_meta in CUBE_META:
         # Backup the file
-        logging.info(
-            f'Backup cube {each_meta} to {target_url}'
-        )
+        # logging.info(
+        #     f'Backup cube {each_meta} to {target_url}'
+        # )
         backup_chunk(s3_bucket, source_url, each_meta, target_url)
 
     # Backup latest chunks and metadata files for each data variable
@@ -326,17 +326,17 @@ def backup_datacube_latest_chunks(
                 s3_target,
             ) for each_chunk in chunks]
 
-            with ProgressBar():
-                _ = dask.compute(
-                    tasks,
-                    scheduler=dask_scheduler,
-                    num_workers=num_threads
-                )
-
-            logging.info(
-                f'Completed backup {each_var} {len(chunks)} chunks: '
-                f'{chunks[0]=} to {chunks[-1]=}'
+            # with ProgressBar():
+            _ = dask.compute(
+                tasks,
+                scheduler=dask_scheduler,
+                num_workers=num_threads
             )
+
+            # logging.info(
+            #     f'Completed backup {each_var} {len(chunks)} chunks: '
+            #     f'{chunks[0]=} to {chunks[-1]=}'
+            # )
 
             del tasks
             gc.collect()
@@ -344,7 +344,7 @@ def backup_datacube_latest_chunks(
         # Copy variable metadata files
         for each_meta in VAR_META:
             # Download the file
-            logging.info(f'Backup {each_meta=} to {s3_target}')
+            # logging.info(f'Backup {each_meta=} to {s3_target}')
             backup_chunk(
                 s3_bucket,
                 s3_var_path,
