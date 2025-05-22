@@ -4031,7 +4031,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--v0Years',
         type=str,
-        default='[2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022]',
+        default='[2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]',
         help="Years to base computations of climotological data on "
              "[%(default)s]. It's a JSON list."
     )
