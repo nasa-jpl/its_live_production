@@ -863,7 +863,6 @@ class ITSCube:
             ]
 
             itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
-            logging.info(f"Copied {json_file} to {backup_bucket}")
 
         # Don't use cube_store - keep it in scope only to guarantee valid
         # file-like access.
