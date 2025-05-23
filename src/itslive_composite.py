@@ -60,6 +60,9 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+# Number of 'aws s3 cp' retries in case of a failure
+_NUM_AWS_COPY_RETRIES = 20
+
 
 def decimal_year(dt):
     start_year = datetime.datetime(year=dt.year, month=1, day=1)
@@ -4126,7 +4129,8 @@ if __name__ == '__main__':
             command_return = None
             env_copy = os.environ.copy()
 
-            while not file_is_copied and num_retries < ITSCube.NUM_AWS_COPY_RETRIES:
+            while not file_is_copied and num_retries < _NUM_AWS_COPY_RETRIES
+:
                 logging.info(f"Attempt #{num_retries+1} to copy {args.outputStore} to {args.targetBucket}")
 
                 command_return = subprocess.run(
@@ -4143,14 +4147,14 @@ if __name__ == '__main__':
 
                     num_retries += 1
                     # If failed due to AWS SlowDown error, retry
-                    if num_retries != ITSCube.NUM_AWS_COPY_RETRIES and \
+                    if num_retries != _NUM_AWS_COPY_RETRIES and \
                        ITSCube.AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
                         # Sleep if it's not a last attempt to copy
                         time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
 
                     else:
                         # Don't retry otherwise
-                        num_retries = ITSCube.NUM_AWS_COPY_RETRIES
+                        num_retries = _NUM_AWS_COPY_RETRIES
 
                 else:
                     file_is_copied = True
