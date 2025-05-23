@@ -45,6 +45,7 @@ from itscube_types import \
     SENSORS_ATTRS, \
     X_ATTRS, \
     Y_ATTRS
+import itslive_utils
 
 # Flag to indicate that debug is on and LSQ fit parameters should be output
 # to the json files in an attempt to reprocude the problem.
@@ -4122,45 +4123,8 @@ if __name__ == '__main__':
                 "--acl", "bucket-owner-full-control"
             ]
 
-            logging.info(' '.join(command_line))
-
-            file_is_copied = False
-            num_retries = 0
-            command_return = None
             env_copy = os.environ.copy()
-
-            while not file_is_copied and num_retries < _NUM_AWS_COPY_RETRIES
-:
-                logging.info(f"Attempt #{num_retries+1} to copy {args.outputStore} to {args.targetBucket}")
-
-                command_return = subprocess.run(
-                    command_line,
-                    env=env_copy,
-                    check=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT
-                )
-
-                if command_return.returncode != 0:
-                    # Report the whole stdout stream as one logging message
-                    logging.warning(f"Failed to copy {args.outputStore} to {args.targetBucket} with returncode={command_return.returncode}: {command_return.stdout}")
-
-                    num_retries += 1
-                    # If failed due to AWS SlowDown error, retry
-                    if num_retries != _NUM_AWS_COPY_RETRIES and \
-                       ITSCube.AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
-                        # Sleep if it's not a last attempt to copy
-                        time.sleep(ITSCube.AWS_COPY_SLEEP_SECONDS)
-
-                    else:
-                        # Don't retry otherwise
-                        num_retries = _NUM_AWS_COPY_RETRIES
-
-                else:
-                    file_is_copied = True
-
-            if not file_is_copied:
-                raise RuntimeError(f"Failed to copy {args.outputStore} to {args.targetBucket} with command.returncode={command_return.returncode}")
+            itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
 
         finally:
             # Remove locally written Zarr store.
