@@ -3,6 +3,14 @@ ITSCube class creates ITS_LIVE datacube based on target projection,
 bounding polygon and datetime period provided by the caller.
 
 Authors: Masha Liukis, Alex Gardner, Mark Fahnestock
+
+
+    # Set local file path for skipped granules info
+    ITSCube.SKIPPED_GRANULES_FILE = args.outputStore.replace(
+        FileExtension.ZARR,
+        FileExtension.JSON
+    )
+
 """
 from dateutil.parser import parse
 from datetime import datetime, timedelta
@@ -803,6 +811,12 @@ class ITSCube:
         s3_in = None
         cube_store = None
         skipped_granules = None
+        # This is a workaround for:
+        # if other than original datacube s3 location was provided for
+        # updated cube, then original skipped granules file attrubutes
+        # will still point to the original datacube location for json file.
+        # Need to use the same location as the datacube being updated.
+        skipped_granules_file = None
 
         if len(s3_bucket) == 0:
             # Reading from the local directory, check if datacube store exists
@@ -814,12 +828,13 @@ class ITSCube:
 
                 # Read skipped granules info that corresponds to the cube
                 if read_skipped_granules:
+                    skipped_granules_file = ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]
+
                     logging.info(
-                        f"Reading existing "
-                        f"{ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]}..."
+                        f"Reading existing {skipped_granules_file}..."
                     )
 
-                    with open(ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]) as skipped_fh:
+                    with open(skipped_granules_file) as skipped_fh:
                         skipped_granules = json.load(skipped_fh)
 
         elif ITSCube.exists(input_dir, s3_bucket):
@@ -839,30 +854,50 @@ class ITSCube:
             logging.info(f'Dimensions for existing {cube_path}: {ds_from_zarr.dims}')
 
             if read_skipped_granules:
-                logging.info(f"Reading existing {ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]}")
+                skipped_granules_file = cube_path.replace(
+                    FileExtension.ZARR, FileExtension.JSON
+                )
+                logging.info(
+                    f'Cube stores '
+                    f'{ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]}, but '
+                    f'reading skipped granules from {skipped_granules_file}'
+                )
 
-                with s3_in.open(ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES], 'r') as skipped_fh:
+                with s3_in.open(skipped_granules_file, 'r') as skipped_fh:
                     skipped_granules = json.load(skipped_fh)
 
         if ds_from_zarr is None:
-            raise RuntimeError(f"Provided input datacube {input_dir} does not exist (s3={s3_bucket})")
+            raise RuntimeError(
+                f"Provided input datacube {input_dir} does not exist in "
+                f"(s3={s3_bucket})"
+            )
 
         # If backup bucket is provided, copy the skipped cube info to the
         # backup s3 bucket directory
-        if backup_bucket is not None:
-            env_copy = os.environ.copy()
+        if backup_bucket is not None and read_skipped_granules:
+            # Make sure the backup copy does not exist
+            json_file = os.path.basename(skipped_granules_file)
+            if ITSCube.exists(json_file, backup_bucket):
+                logging.info(
+                    f'Backup skipped granules file {skipped_granules_file} '
+                    f'already exists in {backup_bucket}, skipping copy'
+                )
 
-            json_file = ds_from_zarr.attrs[DataVars.SKIPPED_GRANULES]
+            else:
+                env_copy = os.environ.copy()
 
-            logging.info(f"Copying {json_file} to {backup_bucket}")
-            command_line = [
-                "awsv2", "s3", "cp",
-                json_file,
-                os.path.join(backup_bucket, os.path.basename(json_file)),
-                "--acl", "bucket-owner-full-control"
-            ]
+                logging.info(f"Copying {skipped_granules_file} to {backup_bucket}")
+                command_line = [
+                    "awsv2", "s3", "cp",
+                    skipped_granules_file,
+                    os.path.join(
+                        backup_bucket,
+                        os.path.basename(skipped_granules_file)
+                    ),
+                    "--acl", "bucket-owner-full-control"
+                ]
 
-            itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
+                itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
 
         # Don't use cube_store - keep it in scope only to guarantee valid
         # file-like access.
@@ -991,12 +1026,18 @@ class ITSCube:
 
             # Identify "last" chunks for the cube and back them up to
             # the backup directory in s3 bucket if provided
-            _ = itslive_utils.backup_datacube_latest_chunks(
-                cube_url,
-                backup_url,
-                num_threads=ITSCube.NUM_THREADS,
-                num_chunks_in_parallel=ITSCube.NUM_CHUNKS_TO_BACKUP,
-            )
+            if ITSCube.exists(output_dir, backup_bucket):
+                logging.info(
+                    f"Backup {output_dir} already exists in {backup_bucket}, "
+                    "skipping backup copy."
+                )
+            else:
+                _ = itslive_utils.backup_datacube_latest_chunks(
+                    cube_url,
+                    backup_url,
+                    num_threads=ITSCube.NUM_THREADS,
+                    num_chunks_in_parallel=ITSCube.NUM_CHUNKS_TO_BACKUP,
+                )
 
             # Download chunks per just created backup (to guarantee that
             # backup copy is a valid copy) before updating the datacube
@@ -1809,12 +1850,16 @@ class ITSCube:
         if len(ITSCube.S3):
             # Result datacube is to be stored in S3 bucket, record S3 location of the
             # skipped granules file
-            self.layers.attrs[DataVars.SKIPPED_GRANULES] = ITSCube.S3.replace(FileExtension.ZARR, FileExtension.JSON)
+            self.layers.attrs[DataVars.SKIPPED_GRANULES] = ITSCube.S3.replace(
+                FileExtension.ZARR, FileExtension.JSON
+            )
 
         else:
             # Result datacube is to be stored locally, record location of the
             # skipped granules file
-            self.layers.attrs[DataVars.SKIPPED_GRANULES] = output_dir.replace(FileExtension.ZARR, FileExtension.JSON)
+            self.layers.attrs[DataVars.SKIPPED_GRANULES] = output_dir.replace(
+                FileExtension.ZARR, FileExtension.JSON
+            )
 
         # Set time standard as datacube attributes
         for var_name in [
@@ -2576,7 +2621,10 @@ class ITSCube:
         """
         ice_mask_file = shapefile_row[column_name].item()
 
-        ice_mask_file = ice_mask_file.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
+        ice_mask_file = ice_mask_file.replace(
+            ITSCube.HTTP_PREFIX,
+            ITSCube.S3_PREFIX
+        )
         ice_mask_file = ice_mask_file.replace(ITSCube.PATH_URL, '')
         logging.info(f'Using {column_name} mask file {ice_mask_file}')
 
@@ -2839,7 +2887,10 @@ if __name__ == '__main__':
         logging.info(f'Cube S3: {ITSCube.S3}')
 
         # URL is valid only if output S3 bucket is provided
-        ITSCube.URL = ITSCube.S3.replace(ITSCube.S3_PREFIX, ITSCube.HTTP_PREFIX)
+        ITSCube.URL = ITSCube.S3.replace(
+            ITSCube.S3_PREFIX,
+            ITSCube.HTTP_PREFIX
+        )
         url_tokens = urlparse(ITSCube.URL)
         ITSCube.URL = url_tokens._replace(
             netloc=url_tokens.netloc+ITSCube.PATH_URL
