@@ -23,6 +23,7 @@ import logging
 import os
 
 import itslive_utils
+from itscube_types import FileExtension
 
 # Set up logging
 logging.basicConfig(
