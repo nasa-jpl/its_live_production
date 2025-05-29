@@ -263,13 +263,33 @@ def main():
     for each_cube in cubes:
         backup_url = each_cube.replace(args.bucketDir, args.backupDir)
 
-        logging.info(f"Copying {each_cube} to {backup_url}...")
+        logging.info(f"Copying {each_cube} from {backup_url}...")
 
         command_line = [
             "awsv2", "s3", "cp",
             backup_url,
             each_cube,
             "--recursive",
+            "--acl", "bucket-owner-full-control"
+        ]
+
+        logging.info(f"Command line: {command_line}")
+
+        if not RestoreDatacubeFromBackup.DRY_RUN:
+            itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
+
+        # Restore json file with skipped granules
+        skipped_granules_file = each_cube.replace(
+            FileExtension.ZARR, FileExtension.JSON
+        )
+        file_url = backup_url.replace(FileExtension.ZARR, FileExtension.JSON)
+
+        logging.info(f"Copying {file_url} to {skipped_granules_file}")
+
+        command_line = [
+            "awsv2", "s3", "cp",
+            file_url,
+            skipped_granules_file,
             "--acl", "bucket-owner-full-control"
         ]
 
