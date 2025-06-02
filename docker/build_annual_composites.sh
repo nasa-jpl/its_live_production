@@ -57,7 +57,7 @@ printf "build_version: ${TAG}\nbuild_datetime: ${BUILD_DATE_TIME}\n" \
 
 # remove the old docker image if it exists
 docker images --format "{{.Repository}}:{{.Tag}} {{.ID}}" \
-  | grep "^${IMAGE}:${TAG} " || awk '{print $2}' | xargs docker rmi
+  | grep "^${IMAGE}:${TAG} " | awk '{print $2}' | xargs -r docker rmi
 
 # build the docker image
 docker build --rm --force-rm -t ${IMAGE}:${TAG} \
