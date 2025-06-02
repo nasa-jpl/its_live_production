@@ -56,7 +56,8 @@ printf "build_version: ${TAG}\nbuild_datetime: ${BUILD_DATE_TIME}\n" \
     > ${TEMP_STAGING_DIR}/VERSION \
 
 # remove the old docker image if it exists
-docker rmi -f ${IMAGE}:${TAG}
+docker images --format "{{.Repository}}:{{.Tag}} {{.ID}}" \
+  | grep "^${IMAGE}:${TAG} " | awk '{print $2}' | xargs docker rmi
 
 # build the docker image
 docker build --rm --force-rm -t ${IMAGE}:${TAG} \
