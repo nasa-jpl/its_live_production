@@ -60,7 +60,7 @@ docker images --format "{{.Repository}}:{{.Tag}} {{.ID}}" \
   | grep "^${IMAGE}:${TAG} " | awk '{print $2}' | xargs -r docker rmi
 
 # build the docker image
-docker build --rm --force-rm -t ${IMAGE}:${TAG} \
+docker build --no-cache --rm --force-rm -t ${IMAGE}:${TAG} \
     --build-arg BUILD_DATE_TIME=${BUILD_DATE_TIME} \
     --build-arg BUILD_VERSION=${TAG} \
     --build-arg SOURCE_DIR=$(basename ${TEMP_STAGING_DIR}) \
