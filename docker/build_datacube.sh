@@ -21,6 +21,9 @@ echo "WORKSPACE: $WORKSPACE"
 echo "IMAGE: $IMAGE"
 echo "TAG: $TAG"
 
+# Set the target platform for the build
+# export DOCKER_DEFAULT_PLATFORM=linux/amd64
+
 # Goal: minimize the number of docker layers
 # Therefore:  Avoid multiple COPY commands in the Dockerfile
 # To support that, do the work here of gathering all the files to copy to
@@ -55,10 +58,11 @@ printf "build_version: ${TAG}\nbuild_datetime: ${BUILD_DATE_TIME}\n" \
     > ${TEMP_STAGING_DIR}/VERSION \
 
 # remove the old docker image if it exists
-docker images | grep ${IMAGE}:${TAG} | xargs docker rmi
+docker images --format "{{.Repository}}:{{.Tag}} {{.ID}}" \
+  | grep "^${IMAGE}:${TAG} " | awk '{print $2}' | xargs -r docker rmi
 
 # build the docker image
-docker build --rm --force-rm -t ${IMAGE}:${TAG} \
+docker build --no-cache --rm --force-rm -t ${IMAGE}:${TAG} \
     --build-arg BUILD_DATE_TIME=${BUILD_DATE_TIME} \
     --build-arg BUILD_VERSION=${TAG} \
     --build-arg SOURCE_DIR=$(basename ${TEMP_STAGING_DIR}) \
