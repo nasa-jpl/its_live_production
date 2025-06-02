@@ -28,7 +28,6 @@ import s3fs
 from grid import Bounds
 from itscube_types import BatchVars, \
     CubeJson, \
-    FilenamePrefix, \
     datacube_filename_zarr, \
     composite_filename_zarr
 import itslive_utils
@@ -57,7 +56,8 @@ class DataCubeCompositeBatch:
 
         self.s3 = s3fs.S3FileSystem(anon=True)
 
-    def __call__(self,
+    def __call__(
+        self,
         cube_file: str,
         s3_bucket: str,
         bucket_dir_path: str,
@@ -140,12 +140,12 @@ class DataCubeCompositeBatch:
 
                     # Include only specific EPSG code(s) if specified
                     if len(BatchVars.EPSG_TO_GENERATE) and \
-                       epsg_code not in BatchVars.EPSG_TO_GENERATE:
+                            epsg_code not in BatchVars.EPSG_TO_GENERATE:
                         continue
 
                     # Exclude specific EPSG code(s) if specified
                     if len(BatchVars.EPSG_TO_EXCLUDE) and \
-                       epsg_code in BatchVars.EPSG_TO_EXCLUDE:
+                            epsg_code in BatchVars.EPSG_TO_EXCLUDE:
                         continue
 
                     coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
@@ -157,9 +157,18 @@ class DataCubeCompositeBatch:
 
                     # Get mid point to the nearest 50
                     logging.info(f"Mid point: x={mid_x} y={mid_y}")
-                    mid_x = int(math.floor(mid_x/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
-                    mid_y = int(math.floor(mid_y/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
-                    logging.info(f"Mid point at {BatchVars.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
+                    mid_x = int(
+                        math.floor(mid_x/BatchVars.MID_POINT_RESOLUTION) *
+                        BatchVars.MID_POINT_RESOLUTION
+                    )
+                    mid_y = int(
+                        math.floor(mid_y/BatchVars.MID_POINT_RESOLUTION) *
+                        BatchVars.MID_POINT_RESOLUTION
+                    )
+                    logging.info(
+                        f"Mid point at {BatchVars.MID_POINT_RESOLUTION}: "
+                        f"x={mid_x} y={mid_y}"
+                    )
 
                     # Convert to lon/lat coordinates to format s3 bucket path
                     # for the datacube
@@ -170,56 +179,91 @@ class DataCubeCompositeBatch:
                     )
 
                     if BatchVars.POLYGON_SHAPE and \
-                       (not BatchVars.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1]))):
+                        not BatchVars.POLYGON_SHAPE.contains(
+                                geometry.Point(mid_lon_lat[0], mid_lon_lat[1])
+                            ):
                         logging.info(f"Skipping non-polygon point: {mid_lon_lat}")
                         # Provided polygon does not contain cube's center point
                         continue
 
-                    bucket_dir = itslive_utils.point_to_prefix(mid_lon_lat[1], mid_lon_lat[0], bucket_dir_path)
-                    if len(BatchVars.PATH_TOKEN) and BatchVars.PATH_TOKEN not in bucket_dir:
+                    bucket_dir = itslive_utils.point_to_prefix(
+                        mid_lon_lat[1],
+                        mid_lon_lat[0],
+                        bucket_dir_path
+                    )
+                    if len(BatchVars.PATH_TOKEN) and \
+                            BatchVars.PATH_TOKEN not in bucket_dir:
                         # A way to pick specific 10x10 grid cell for the datacube
                         logging.info(f"Skipping non-{BatchVars.PATH_TOKEN}")
                         continue
 
-                    cube_filename = datacube_filename_zarr(epsg, self.grid_size, mid_x, mid_y)
+                    cube_filename = datacube_filename_zarr(
+                        epsg,
+                        self.grid_size,
+                        mid_x, mid_y
+                    )
                     logging.info(f'Cube name: {cube_filename}')
 
                     # Process specific datacubes only
-                    if len(BatchVars.CUBES_TO_GENERATE) and cube_filename not in BatchVars.CUBES_TO_GENERATE:
+                    if len(BatchVars.CUBES_TO_GENERATE) and \
+                            cube_filename not in BatchVars.CUBES_TO_GENERATE:
                         # logging.info(f"Skipping {cube_filename} as not provided in BatchVars.CUBES_TO_GENERATE")
                         continue
 
-                    if len(BatchVars.CUBES_TO_EXCLUDE) and cube_filename in BatchVars.CUBES_TO_EXCLUDE:
-                        logging.info(f"Skipping as provided in BatchVars.CUBES_TO_EXCLUDE")
+                    if len(BatchVars.CUBES_TO_EXCLUDE) and \
+                            cube_filename in BatchVars.CUBES_TO_EXCLUDE:
+                        logging.info(
+                            "Skipping as provided in BatchVars.CUBES_TO_EXCLUDE"
+                        )
                         continue
 
                     # Check if datacube exists in S3 bucket as not all cubes
                     # are most likely generated
-                    cube_exists = self.s3.ls(os.path.join(s3_bucket, bucket_dir, cube_filename))
+                    cube_exists = self.s3.ls(
+                        os.path.join(s3_bucket, bucket_dir, cube_filename)
+                    )
                     if len(cube_exists) == 0:
-                        logging.info(f"Datacube {os.path.join(s3_bucket, bucket_dir, cube_filename)} does not exist, skipping composite.")
+                        logging.info(
+                            f"Datacube "
+                            f"{os.path.join(s3_bucket, bucket_dir, cube_filename)} "
+                            "does not exist, skipping composite."
+                        )
                         continue
 
                     # Format cube composites filename:
                     # s3://its-live-data/composites/annual/v02/N60W130/ITS_LIVE_velocity_120m_X-3250000_Y250000.zarr
                     # composite_filename =f"{FilenamePrefix.Composites}_{int(self.grid_size_str):03d}m_X{mid_x}_Y{mid_y}.zarr"
-                    composite_filename = composite_filename_zarr(epsg_code, self.grid_size, mid_x, mid_y)
+                    composite_filename = composite_filename_zarr(
+                        epsg_code,
+                        self.grid_size,
+                        mid_x, mid_y
+                    )
                     logging.info(f'Cube composite name: {composite_filename}')
 
                     # Check if list of specific composites was provided
-                    if len(DataCubeCompositeBatch.COMPOSITES_TO_GENERATE) and composite_filename not in DataCubeCompositeBatch.COMPOSITES_TO_GENERATE:
+                    if len(DataCubeCompositeBatch.COMPOSITES_TO_GENERATE) and \
+                            composite_filename not in \
+                            DataCubeCompositeBatch.COMPOSITES_TO_GENERATE:
                         continue
 
-                    composite_dir = bucket_dir.replace(bucket_dir_path, output_bucket_dir)
+                    composite_dir = bucket_dir.replace(
+                        bucket_dir_path, output_bucket_dir
+                    )
                     logging.info(f'Cube composite S3 directory: {composite_dir}')
 
                     # Work around to process only non-existent composites (if they
                     # failed from prevoius run or were not generated to begin with)
                     # TODO: make a command-line option
-                    composite_exists = self.s3.ls(os.path.join(s3_bucket, composite_dir, composite_filename))
+                    composite_exists = self.s3.ls(
+                        os.path.join(s3_bucket, composite_dir, composite_filename)
+                    )
                     if len(composite_exists) != 0:
                         num_existing_composites += 1
-                        logging.info(f"Composite {os.path.join(composite_dir, composite_filename)} exists, skipping composite generation.")
+                        logging.info(
+                            f"Composite "
+                            f"{os.path.join(composite_dir, composite_filename)} "
+                            "exists, skipping composite generation."
+                        )
                         continue
 
                     cube_params = {
@@ -286,8 +330,11 @@ class DataCubeCompositeBatch:
                     jobs_files.append(os.path.join(s3_bucket, bucket_dir, cube_filename))
 
                 else:
-                    # Report the cube as being skipped due to the ROI==0 if it's one of the requested datacubes
-                    epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
+                    # Report the cube as being skipped due to the ROI==0 if
+                    # it's one of the requested datacubes
+                    epsg = properties[CubeJson.DATA_EPSG].replace(
+                        CubeJson.EPSG_SEPARATOR, ''
+                    )
                     coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
                     x_bounds = Bounds([each[0] for each in coords])
                     y_bounds = Bounds([each[1] for each in coords])
@@ -316,6 +363,7 @@ class DataCubeCompositeBatch:
             logging.info(f'Number of existing composites: {num_existing_composites}')
             return
 
+
 def main(
     dry_run: bool,
     cube_definition_file: str,
@@ -326,7 +374,8 @@ def main(
     bucket_dir: str,
     output_bucket_dir: str,
     output_job_file: str,
-    number_of_cubes: int):
+    number_of_cubes: int
+):
     """
     Driver to submit multiple Batch jobs to AWS.
     """
@@ -339,15 +388,16 @@ def main(
     )
     run_batch(cube_definition_file, s3_bucket, bucket_dir, output_bucket_dir, output_job_file, number_of_cubes)
 
+
 def parse_args():
     """
     Create command-line argument parser and parse arguments.
     """
     # Set up logging
     logging.basicConfig(
-        level = logging.INFO,
-        format = '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt = '%Y-%m-%d %H:%M:%S'
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
 
     # Command-line arguments parser
@@ -388,14 +438,14 @@ def parse_args():
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='datacubes/v2',
+        default='datacubes/v2-updated-october2024',
         help="S3 directory for the datacubes [%(default)s]"
     )
     parser.add_argument(
         '-o', '--outputBucketDir',
         type=str,
         action='store',
-        default='composites/annual/v2_slow_error',
+        default='composites/annual/v2_updated-may2025',
         help="Destination S3 directory for the composites [%(default)s]"
     )
     parser.add_argument(
@@ -409,7 +459,8 @@ def parse_args():
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-64Gb:1',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-disableSlowError-64Gb:1',
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-64Gb:1',
         # default = 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-256Gb:2',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-128Gb:1',
         # Use compute optimized env. to re-run composites for ANT and Greenland
@@ -420,8 +471,8 @@ def parse_args():
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        # default='datacube-spot-8vCPU-64GB',
-        default='datacube-ondemand-8vCPU-64GB',
+        default='datacube-spot-8vCPU-64GB',
+        # default='datacube-ondemand-8vCPU-64GB',
         # default = 'datacube-ondemand-32vCPU-256GB',
         # default='datacube-spot-16vCPU-128GB',
         # default='datacube-spot-CO-16vCPU-32GB',
@@ -510,7 +561,7 @@ def parse_args():
     logging.info(f'Parser arguments: {args}')
 
     BatchVars.HTTP_PREFIX = args.urlPath
-    BatchVars.PATH_TOKEN  = args.pathToken
+    BatchVars.PATH_TOKEN = args.pathToken
     DataCubeCompositeBatch.X_Y_CHUNK = args.chunkSize
 
     epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
@@ -518,7 +569,10 @@ def parse_args():
         logging.info(f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes")
         BatchVars.EPSG_TO_GENERATE = epsg_codes
 
-    epsg_codes = list(map(str, json.loads(args.excludeEPSG))) if args.excludeEPSG is not None else None
+    epsg_codes = list(
+        map(str, json.loads(args.excludeEPSG))
+    ) if args.excludeEPSG is not None else None
+
     if epsg_codes and len(epsg_codes):
         logging.info(f"Got EPSG codes to exclude: {epsg_codes}")
         BatchVars.EPSG_TO_EXCLUDE = epsg_codes
@@ -526,37 +580,66 @@ def parse_args():
     # Make sure there is no overlap in EPSG_TO_GENERATE and EPSG_TO_EXCLUDE
     diff = set(BatchVars.EPSG_TO_GENERATE).intersection(BatchVars.EPSG_TO_EXCLUDE)
     if len(diff):
-        raise RuntimeError(f"The same code is specified for BatchVars.EPSG_TO_EXCLUDE={BatchVars.EPSG_TO_EXCLUDE} and BatchVars.EPSG_TO_GENERATE={BatchVars.EPSG_TO_GENERATE}")
+        raise RuntimeError(
+            f"The same code is specified for BatchVars.EPSG_TO_EXCLUDE="
+            f"{BatchVars.EPSG_TO_EXCLUDE} and BatchVars.EPSG_TO_GENERATE="
+            f"{BatchVars.EPSG_TO_GENERATE}"
+        )
 
     if args.processCubesFile:
-        # Check for this option first as another mutually exclusive option has a default value
-        BatchVars.CUBES_TO_GENERATE = json.loads(args.processCubesFile.read_text())
+        # Check for this option first as another mutually exclusive
+        # option has a default value
+        BatchVars.CUBES_TO_GENERATE = json.loads(
+            args.processCubesFile.read_text()
+        )
 
-        # Replace each path by the datacube basename, and make sure cubefilenames are
-        # unique
-        BatchVars.CUBES_TO_GENERATE = list(set([os.path.basename(each) for each in BatchVars.CUBES_TO_GENERATE if len(each)]))
+        # Replace each path by the datacube basename, and make sure
+        # cubefilenames are unique
+        BatchVars.CUBES_TO_GENERATE = list(
+            set([os.path.basename(each) for each in BatchVars.CUBES_TO_GENERATE if len(each)])
+        )
 
-        logging.info(f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubesFile}: {BatchVars.CUBES_TO_GENERATE}")
+        logging.info(
+            f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to "
+            f"generate from {args.processCubesFile}: {BatchVars.CUBES_TO_GENERATE}"
+        )
 
     elif args.processCompositesFile:
-        DataCubeCompositeBatch.COMPOSITES_TO_GENERATE = json.loads(args.processCompositesFile.read_text())
-        DataCubeCompositeBatch.COMPOSITES_TO_GENERATE = [os.path.basename(each) for each in DataCubeCompositeBatch.COMPOSITES_TO_GENERATE if len(each)]
+        DataCubeCompositeBatch.COMPOSITES_TO_GENERATE = json.loads(
+            args.processCompositesFile.read_text()
+        )
+        DataCubeCompositeBatch.COMPOSITES_TO_GENERATE = [
+            os.path.basename(each) for each in
+            DataCubeCompositeBatch.COMPOSITES_TO_GENERATE if len(each)
+        ]
 
         if len(DataCubeCompositeBatch.COMPOSITES_TO_GENERATE):
-            logging.info(f"Found {len(DataCubeCompositeBatch.COMPOSITES_TO_GENERATE)} of datacubes to generate from {args.processCompositesFile}: {DataCubeCompositeBatch.COMPOSITES_TO_GENERATE}")
+            logging.info(
+                f"Found {len(DataCubeCompositeBatch.COMPOSITES_TO_GENERATE)} "
+                f"of datacubes to generate from {args.processCompositesFile}: "
+                f"{DataCubeCompositeBatch.COMPOSITES_TO_GENERATE}"
+            )
 
     elif args.processCubes:
         BatchVars.CUBES_TO_GENERATE = json.loads(args.processCubes)
         if len(BatchVars.CUBES_TO_GENERATE):
-            logging.info(f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to generate from {args.processCubes}: {BatchVars.CUBES_TO_GENERATE}")
+            logging.info(
+                f"Found {len(BatchVars.CUBES_TO_GENERATE)} of datacubes to "
+                f"generate from {args.processCubes}: "
+                f"{BatchVars.CUBES_TO_GENERATE}"
+            )
 
     if args.processCubesWithinPolygon:
         with open(args.processCubesWithinPolygon, 'r') as fhandle:
             shape_file = json.load(fhandle)
 
-            logging.info(f'Reading region polygon the datacube\'s central point should fall into: {args.processCubesWithinPolygon}')
+            logging.info(
+                f"Reading region polygon the datacube's central point "
+                f"should fall into: {args.processCubesWithinPolygon}"
+            )
             shapefile_coords = shape_file[CubeJson.FEATURES][0]['geometry']['coordinates']
             logging.info(f'Got polygon coordinates: {shapefile_coords}')
+
             line = geometry.LineString(shapefile_coords[0][0])
             BatchVars.POLYGON_SHAPE = geometry.Polygon(line)
             logging.info(f'Set polygon: {BatchVars.POLYGON_SHAPE}')
@@ -565,8 +648,15 @@ def parse_args():
         BatchVars.CUBES_TO_EXCLUDE = json.loads(args.excludeCubesFile.read_text())
 
         # Replace each path by the datacube basename
-        BatchVars.CUBES_TO_EXCLUDE = [os.path.basename(each) for each in BatchVars.CUBES_TO_EXCLUDE if len(each)]
-        logging.info(f"Found {len(BatchVars.CUBES_TO_EXCLUDE)} of datacubes to exclude per {args.excludeCubesFile}: {BatchVars.CUBES_TO_EXCLUDE}")
+        BatchVars.CUBES_TO_EXCLUDE = [
+            os.path.basename(each) for each in BatchVars.CUBES_TO_EXCLUDE if
+            len(each)
+        ]
+        logging.info(
+            f"Found {len(BatchVars.CUBES_TO_EXCLUDE)} of datacubes to "
+            f"exclude per {args.excludeCubesFile}: "
+            f"{BatchVars.CUBES_TO_EXCLUDE}"
+        )
 
     return args
 
@@ -588,4 +678,4 @@ if __name__ == '__main__':
         args.numberOfCubes
     )
 
-    logging.info(f"Done")
+    logging.info("Done")
