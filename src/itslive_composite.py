@@ -12,7 +12,6 @@ March 21, 2022
 """
 import collections
 import dask
-from dask.diagnostics import ProgressBar
 import datetime
 from dateutil.parser import parse
 import gc
@@ -1697,7 +1696,7 @@ class SensorExcludeFilter:
             # # Find such indices in data
             if ds_land_ice_mask is not None:
                 valid_mask_ind = np.argwhere(ds_land_ice_mask == 0)
-                logging.info(f'Applying SensorExcludeFilter to {len(valid_mask_ind)} points.')
+                logging.debug(f'Applying SensorExcludeFilter to {len(valid_mask_ind)} points.')
 
                 for each_index in valid_mask_ind:
                     j_index = each_index[0]
@@ -2007,7 +2006,7 @@ class StableShiftFilter:
 
                 # Since vx and vy are 3d data variables, need to reshape the stable_shift
                 # values to the same 3d dimensions
-                logging.info(f'StableShiftFilter: need to reverse stable_shift for {self.num_reverse_stable_shift_mask} granules')
+                logging.debug(f'StableShiftFilter: need to reverse stable_shift for {self.num_reverse_stable_shift_mask} granules')
 
                 self.vx_stable_shift = self.vx_stable_shift.reshape((self.num_reverse_stable_shift_mask, 1, 1))
                 self.vy_stable_shift = self.vy_stable_shift.reshape((self.num_reverse_stable_shift_mask, 1, 1))
@@ -2028,7 +2027,7 @@ class StableShiftFilter:
                 # might be set to be excluded already. Get the number of total excluded
                 # granules in the mask.
                 self.num_exclude_granules = np.sum(self.keep_granule_mask == False)
-                logging.info(f'StableShiftFilter: need to skip {self.num_exclude_granules} granules')
+                logging.debug(f'StableShiftFilter: need to skip {self.num_exclude_granules} granules')
 
                 # DEBUG: pandas.errors.InvalidIndexError: Reindexing only valid with uniquely valued Index objects:
                 # There are duplicates of mid_date values in some datacubes,
@@ -2242,7 +2241,7 @@ class ITSLiveComposite:
         # cube_ds = xr.open_dataset(cube_store, decode_timedelta=False)
 
         # Read in only specific data variables
-        logging.info("Read only variables of interest from datacube...")
+        logging.debug("Read only variables of interest from datacube...")
         # Need to sort data by dt to be able to filter with np.searchsorted()
         # (relies on date_dt vector being sorted)
         # self.data = cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
@@ -2254,13 +2253,16 @@ class ITSLiveComposite:
         # Apply StableShiftFilter: revert stable_shift offset and/or exclude some granules
         # Create valid granule mask and "need to adjust vx/vy" mask based on
         # the stable_shift filter
-        logging.info('Initialize stable_shift filter...')
+        logging.debug('Initialize StableShiftFilter filter...')
         start_time = timeit.default_timer()
         self.stable_shift_filter = StableShiftFilter(
             cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
         )
         self.stable_shift_filter(cube_ds)
-        logging.info(f'Initialized stable_shift filter (took {timeit.default_timer() - start_time} seconds)')
+        logging.debug(
+            f'Initialized StableShiftFilter filter (took '
+            f'{timeit.default_timer() - start_time} seconds)'
+        )
 
         # Remember datacube dimensions
         sizes = cube_ds.sizes
@@ -2593,7 +2595,7 @@ class ITSLiveComposite:
         stop_y = start_y + num_y
         stop_x = start_x + num_x
         ITSLiveComposite.Chunk = Chunk(start_x, stop_x, num_x, start_y, stop_y, num_y)
-        ITSCube.show_memory_usage(f'before cube_time_mean(): start_x={start_x} start_y={start_y}')
+        # ITSCube.show_memory_usage(f'before cube_time_mean(): start_x={start_x} start_y={start_y}')
 
         # Start timer
         start_time = timeit.default_timer()
@@ -2601,7 +2603,7 @@ class ITSLiveComposite:
         # ----- FILTER DATA -----
         # Filter data based on locations where means of various dts are
         # statistically different and mad deviations from a running meadian
-        logging.info('Filter data based on dt binned medians...')
+        logging.debug('Filter data based on dt binned medians...')
 
         # Initialize variables
         dims = (ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, ITSLiveComposite.MID_DATE_LEN)
@@ -2613,16 +2615,16 @@ class ITSLiveComposite:
         # convert data to numpy types and use numpy only
         logging.info(f'Loading vx[:, {start_y}:{stop_y}, {start_x}:{stop_x}] out of [{self.cube_sizes[Coords.MID_DATE]}, {self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]...')
         vx_org = self.data.vx[:, start_y:stop_y, start_x:stop_x].astype(np.float32).values
-        logging.info(f'vx shape={vx_org.shape}')
+        logging.debug(f'vx shape={vx_org.shape}')
 
         logging.info(f'Loading vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}] out of [{self.cube_sizes[Coords.MID_DATE]}, {self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]...')
         vy_org = self.data.vy[:, start_y:stop_y, start_x:stop_x].astype(np.float32).values
-        logging.info(f'vy shape={vy_org.shape}')
+        logging.debug(f'vy shape={vy_org.shape}')
 
         # Reverse stable_shift and exclude granules if any are identified by the
         # StableShiftFilter
         vx_org, vy_org = self.stable_shift_filter.apply(vx_org, vy_org)
-        logging.info(f'After StableShiftFilter.apply: vx.shape={vx_org.shape} vy.shape={vy_org.shape}')
+        logging.debug(f'After StableShiftFilter.apply: vx.shape={vx_org.shape} vy.shape={vy_org.shape}')
 
         # Transpose data to make it continuous in time
         vx = np.zeros((ITSLiveComposite.Chunk.y_len, ITSLiveComposite.Chunk.x_len, ITSLiveComposite.MID_DATE_LEN))
@@ -2632,7 +2634,7 @@ class ITSLiveComposite:
         vy.flat = np.transpose(vy_org, ITSLiveComposite.CONT_TIME_ORDER)
 
         # Call filter to exclude sensors if any
-        logging.info('Sensor exclude filter...')
+        logging.debug('Sensor exclude filter...')
         start_time = timeit.default_timer()
         land_ice_mask = None if self.land_ice_mask is None else self.land_ice_mask[start_y:stop_y, start_x:stop_x]
 
@@ -2643,7 +2645,7 @@ class ITSLiveComposite:
             self.date_center,
             land_ice_mask
         )
-        logging.info(f'Finished sensor exclude filter ({timeit.default_timer() - start_time} seconds)')
+        logging.debug(f'Finished sensor exclude filter ({timeit.default_timer() - start_time} seconds)')
 
         # Project valid (excluding sensors) v onto median flow vector:
         # take into account exclude_sensors for each spacial point
@@ -2669,7 +2671,7 @@ class ITSLiveComposite:
             copy_vx = vx.copy()
 
         start_time = timeit.default_timer()
-        logging.info('Project velocity to median flow unit vector...')
+        logging.debug('Project velocity to median flow unit vector...')
         # Note for v3:
         # Project velocity to median flow unit vector using only valid sensors: this is
         # pre-processing step for the dt_max filter, not used anywhere else.
@@ -2681,7 +2683,10 @@ class ITSLiveComposite:
             self.sensor_filter.sensors_str,
             exclude_sensors
         )
-        logging.info(f'Done with velocity projection to median flow unit vector (took {timeit.default_timer() - start_time} seconds)')
+        logging.debug(
+            f'Done with velocity projection to median flow unit vector '
+            f'(took {timeit.default_timer() - start_time} seconds)'
+        )
 
         # DEBUG only: store vp to CSV file
         # logging.info(f'vp.size={vp.shape}')
@@ -2690,7 +2695,7 @@ class ITSLiveComposite:
 
         # Apply dt filter: step through all sensors groups
         for i, sensor_group in enumerate(self.sensors_groups):
-            logging.info(
+            logging.debug(
                 f'Filtering dt for sensors of "{sensor_group.mission}" '
                 f'({i+1} out of {len(self.sensors_groups)} sensor groups)'
             )
@@ -2699,7 +2704,7 @@ class ITSLiveComposite:
             mask = (self.sensor_filter.sensors_str == sensor_group.mission)
 
             # Filter current block's variables
-            logging.info(
+            logging.debug(
                 f'Start dt filter for projected v using '
                 f'{sensor_group.mission} sensors...'
             )
@@ -2715,10 +2720,10 @@ class ITSLiveComposite:
                     sensor_group.mission,
                     exclude_sensors
                 )
-            logging.info(f'Done with dt filter for projected v (took {timeit.default_timer() - start_time} seconds)')
+            logging.debug(f'Done with dt filter for projected v (took {timeit.default_timer() - start_time} seconds)')
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
-        logging.info('Compute invalid mask...')
+        logging.debug('Compute invalid mask...')
         start_time = timeit.default_timer()
 
         # Note for v3: exclude v > 20000 right before any analysis (before SensorExcludeFilter)
@@ -2737,10 +2742,10 @@ class ITSLiveComposite:
         # _debug_mask = (self.sensor_filter.sensors_str == MissionSensor.LANDSAT89.mission)
         # logging.info(f'DEBUG: total number of valid vx points for L89: {np.sum(~np.isnan(vx[:, :, _debug_mask]))}')
 
-        logging.info(f'Finished filtering with invalid mask ({timeit.default_timer() - start_time} seconds)')
+        logging.debug(f'Finished filtering with invalid mask ({timeit.default_timer() - start_time} seconds)')
 
         # %% Least-squares fits to detemine amplitude, phase and annual means
-        logging.info('Find vx annual means using LSQ fit... ')
+        logging.debug('Find vx annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
         # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
@@ -2760,9 +2765,9 @@ class ITSLiveComposite:
             self.slope.vx,
             self.std_error.vx
         )
-        logging.info(f'Finished vx LSQ fit (took {timeit.default_timer() - start_time} seconds)')
+        logging.debug(f'Finished vx LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
-        logging.info('Find vy annual means using LSQ fit... ')
+        logging.debug('Find vy annual means using LSQ fit... ')
         start_time = timeit.default_timer()
 
         # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
@@ -2781,9 +2786,9 @@ class ITSLiveComposite:
             self.slope.vy,
             self.std_error.vy
         )
-        logging.info(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
+        logging.debug(f'Finished vy LSQ fit (took {timeit.default_timer() - start_time} seconds)')
 
-        logging.info('Find climatology magnitude...')
+        logging.debug('Find climatology magnitude...')
         start_time = timeit.default_timer()
 
         self.offset.v[start_y:stop_y, start_x:stop_x], \
@@ -2808,7 +2813,7 @@ class ITSLiveComposite:
                 ITSLiveComposite.V_LIMIT
             )
 
-        logging.info(f'Finished climatology magnitude (took {timeit.default_timer() - start_time} seconds)')
+        logging.debug(f'Finished climatology magnitude (took {timeit.default_timer() - start_time} seconds)')
 
         if self.sensor_filter.excludeS2FromLSQ:
             # The 2nd LSQ S2 filter should only be applied where land_ice_2km_inbuff == 1
@@ -2823,18 +2828,24 @@ class ITSLiveComposite:
                 if np.sum(mask) == 0:
                     # There are no cells to apply 2nd LSQ fit to
                     run_lsq_fit = False
-                    logging.info('Skipping 2nd LSQ fit due to zero points of (landice == 1)')
+                    logging.debug('Skipping 2nd LSQ fit due to zero points of (landice == 1)')
 
                 else:
                     vx[~mask] = np.nan
                     vy[~mask] = np.nan
-                    logging.info(f'Applying 2nd LSQ fit to {np.sum(mask)} out of {ITSLiveComposite.Chunk.y_len * ITSLiveComposite.Chunk.x_len} points.')
+                    logging.debug(
+                        f'Applying 2nd LSQ fit to {np.sum(mask)} out of '
+                        f'{ITSLiveComposite.Chunk.y_len * ITSLiveComposite.Chunk.x_len} points.'
+                    )
 
             if run_lsq_fit:
                 # Need to compare to LSQ fit excluding all S2 data: to see if
                 # S2 contains "faulty" data
                 mission_index = self.sensors_groups.index(SensorExcludeFilter.REF_SENSOR)
-                logging.info(f'Excluding "{SensorExcludeFilter.REF_SENSOR.mission}" (index={mission_index}) from vx and vy')
+                logging.debug(
+                    f'Excluding "{SensorExcludeFilter.REF_SENSOR.mission}" '
+                    f'(index={mission_index}) from vx and vy'
+                )
 
                 # Find which layers correspond to the sensor group
                 mask = (self.sensor_filter.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
@@ -2846,13 +2857,13 @@ class ITSLiveComposite:
 
                 # Exclude S2 granules from total number of granules
                 copy_vx[:, :, mask] = np.nan
-                logging.info(f'Excluding {np.sum(mask)} S2 points')
+                logging.debug(f'Excluding {np.sum(mask)} S2 points')
 
                 # logging.info(f'DEBUG: Excluded S2 {self.sensors[mask]}')
                 # logging.info(f'DEBUG: left total valid vx points: {np.sum(~np.isnan(vx))}')
 
                 # %% Least-squares fits to detemine amplitude, phase and annual means
-                logging.info(f'Find vx annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
+                logging.debug(f'Find vx annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
                 start_time = timeit.default_timer()
 
                 # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
@@ -2872,9 +2883,16 @@ class ITSLiveComposite:
                     self.excludeS2_slope.vx,
                     self.excludeS2_std_error.vx
                 )
-                logging.info(f'Finished vx LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
+                logging.debug(
+                    f'Finished vx LSQ fit excluding '
+                    f'{SensorExcludeFilter.REF_SENSOR.mission} data '
+                    f'(took {timeit.default_timer() - start_time} seconds)'
+                )
 
-                logging.info(f'Find vy annual means using LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data... ')
+                logging.debug(
+                    f'Find vy annual means using LSQ fit excluding '
+                    f'{SensorExcludeFilter.REF_SENSOR.mission} data... '
+                )
                 start_time = timeit.default_timer()
 
                 # logging.info(f'DEBUG:  Before LSQ fit: vy: min={np.nanmin(vy)} max={np.nanmax(vy)}')
@@ -2893,9 +2911,16 @@ class ITSLiveComposite:
                     self.excludeS2_slope.vy,
                     self.excludeS2_std_error.vy
                 )
-                logging.info(f'Finished vy LSQ fit excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
+                logging.debug(
+                    f'Finished vy LSQ fit excluding '
+                    f'{SensorExcludeFilter.REF_SENSOR.mission} data '
+                    f'(took {timeit.default_timer() - start_time} seconds)'
+                )
 
-                logging.info(f'Find climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data...')
+                logging.debug(
+                    f'Find climatology magnitude excluding '
+                    f'{SensorExcludeFilter.REF_SENSOR.mission} data...'
+                )
                 start_time = timeit.default_timer()
 
                 self.excludeS2_offset.v[start_y:stop_y, start_x:stop_x], \
@@ -2919,7 +2944,11 @@ class ITSLiveComposite:
                         self.excludeS2_std_error.vy[start_y:stop_y, start_x:stop_x],
                         ITSLiveComposite.V_LIMIT
                     )
-                logging.info(f'Finished climatology magnitude excluding {SensorExcludeFilter.REF_SENSOR.mission} data (took {timeit.default_timer() - start_time} seconds)')
+                logging.debug(
+                    f'Finished climatology magnitude excluding '
+                    f'{SensorExcludeFilter.REF_SENSOR.mission} data '
+                    f'(took {timeit.default_timer() - start_time} seconds)'
+                )
 
                 # Check if there are any values that satisfy:
                 # if (amp_all) > (S1+L8_amp) * 2 and (amp_all) - (S1+L8_amp) > 5)
@@ -2927,14 +2956,22 @@ class ITSLiveComposite:
                 amp_mask = (
                     self.amplitude.v[start_y:stop_y, start_x:stop_x] >
                     (self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x] * ITSLiveComposite.LSQ_AMP_SCALE)
-                ) & (
-                    (self.amplitude.v[start_y:stop_y, start_x:stop_x] - self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x]) > ITSLiveComposite.LSQ_MIN_AMP_DIFF
+                ) & \
+                (
+                    (
+                        self.amplitude.v[start_y:stop_y, start_x:stop_x] -
+                        self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x]
+                    ) > ITSLiveComposite.LSQ_MIN_AMP_DIFF
                 )
 
                 if np.sum(amp_mask) > 0:
                     # Use results from LSQ fit when excluding S2 for the spacial points
                     # where (amp_all) > (S1+L8_amp) * 2
-                    logging.info(f'Using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data: {np.sum(amp_mask)} spacial points')
+                    logging.debug(
+                        f'Using LSQ fit results after excluding '
+                        f'{SensorExcludeFilter.REF_SENSOR.mission} data: '
+                        f'{np.sum(amp_mask)} spacial points'
+                    )
 
                     # Re-compute the mask for valid count which now excludes S2 data
                     # count_mask = ~np.isnan(copy_vx)
@@ -2996,7 +3033,7 @@ class ITSLiveComposite:
                     count0_vx[amp_mask] = count_mask.sum(axis=2)[amp_mask]
 
                 else:
-                    logging.info(f'Not using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data')
+                    logging.debug(f'Not using LSQ fit results after excluding {SensorExcludeFilter.REF_SENSOR.mission} data')
 
         # Some of the cells will have total granule count = 0, exclude these from
         # the assignment
@@ -3009,7 +3046,7 @@ class ITSLiveComposite:
         if np.sum(positive_outlier_mask) > 0:
             raise RuntimeError(f'Negative outlier fraction is detected: {self.outlier_fraction[start_y:stop_y, start_x:stop_x][positive_outlier_mask]} for indices={np.where(self.outlier_fraction[start_y:stop_y, start_x:stop_x] < 0.0)}')
 
-        logging.info('Find annual magnitude... ')
+        logging.debug('Find annual magnitude... ')
         start_time = timeit.default_timer()
 
         self.mean.v[start_y:stop_y, start_x:stop_x, :], \
@@ -3023,7 +3060,7 @@ class ITSLiveComposite:
                 self.count.vx[start_y:stop_y, start_x:stop_x, :],
                 self.count.vy[start_y:stop_y, start_x:stop_x, :],
             )
-        logging.info(f'Finished annual magnitude (took {timeit.default_timer() - start_time} seconds)')
+        logging.debug(f'Finished annual magnitude (took {timeit.default_timer() - start_time} seconds)')
 
         # Nan out invalid values
         invalid_mask = (self.mean.v > ITSLiveComposite.V_LIMIT)
@@ -3839,7 +3876,7 @@ def cubelsqfit2(
     v_err = v_err_data
     if v_err_data.ndim != v.ndim:
         # Expand vector to 3-d array
-        logging.info(f'Expand v_error from {v_err_data.ndim} to {v.ndim} dimensions...')
+        logging.debug(f'Expand v_error from {v_err_data.ndim} to {v.ndim} dimensions...')
 
         reshape_v_err = v_err_data.reshape((1, 1, v_err_data.size))
         v_err = np.broadcast_to(
@@ -3851,115 +3888,61 @@ def cubelsqfit2(
             )
         )
 
-    use_dask = True
-    if use_dask:
-        tasks = []
+    tasks = []
 
-        for j in tqdm(
-                range(0,  ITSLiveComposite.Chunk.y_len),
-                ascii=True,
-                desc='cubelsqfit2: y'
-        ):
-            for i in range(0,  ITSLiveComposite.Chunk.x_len):
-                mask = ~np.isnan(v[j, i, :])
-                if mask.sum() < _num_valid_points:
-                    # Skip the point, return no outliers
-                    continue
+    for j in range(0,  ITSLiveComposite.Chunk.y_len):
+        for i in range(0,  ITSLiveComposite.Chunk.x_len):
+            mask = ~np.isnan(v[j, i, :])
+            if mask.sum() < _num_valid_points:
+                # Skip the point, return no outliers
+                continue
 
-                global_i = i + ITSLiveComposite.Chunk.start_x
-                global_j = j + ITSLiveComposite.Chunk.start_y
+            global_i = i + ITSLiveComposite.Chunk.start_x
+            global_j = j + ITSLiveComposite.Chunk.start_y
 
-                tasks.append(
-                    dask.delayed(itslive_lsqfit_annual)(
-                        var_name,
-                        v[j, i, :],
-                        v_err[j, i, :],
-                        ITSLiveComposite.START_DECIMAL_YEAR,
-                        ITSLiveComposite.STOP_DECIMAL_YEAR,
-                        ITSLiveComposite.DECIMAL_DT,
-                        ITSLiveComposite.YEARS,
-                        ITSLiveComposite.M,
-                        ITSLiveComposite.MAD_STD_RATIO,
-                        ITSLiveComposite.V0_YEARS,
-                        CENTER_DATE,
-                        mean[global_j, global_i, :],
-                        error[global_j, global_i, :],
-                        count[global_j, global_i, :],
-                        global_i, global_j
-                    )
+            tasks.append(
+                dask.delayed(itslive_lsqfit_annual)(
+                    var_name,
+                    v[j, i, :],
+                    v_err[j, i, :],
+                    ITSLiveComposite.START_DECIMAL_YEAR,
+                    ITSLiveComposite.STOP_DECIMAL_YEAR,
+                    ITSLiveComposite.DECIMAL_DT,
+                    ITSLiveComposite.YEARS,
+                    ITSLiveComposite.M,
+                    ITSLiveComposite.MAD_STD_RATIO,
+                    ITSLiveComposite.V0_YEARS,
+                    CENTER_DATE,
+                    mean[global_j, global_i, :],
+                    error[global_j, global_i, :],
+                    count[global_j, global_i, :],
+                    global_i, global_j
                 )
-
-        dask_results = None
-
-        logging.info(f'Using {ITSLiveComposite.NUM_DASK_THREADS} Dask threads')
-        with ProgressBar():
-            # Display progress bar
-            dask_results = dask.compute(
-                tasks,
-                scheduler="threads",
-                num_workers=ITSLiveComposite.NUM_DASK_THREADS
             )
 
-        for each_result in dask_results[0]:
-            # logging.info(each_result)
+    logging.debug(f'Using {ITSLiveComposite.NUM_DASK_THREADS} Dask threads')
+    dask_results = dask.compute(
+        tasks,
+        scheduler="threads",
+        num_workers=ITSLiveComposite.NUM_DASK_THREADS
+    )
 
-            results_valid, results, global_i, global_j = each_result
+    for each_result in dask_results[0]:
+        # logging.info(each_result)
 
-            if results_valid:
-                # Update global results only if they are reported to be valid.
-                # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
-                # Unpack results into corresponding data variables
-                amplitude[global_j, global_i], \
-                    sigma[global_j, global_i], \
-                    phase[global_j, global_i], \
-                    offset[global_j, global_i], \
-                    slope[global_j, global_i], \
-                    se[global_j, global_i], \
-                    count_image_pairs[global_j, global_i] = results
+        results_valid, results, global_i, global_j = each_result
 
-    use_original = False
-    if use_original:
-        # for j in tqdm(range(0, 1), ascii=True, desc='cubelsqfit2: y (debug)'):
-        for j in tqdm(range(0, ITSLiveComposite.Chunk.y_len), ascii=True, desc='cubelsqfit2: y'):
-            for i in range(0, ITSLiveComposite.Chunk.x_len):
-                mask = ~np.isnan(v[j, i, :])
-                if mask.sum() < _num_valid_points:
-                    # Skip the point, return no outliers
-                    continue
-
-                global_i = i + ITSLiveComposite.Chunk.start_x
-                global_j = j + ITSLiveComposite.Chunk.start_y
-
-                results_valid, results, _, _ = \
-                    itslive_lsqfit_annual(
-                        var_name,
-                        v[j, i, :],
-                        v_err[j, i, :],
-                        ITSLiveComposite.START_DECIMAL_YEAR,
-                        ITSLiveComposite.STOP_DECIMAL_YEAR,
-                        ITSLiveComposite.DECIMAL_DT,
-                        ITSLiveComposite.YEARS,
-                        ITSLiveComposite.M,
-                        ITSLiveComposite.MAD_STD_RATIO,
-                        ITSLiveComposite.V0_YEARS,
-                        CENTER_DATE,
-                        mean[global_j, global_i, :],
-                        error[global_j, global_i, :],
-                        count[global_j, global_i, :],
-                        global_i,
-                        global_j
-                    )
-
-                if results_valid:
-                    # logging.info(f'DEBUG: valid results for offset [{global_j}, {global_i}]')
-                    # Unpack results into corresponding data variables
-                    amplitude[global_j, global_i], \
-                        sigma[global_j, global_i], \
-                        phase[global_j, global_i], \
-                        offset[global_j, global_i], \
-                        slope[global_j, global_i], \
-                        se[global_j, global_i], \
-                        count_image_pairs[global_j, global_i] = results
+        if results_valid:
+            # Update global results only if they are reported to be valid.
+            # logging.info(f'DEBUG: No valid results for offset [{global_j}, {global_i}]')
+            # Unpack results into corresponding data variables
+            amplitude[global_j, global_i], \
+                sigma[global_j, global_i], \
+                phase[global_j, global_i], \
+                offset[global_j, global_i], \
+                slope[global_j, global_i], \
+                se[global_j, global_i], \
+                count_image_pairs[global_j, global_i] = results
 
     return
 
