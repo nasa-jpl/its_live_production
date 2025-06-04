@@ -107,7 +107,7 @@ class ITSCube:
     SHAPE_PATH_URL = '.s3.amazonaws.com'
 
     # STAC catalog URL for the ITS_LIVE granules
-    STAC_CATALOG = "https://stac.itslive.cloud"
+    STAC_CATALOG = "https://stac.icevelocity.cloud"
 
     # Start and end dates for the catalog search
     START_DATE = '1982-01-01'
@@ -2724,7 +2724,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-stacCatalog',
         type=str,
-        default='https://stac.itslive.cloud',
+        default='https://stac.icevelocity.cloud',
         help='ITS_LIVE granule STAC catalog URL to request granules from '
              '[%(default)s].'
     )

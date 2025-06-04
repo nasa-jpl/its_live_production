@@ -532,7 +532,7 @@ def search_stac_catalog(epsg_code: str,
                         stac_catalog: str,
                         start_date: str,
                         end_date: str,
-                        page_size: int = 2000,
+                        page_size: int = 4000,
                         percent_valid_pixels: int = 1,
                         **kwargs):
     """
