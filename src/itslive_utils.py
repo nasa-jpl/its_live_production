@@ -614,6 +614,8 @@ def search_stac_catalog(epsg_code: str,
                 f'{len(hrefs)=} found granules '
             )
 
+            got_granules = True
+
         except:
             # If failed due to timeout in STAC catalog or any other STAC
             # failure (too many requests at the same time?)
