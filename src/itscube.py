@@ -587,7 +587,7 @@ class ITSCube:
         # Log an example of the cube layer that is not present in found_urls
         if len(cube_in_found_urls):
             self.logger.info(
-                f"Cube layer not present in found_urls: {cube_in_found_urls[0]}"
+                f"Cube layer not present in found_urls: {list(cube_in_found_urls)[0]}"
             )
 
         self.logger.info(
