@@ -534,6 +534,8 @@ def search_stac_catalog(epsg_code: str,
                         end_date: str,
                         page_size: int = 4000,
                         percent_valid_pixels: int = 1,
+                        total_retries=5,
+                        num_seconds=30,
                         **kwargs):
     """
     Search STAC catalog for granules. The code is provided by Luis Lopez.
@@ -583,23 +585,45 @@ def search_stac_catalog(epsg_code: str,
     search_kwargs["filter_lang"] = "cql2-json"
 
     logging.info(f'Using STAC search criteria: {search_kwargs=}')
-    search = catalog.search(**search_kwargs)
 
+    got_granules = False
+    num_retries = 0
     hrefs = []
-    pages_count = 0
 
-    for page in search.pages():
-        pages_count += 1
-        for item in page:
-            # Check if the item has the requested projection
-            for asset in item.assets.values():
-                if "data" in asset.roles and asset.href.endswith(".nc"):
-                    hrefs.append(asset.href)
+    while not got_granules and num_retries <= total_retries:
+        # Get list of granules:
+        num_retries += 1
 
-    logging.info(
-        f'STAC catalog query results: {pages_count=} pages, '
-        f'{len(hrefs)=} found granules '
-    )
+        try:
+            logging.info(f"Getting granules from STAC: #{num_retries} attempt")
+
+            hrefs = []
+            pages_count = 0
+            search = catalog.search(**search_kwargs)
+
+            for page in search.pages():
+                pages_count += 1
+                for item in page:
+                    # Check if the item has the requested projection
+                    for asset in item.assets.values():
+                        if "data" in asset.roles and asset.href.endswith(".nc"):
+                            hrefs.append(asset.href)
+
+            logging.info(
+                f'STAC catalog query results: {pages_count=} pages, '
+                f'{len(hrefs)=} found granules '
+            )
+
+        except:
+            # If failed due to timeout in STAC catalog or any other STAC
+            # failure (too many requests at the same time?)
+            logging.info(f'Got exception: {sys.exc_info()}')
+            if num_retries < total_retries:
+                # Sleep if it's not the last attempt
+                logging.info(
+                    f'Sleeping between STAC queries for {num_seconds} seconds...'
+                )
+                time.sleep(num_seconds)
 
     return hrefs
 
@@ -682,7 +706,10 @@ def get_granule_urls_compressed(params, total_retries=1, num_seconds=30):
             logging.info(f'Got exception: {sys.exc_info()}')
             if num_retries < total_retries:
                 # Sleep if it's not last attempt
-                logging.info(f'Sleeping between searchAPI attempts for {num_seconds} seconds...')
+                logging.info(
+                    f'Sleeping between searchAPI attempts for {num_seconds} '
+                    f'seconds...'
+                )
                 time.sleep(num_seconds)
 
         finally:
