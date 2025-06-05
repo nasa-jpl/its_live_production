@@ -583,6 +583,13 @@ class ITSCube:
         self.logger.info(
             f"Cube granules not in found_urls: ({len(cube_in_found_urls)})"
         )
+
+        # Log an example of the cube layer that is not present in found_urls
+        if len(cube_in_found_urls):
+            self.logger.info(
+                f"Cube layer not present in found_urls: {cube_in_found_urls[0]}"
+            )
+
         self.logger.info(
             f"Exclude known cube granules ({len(cube_granules)}): "
             f"{len(granules)} granules remain"
