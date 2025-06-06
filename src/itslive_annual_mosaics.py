@@ -26,7 +26,8 @@ python ./itslive_annual_mosaics.py -c tools/catalog_datacubes_v02.json
     --processCubesFile HMA_datacubes.json -r HMA
     --mosaicsEpsgCode 102027
 
-Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Greene (JPL), Mark Fahnestock (UAF)
+Authors: Masha Liukis (JPL), Alex Gardner (JPL), Chad Greene (JPL),
+         Mark Fahnestock (UAF)
 """
 import collections
 import datetime
@@ -2333,9 +2334,9 @@ class ITSLiveAnnualMosaics:
             }
         )
 
-        # Start with all values set to "include" (1)
-        # Use new "include" value of 0 since the change is implemented in composites:
-        # values are flipped right before storing data to the file
+        # Start with all values set to "include" (0)
+        # Use new "include" value of 0 since the change is implemented in
+        # composites: values are flipped right before storing data to the file
         ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
             data=np.full(sensor_dims, 0, dtype=np.short),
             coords=var_coords,
