@@ -372,7 +372,6 @@ class ITSLiveAnnualMosaics:
         self,
         cubes_file: str,
         s3_bucket: str,
-        cube_dir: str,
         composite_dir: str,
         mosaics_dir: str
     ):
@@ -382,11 +381,10 @@ class ITSLiveAnnualMosaics:
         cubes_file: GeoJson catalog file with existing datacube's Zarr S3 URLs.
         s3_bucket: S3 bucket that stores all data (assumes that all datacubes,
                     composites, and mosaics are stored in the same bucket).
-        cube_dir:  Directory path within S3 bucket that stores datacubes.
         composite_dir: Directory path within S3 bucket that stores datacubes' composites.
         mosaics_dir:   Directory path within S3 bucket that stores datacubes' mosaics.
         """
-        self.collect_composites(cubes_file, s3_bucket, cube_dir, composite_dir)
+        self.collect_composites(cubes_file, s3_bucket, composite_dir)
 
         # If it's a multi-EPSG region, create mosaics per each EPSG code first, then
         # combine them into target EPSG projection
@@ -469,7 +467,6 @@ class ITSLiveAnnualMosaics:
         self,
         cubes_file: str,
         s3_bucket: str,
-        cube_dir: str,
         composite_dir: str
     ):
         """
@@ -480,7 +477,6 @@ class ITSLiveAnnualMosaics:
         cubes_file: GeoJson catalog file with existing datacubes' Zarr S3 URLs.
         s3_bucket: S3 bucket that stores all data (assumes that all datacubes,
                     composites, and mosaics are stored in the same bucket).
-        cube_dir:  Directory path within S3 bucket that stores datacubes.
         composite_dir: Directory path within S3 bucket that stores datacubes' composites.
         """
         logging.info(f'BatchVars.POLYGON_SHAPE: {BatchVars.POLYGON_SHAPE}')
@@ -2739,24 +2735,17 @@ def parse_args():
         help="URL for the store in S3 bucket (to provide for easier download option) [%(default)s]"
     )
     parser.add_argument(
-        '-d', '--cubeDir',
-        type=str,
-        action='store',
-        default='datacubes/v2',
-        help="S3 directory with datacubes [%(default)s]"
-    )
-    parser.add_argument(
         '-s', '--compositesDir',
         type=str,
         action='store',
-        default='composites/annual/v2',
+        default='composites/annual/v2_updated-may2025',
         help="Destination S3 directory with composites [%(default)s]"
     )
     parser.add_argument(
         '-m', '--mosaicsDir',
         type=str,
         action='store',
-        default='mosaics/annual/v2',
+        default='mosaics/annual/v2_updated-may2025',
         help="Destination S3 directory to store mosaics to [%(default)s]"
     )
     parser.add_argument(
@@ -2925,7 +2914,6 @@ if __name__ == '__main__':
     result_files = mosaics.create(
         args.cubeDefinitionFile,
         args.bucket,
-        args.cubeDir,
         args.compositesDir,
         args.mosaicsDir
     )
