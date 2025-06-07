@@ -2745,7 +2745,7 @@ def parse_args():
         '-m', '--mosaicsDir',
         type=str,
         action='store',
-        default='mosaics/annual/v2_updated-may2025',
+        default='velocity_mosaic/v2_updated-may2025',
         help="Destination S3 directory to store mosaics to [%(default)s]"
     )
     parser.add_argument(
