@@ -349,13 +349,14 @@ def parse_args():
         type=str,
         action='store',
         default=None,
-        help="File regex to match mosaics in S3 bucket location [%(default)s]."
+        help="File regex to match mosaics in S3 bucket location [%(default)s]. "
+            "For example, ITS_LIVE_velocity_120m_RGI12A_*.nc."
     )
     parser.add_argument(
         '-b', '--bucket',
         type=str,
         action='store',
-        default='s3://its-live-data/mosaics/annual/v2/netcdf',
+        default='s3://its-live-data/velocity_mosaic/v2_updated-may2025',
         help="S3 bucket location that stores mosaics files for post-processing [%(default)s]."
     )
     parser.add_argument(
@@ -369,7 +370,7 @@ def parse_args():
         '-d', '--targetBucketDir',
         type=str,
         action='store',
-        default='mosaics/annual/v2/postprocessing',
+        default='velocity_mosaic/v2_updated-may2025/post_process',
         help="S3 bucket location to store post-processed mosaics files [%(default)s]"
     )
     parser.add_argument(
