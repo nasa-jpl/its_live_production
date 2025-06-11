@@ -2146,6 +2146,13 @@ class ITSCube:
         compression = {"compressor": compressor}
 
         start_time = timeit.default_timer()
+
+        # New version of Zarr requires all granule_url values to be of the
+        # same type
+        self.layers[DataVars.URL] = self.layers[DataVars.URL].astype(
+            f'U{ITSCube.MAX_GRANULE_URL_LEN}'
+        )
+
         # Write to the Zarr store
         if is_first_write:
             encoding_settings = {}
