@@ -373,7 +373,7 @@ class ITSCube:
             epsg_code=self.projection,
             start_date=ITSCube.START_DATE,
             end_date=ITSCube.END_DATE,
-            intersects=roi,
+            roi=roi,
             backend=ITSCube.STAC_CATALOG,
         )
 
