@@ -441,7 +441,8 @@ def serverless_search(
             the region to search for.
         backend (str): URL to the STAC catalog geoparquets.
         percent_valid_pixels (float): Minimum percentage of valid pixels
-            in the granule. Default is None, which means no filtering.    asset_type: string, type of asset to search for, default is ".nc".
+            in the granule. Default is None, which means no filtering.
+        asset_type: string, type of asset to search for, default is ".nc".
 
     Outputs: a list of URL matching the asset type (string matching not
         mime type).
