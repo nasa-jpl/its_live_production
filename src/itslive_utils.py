@@ -1,26 +1,23 @@
 import boto3
 import collections
 import dask
-from dask.diagnostics import ProgressBar
 import gc
 import itertools
 import json
-import requests
 import pyproj
-from pystac_client import Client
+import rustac
 import numpy as np
 import os
 import logging
+from pathlib import Path
 import time
-import sys
+from shapely.geometry import shape, box
+import s3fs
 import subprocess
 import zarr
-import zipfile
 
+# Local imports
 from grid import Bounds
-
-BASE_URL = 'https://nsidc.org/apps/itslive-search/velocities/urls'
-# BASE_URL = 'https://staging.nsidc.org/apps/itslive-search/velocities/urls'
 
 # Number of 'aws s3 cp' retries in case of a failure
 _NUM_AWS_COPY_RETRIES = 20
@@ -355,99 +352,139 @@ def backup_datacube_latest_chunks(
     return last_chunk_map
 
 
+def get_overlapping_dirs_for_feature(geometry):
+    """Luis's code.
+    """
+    geom = shape(geometry)
+
+    minx, miny, maxx, maxy = geom.bounds
+
+    # Floor to 10-degree tile grid
+    start_lon = int(minx // 10) * 10
+    end_lon = int(maxx // 10) * 10
+
+    if maxx % 10 != 0:
+        end_lon += 10
+
+    start_lat = int(miny // 10) * 10
+    end_lat = int(maxy // 10) * 10
+
+    if maxy % 10 != 0:
+        end_lat += 10
+
+    intersecting_dirs = []
+
+    for lat in range(start_lat, end_lat, 10):
+        for lon in range(start_lon, end_lon, 10):
+            tile = box(lon, lat, lon + 10, lat + 10)
+            if tile.intersects(geom):
+                lat_prefix = 'N' if lat >= 0 else 'S'
+                lon_prefix = 'E' if lon >= 0 else 'W'
+                dir_name = f"{lat_prefix}{abs(lat):02d}{lon_prefix}{abs(lon):03d}"
+                intersecting_dirs.append(dir_name)
+
+    return intersecting_dirs
+
+
+def find_paths_for_dir_names(base_dir, dir_names):
+    """Luis's code.
+    """
+    base = Path(base_dir)
+    matches = []
+
+    for dir_name in dir_names:
+        matches.extend(p for p in base.rglob(dir_name) if p.is_dir())
+
+    return matches
+
+
+def path_exists(path: str) -> bool:
+    """Luis's code.
+    """
+    if path.startswith("s3://"):
+        fs = s3fs.S3FileSystem(anon=True)
+        return fs.exists(path)
+
+    else:
+        return os.path.exists(path)
+
+
+def build_cql2_filter(filters_list):
+    """Luis's code.
+    """
+    if not filters_list:
+        return None
+
+    return filters_list[0] if len(filters_list) == 1 else \
+        {"op": "and", "args": filters_list}
+
+
 @timing_decorator
-def download_datacube_latest_chunks(
-    bucket_url: str,
-    local_path: str,
-    num_threads: int = 4,
-    dask_scheduler: str = 'threads'
+def serverless_search(
+    epsg_code: str,
+    start_date: str,
+    end_date: str,
+    roi: dict,
+    backend: str = "s3://its-live-data/test-space/stac",
+    percent_valid_pixels: int = 1,
+    asset_type: str = ".nc"
 ):
     """
-    Download metadata files and latest chunks for each of the data
-    variables from the given datacube s3 URL.
+    Search STAC catalog geoparquets for the granules that satisfy
+    cube's search criteria (Luis's code).
 
-    Args:
-        bucket_url (str): Name of the S3 bucket and full path to the
-            datacube in Zarr format.
-        local_path (str): Local directory to save the downloaded files to
-            (should be a name of the datacube).
-        num_threads (int): Number of threads to use for downloading.
-        dask_scheduler (str): Dask scheduler to use for parallel downloads.
-                            Default is 'threads'.
+    Inputs:
+        epsg_code (int): EPSG code of the projection to search for.
+        start_date (str): Start date for the search in 'YYYY-MM-DD' format.
+        end_date (str): End date for the search in 'YYYY-MM-DD' format.
+        roi (dict): GeoJSON-like dictionary with the bounding box of
+            the region to search for.
+        backend (str): URL to the STAC catalog geoparquets.
+        percent_valid_pixels (float): Minimum percentage of valid pixels
+            in the granule. Default is None, which means no filtering.    asset_type: string, type of asset to search for, default is ".nc".
 
-    Returns:
-        Map of data variable to the ranges for existing data chunks,
-        and the last chunk ranges for each data variable.
+    Outputs: a list of URL matching the asset type (string matching not
+        mime type).
     """
-    # Identify last chunk for each data variable in the zarr store
-    last_chunk_map = identify_datacube_latest_chunks(bucket_url)
+    missions = ["landsatOLI", "sentinel1", "sentinel2"]
 
-    bucket_name, source_url = bucket_cube_name_from_url(bucket_url)
+    filters = [
+        {
+            "op": ">=",
+            "args": [{"property": "percent_valid_pixels"}, percent_valid_pixels]
+        },
+        {
+            "op": "=",
+            "args": [{"property": "proj:code"}, f'EPSG:{epsg_code}']
+        }
+    ]
+    search_kwargs = {
+        "intersects": roi,  # <- has to be in lat lon
+        "datetime": f"{start_date}/{end_date}",
+        "filter": build_cql2_filter(filters)
+    }
 
-    # Get rid of 's3://' prefix and bucket name if present in the source URL
-    s3_path = source_url.replace('s3://' + bucket_name + '/', '')
+    grids = get_overlapping_dirs_for_feature(search_kwargs["intersects"])
+    prefixes = [f"{backend}/{p}/{i}" for p in missions for i in grids]
+    search_prefixes = [
+        f"{path}/**/*.parquet" for path in prefixes if path_exists(path)
+    ]
 
-    # Create target directory if it doesn't exist
-    if not os.path.exists(local_path):
-        os.mkdir(local_path)
+    logging.info(f"Searching in {search_prefixes}")
 
-    # Download metadata files
-    for each_meta in CUBE_META:
-        # Download the file
-        logging.info(f'Downloading {os.path.join(s3_path, each_meta)} to {local_path}')
-        download_chunk(bucket_name, s3_path, each_meta, local_path)
+    client = rustac.DuckdbClient()
+    hrefs = []
+    for prefix in search_prefixes:
+        items = client.search(prefix, **search_kwargs)
+        for item in items:
+            for asset in item["assets"].values():
+                if "data" in asset["roles"] and \
+                        asset["href"].endswith(asset_type):
+                    hrefs.append(asset["href"])
 
-    # Number of chunks to download in parallel - should make it configurable?
-    num_chunks_in_parallel = 500
+        logging.info(f"Prefx: {prefix} items found: {len(items)}")
 
-    # Download latest chunks and metadata files for each data variable
-    for each_var, each_chunk_info in last_chunk_map.items():
-        local_var_path = os.path.join(local_path, each_var)
-        s3_var_path = os.path.join(s3_path, each_var)
-
-        if not os.path.exists(local_var_path):
-            os.mkdir(local_var_path)
-
-        # Copy last chunks for the data variable
-        logging.info(f'Downloading {each_var}: {each_chunk_info.last_dim_ranges=}')
-
-        chunk_iterator = itertools.product(*each_chunk_info.last_dim_ranges)
-
-        for chunks in iter(lambda: list(itertools.islice(chunk_iterator, num_chunks_in_parallel)), []):
-            tasks = [dask.delayed(download_chunk)(
-                bucket_name,
-                s3_var_path,
-                ".".join(map(str, each_chunk)),
-                local_var_path
-            ) for each_chunk in chunks]
-
-            with ProgressBar():
-                _ = dask.compute(
-                    tasks,
-                    scheduler=dask_scheduler,
-                    num_workers=num_threads
-                )
-
-            logging.info(f'Completed downloading {each_var} {len(chunks)} chunks: {chunks[0]=} to {chunks[-1]=}')
-
-            del tasks
-            gc.collect()
-
-        # Copy variable metadata files
-        for each_meta in VAR_META:
-            # Download the file
-            logging.info(f'Downloading {each_meta=} to {os.path.join(local_path, each_var)}')
-            download_chunk(
-                bucket_name,
-                s3_var_path,
-                each_meta,
-                local_var_path
-            )
-
-        # Debugger
-        # break
-
-    return last_chunk_map
+    return hrefs
 
 
 def get_min_lon_lat_max_lon_lat(coordinates: list):
@@ -524,110 +561,10 @@ def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool 
             file_is_copied = True
 
     if not file_is_copied:
-        raise RuntimeError(f"Failed to invoke {' '.join(command_line)} with command.returncode={command_return.returncode}")
-
-
-@timing_decorator
-def search_stac_catalog(epsg_code: str,
-                        stac_catalog: str,
-                        start_date: str,
-                        end_date: str,
-                        page_size: int = 4000,
-                        percent_valid_pixels: int = 1,
-                        total_retries=5,
-                        num_seconds=30,
-                        **kwargs):
-    """
-    Search STAC catalog for granules. The code is provided by Luis Lopez.
-
-    Args:
-        epsg_code (int): EPSG code of the projection to search for.
-        stac_catalog (str): URL to the STAC catalog.
-        start_date (str): Start date for the search in 'YYYY-MM-DD' format.
-        end_date (str): End date for the search in 'YYYY-MM-DD' format.
-        page_size (int): Number of items to return per page. Default is 2000.
-        percent_valid_pixels (float): Minimum percentage of valid pixels
-            in the granule. Default is None, which means no filtering.
-        **kwargs: Additional search parameters.
-    Returns:
-        list: List of granule URLs.
-    """
-    # Open the STAC catalog
-    logging.info(f"Searching STAC catalog: {stac_catalog}")
-    catalog = Client.open(stac_catalog)
-    search_kwargs = {
-        "collections": ["itslive-granules"],
-        "limit": page_size,
-        "datetime": f"{start_date}/{end_date}",
-        **kwargs
-    }
-
-    def build_cql2_filter(filters_list):
-        if not filters_list:
-            return None
-        return filters_list[0] if len(filters_list) == 1 else \
-            {"op": "and", "args": filters_list}
-
-    # Add more filters and flexibility if needed
-    filter_list = [
-        {
-            "op": ">=",
-            "args": [{"property": "percent_valid_pixels"}, percent_valid_pixels]
-        },
-        {
-            "op": "=",
-            "args": [{"property": "proj:code"}, f'EPSG:{epsg_code}']
-        }
-    ]
-
-    filters = build_cql2_filter(filter_list)
-    search_kwargs["filter"] = build_cql2_filter(filters)
-    search_kwargs["filter_lang"] = "cql2-json"
-
-    logging.info(f'Using STAC search criteria: {search_kwargs=}')
-
-    got_granules = False
-    num_retries = 0
-    hrefs = []
-
-    while not got_granules and num_retries <= total_retries:
-        # Get list of granules:
-        num_retries += 1
-
-        try:
-            logging.info(f"Getting granules from STAC: #{num_retries} attempt")
-
-            hrefs = []
-            pages_count = 0
-            search = catalog.search(**search_kwargs)
-
-            for page in search.pages():
-                pages_count += 1
-                for item in page:
-                    # Check if the item has the requested projection
-                    for asset in item.assets.values():
-                        if "data" in asset.roles and asset.href.endswith(".nc"):
-                            hrefs.append(asset.href)
-
-            logging.info(
-                f'STAC catalog query results: {pages_count=} pages, '
-                f'{len(hrefs)=} found granules '
-            )
-
-            got_granules = True
-
-        except:
-            # If failed due to timeout in STAC catalog or any other STAC
-            # failure (too many requests at the same time?)
-            logging.info(f'Got exception: {sys.exc_info()}')
-            if num_retries < total_retries:
-                # Sleep if it's not the last attempt
-                logging.info(
-                    f'Sleeping between STAC queries for {num_seconds} seconds...'
-                )
-                time.sleep(num_seconds)
-
-    return hrefs
+        raise RuntimeError(
+            f"Failed to invoke {' '.join(command_line)} with "
+            f"command.returncode={command_return.returncode}"
+        )
 
 
 def transform_coord(proj1, proj2, lon, lat):
@@ -637,177 +574,6 @@ def transform_coord(proj1, proj2, lon, lat):
     proj2 = pyproj.Proj("+init=EPSG:"+proj2)
     # Convert coordinates
     return pyproj.transform(proj1, proj2, lon, lat)
-
-
-def get_granule_urls(params):
-    # Allow for longer query time from searchAPI: 10 minutes
-    resp = requests.get(BASE_URL, params=params, verify=False, timeout=500)
-    return resp.json()
-
-
-def get_granule_urls_compressed(params, total_retries=1, num_seconds=30):
-    """
-    Request granules URLs with ZIP compression enabled, save the stream to the ZIP file,
-    and retrieve JSON information from the archive.
-
-    params: request parameters
-    total_retries: number of retries to query searchAPI in a case of exception.
-                    Default is 1.
-    num_seconds: number of seconds to sleep between retries to query searchAPI.
-                    Default is 30 seconds.
-    """
-    # Format request URL:
-    url = f'{BASE_URL}?'
-    for each_key, each_value in params.items():
-        url += f'{each_key}={each_value}&'
-
-    # Add compression option
-    url += 'compressed=true&'
-
-    # Add requested granules version (TODO: should be configurable on startup?)
-    url += 'version=2'
-
-    # Get rid of all single quotes if any in URL
-    url = url.replace("'", "")
-
-    num_retries = 0
-    got_granules = False
-    data = []
-
-    # Save response to local file:
-    local_path = 'searchAPI_urls.json.zip'
-
-    logging.info(f'Submitting searchAPI request with url={url}')
-
-    while not got_granules and num_retries < total_retries:
-        # Get list of granules:
-        try:
-            logging.info(f"Getting granules from searchAPI: #{num_retries+1} attempt")
-            num_retries += 1
-
-            resp = requests.get(url, stream=True, timeout=500)
-
-            logging.info(f'Saving searchAPI response to {local_path}')
-            with open(local_path, 'wb') as fh:
-                for chunk in resp.iter_content(10240, decode_unicode=False):
-                    _ = fh.write(chunk)
-
-            # Unzip the file
-            with zipfile.ZipFile(local_path, 'r') as fh:
-                zip_json_file = fh.namelist()[0]
-                logging.info(f'Extracting {zip_json_file}')
-
-                with fh.open(zip_json_file) as fh_json:
-                    data = json.load(fh_json)
-
-                    got_granules = True
-
-        except:
-            # If failed due to response truncation or searchAPI not being able to respond
-            # (too many requests at the same time?)
-            logging.info(f'Got exception: {sys.exc_info()}')
-            if num_retries < total_retries:
-                # Sleep if it's not last attempt
-                logging.info(
-                    f'Sleeping between searchAPI attempts for {num_seconds} '
-                    f'seconds...'
-                )
-                time.sleep(num_seconds)
-
-        finally:
-            # Clean up local file
-            if os.path.exists(local_path):
-                # Remove local file
-                logging.info(f'Removing {local_path}')
-                os.unlink(local_path)
-
-    if not got_granules:
-        raise RuntimeError("Failed to get granules from searchAPI.")
-
-    return data
-
-
-def get_granule_urls_streamed(params, total_retries=1, num_seconds=30):
-    """
-    Use streamed retrieval of the response from URL request.
-
-    params: request parameters
-    total_retries: number of retries to query searchAPI in a case of exception.
-                    Default is 1.
-    num_seconds: number of seconds to sleep between retries to query searchAPI.
-                    Default is 30 seconds.
-    """
-    token = ']['
-
-    # Format request URL:
-    url = f'{BASE_URL}?'
-    for each_key, each_value in params.items():
-        url += f'{each_key}={each_value}&'
-
-    # Add requested granules version (TODO: should be configurable on startup?)
-    url += 'version=2'
-
-    # Get rid of all single quotes if any in URL
-    url = url.replace("'", "")
-
-    num_retries = 0
-    got_granules = False
-    data = []
-
-    # Save response to local file:
-    local_path = 'searchAPI_urls.json'
-
-    logging.info(f'Submitting searchAPI request with url={url}')
-
-    while not got_granules and num_retries < total_retries:
-        # Get list of granules:
-        try:
-            logging.info(f"Getting granules from searchAPI: #{num_retries+1} attempt")
-            num_retries += 1
-
-            resp = requests.get(url, stream=True, timeout=500)
-
-            logging.info(f'Saving searchAPI response to {local_path}')
-            with open(local_path, 'a') as fh:
-                for chunk in resp.iter_content(10240, decode_unicode=True):
-                    _ = fh.write(chunk)
-
-            # Read data from local file
-            data = ''
-            with open(local_path) as fh:
-                data = fh.readline()
-
-            # if multiple json strings are returned,  then possible to see '][' within
-            # the string, replace it by ','
-            if token in data:
-                logging.info('Got multiple json variables within the same string (len(data)={len(data)})')
-                data = data.replace(token, ',')
-
-                logging.info('Merged multiple json variables into one list (len(data)={len(data)})')
-
-            data = json.loads(data)
-            got_granules = True
-
-        except:
-            # If failed due to response truncation or searchAPI not being able to respond
-            # (too many requests at the same time?)
-            logging.info(f'Got exception: {sys.exc_info()}')
-            if num_retries < total_retries:
-                # Sleep if it's not last attempt
-                logging.info(f'Sleeping between searchAPI attempts for {num_seconds} seconds...')
-                time.sleep(num_seconds)
-
-        finally:
-            # Clean up local file
-            if os.path.exists(local_path):
-                # Remove local file
-                logging.info(f'Removing {local_path}')
-                os.unlink(local_path)
-
-    if not got_granules:
-        raise RuntimeError("Failed to get granules from searchAPI.")
-
-    return data
 
 
 #

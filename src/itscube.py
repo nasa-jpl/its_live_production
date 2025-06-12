@@ -106,8 +106,8 @@ class ITSCube:
     PATH_URL = ".s3.amazonaws.com"
     SHAPE_PATH_URL = '.s3.amazonaws.com'
 
-    # STAC catalog URL for the ITS_LIVE granules
-    STAC_CATALOG = "https://stac.icevelocity.cloud"
+    # STAC catalog S3 URL for the ITS_LIVE granules
+    STAC_CATALOG = "s3://its-live-data/test-space/stac"
 
     # Start and end dates for the catalog search
     START_DATE = '1982-01-01'
@@ -369,12 +369,12 @@ class ITSCube:
             "coordinates": [self.polygon_coords]
         }
 
-        found_urls = itslive_utils.search_stac_catalog(
+        found_urls = itslive_utils.serverless_search(
             epsg_code=self.projection,
-            stac_catalog=ITSCube.STAC_CATALOG,
             start_date=ITSCube.START_DATE,
             end_date=ITSCube.END_DATE,
-            intersects=roi
+            intersects=roi,
+            backend=ITSCube.STAC_CATALOG,
         )
 
         total_num = len(found_urls)
@@ -2738,8 +2738,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '-stacCatalog',
         type=str,
-        default='https://stac.icevelocity.cloud',
-        help='ITS_LIVE granule STAC catalog URL to request granules from '
+        default='s3://its-live-data/test-space/stac',
+        help='ITS_LIVE granule STAC catalog to request granules from '
              '[%(default)s].'
     )
     parser.add_argument(
