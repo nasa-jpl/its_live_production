@@ -473,7 +473,7 @@ def serverless_search(
         f"{path}/**/*.parquet" for path in prefixes if path_exists(path)
     ]
 
-    logging.info(f"Searching {backend=} in {search_prefixes=}")
+    logging.info(f"Searching in {search_prefixes=}")
 
     client = rustac.DuckdbClient()
     hrefs = []
