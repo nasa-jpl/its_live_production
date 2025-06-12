@@ -419,7 +419,7 @@ def build_cql2_filter(filters_list):
         {"op": "and", "args": filters_list}
 
 
-@timing_decorator
+# @timing_decorator
 def serverless_search(
     epsg_code: str,
     start_date: str,
@@ -465,13 +465,15 @@ def serverless_search(
         "filter": build_cql2_filter(filters)
     }
 
+    logging.info(f"Search filters: {search_kwargs}")
+
     grids = get_overlapping_dirs_for_feature(search_kwargs["intersects"])
     prefixes = [f"{backend}/{p}/{i}" for p in missions for i in grids]
     search_prefixes = [
         f"{path}/**/*.parquet" for path in prefixes if path_exists(path)
     ]
 
-    logging.info(f"Searching in {search_prefixes}")
+    logging.info(f"Searching {backend=} in {search_prefixes=}")
 
     client = rustac.DuckdbClient()
     hrefs = []
