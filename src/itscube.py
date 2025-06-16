@@ -2738,7 +2738,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-stacCatalog',
         type=str,
-        default='s3://its-live-data/test-space/stac/geoparquet/latlon',
+        default='s3://its-live-data/test-space/stac/geoparquet/h3r2',
         help='ITS_LIVE granule STAC catalog to request granules from '
              '[%(default)s].'
     )

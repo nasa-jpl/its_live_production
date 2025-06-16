@@ -518,12 +518,12 @@ def serverless_search(
     end_date: str,
     roi: dict,
     percent_valid_pixels: float = 1.0,
-    base_catalog_href: str = "s3://its-live-data/test-space/stac/geoparquet/latlon",
+    base_catalog_href: str = "s3://its-live-data/test-space/stac/geoparquet/h3r2",
     engine: str = "duckdb",
     reduce_spatial_search=True,
-    partition_type: str = "latlon",
+    partition_type: str = "h3",
     resolution: int = 2,
-    overlap: str = "overlap",
+    overlap: str = "bbox_overlap",
     asset_type: str = ".nc"
 ):
     """
