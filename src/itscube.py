@@ -590,6 +590,25 @@ class ITSCube:
                 f"Cube layer not present in found_urls: {list(cube_in_found_urls)[0]}"
             )
 
+        # Check if any of the cube granules not reported in the new found_urls
+        # are due to the skipped granules in the datacube because of
+        # duplicate mid_date.
+        cube_in_skipped_found_urls = set(cube_in_found_urls).difference(
+            self.skipped_granules[DataVars.SKIP_DUPLICATE]
+        )
+        self.logger.info(
+            f"Cube granules not in found_urls and not skipped due to "
+            f"double mid_date: ({len(cube_in_skipped_found_urls)})"
+        )
+
+        # Log an example of the cube layer that is not present in found_urls
+        # and not skipped due to double mid_date
+        if len(cube_in_skipped_found_urls):
+            self.logger.info(
+                f"Example of the cube layer not present in found_urls: "
+                f"{list(cube_in_skipped_found_urls)[0]}"
+            )
+
         self.logger.info(
             f"Exclude known cube granules ({len(cube_granules)}): "
             f"{len(granules)} granules remain"
@@ -993,6 +1012,9 @@ class ITSCube:
 
         self.clear()
 
+        # This will exclude older Landsat8/9 granules that have duplicate
+        # mid_date and will update self.skipped_granules[DataVars.SKIP_DUPLICATE]
+        # with such granules.
         found_urls = self.request_granules(num_granules)
         if len(found_urls) == 0:
             return found_urls

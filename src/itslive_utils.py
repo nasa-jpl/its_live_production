@@ -435,6 +435,7 @@ def get_overlapping_grid_names(
         prefixes = [f"{base_href}/{p}" for p in grids]
         search_prefixes = [f"{prefix}/**/*.parquet" for prefix in prefixes if path_exists(prefix)]
         return search_prefixes
+
     else:
         raise NotImplementedError(f"Partition {partition_type} not implemented.")
 
