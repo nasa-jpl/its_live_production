@@ -631,40 +631,40 @@ def serverless_search(
     # to DuckDB/rustac as a combined list of paths.
     # for debugging purposes querying one by one is more convenient for now.
     for prefix in search_prefixes:
-        try:
-            if engine == "duckdb":
-                # TODO: make it more flexible
-                logging.info(f"Filters as SQL: {filters_sql}")
-                geojson_str = json.dumps(search_kwargs["intersects"])
-                query = f"""
-                    SELECT
-                        '{prefix}' AS source_parquet,
-                        assets -> 'data' ->> 'href' AS data_href
-                    FROM read_parquet('{prefix}', union_by_name=true)
-                    WHERE ST_Intersects(
-                        geometry,
-                        ST_GeomFromGeoJSON('{geojson_str}')
-                    ) AND {filters_sql}
-                """
-                items = con.execute(query).df()
-                links = items["data_href"].to_list()
-                hrefs.extend(links)
+        # try:
+        if engine == "duckdb":
+            # TODO: make it more flexible
+            logging.info(f"Filters as SQL: {filters_sql}")
+            geojson_str = json.dumps(search_kwargs["intersects"])
+            query = f"""
+                SELECT
+                    '{prefix}' AS source_parquet,
+                    assets -> 'data' ->> 'href' AS data_href
+                FROM read_parquet('{prefix}', union_by_name=true)
+                WHERE ST_Intersects(
+                    geometry,
+                    ST_GeomFromGeoJSON('{geojson_str}')
+                ) AND {filters_sql}
+            """
+            items = con.execute(query).df()
+            links = items["data_href"].to_list()
+            hrefs.extend(links)
 
-            elif engine == "rustac":
-                # can we use include to only bring the asset links?
-                items = client.search(prefix, **search_kwargs)
-                for item in items:
-                    for asset in item["assets"].values():
-                        if "data" in asset["roles"] and asset["href"].endswith(".nc"):
-                            hrefs.append(asset["href"])
+        elif engine == "rustac":
+            # can we use include to only bring the asset links?
+            items = client.search(prefix, **search_kwargs)
+            for item in items:
+                for asset in item["assets"].values():
+                    if "data" in asset["roles"] and asset["href"].endswith(".nc"):
+                        hrefs.append(asset["href"])
 
-            else:
-                raise NotImplementedError(f"Not a valid query engine: {engine}")
+        else:
+            raise NotImplementedError(f"Not a valid query engine: {engine}")
 
-            logging.info(f"Prefx: {prefix} items found: {len(items)}")
+        logging.info(f"Prefx: {prefix} items found: {len(items)}")
 
-        except Exception as e:
-            raise (f"Error while searching in {prefix}: {e}")
+        # except Exception as e:
+        #     raise (f"Error while searching in {prefix}: {e}")
 
     return sorted(list(set(hrefs)))
 
