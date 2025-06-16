@@ -519,7 +519,7 @@ def serverless_search(
     roi: dict,
     percent_valid_pixels: float = 1.0,
     base_catalog_href: str = "s3://its-live-data/test-space/stac/geoparquet/latlon",
-    engine: str = "rustac",
+    engine: str = "duckdb",
     reduce_spatial_search=True,
     partition_type: str = "latlon",
     resolution: int = 2,
