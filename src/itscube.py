@@ -374,7 +374,7 @@ class ITSCube:
             start_date=ITSCube.START_DATE,
             end_date=ITSCube.END_DATE,
             roi=roi,
-            backend=ITSCube.STAC_CATALOG,
+            base_catalog_href=ITSCube.STAC_CATALOG,
         )
 
         total_num = len(found_urls)
@@ -2738,7 +2738,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-stacCatalog',
         type=str,
-        default='s3://its-live-data/test-space/stac',
+        default='s3://its-live-data/test-space/stac/geoparquet/latlon',
         help='ITS_LIVE granule STAC catalog to request granules from '
              '[%(default)s].'
     )

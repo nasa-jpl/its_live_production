@@ -1,15 +1,16 @@
 import boto3
 import collections
 import dask
+import duckdb
 import gc
 import itertools
 import json
-import pyproj
-import rustac
+import logging
+import math
 import numpy as np
 import os
-import logging
-from pathlib import Path
+import pyproj
+import rustac
 import time
 from shapely.geometry import shape, box
 import s3fs
@@ -352,54 +353,144 @@ def backup_datacube_latest_chunks(
     return last_chunk_map
 
 
-def get_overlapping_dirs_for_feature(geometry):
-    """Luis's code.
+def get_overlapping_grid_names(
+    geojson_geometry: dict = {},
+    base_href: str = "s3://its-live-data/test-space/stac/geoparquet/latlon",
+    partition_type: str = "latlon",
+    resolution: int = 2,
+    overlap: str = "overlap"
+):
     """
-    geom = shape(geometry)
+    Luis's code.
 
-    minx, miny, maxx, maxy = geom.bounds
+    Generates a list of S3 path prefixes corresponding to spatial grid tiles that overlap
+    with the provided GeoJSON geometry. These paths are intended for discovering Parquet files
+    in a spatially partitioned STAC dataset.
 
-    # Floor to 10-degree tile grid
-    start_lon = int(minx // 10) * 10
-    end_lon = int(maxx // 10) * 10
+    This is a workaround: ideally, spatial filtering should be handled within the Parquet metadata
+    or using spatial indices rather than inferring intersecting tiles manually.
 
-    if maxx % 10 != 0:
-        end_lon += 10
+    Parameters:
+    ----------
+    geojson_geometry : dict, optional
+        A GeoJSON geometry dictionary specifying the spatial region of interest.
+        The function will find grid cells (by centroid) that intersect with this geometry.
+    base_href : str, optional
+        The base S3 path where partitioned STAC data is stored. The function will append
+        grid identifiers and mission names to this prefix.
+    partition_type : str, optional
+        Type of partitioning used. Supports:
+        - "latlon": Fixed 10x10 degree lat/lon grids with cell names like "N60W040"
+        - "h3": H3 hexagonal grid system using resolution and overlap
+    resolution : int, optional
+        Only used if `partition_type` is "h3". Specifies the resolution of the H3 hex cells.
+    overlap : str, optional
+        Only used if `partition_type` is "h3". Passed to the `h3shape_to_cells_experimental` function
+        to control overlap behavior.
 
-    start_lat = int(miny // 10) * 10
-    end_lat = int(maxy // 10) * 10
-
-    if maxy % 10 != 0:
-        end_lat += 10
-
-    intersecting_dirs = []
-
-    for lat in range(start_lat, end_lat, 10):
-        for lon in range(start_lon, end_lon, 10):
-            tile = box(lon, lat, lon + 10, lat + 10)
-            if tile.intersects(geom):
-                lat_prefix = 'N' if lat >= 0 else 'S'
-                lon_prefix = 'E' if lon >= 0 else 'W'
-                dir_name = f"{lat_prefix}{abs(lat):02d}{lon_prefix}{abs(lon):03d}"
-                intersecting_dirs.append(dir_name)
-
-    return intersecting_dirs
-
-
-def find_paths_for_dir_names(base_dir, dir_names):
-    """Luis's code.
+    Returns:
+    -------
+    List[str]
+        A list of valid S3-style path prefixes (with wildcards) that point to
+        `.parquet` files under spatial partitions overlapping the input geometry.
     """
-    base = Path(base_dir)
-    matches = []
+    if partition_type == "latlon":
+        # ITS_LIVE uses a fixed 10 by 10 grid  (centroid as name for the cell e.g. N60W040)
+        def lat_prefix(lat):
+            return f"N{abs(lat):02d}" if lat >= 0 else f"S{abs(lat):02d}"
 
-    for dir_name in dir_names:
-        matches.extend(p for p in base.rglob(dir_name) if p.is_dir())
+        def lon_prefix(lon):
+            return f"E{abs(lon):03d}" if lon >= 0 else f"W{abs(lon):03d}"
 
-    return matches
+        geom = shape(geojson_geometry)
+        missions = ["landsatOLI", "sentinel1", "sentinel2"]
+
+        if not geom.is_valid:
+            geom = geom.buffer(0)
+
+        minx, miny, maxx, maxy = geom.bounds
+
+        # Center-based grid!
+        lon_center_start = int(math.floor((minx - 5)/10.0)) * 10
+        lon_center_end = int(math.ceil((maxx + 5)/10.0)) * 10
+        lat_center_start = int(math.floor((miny - 5)/10.0)) * 10
+        lat_center_end = int(math.ceil((maxy + 5)/10.0)) * 10
+
+        grids = set()
+        for lon_c in range(lon_center_start, lon_center_end + 1, 10):
+            for lat_c in range(lat_center_start, lat_center_end + 1, 10):
+                tile = box(lon_c - 5, lat_c - 5, lon_c + 5, lat_c + 5)
+                if geom.intersects(tile):
+                    name = f"{lat_prefix(lat_c)}{lon_prefix(lon_c)}"
+                    grids.add(name)
+
+        prefixes = [f"{base_href}/{p}/{i}" for p in missions for i in list(grids)]
+        search_prefixes = [f"{path}/**/*.parquet" for path in prefixes if path_exists(path)]
+        return search_prefixes
+
+    elif partition_type == "h3":
+        import h3
+        grids_hex = h3.h3shape_to_cells_experimental(h3.geo_to_h3shape(geojson_geometry), resolution, overlap)
+        grids = [int(hs, 16) for hs in grids_hex]
+        prefixes = [f"{base_href}/{p}" for p in grids]
+        search_prefixes = [f"{prefix}/**/*.parquet" for prefix in prefixes if path_exists(prefix)]
+        return search_prefixes
+    else:
+        raise NotImplementedError(f"Partition {partition_type} not implemented.")
+
+
+def expr_to_sql(expr):
+    """
+    Luis's code.
+
+    Transform a cql expression into SQL, I wonder if the library does it.
+    """
+    op = expr["op"]
+    left, right = expr["args"]
+
+    # Get property name if dict with "property" key, else literal
+    def val_to_sql(val):
+        if isinstance(val, dict) and "property" in val:
+            prop = val["property"]
+            if not prop.isidentifier():
+                return f'"{prop}"'
+            return prop
+        elif isinstance(val, str):
+            # quote strings
+            return f"'{val}'"
+        else:
+            return str(val)
+
+    left_sql = val_to_sql(left)
+    right_sql = val_to_sql(right)
+
+    # Map operators
+    op_map = {
+        "=": "=",
+        "==": "=",
+        ">=": ">=",
+        "<=": "<=",
+        ">": ">",
+        "<": "<",
+        "!=": "<>",
+        "<>": "<>"
+    }
+    sql_op = op_map.get(op, op)
+    return f"{left_sql} {sql_op} {right_sql}"
+
+
+def filters_to_where(filters):
+    """
+    Luis's code.
+"""
+    # filters is a list of expressions combined with AND
+    sql_parts = [expr_to_sql(f) for f in filters]
+    return " AND ".join(sql_parts)
 
 
 def path_exists(path: str) -> bool:
-    """Luis's code.
+    """
+    Luis's code.
     """
     if path.startswith("s3://"):
         fs = s3fs.S3FileSystem(anon=True)
@@ -410,7 +501,8 @@ def path_exists(path: str) -> bool:
 
 
 def build_cql2_filter(filters_list):
-    """Luis's code.
+    """
+    Luis's code.
     """
     if not filters_list:
         return None
@@ -419,35 +511,78 @@ def build_cql2_filter(filters_list):
         {"op": "and", "args": filters_list}
 
 
-# @timing_decorator
+@timing_decorator
 def serverless_search(
     epsg_code: str,
     start_date: str,
     end_date: str,
     roi: dict,
-    backend: str = "s3://its-live-data/test-space/stac",
-    percent_valid_pixels: int = 1,
+    percent_valid_pixels: float = 1.0,
+    base_catalog_href: str = "s3://its-live-data/test-space/stac/geoparquet/latlon",
+    engine: str = "rustac",
+    reduce_spatial_search=True,
+    partition_type: str = "latlon",
+    resolution: int = 2,
+    overlap: str = "overlap",
     asset_type: str = ".nc"
 ):
     """
-    Search STAC catalog geoparquets for the granules that satisfy
-    cube's search criteria (Luis's code).
+    Performs a serverless!! search over partitioned STAC catalogs stored in
+    Parquet format for the ITS_LIVE project.
 
-    Inputs:
-        epsg_code (int): EPSG code of the projection to search for.
-        start_date (str): Start date for the search in 'YYYY-MM-DD' format.
-        end_date (str): End date for the search in 'YYYY-MM-DD' format.
-        roi (dict): GeoJSON-like dictionary with the bounding box of
-            the region to search for.
-        backend (str): URL to the STAC catalog geoparquets.
-        percent_valid_pixels (float): Minimum percentage of valid pixels
-            in the granule. Default is None, which means no filtering.
-        asset_type: string, type of asset to search for, default is ".nc".
+    Parameters
+    ----------
+    epsg_code : str
+        EPSG code of the coordinate reference system to use for the search.
+    start_date : str
+        Start date of the search range in ISO 8601 format (e.g., "2020-01-01").
+    end_date : str
+        End date of the search range in ISO 8601 format (e.g., "2020-12-31").
+    roi : list
+        A GeoJSON-like dictionary defining the region of interest (ROI) for
+        the search. It should contain a "type" key (e.g., "Polygon") and a
+        "coordinates" key with a list of coordinates defining the geometry.
+    percent_valid_pixels : float, optional
+        Minimum percentage of valid pixels required for an asset to be included in the results.
+        Defaults to 1.0 (100% valid pixels).
+    base_catalog_href : str
+        Base URI of the ITS_LIVE STAC catalog or geoparquet collection. This
+        should point to the root location where spatial partitions are stored
+        (e.g. "s3://its-live-data/test-space/stac/geoparquet/latlon").
+    engine : str, optional
+        The backend engine to use for querying. Supported options:
+        - "rustac": Uses the Rust STAC client (`rustac.DuckdbClient`)
+        - "duckdb": Uses DuckDB SQL for querying parquet partitions
+    reduce_spatial_search : bool, optional
+        Whether to pre-filter the list of parquet files using overlapping
+        spatial partitions. If False, all files under the base path will be
+        searched.
+    partition_type : str, optional
+        The spatial partitioning scheme used. Supports:
+        - "latlon": 10x10 degree tiles (default)
+        - "h3": Hexagonal grid (requires `resolution` and `overlap`)
+    resolution : int, optional
+        Only used if `partition_type` is "h3". Defines the granularity of H3 spatial partitioning.
+    overlap : str, optional
+        Only used with H3 partitioning. Passed to the `h3shape_to_cells_experimental()` function
+        to handle partial overlaps.
+    asset_type : str, optional
+        A string suffix filter to match asset HREFs (e.g., ".nc" for NetCDF files).
 
-    Outputs: a list of URL matching the asset type (string matching not
-        mime type).
+    Returns
+    -------
+    List[str]
+        A list of asset URLs (typically `.nc` NetCDF files) that match the search criteria.
+
     """
-    missions = ["landsatOLI", "sentinel1", "sentinel2"]
+    # Connect to DuckDB
+    con = duckdb.connect()
+    # Load spatial extension required for the spatial queries
+    con.execute("INSTALL spatial")
+    con.execute("LOAD spatial")
+
+    client = rustac.DuckdbClient()
+    store = base_catalog_href
 
     filters = [
         {
@@ -459,6 +594,8 @@ def serverless_search(
             "args": [{"property": "proj:code"}, f'EPSG:{epsg_code}']
         }
     ]
+    filters_sql = filters_to_where(filters)
+
     search_kwargs = {
         "intersects": roi,  # <- has to be in lat lon
         "datetime": f"{start_date}/{end_date}",
@@ -467,27 +604,69 @@ def serverless_search(
 
     logging.info(f"Search filters: {search_kwargs}")
 
-    grids = get_overlapping_dirs_for_feature(search_kwargs["intersects"])
-    prefixes = [f"{backend}/{p}/{i}" for p in missions for i in grids]
-    search_prefixes = [
-        f"{path}/**/*.parquet" for path in prefixes if path_exists(path)
-    ]
+    if reduce_spatial_search:
+        if "intersects" in search_kwargs:
+            search_prefixes = get_overlapping_grid_names(
+                base_href=store,
+                geojson_geometry=search_kwargs["intersects"],
+                partition_type=partition_type,
+                resolution=resolution,
+                overlap=overlap
+            )
 
-    logging.info(f"Searching in {search_prefixes=}")
+    else:
+        if partition_type == "latlon":
+            search_prefixes = [
+                f"{store}/{mission}/**/*.parquet" for mission
+                in ["landsatOLI", "sentinel1", "sentinel2"]
+            ]
 
-    client = rustac.DuckdbClient()
+        else:
+            search_prefixes = [f"{store}/**/*.parquet"]
+
+    logging.info((f"Searching in {search_prefixes}"))
+
     hrefs = []
+    # TODO: this could run in parallel on a thread or could be passed all
+    # to DuckDB/rustac as a combined list of paths.
+    # for debugging purposes querying one by one is more convenient for now.
     for prefix in search_prefixes:
-        items = client.search(prefix, **search_kwargs)
-        for item in items:
-            for asset in item["assets"].values():
-                if "data" in asset["roles"] and \
-                        asset["href"].endswith(asset_type):
-                    hrefs.append(asset["href"])
+        try:
+            if engine == "duckdb":
+                # TODO: make it more flexible
+                logging.info(f"Filters as SQL: {filters_sql}")
+                geojson_str = json.dumps(search_kwargs["intersects"])
+                query = f"""
+                    SELECT
+                        '{prefix}' AS source_parquet,
+                        assets -> 'data' ->> 'href' AS data_href
+                    FROM read_parquet('{prefix}', union_by_name=true)
+                    WHERE ST_Intersects(
+                        geometry,
+                        ST_GeomFromGeoJSON('{geojson_str}')
+                    ) AND {filters_sql}
+                """
+                items = con.execute(query).df()
+                links = items["data_href"].to_list()
+                hrefs.extend(links)
 
-        logging.info(f"Prefx: {prefix} items found: {len(items)}")
+            elif engine == "rustac":
+                # can we use include to only bring the asset links?
+                items = client.search(prefix, **search_kwargs)
+                for item in items:
+                    for asset in item["assets"].values():
+                        if "data" in asset["roles"] and asset["href"].endswith(".nc"):
+                            hrefs.append(asset["href"])
 
-    return hrefs
+            else:
+                raise NotImplementedError(f"Not a valid query engine: {engine}")
+
+            logging.info(f"Prefx: {prefix} items found: {len(items)}")
+
+        except Exception as e:
+            raise (f"Error while searching in {prefix}: {e}")
+
+    return sorted(list(set(hrefs)))
 
 
 def get_min_lon_lat_max_lon_lat(coordinates: list):
