@@ -1,4 +1,4 @@
-name: itslivecube_luis
+name: itslivecube
 
 channels:
   - conda-forge
