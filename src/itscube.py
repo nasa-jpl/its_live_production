@@ -277,6 +277,11 @@ class ITSCube:
         # Constructed cube
         self.layers = None
 
+        # For existing datacubes capture size of unicode strings as newer
+        # version of zarr requires dtype to be the same when appending the
+        # layers
+        self.existing_dtypes = {}
+
         # Number of layers in the cube - this will be the same as the number of granules
         # if datacube exists. If datacube is being created from scratch, this number
         # will be zero. This number indicates starting index when appending new layers
@@ -1005,6 +1010,29 @@ class ITSCube:
 
         self.date_updated = self.date_created
         self.date_created = cube_ds.attrs[CubeOutput.DATE_CREATED]
+
+        # When updating existing datacube we need to know maximum number of
+        # characters for unicode string data variables. Newer zarr requires
+        # dtypes to be consistent: when appending new layers data has to be
+        # formatted to the existing on disk dtype.
+        if cube_ds is not None:
+            for each in [
+                DataVars.ImgPairInfo.SENSOR_IMG1,
+                DataVars.ImgPairInfo.SENSOR_IMG2
+            ]:
+                # Convert dtype to string rep: '<U3' for dtype('<U3')
+                dtype_str = str(cube_ds[each].dtype)
+
+                # Extract how many characters
+                match = re.match(r"[<>=|]?U(\d+)", dtype_str)
+                if match:
+                    self.dtype[each] = int(match.group(1))
+                    self.logger.info(
+                        f'Extracted dtype for {each}: {self.dtype[each]} characters'
+                    )
+
+                else:
+                    self.logger.warning(f'Could not extract dtype for {each}')
 
         if s3 is None:
             # If input datacube is on the local filesystem, open S3FS for reading
@@ -2429,25 +2457,22 @@ class ITSCube:
                 DataVars.ImgPairInfo.SENSOR_IMG1,
                 DataVars.ImgPairInfo.SENSOR_IMG2
             ]:
-                # Convert dtype to string rep: '<U3' for dtype('<U3')
-                dtype_str = str(ds[each].dtype)
+                # Number of characters in dtype for the data variable in
+                # the existing Zarr store on disk
+                num_chars = self.existing_dtypes[each]
+                dtype_str = f'U{num_chars}'
 
-                # Extract how many characters
-                match = re.match(r"[<>=|]?U(\d+)", dtype_str)
-                if match:
-                    num_chars = int(match.group(1))
-
-                    _values = self.layers[each].values
-                    max_sensor_len = max(map(len, _values))
-                    if max_sensor_len > num_chars:
-                        # Find which values exceed the current dtype's number
-                        # of characters
-                        mask = np.char.str_len(_values) > num_chars
-                        raise RuntimeError(
-                            f'"{each}" would be truncated to the current '
-                            f'length limit {num_chars=}: {set(_values[mask])} '
-                            f'new values are detected in layers to append.'
-                        )
+                _values = self.layers[each].values
+                max_sensor_len = max(map(len, _values))
+                if max_sensor_len > num_chars:
+                    # Find which values exceed the current dtype's number
+                    # of characters
+                    mask = np.char.str_len(_values) > num_chars
+                    raise RuntimeError(
+                        f'"{each}" would be truncated to the current '
+                        f'length limit {num_chars=}: {set(_values[mask])} '
+                        f'new values are detected in layers to append.'
+                    )
 
                 self.layers[each] = self.layers[each].astype(dtype_str)
 
