@@ -1018,7 +1018,9 @@ class ITSCube:
         if cube_ds is not None:
             for each in [
                 DataVars.ImgPairInfo.SENSOR_IMG1,
-                DataVars.ImgPairInfo.SENSOR_IMG2
+                DataVars.ImgPairInfo.SENSOR_IMG2,
+                DataVars.ImgPairInfo.SATELLITE_IMG1,
+                DataVars.ImgPairInfo.SATELLITE_IMG2
             ]:
                 # Convert dtype to string rep: '<U3' for dtype('<U3')
                 dtype_str = str(cube_ds[each].dtype)
@@ -2455,7 +2457,9 @@ class ITSCube:
             # disk
             for each in [
                 DataVars.ImgPairInfo.SENSOR_IMG1,
-                DataVars.ImgPairInfo.SENSOR_IMG2
+                DataVars.ImgPairInfo.SENSOR_IMG2,
+                DataVars.ImgPairInfo.SATELLITE_IMG1,
+                DataVars.ImgPairInfo.SATELLITE_IMG2
             ]:
                 # Number of characters in dtype for the data variable in
                 # the existing Zarr store on disk
