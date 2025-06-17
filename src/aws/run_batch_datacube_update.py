@@ -404,7 +404,7 @@ def parse_args():
         '-bd', '--backupDir',
         type=str,
         action='store',
-        default='test-space/backup/v2_datacubes/20250522',
+        default='test-space/backup/v2_datacubes/2025June',
         help="Destination S3 bucket for the backup of datacubes latest chunks "
              "before datacube update is applied [%(default)s]"
     )
