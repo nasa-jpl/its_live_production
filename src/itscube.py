@@ -2318,36 +2318,6 @@ class ITSCube:
 
                 encoding_settings.setdefault(each, {}).update({Output.DTYPE_ATTR: f'U{ITSCube.MAX_SENSOR_LEN}'})
 
-            # Set array size for unicode string to the one stored in Zarr on
-            # disk
-            for each in [
-                DataVars.ImgPairInfo.SENSOR_IMG1,
-                DataVars.ImgPairInfo.SENSOR_IMG2
-            ]:
-                # Convert dtype to string rep: '<U3' for dtype('<U3')
-                dtype_str = str(ds[each].dtype)
-
-                # Extract how many characters
-                match = re.match(r"[<>=|]?U(\d+)", dtype_str)
-                if match:
-                    num_chars = int(match.group(1))
-
-                    _values = self.layers[each].values
-                    max_sensor_len = max(map(len, _values))
-                    if max_sensor_len > num_chars:
-                        # Find which values exceed the current dtype's number
-                        # of characters
-                        mask = np.char.str_len(_values) > num_chars
-                        raise RuntimeError(
-                            f'"{each}" would be truncated to the current '
-                            f'length limit {num_chars=}: {set(_values[mask])} '
-                            f'new values are detected in layers to append.'
-                        )
-
-                encoding_settings.setdefault(each, {}).update(
-                    {Output.DTYPE_ATTR: dtype_str}
-                )
-
             # Check for the length limit of the granule_url's
             max_url_len = max(map(len, self.layers[DataVars.URL].values))
             if max_url_len > ITSCube.MAX_GRANULE_URL_LEN:
@@ -2451,8 +2421,42 @@ class ITSCube:
             self.layers.to_zarr(output_dir, encoding=encoding_settings, consolidated=True)
 
         else:
+            # New version of Zarr requires all sensor_img[12] values to be of the
+            # same type
+            # Set array size for unicode string to the one stored in Zarr on
+            # disk
+            for each in [
+                DataVars.ImgPairInfo.SENSOR_IMG1,
+                DataVars.ImgPairInfo.SENSOR_IMG2
+            ]:
+                # Convert dtype to string rep: '<U3' for dtype('<U3')
+                dtype_str = str(ds[each].dtype)
+
+                # Extract how many characters
+                match = re.match(r"[<>=|]?U(\d+)", dtype_str)
+                if match:
+                    num_chars = int(match.group(1))
+
+                    _values = self.layers[each].values
+                    max_sensor_len = max(map(len, _values))
+                    if max_sensor_len > num_chars:
+                        # Find which values exceed the current dtype's number
+                        # of characters
+                        mask = np.char.str_len(_values) > num_chars
+                        raise RuntimeError(
+                            f'"{each}" would be truncated to the current '
+                            f'length limit {num_chars=}: {set(_values[mask])} '
+                            f'new values are detected in layers to append.'
+                        )
+
+                self.layers[each] = self.layers[each].astype(dtype_str)
+
             # Append layers to existing Zarr store
-            self.layers.to_zarr(output_dir, append_dim=Coords.MID_DATE, consolidated=True)
+            self.layers.to_zarr(
+                output_dir,
+                append_dim=Coords.MID_DATE,
+                consolidated=True
+            )
 
         time_delta = timeit.default_timer() - start_time
         self.logger.info(f"Wrote {len(self.urls)} layers to {output_dir} (took {time_delta} seconds)")
