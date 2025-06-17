@@ -1026,9 +1026,9 @@ class ITSCube:
                 # Extract how many characters
                 match = re.match(r"[<>=|]?U(\d+)", dtype_str)
                 if match:
-                    self.dtype[each] = int(match.group(1))
+                    self.existing_dtypes[each] = int(match.group(1))
                     self.logger.info(
-                        f'Extracted dtype for {each}: {self.dtype[each]} characters'
+                        f'Extracted dtype for {each}: {self.existing_dtypes[each]} characters'
                     )
 
                 else:
