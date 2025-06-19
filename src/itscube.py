@@ -2720,7 +2720,7 @@ class ITSCube:
         return gpd.read_file(shape_file)
 
     @staticmethod
-    @itslive_utils.retry_decorator
+    @itslive_utils.retry_decorator()
     def read_ice_mask(shapefile_row, column_name, grid_x, grid_y):
         """
         Read ice mask as stored in "column_name" field of the shapefile's row.

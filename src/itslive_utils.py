@@ -64,7 +64,10 @@ def timing_decorator(func):
 
         # Calculate elapsed time
         elapsed_time = end_time - start_time
-        logging.info(f"Function {func.__name__}() executed in {elapsed_time:.6f} seconds ({elapsed_time/60:.6f} minutes)")
+        logging.info(
+            f"Function {func.__name__}() executed in {elapsed_time:.6f} "
+            f"seconds ({elapsed_time/60:.6f} minutes)"
+        )
 
         return result
 
@@ -101,7 +104,11 @@ def retry_decorator(
                     if attempt == max_retries:
                         raise
                     sleep_time = random.uniform(0, delay) if jitter else delay
-                    print(f"[Retry {attempt}] {type(e).__name__}: {e} — retrying in {sleep_time:.2f}s...")
+
+                    logging.info(
+                        f"[Retry {attempt}] {type(e).__name__}: {e} — "
+                        f"retrying in {sleep_time:.2f}s..."
+                    )
                     time.sleep(sleep_time)
                     delay *= backoff
         return wrapper
@@ -552,7 +559,7 @@ def build_cql2_filter(filters_list):
 
 
 @timing_decorator
-@retry_decorator
+@retry_decorator()
 def serverless_search(
     epsg_code: str,
     start_date: str,
