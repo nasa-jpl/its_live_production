@@ -1889,8 +1889,14 @@ class ITSCube:
             raise RuntimeError(f"Multiple values for '{DataVars.AUTORIFT_PARAMETER_FILE}' are detected for current {len(self.ds)} layers: {unique_values}")
 
         # All layers within datacube must have the same autoRIFT parameter file
-        if self.autoRIFTParamFile != self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE]:
-            raise RuntimeError(f"Inconsistent values for '{DataVars.AUTORIFT_PARAMETER_FILE}' are detected: {self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE]} for current {len(self.ds)} layers vs. previously detected {self.autoRIFTParamFile}")
+        if os.path.basename(self.autoRIFTParamFile) != \
+                os.path.basename(self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE]):
+            raise RuntimeError(
+                f"Inconsistent values for '{DataVars.AUTORIFT_PARAMETER_FILE}' "
+                f"are detected: {self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE]} "
+                f"for current {len(self.ds)} layers vs. previously detected "
+                f"{self.autoRIFTParamFile}"
+            )
 
         self.layers.attrs[CubeOutput.CONVENTIONS] = CubeOutput.Values.CONVENTIONS
         self.layers.attrs[CubeOutput.DATACUBE_SOFTWARE_VERSION] = ITSCube.Version
@@ -2703,6 +2709,7 @@ class ITSCube:
         return gpd.read_file(shape_file)
 
     @staticmethod
+    @itslive_utils.retry_decorator
     def read_ice_mask(shapefile_row, column_name, grid_x, grid_y):
         """
         Read ice mask as stored in "column_name" field of the shapefile's row.

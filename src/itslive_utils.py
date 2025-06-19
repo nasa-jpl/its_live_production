@@ -2,6 +2,7 @@ import boto3
 import collections
 import dask
 import duckdb
+import functools
 import gc
 import itertools
 import json
@@ -10,6 +11,7 @@ import math
 import numpy as np
 import os
 import pyproj
+import random
 import rustac
 import time
 from shapely.geometry import shape, box
@@ -67,6 +69,43 @@ def timing_decorator(func):
         return result
 
     return wrapper
+
+
+def retry_decorator(
+    max_retries=10,
+    base_delay=1.0,
+    backoff=2.0,
+    jitter=True
+):
+    """
+    Decorator to retry a function on any exception.
+
+    Args:
+        max_retries (int): Number of retry attempts.
+        base_delay (float): Initial delay between retries.
+        backoff (float): Backoff multiplier between retries.
+        jitter (bool): Whether to add random jitter to the delay.
+
+    Usage:
+        @retry(max_retries=3)
+        def my_func(): ...
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = base_delay
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_retries:
+                        raise
+                    sleep_time = random.uniform(0, delay) if jitter else delay
+                    print(f"[Retry {attempt}] {type(e).__name__}: {e} — retrying in {sleep_time:.2f}s...")
+                    time.sleep(sleep_time)
+                    delay *= backoff
+        return wrapper
+    return decorator
 
 
 # Collection to record chunk information for each data variable in
@@ -483,7 +522,7 @@ def expr_to_sql(expr):
 def filters_to_where(filters):
     """
     Luis's code.
-"""
+    """
     # filters is a list of expressions combined with AND
     sql_parts = [expr_to_sql(f) for f in filters]
     return " AND ".join(sql_parts)
@@ -513,6 +552,7 @@ def build_cql2_filter(filters_list):
 
 
 @timing_decorator
+@retry_decorator
 def serverless_search(
     epsg_code: str,
     start_date: str,
