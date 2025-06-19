@@ -201,7 +201,9 @@ class ITSCube:
         self.projection = projection
         self.polygon = polygon
 
-        # All layers are required to have the same autoRIFT parameter file
+        # All layers are required to have the same autoRIFT parameter file:
+        # set it to the parameter file for the fist granule to be appended
+        # to the new datacube. Set it to the attribute for existing datacube.
         self.autoRIFTParamFile = None
 
         # Set min/max x/y values to filter region by
@@ -1016,6 +1018,10 @@ class ITSCube:
         # dtypes to be consistent: when appending new layers data has to be
         # formatted to the existing on disk dtype.
         if cube_ds is not None:
+            # Set autoRIFT attribute for newly appended layers to what
+            # is already in the datacube
+            self.autoRIFTParamFile = cube_ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE]
+
             for each in [
                 DataVars.ImgPairInfo.SENSOR_IMG1,
                 DataVars.ImgPairInfo.SENSOR_IMG2,
@@ -1877,25 +1883,30 @@ class ITSCube:
         )
 
         # Set datacube attribute to capture autoRIFT parameter file
-        self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE] = self.ds[0].attrs[DataVars.AUTORIFT_PARAMETER_FILE]
-
         if self.autoRIFTParamFile is None:
-            self.autoRIFTParamFile = self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE]
+            # If autoRIFT parameter file is not set (meaning we are generating
+            # brand new cube), use the first layer's parameter file
+            self.autoRIFTParamFile = self.ds[0].attrs[DataVars.AUTORIFT_PARAMETER_FILE]
+
+        self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE] = self.autoRIFTParamFile
 
         # Make sure all layers have the same parameter file
         all_values = [urlparse(ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE]).path for ds in self.ds]
         unique_values = list(set(all_values))
         if len(unique_values) > 1:
-            raise RuntimeError(f"Multiple values for '{DataVars.AUTORIFT_PARAMETER_FILE}' are detected for current {len(self.ds)} layers: {unique_values}")
+            raise RuntimeError(
+                f"Multiple values for '{DataVars.AUTORIFT_PARAMETER_FILE}' "
+                f"are detected for current {len(self.ds)} layers: {unique_values}"
+            )
 
         # All layers within datacube must have the same autoRIFT parameter file
         if os.path.basename(self.autoRIFTParamFile) != \
-                os.path.basename(self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE]):
+                os.path.basename(unique_values[0]):
             raise RuntimeError(
                 f"Inconsistent values for '{DataVars.AUTORIFT_PARAMETER_FILE}' "
                 f"are detected: {self.layers.attrs[DataVars.AUTORIFT_PARAMETER_FILE]} "
                 f"for current {len(self.ds)} layers vs. previously detected "
-                f"{self.autoRIFTParamFile}"
+                f"{unique_values[0]}"
             )
 
         self.layers.attrs[CubeOutput.CONVENTIONS] = CubeOutput.Values.CONVENTIONS
