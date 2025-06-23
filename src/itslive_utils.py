@@ -1,7 +1,6 @@
 import boto3
 import collections
 import dask
-import duckdb
 import functools
 import gc
 import itertools
@@ -12,7 +11,6 @@ import numpy as np
 import os
 import pyproj
 import random
-import rustac
 import time
 from shapely.geometry import shape, box
 import s3fs
@@ -623,6 +621,9 @@ def serverless_search(
         A list of asset URLs (typically `.nc` NetCDF files) that match the search criteria.
 
     """
+    import duckdb
+    import rustac
+
     # Connect to DuckDB
     con = duckdb.connect()
     # Load spatial extension required for the spatial queries
