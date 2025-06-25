@@ -2683,7 +2683,7 @@ class ITSLiveComposite:
 
         # Note for v3: exclude v > 20000 right before any analysis (before SensorExcludeFilter)
         # filter vp against the same v limit
-        vp_invalid_mask =  vp > ITSLiveComposite.V_LIMIT
+        vp_invalid_mask = (vp > ITSLiveComposite.V_LIMIT)
         vp[vp_invalid_mask] = np.nan
 
         # DEBUG only: store vp to CSV file
