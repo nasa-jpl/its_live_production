@@ -168,8 +168,8 @@ def cube_filter_iteration(vp, dt, mad_std_ratio):
 
     Inputs:
     =======
-    vp_in: Projected velocity to median flow unit vector.
-    dt_in: Day separation vector.
+    vp: Projected velocity to median flow unit vector.
+    dt: Day separation vector.
 
     Return: a tuple of
     maxdt:   Maximum dt as determined by the filter.
@@ -195,17 +195,10 @@ def cube_filter_iteration(vp, dt, mad_std_ratio):
     invalid = np.zeros_like(dt, dtype=np.bool_)
 
     # There is no valid projected velocity vector
-    if np.all(np.isnan(vp)):
-        return (np.nan, invalid)
-
-    if np.any(np.isinf(vp)):
-        return (np.inf, invalid)
+    if np.all(np.isnan(vp)) or np.all(np.isinf(vp)):
+        return (maxdt, np.ones_like(dt, dtype=np.bool_))
 
     x0_is_null = np.isnan(vp)
-    if np.all(x0_is_null):
-        # No data to process
-        return (maxdt, invalid)
-
     mask = ~x0_is_null
     x0 = vp[mask]
     x0_dt = dt[mask]
@@ -254,7 +247,7 @@ def cube_filter_iteration(vp, dt, mad_std_ratio):
 
     # Not enough data to proceed
     if ref_index.size == 0:
-        return (maxdt, invalid)
+        return (maxdt, np.ones_like(dt, dtype=np.bool_))
 
     ref_index = ref_index[0]
 
@@ -2687,6 +2680,11 @@ class ITSLiveComposite:
             f'Done with velocity projection to median flow unit vector '
             f'(took {timeit.default_timer() - start_time} seconds)'
         )
+
+        # Note for v3: exclude v > 20000 right before any analysis (before SensorExcludeFilter)
+        # filter vp against the same v limit
+        vp_invalid_mask =  vp > ITSLiveComposite.V_LIMIT)
+        vp[vp_invalid_mask] = np.nan
 
         # DEBUG only: store vp to CSV file
         # logging.info(f'vp.size={vp.shape}')
