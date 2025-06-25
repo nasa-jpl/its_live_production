@@ -811,6 +811,10 @@ def to_int_type(data, data_type=np.uint16, fill_value=DataVars.MISSING_POS_VALUE
     _mask = np.isnan(data)
     data[_mask] = fill_value
 
+    # Mask Inf's with maximum value for the target dtype
+    _mask = np.isinf(data)
+    data[_mask] = np.iinfo(data_type).max
+
     # Round to nearest int value
     int_data = np.rint(data).astype(data_type)
 
