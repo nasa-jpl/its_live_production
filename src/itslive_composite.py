@@ -2553,9 +2553,11 @@ class ITSLiveComposite:
         ds_vy: 3d block of vy values.
         ds_date_dt: day separation for velocity image pairs.
         ds_sensors: Current sensors for the datacube.
-        exclude_sensors: 2d "map" of sensors to exclude from calculations (one list per each [y, x] point).
+        exclude_sensors: 2d "map" of sensors to exclude from calculations
+            (one list per each [y, x] point).
         """
         vp = np.full_like(ds_vx, np.nan)
+        logging.info(f"Creating vp: {vp.shape=}")
 
         dims = ds_vx.shape
         y_len = dims[0]
@@ -2684,6 +2686,10 @@ class ITSLiveComposite:
         # Note for v3: exclude v > 20000 right before any analysis (before SensorExcludeFilter)
         # filter vp against the same v limit
         vp_invalid_mask = (vp > ITSLiveComposite.V_LIMIT)
+        logging.info(
+            f'Setting {np.sum(vp_invalid_mask)} vp elements to nans due to '
+            f'exceeding {ITSLiveComposite.V_LIMIT=}'
+        )
         vp[vp_invalid_mask] = np.nan
 
         # DEBUG only: store vp to CSV file
