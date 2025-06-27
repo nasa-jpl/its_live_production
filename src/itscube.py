@@ -2702,6 +2702,7 @@ class ITSCube:
                 raise RuntimeError(f"Failed to remove original {json_s3_path}: {command_return.stdout}")
 
     @staticmethod
+    @itslive_utils.retry_decorator()
     def read_shapefile(shapefile: str):
         """
         Read shape file in with ice mask information required for processing.
@@ -2971,9 +2972,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # Read shape file with ice masks information in
-    ITSCube.SHAPE_FILE = ITSCube.read_shapefile(args.shapeFile)
-
     # Check if target location of the generated/updated datacube is different from original cube location
     target_bucket = args.targetBucket if args.targetBucket is not None else args.outputBucket
     logging.info(f'Target s3 bucket location is set to {target_bucket}')
@@ -3033,6 +3031,9 @@ if __name__ == '__main__':
             ITSCube.SKIPPED_GRANULES_FILE,
             args.outputBucket
         )
+
+    # Read shape file with ice masks information in
+    ITSCube.SHAPE_FILE = ITSCube.read_shapefile(args.shapeFile)
 
     projection = args.targetProjection
 
