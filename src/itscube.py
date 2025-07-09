@@ -185,6 +185,14 @@ class ITSCube:
     # Shape file to locate ice masks files that correspond to the composite's EPSG code
     SHAPE_FILE = None
 
+    # Flag indicating whether to use an existing backup of the datacube, if
+    # one exists.
+    # Reusing backups can be helpful, but it’s often cumbersome to delete
+    # incomplete backups left behind by terminated EC2 jobs in AWS. Therefore,
+    # this is made optional, with the default behavior set to *not* reuse an
+    # existing backup.
+    USE_EXISTING_BACKUP = False
+
     def __init__(self, polygon: tuple, projection: str):
         """
         Initialize object.
@@ -1092,7 +1100,8 @@ class ITSCube:
 
             # Identify "last" chunks for the cube and back them up to
             # the backup directory in s3 bucket if provided
-            if ITSCube.exists(output_dir, backup_bucket):
+            if ITSCube.exists(output_dir, backup_bucket) and \
+                    ITSCube.USE_EXISTING_BACKUP:
                 logging.info(
                     f"Backup {output_dir} already exists in {backup_bucket}, "
                     "skipping backup copy."
@@ -2909,6 +2918,11 @@ if __name__ == '__main__':
              'to longitude/latitude coordinates'
     )
     parser.add_argument(
+        '--useExistingCubeBackup',
+        action='store_true',
+        help='Use datacube backup copy for the update if it exists already.'
+    )
+    parser.add_argument(
         '--useGranulesFile',
         type=Path,
         default=None,
@@ -2982,6 +2996,7 @@ if __name__ == '__main__':
 
     ITSCube.NUM_THREADS = args.threads
     ITSCube.NUM_CHUNKS_TO_BACKUP = args.numberBackupChunks
+    ITSCube.USE_EXISTING_BACKUP = args.useExistingCubeBackup
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
     ITSCube.PATH_URL = args.pathURLToken

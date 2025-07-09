@@ -285,6 +285,7 @@ def identify_datacube_latest_chunks(bucket_url: str):
 
 
 @timing_decorator
+@retry_decorator()
 def backup_datacube_latest_chunks(
     bucket_url: str,
     backup_url: str,
