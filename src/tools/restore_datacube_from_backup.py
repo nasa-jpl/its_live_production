@@ -223,7 +223,7 @@ def main():
         '--inputCubes',
         type=str,
         action='store',
-        default='[]',
+        default=None,
         help="JSON list of datacubes to process [%(default)s]."
     )
     group.add_argument(
