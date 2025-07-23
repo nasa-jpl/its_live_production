@@ -263,7 +263,7 @@ def main():
         cubes = json.loads(args.inputCubes)
 
     elif args.inputCubesFile:
-        cubes = json.loads(args.processCubesFile.read_text())
+        cubes = json.loads(args.inputCubesFile.read_text())
 
     if len(cubes) == 0:
         raise RuntimeError('No cubes to restore are provided.')
