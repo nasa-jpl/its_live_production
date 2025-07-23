@@ -21,6 +21,7 @@ import itertools
 import json
 import logging
 import os
+from pathlib import Path
 
 import itslive_utils
 from itscube_types import FileExtension
@@ -217,11 +218,20 @@ def main():
         epilog=__doc__,
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument(
-        '-i', '--inputCubes',
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        '--inputCubes',
         type=str,
-        default='',
-        help='List of AWS S3 datacubes URLs to restore [%(default)s]'
+        action='store',
+        default='[]',
+        help="JSON list of datacubes to process [%(default)s]."
+    )
+    group.add_argument(
+        '--inputCubesFile',
+        type=Path,
+        action='store',
+        default=None,
+        help="File that contains JSON list of datacube to process [%(default)s]."
     )
     parser.add_argument(
         '-d', '--bucketDir',
@@ -247,7 +257,16 @@ def main():
 
     logging.info(f"Args: {args}")
     RestoreDatacubeFromBackup.DRY_RUN = args.dryrun
-    cubes = json.loads(args.inputCubes)
+
+    cubes = []
+    if args.inputCubes:
+        cubes = json.loads(args.inputCubes)
+
+    elif args.inputCubesFile:
+        cubes = json.loads(args.processCubesFile.read_text())
+
+    if len(cubes) == 0:
+        raise RuntimeError('No cubes to restore are provided.')
 
     restore_cubes = RestoreDatacubeFromBackup(
         cubes,
