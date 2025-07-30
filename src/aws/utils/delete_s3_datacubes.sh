@@ -20,11 +20,11 @@ while read -r line; do
     name="$line"
     echo "Deleting - $name"
     # aws s3 ls $name
-    # aws s3 rm --recursive --quiet $name
+    aws s3 rm --recursive --quiet $name
 
     # Generate the corresponding .json filename
     json_name="${name%.zarr}.json"
     echo "Deleting - $json_name"
-    # aws s3 rm --quiet "$json_name"
+    aws s3 rm --quiet "$json_name"
 
 done < "$filename"
