@@ -2378,6 +2378,10 @@ class ITSCube:
                         'Please update ITSCube.MAX_SATELLITE_LEN value.'
                     )
 
+                # Capture max number of characters allowed for the dtype
+                self.existing_dtypes[each] = ITSCube.MAX_SATELLITE_LEN
+
+                # Set encoding
                 encoding_settings.setdefault(each, {}).update({Output.DTYPE_ATTR: f'U{ITSCube.MAX_SATELLITE_LEN}'})
 
             # Set array size to accomodate maximum length of the sensor
@@ -2392,6 +2396,11 @@ class ITSCube:
                         f'{ITSCube.MAX_SENSOR_LEN}: {max_len} length is detected. '
                         'Please update ITSCube.MAX_SATELLITE_LEN value.'
                     )
+
+                # Capture max number of characters allowed for the dtype
+                self.existing_dtypes[each] = ITSCube.MAX_SENSOR_LEN
+
+                # Set encoding
                 encoding_settings.setdefault(each, {}).update({Output.DTYPE_ATTR: f'U{ITSCube.MAX_SENSOR_LEN}'})
 
             # Check for the length limit of the granule_url's
