@@ -158,8 +158,11 @@ class ITSCube:
     # to avoid truncation of the data if first ever written block of data
     # has less than other blocks data in length.
 
+    # Maximum length for the satellite value across all used missions
+    MAX_SATELLITE_LEN = 2
+
     # Maximum length for the sensor value across all used missions
-    MAX_SENSOR_LEN = 2
+    MAX_SENSOR_LEN = 5
 
     # Maximum length of the granule URL
     MAX_GRANULE_URL_LEN = 1024
@@ -681,6 +684,7 @@ class ITSCube:
         # Check if there are any granules between existing cube layers and found_urls
         # that have duplicate middle date
         cube_and_found_urls = cube_granules + list(granules)
+
         _, skipped_landsat_granules = ITSCube.skip_duplicate_l89_granules(cube_and_found_urls)
 
         # Check if any of the skipped granules are in the cube
@@ -820,7 +824,7 @@ class ITSCube:
             if os.path.exists(cube_path):
                 cube_exists = True
 
-        logging.info(f'{cube_path} exists: {cube_exists == True}')
+        logging.info(f'{cube_path} exists: {cube_exists is True}')
 
         return cube_exists
 
@@ -2359,19 +2363,33 @@ class ITSCube:
             ]:
                 encoding_settings.setdefault(each, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
-            # Set array size to accomodate maximum length of the sensor
+            # Set array size to accomodate maximum length of the satellite
             for each in [
                 DataVars.ImgPairInfo.SATELLITE_IMG1,
                 DataVars.ImgPairInfo.SATELLITE_IMG2
             ]:
-                max_sensor_len = max(map(len, self.layers[each].values))
-                if max_sensor_len > ITSCube.MAX_SENSOR_LEN:
+                max_len = max(map(len, self.layers[each].values))
+                if max_len > ITSCube.MAX_SATELLITE_LEN:
                     raise RuntimeError(
                         f'"{each}" will be truncated to the current length limit: '
-                        f'{ITSCube.MAX_SENSOR_LEN}: {max_sensor_len} length is detected. '
-                        'Please update ITSCube.MAX_SENSOR_LEN value.'
+                        f'{ITSCube.MAX_SATELLITE_LEN}: {max_len} length is detected. '
+                        'Please update ITSCube.MAX_SATELLITE_LEN value.'
                     )
 
+                encoding_settings.setdefault(each, {}).update({Output.DTYPE_ATTR: f'U{ITSCube.MAX_SATELLITE_LEN}'})
+
+            # Set array size to accomodate maximum length of the sensor
+            for each in [
+                DataVars.ImgPairInfo.SENSOR_IMG1,
+                DataVars.ImgPairInfo.SENSOR_IMG2
+            ]:
+                max_len = max(map(len, self.layers[each].values))
+                if max_len > ITSCube.MAX_SENSOR_LEN:
+                    raise RuntimeError(
+                        f'"{each}" will be truncated to the current length limit: '
+                        f'{ITSCube.MAX_SENSOR_LEN}: {max_len} length is detected. '
+                        'Please update ITSCube.MAX_SATELLITE_LEN value.'
+                    )
                 encoding_settings.setdefault(each, {}).update({Output.DTYPE_ATTR: f'U{ITSCube.MAX_SENSOR_LEN}'})
 
             # Check for the length limit of the granule_url's
@@ -2477,8 +2495,8 @@ class ITSCube:
             self.layers.to_zarr(output_dir, encoding=encoding_settings, consolidated=True)
 
         else:
-            # New version of Zarr requires all sensor_img[12] values to be of the
-            # same type
+            # New version of Zarr requires all unicode string values to be
+            # of the same type
             # Set array size for unicode string to the one stored in Zarr on
             # disk
             for each in [
@@ -2493,8 +2511,8 @@ class ITSCube:
                 dtype_str = f'U{num_chars}'
 
                 _values = self.layers[each].values
-                max_sensor_len = max(map(len, _values))
-                if max_sensor_len > num_chars:
+                max_len = max(map(len, _values))
+                if max_len > num_chars:
                     # Find which values exceed the current dtype's number
                     # of characters
                     mask = np.char.str_len(_values) > num_chars
