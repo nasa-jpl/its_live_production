@@ -395,8 +395,10 @@ class ITSCube:
             roi=roi,
             base_catalog_href=ITSCube.STAC_CATALOG,
         )
-
         total_num = len(found_urls)
+
+        self.logger.info(f"Total of {total_num} granules returned by searchAPI.")
+
 
         if total_num == 0:
             self.logger.info("No granules are found, skipping datacube generation or update")
