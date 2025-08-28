@@ -1,3 +1,5 @@
+[![Citation](https://zenodo.org/badge/312696948.svg)](https://doi.org/10.5281/zenodo.16969434)
+
 # itslive_production
 The Inter-mission Time Series of Land Ice Velocity and Elevation ([ITS_LIVE](https://its-live.jpl.nasa.gov)) is a NASA MEaSUREs project to provide automated, low latency, global glacier flow and elevation change datasets.
 
