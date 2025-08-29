@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import sys
+import os
 
 from itscube_types import CubeJson
 
@@ -129,6 +130,13 @@ if __name__ == '__main__':
                         ((isinstance(attr_value, list) and properties[attr_name] in attr_value) or \
                         (not isinstance(attr_value, list) and properties[attr_name] == attr_value)):
                     cubes_to_generate.append(properties[CubeJson.URL])
+                    if CubeJson.REGION_ID in properties:
+                        logging.info(f'{properties[CubeJson.URL]}: '
+                                        f'regionID={properties[CubeJson.REGION_ID]} '
+                                        f'regionCode={properties[CubeJson.RGI_CODE]}')
+                    else:
+                        logging.info(f'{properties[CubeJson.URL]}: '
+                                        f'regionCode={properties[CubeJson.RGI_CODE]}')
 
     logging.info(f'Number of cubes for {attr_name}={attr_value}: {len(cubes_to_generate)}')
 
