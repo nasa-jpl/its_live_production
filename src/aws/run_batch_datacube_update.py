@@ -491,7 +491,7 @@ def parse_args():
     parser.add_argument(
         '-p', '--parallelGranules',
         type=int,
-        default=700,
+        default=800,
         help="Number of granules to process in parallel at one time [%(default)d]."
     )
     parser.add_argument(
