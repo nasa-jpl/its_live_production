@@ -63,6 +63,14 @@ logging.basicConfig(
 # Number of 'aws s3 cp' retries in case of a failure
 _NUM_AWS_COPY_RETRIES = 20
 
+# Bin edges for dt_max filter
+DT_EDGE = np.array([0, 16, 32, 64, 128, 256, np.inf])
+# Bin edges for the median flow vector
+DT_MEDIAN_FLOW = np.array([16, 32, 64, 128, 256, np.inf])
+
+# For convenience
+TWO_PI = np.pi * 2
+
 
 def decimal_year(dt):
     start_year = datetime.datetime(year=dt.year, month=1, day=1)
@@ -96,7 +104,8 @@ def medianMadFunction(x):
 
 
 @nb.jit(nopython=True)
-def create_projected_velocity(x_in, y_in, dt):
+def create_projected_velocity(x_in, y_in, dt, dt_median_flow,
+    min_ref_unit_count = 50, min_v0_threshold = 50 ):
     """
     Project vx and vy onto the median flow vector for the given spacial point.
 
@@ -105,20 +114,16 @@ def create_projected_velocity(x_in, y_in, dt):
     x_in: x component of the velocity vector.
     y_in: y component of the velocity vector.
     dt:   Day separation vector.
+    dt_median_flow: Bin edges for the median flow vector.
+    min_ref_unit_count: Minimum number of points for dt_median_flow bin.
+        Default is 50.
+    min_v0_threshold: v0 threshold for slow moving areas. Those will be
+        skipped for dt_max filter.
 
     Return:
     =======
     Projected velocity onto median flow vector.
     """
-    # Bin edges to use for the median flow vector
-    _dt_median_flow = np.array([16, 32, 64, 128, 256, np.inf])
-
-    # Minimum number of points for dt_median_flow bin
-    _min_ref_unit_count = 50
-
-    # Skip dt filter for slow moving areas
-    _min_v0_threshold = 50
-
     x0_in = np.full_like(x_in, np.nan)
 
     x0_is_null = np.isnan(x_in)
@@ -131,11 +136,11 @@ def create_projected_velocity(x_in, y_in, dt):
     ind = None
     valid = ~x0_is_null  # Number of valid points
 
-    for each_dt in _dt_median_flow:
+    for each_dt in dt_median_flow:
         ind = (dt <= each_dt) & valid
 
         # Are there enough points?
-        if ind.sum() >= _min_ref_unit_count:
+        if ind.sum() >= min_ref_unit_count:
             break
 
     if ind.sum() == 0:
@@ -149,20 +154,22 @@ def create_projected_velocity(x_in, y_in, dt):
     vy0 = np.median(y_in[ind])
     v0 = np.sqrt(vx0**2 + vy0**2)
 
-    if v0 <= _min_v0_threshold:
-        # maxdt should be set to np.inf
+    # Skip dt filter for slow moving areas
+    if v0 <= min_v0_threshold:
+        # maxdt will be set to np.nan after vp>=20000 masking
+        # (see dt_max_filter())
         x0_in = np.full_like(x_in, np.inf)
         return x0_in
 
     uv_x = vx0/v0  # unit flow vector
     uv_y = vy0/v0
-    x0_in = x_in*uv_x + y_in*uv_y  # projected flow vectors
+    x0_in = x_in*uv_x + y_in*uv_y  # projected flow vector
 
     return x0_in
 
 
 @nb.jit(nopython=True)
-def cube_filter_iteration(vp, dt, mad_std_ratio):
+def project_v_to_median_flow(vp, dt, dt_edge, min_ref_bin_count = 50):
     """
     Filter one spacial point by dt (date separation) between the images.
 
@@ -170,156 +177,245 @@ def cube_filter_iteration(vp, dt, mad_std_ratio):
     =======
     vp: Projected velocity to median flow unit vector.
     dt: Day separation vector.
+    dt_edge: Bin boundaries.
+    min_ref_bin_count: Minumum number of points for the reference bin.
 
-    Return: a tuple of
+    Returns: a tuple of
     maxdt:   Maximum dt as determined by the filter.
-    invalid: Mask for invalid values of the input vector based on maxdt.
+    is_invalid: Mask for invalid values of the input vector based on dt_max
+        filter.
     """
-    # Filter parameters for dt bins:
-    # used to determine if dt means are significantly different
-    # Note for v3: revisit it as (mad_std_ratio*_dtbin_mad_thresh) ~ 1.0
-    _dtbin_mad_thresh = 0.67
-
-    _dtbin_ratio = _dtbin_mad_thresh * mad_std_ratio
-
-    _dt_edge = np.array([0, 16, 32, 64, 128, 256, np.inf])
-    _num_bins = len(_dt_edge)-1
-
-    # Minumum number of points for the reference bin
-    _min_ref_bin_count = 50
-
-    # Output data variables
-    maxdt = np.nan
+    _num_bins = len(dt_edge)-1
 
     # Make numba happy - use np.bool_ type
-    invalid = np.zeros_like(dt, dtype=np.bool_)
+    is_invalid = np.zeros(len(dt), dtype=np.bool_)
 
-    # There is no valid projected velocity vector
+    # There is no valid projected velocity vector:
+    # should never be the case of all values being as np.inf
+    # since we mask vp > 20000 before dt_max filter
     if np.all(np.isnan(vp)) or np.all(np.isinf(vp)):
-        return (maxdt, np.ones_like(dt, dtype=np.bool_))
+        return np.nan, is_invalid
 
-    x0_is_null = np.isnan(vp)
-    mask = ~x0_is_null
+    mask = ~np.isnan(vp)
     x0 = vp[mask]
     x0_dt = dt[mask]
 
     # Group data values by identified bins "manually":
     # since data is sorted by date_dt, we can identify index boundaries
     # for each bin within the "date_dt" vector
-    bin_index = np.searchsorted(x0_dt, _dt_edge)
-
-    # Don't know ahead of time how many valid (start != end) bins will be
-    # collected, so don't pre-allocate lists
-    xmed = []
-    xmad = []
-    count = []
+    bin_index = np.searchsorted(x0_dt, dt_edge)
 
     # Collect indices for bins that represent current x0_dt
-    dt_bin_indices = []
+
+    # Pre-allocate with maximum possible size
+    xmed = np.empty(_num_bins)
+    xmad = np.empty(_num_bins)
+    count = np.empty(_num_bins, dtype=np.int32)
+    dt_bin_indices = np.empty(_num_bins, dtype=np.int32)
+    valid_bins = 0
 
     for bin_i in range(0, _num_bins):
         # if bin_index[bin_i] and bin_index[bin_i+1] are the same,
         # there are no values for the bin, skip it
-        if bin_index[bin_i] != bin_index[bin_i+1]:
-            bin_xmed, bin_xmad = medianMadFunction(
-                x0[bin_index[bin_i]:bin_index[bin_i+1]]
-            )
-            count.append(bin_index[bin_i+1] - bin_index[bin_i] + 1)
-            xmed.append(bin_xmed)
-            xmad.append(bin_xmad)
-            dt_bin_indices.append(bin_i)
+        start_idx = bin_index[bin_i]
+        end_idx = bin_index[bin_i + 1]
+
+        if start_idx != end_idx:
+            bin_data = x0[start_idx:end_idx]
+            xmed[valid_bins], xmad[valid_bins] = medianMadFunction(bin_data)
+            count[valid_bins] = end_idx - start_idx + 1
+            dt_bin_indices[valid_bins] = bin_i
+            valid_bins += 1
 
     # Check if populations overlap (use first, smallest dt, bin as reference)
-    # logging.info(f'Before min/max bound')
-    std_dev = np.array(xmad) * _dtbin_ratio
-    xmed = np.array(xmed)
 
+    # Trim arrays to actual size
+    xmed = xmed[:valid_bins]
+    std_dev = xmad[:valid_bins]
+    count = count[:valid_bins]
+    dt_bin_indices = dt_bin_indices[:valid_bins]
+
+    # Calculate bounds
     minBound = xmed - std_dev
     maxBound = xmed + std_dev
 
     # Find first valid bin with minimum acceptable number of points
-    ref_index, = np.where(np.array(count) >= _min_ref_bin_count)
+    ref_index, = np.where(count >= min_ref_bin_count)
 
     # If no such valid bin exists, just consider first bin where
-    # maxBound != 0
     if ref_index.size == 0:
         ref_index, = np.where(maxBound != 0)
 
     # Not enough data to proceed
     if ref_index.size == 0:
-        return (maxdt, np.ones_like(dt, dtype=np.bool_))
+        return np.nan, is_invalid
 
     ref_index = ref_index[0]
 
-    exclude = (minBound > maxBound[ref_index]) | \
-        (maxBound < minBound[ref_index])
+    exclude = (minBound > maxBound[ref_index]) | (maxBound < minBound[ref_index])
+
+    maxdt = np.nan
 
     if np.any(exclude):
-        dt_bin_indices = np.array(dt_bin_indices)[exclude]
-        maxdt = _dt_edge[dt_bin_indices].min()
-        invalid = dt > maxdt
+        dt_bin_indices = dt_bin_indices[exclude]
+        maxdt = dt_edge[dt_bin_indices].min()
+        is_invalid = dt > maxdt
 
-    return (maxdt, invalid)
+    return maxdt, is_invalid
 
-
-# Can't compile with numba as exclude_sensor_groups are of Python object type
-# @nb.jit(nopython=True, parallel=True)
-def cube_filter(
-    vp, dt, mad_std_ratio, current_sensor_group, exclude_sensor_groups
-):
+@nb.jit(nopython=True)
+def dt_max_filter_iteration(vp, dt, dt_edge, min_ref_bin_count = 50):
     """
-    Filter data cube by dt (date separation) between the images for the sensor type.
+    Filter one spacial point by dt (date separation) between the images.
 
-    Input:
-    ======
-    vp:            Velocity projected to median flow unit vector.
-    dt:            Day separation vector.
-    mad_std_ratio: Scalar relation between MAD and STD.
-    current_sensor_group: Current sensor to filter by.
-    exclude_sensor_groups: List of sensors that should be excluded from the
-                    filter (per spatial cell).
-
-    Return:
+    Inputs:
     =======
-    invalid: Mask for invalid values.
-    maxdt:   Maximum date separation.
-    sensor_include: Mask for included sensors.
+    vp: Projected velocity to median flow unit vector.
+    dt: Day separation vector.
+    dt_edge: Bin boundaries.
+    min_ref_bin_count: Minumum number of points for the reference bin.
+
+    Returns: a tuple of
+    maxdt:   Maximum dt as determined by the filter.
+    is_invalid: Mask for invalid values of the input vector based on dt_max
+        filter.
     """
-    # Initialize output
+    _num_bins = len(dt_edge)-1
+
+    # Make numba happy - use np.bool_ type
+    is_invalid = np.zeros(len(dt), dtype=np.bool_)
+
+    # There is no valid projected velocity vector:
+    # should never be the case of all values being as np.inf
+    # since we mask vp > 20000 before dt_max filter
+    if np.all(np.isnan(vp)) or np.all(np.isinf(vp)):
+        return np.nan, is_invalid
+
+    mask = ~np.isnan(vp)
+    x0 = vp[mask]
+    x0_dt = dt[mask]
+
+    # Group data values by identified bins "manually":
+    # since data is sorted by date_dt, we can identify index boundaries
+    # for each bin within the "date_dt" vector
+    bin_index = np.searchsorted(x0_dt, dt_edge)
+
+    # Collect indices for bins that represent current x0_dt
+
+    # Pre-allocate with maximum possible size
+    xmed = np.empty(_num_bins)
+    xmad = np.empty(_num_bins)
+    count = np.empty(_num_bins, dtype=np.int32)
+    dt_bin_indices = np.empty(_num_bins, dtype=np.int32)
+    valid_bins = 0
+
+    for bin_i in range(0, _num_bins):
+        # if bin_index[bin_i] and bin_index[bin_i+1] are the same,
+        # there are no values for the bin, skip it
+        start_idx = bin_index[bin_i]
+        end_idx = bin_index[bin_i + 1]
+
+        if start_idx != end_idx:
+            bin_data = x0[start_idx:end_idx]
+            xmed[valid_bins], xmad[valid_bins] = medianMadFunction(bin_data)
+            count[valid_bins] = end_idx - start_idx + 1
+            dt_bin_indices[valid_bins] = bin_i
+            valid_bins += 1
+
+    # Check if populations overlap (use first, smallest dt, bin as reference)
+
+    # Trim arrays to actual size
+    xmed = xmed[:valid_bins]
+    std_dev = xmad[:valid_bins]
+    count = count[:valid_bins]
+    dt_bin_indices = dt_bin_indices[:valid_bins]
+
+    # Calculate bounds
+    minBound = xmed - std_dev
+    maxBound = xmed + std_dev
+
+    # Find first valid bin with minimum acceptable number of points
+    ref_index, = np.where(count >= min_ref_bin_count)
+
+    # If no such valid bin exists, just consider first bin where
+    if ref_index.size == 0:
+        ref_index, = np.where(maxBound != 0)
+
+    # Not enough data to proceed
+    if ref_index.size == 0:
+        return np.nan, is_invalid
+
+    ref_index = ref_index[0]
+
+    exclude = (minBound > maxBound[ref_index]) | (maxBound < minBound[ref_index])
+
+    maxdt = np.nan
+
+    if np.any(exclude):
+        dt_bin_indices = dt_bin_indices[exclude]
+        maxdt = dt_edge[dt_bin_indices].min()
+        is_invalid = dt > maxdt
+
+    return maxdt, is_invalid
+
+
+@nb.jit(nopython=True, parallel=True)
+def dt_max_filter_parallel(vp, dt, dt_edge, min_ref_bin_count=50):
+    """
+    Parallelized core computation for dt_max filtering of the data.
+    This handles the numerical computation only.
+    """
     y_len, x_len, t_len = vp.shape
-    dims = [y_len, x_len]
-    maxdt = np.full(dims, np.nan)
-    sensor_include = np.ones(dims)
+    maxdt = np.full((y_len, x_len), np.nan)
+    invalid = np.zeros((y_len, x_len, t_len), dtype=np.bool_)
 
-    # dims = (y_len, x_len, np.sum(sensor_mask))
-    invalid = np.zeros_like(vp, dtype=np.bool_)
+    # Parallel loop over spatial dimensions
+    for j_index in nb.prange(y_len):
+        for i_index in range(x_len):
+            maxdt[j_index, i_index], invalid[j_index, i_index, :] = \
+                dt_max_filter_iteration(
+                    vp[j_index, i_index],
+                    dt,
+                    dt_edge,
+                    min_ref_bin_count
+                )
 
-    # Loop through all spatial points
-    for j_index in range(0, y_len):
-        for i_index in range(0, x_len):
-            # Check if filter should be skipped due to exclude_sensor_groups
-            if len(exclude_sensor_groups[j_index, i_index]) and \
-                    current_sensor_group in exclude_sensor_groups[j_index, i_index]:
-                # logging.info(f'DEBUG: exclude_sensors: '
-                #   f'{exclude_sensor_groups[j_index, i_index]}')
-                # logging.info(f'j={j_index} i={i_index}: skipping '
-                # f'{current_sensor_group} due to '
-                # f'exclude_groups={exclude_sensor_groups[j_index, i_index]}')
-                invalid[j_index, i_index, :] = True
-                sensor_include[j_index, i_index] = 0
-                continue
+    return invalid, maxdt
 
-            maxdt[j_index, i_index], invalid[j_index, i_index, :] = cube_filter_iteration(
-                vp[j_index, i_index],
-                dt,
-                mad_std_ratio
-            )
-            # logging.info(
-            # f'DEBUG: j={j_index} i={i_index} after cube_filter: '
-            # f'maxdt={maxdt[j_index, i_index]}'
-            # )
 
-    # logging.info(f'DEBUG: Excluded sensors: {sensor_include}')
+def dt_max_filter(vp, dt, current_sensor_group, exclude_sensor_groups,
+    min_ref_bin_count=50):
+    """
+    Optimized filter data cube by dt (date separation).
+
+    """
+    y_len, x_len, t_len = vp.shape
+
+    # First pass: identify cells to exclude (vectorized where possible)
+    sensor_include = np.ones((y_len, x_len))
+    exclude_mask = np.zeros((y_len, x_len), dtype=np.bool_)
+
+    # Check exclusions
+    for j in range(y_len):
+        for i in range(x_len):
+            if len(exclude_sensor_groups[j, i]) > 0 and \
+                current_sensor_group in exclude_sensor_groups[j, i]:
+                exclude_mask[j, i] = True
+                sensor_include[j, i] = 0
+
+    # Create working copy for cells that need processing
+    vp_work = vp.copy()
+    vp_work[exclude_mask, :] = np.nan  # Mark excluded cells
+
+    # Run parallelized computation
+    invalid, maxdt = dt_max_filter_parallel(
+        vp_work, dt, DT_EDGE, min_ref_bin_count
+    )
+
+    # Apply exclusion mask to results
+    invalid[exclude_mask, :] = True
+    maxdt[exclude_mask] = np.nan
+
     return invalid, maxdt, sensor_include
 
 
@@ -389,16 +485,17 @@ def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
     """
     LSQ fit iteration for a single spacial point of the datacube.
     """
-    _two_pi = np.pi * 2
     #
     # LSQ fit iteration
     #
-    # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
+    # Displacement Vandermonde matrix: (these are displacements! not velocities,
+    # so this matrix is just the definite integral wrt time of
+    # a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
     # D = [(cos(2*pi*yr(:,1)) - cos(2*pi*yr(:,2)))./(2*pi).*(M>0) (sin(2*pi*yr(:,2)) - sin(2*pi*yr(:,1)))./(2*pi).*(M>0) M];
     D = np.stack(
         (
-            (np.cos(_two_pi*start_year) - np.cos(_two_pi*stop_year))/_two_pi,
-            (np.sin(_two_pi*stop_year) - np.sin(_two_pi*start_year))/_two_pi
+            (np.cos(TWO_PI*start_year) - np.cos(TWO_PI*stop_year))/TWO_PI,
+            (np.sin(TWO_PI*stop_year) - np.sin(TWO_PI*start_year))/TWO_PI
         ),
         axis=-1
     )
@@ -711,8 +808,6 @@ def itslive_lsqfit_annual(
     TODO: ...
     v0_years: List of years to filter data by for calculations of climatological data
     """
-    _two_pi = np.pi * 2
-
     # Filter parameters for lsq fit for outlier rejections
     _mad_thresh = 6
     _mad_filter_iterations = 1
@@ -1005,7 +1100,7 @@ def itslive_lsqfit_annual(
         ph_rad = np.arctan2(p[1], p[0])
 
         # phase converted such that it reflects the day when value is maximized
-        ph = 365.25*((0.25 - ph_rad/_two_pi) % 1)
+        ph = 365.25*((0.25 - ph_rad/TWO_PI) % 1)
 
         # A_err is the *velocity* (not displacement) error, which is the
         # displacement error divided by the weighted mean dt:
@@ -1155,8 +1250,6 @@ def climatology_magnitude(
     self.phase.v[start_y:stop_y, start_x:stop_x]
     self.std_error.v[start_y:stop_y, start_x:stop_x]
     """
-    _two_pi = np.pi * 2
-
     # solve for velocity magnitude and acceleration
     # [do this using vx and vy as to not bias the result due to the Rician distribution of v]
     v = np.sqrt(vx0**2 + vy0**2)  # velocity magnitude
@@ -1195,8 +1288,8 @@ def climatology_magnitude(
     vy_phase_rad = vy_phase/365.25
 
     # Convert degrees to radians as numpy trig. functions take angles in radians
-    vx_phase_rad *= _two_pi
-    vy_phase_rad *= _two_pi
+    vx_phase_rad *= TWO_PI
+    vy_phase_rad *= TWO_PI
 
     # Don't use np.nan values in calculations to avoid warnings
     valid_mask = (~np.isnan(vx_phase_rad)) & (~np.isnan(vy_phase_rad))
@@ -1210,7 +1303,7 @@ def climatology_magnitude(
     mask = (theta < 0)
     if np.any(mask):
         # logging.info(f'Got negative theta, converting to positive values')
-        theta[mask] += _two_pi
+        theta[mask] += TWO_PI
 
     # Find negative values
     sin_theta = np.sin(theta)
@@ -1682,7 +1775,7 @@ class SensorExcludeFilter:
         """
         y_len, x_len, _ = ds_vx.shape
         dims = (y_len, x_len)
-        exclude_sensors = np.frompyfunc(list, 0, 1)(np.empty(dims, dtype=object))
+        exclude_sensors = np.frompyfunc(set, 0, 1)(np.empty(dims, dtype=object))
 
         if self.apply:
             # # SensorExcludeFilter should only be applied if land_ice 2km inbuffer mask == 0.
@@ -1704,6 +1797,7 @@ class SensorExcludeFilter:
 
             else:
                 # Apply filter to all points
+                logging.debug(f'Applying SensorExcludeFilter to all points.')
                 for j_index in range(0, y_len):
                     for i_index in range(0, x_len):
                         exclude_sensors[j_index, i_index] = self.iteration(
@@ -1737,7 +1831,7 @@ class SensorExcludeFilter:
         #     valid = .~ismissing.(vx)
         #     ind = dtind .& valid
         #
-        sensors_to_exclude = []
+        sensors_to_exclude = set()
 
         # logging.info(f'Num valid points: {np.sum((~np.isnan(ds_vx)))}')
         trimmed_index = ((ds_date_dt <= SensorExcludeFilter.MAX_DT) & (~np.isnan(ds_vx)))
@@ -1839,7 +1933,7 @@ class SensorExcludeFilter:
                 # TODO: Should use absolute difference for sigma comparison?
                 stats[sen]['disagree_with_refsensor'] = (stats[sen]['mean'] + (stats[sen]['se'] * SensorExcludeFilter.SESCALE)) < 0
                 if stats[sen]['disagree_with_refsensor']:
-                    sensors_to_exclude.append(sen)
+                    sensors_to_exclude.add(sen)
 
         # logging.info(f'DEBUG: SensorExclude: {stats}')
         return sensors_to_exclude
@@ -2439,51 +2533,8 @@ class ITSLiveComposite:
         Create datacube composite: cube time mean values.
         """
         # Loop through cube in chunks to minimize memory footprint
-        # x_index: 331
-        # y_index: 796
         x_start = 0
         x_num_to_process = self.cube_sizes[Coords.X]
-
-        # For debugging only
-        # ======================
-        # Alex's Julia code
-        # datacubes/v02/N60W040/ITS_LIVE_vel_EPSG3413_G0120_X150000_Y-2650000.zarr
-        # x_start = 118  # good point
-        # x_start = 265  # bad point
-
-        # datacubes/v02/N60W040/ITS_LIVE_vel_EPSG3413_G0120_X-150000_Y-2250000.zarr
-        # x_start = 216    # large diff in vx0 for S2 excluded in LSQ fit
-        # x_start = 500
-
-        # To debug new Malaspina cube: v0 spurious values
-        # python ./itslive_composite.py -i  Malaspina_succeeded_ITS_LIVE_vel_EPSG3413_G0120_X-3250000_Y250000.zarr -b s3://its-live-data/test_datacubes -o test_malaspina_v0_large.zarr
-        # x index=639
-        # y index=298
-        # x_start = 639
-        # x_num_to_process = 1
-
-        # Debug "numpy.linalg.LinAlgError: SVD did not converge in Linear Least Squares" for
-        # ITS_LIVE_vel_EPSG3031_G0120_X-50000_Y1750000.zarr
-        # x_num_to_process = 100
-        # x_start = 400
-
-        # Debug large vx and vy in Malaspina cube
-        # x_start = 650
-        # x_num_to_process = 100
-
-        # Debug slow_error exception: division by zero
-        # x_start = 160
-        # x_num_to_process = 10
-
-        # Debug slow_error exception: Linear Least Squares conversion error
-        # x_start = 40
-        # x_num_to_process = 10
-
-        # Debug slow_error exception: Linear Least Squares conversion error
-        # x_start = 430
-        # x_num_to_process = 1
-
-        # x_num_to_process = self.cube_sizes[Coords.X] - x_start
 
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -2491,41 +2542,6 @@ class ITSLiveComposite:
 
             y_start = 0
             y_num_to_process = self.cube_sizes[Coords.Y]
-
-            # For debugging only
-            # ======================
-            # Alex's Julia code
-            # y_start = 428  # good point
-            # y_start = 432  # bad point
-            # y_start = 216    # large diff in vx0 for S2 excluded in LSQ fit
-
-            # # To debug new Malaspina cube: v0 spurious values
-            # # x index=639
-            # # y index=298
-            # y_start = 298  # huge value
-            # y_start = 299  # good value
-            # y_num_to_process = 1
-
-            # Debug "numpy.linalg.LinAlgError: SVD did not converge in Linear Least Squares" for
-            # ITS_LIVE_vel_EPSG3031_G0120_X-50000_Y1750000.zarr
-            # y_num_to_process = 100
-
-            # Debug large vx and vy in Malaspina cube
-            # y_num_to_process = 100
-
-            # y_num_to_process = self.cube_sizes[Coords.Y] - y_start
-
-            # Debug slow_error exception: division by zero
-            # y_start = 370
-            # y_num_to_process = 10
-
-            # Debug slow_error exception: Linear Least Squares conversion error
-            # y_start = 330
-            # y_num_to_process = 10
-
-            # Debug slow_error exception: Linear Least Squares conversion error
-            # y_start = 261
-            # y_num_to_process = 1
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if y_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else y_num_to_process
@@ -2543,7 +2559,9 @@ class ITSLiveComposite:
         self.to_zarr(output_store)
 
     @staticmethod
-    def project_v_to_median_flow(ds_vx, ds_vy, ds_date_dt, ds_sensors_str, exclude_sensors):
+    def project_v_to_median_flow(
+        ds_vx, ds_vy, ds_date_dt, ds_sensors_str, exclude_sensors
+    ):
         """
         Project valid velocity values to median flow unit vector.
 
@@ -2552,32 +2570,43 @@ class ITSLiveComposite:
         ds_vx: 3d block of vx values.
         ds_vy: 3d block of vy values.
         ds_date_dt: day separation for velocity image pairs.
-        ds_sensors: Current sensors for the datacube.
+        ds_sensors_str: Current sensors for the datacube.
         exclude_sensors: 2d "map" of sensors to exclude from calculations
-            (one list per each [y, x] point).
+            (one set per each [y, x] point).
         """
         vp = np.full_like(ds_vx, np.nan)
-        logging.info(f"Creating vp: {vp.shape=}")
+        logging.debug(f"Creating vp: {vp.shape=}")
 
-        dims = ds_vx.shape
-        y_len = dims[0]
-        x_len = dims[1]
+        y_len, x_len, _ = ds_vx.shape
 
         for j_index in range(0, y_len):
             for i_index in range(0, x_len):
                 # Exclude all identified invalid sensor groups per [y, x] point
-                exclude_mask = np.zeros((len(ds_sensors_str)), dtype=np.bool_)
+                # exclude_mask = np.zeros((len(ds_sensors_str)), dtype=np.bool_)
+                exclude_set = exclude_sensors[j_index, i_index]
 
-                for each in exclude_sensors[j_index, i_index]:
-                    # logging.info(f'DEBUG: j={j_index} i={i_index}: exclude {each} as part of {exclude_sensors[j_index, i_index]}')
-                    exclude_mask |= (ds_sensors_str == each)
-                    # logging.info(f'exclude_mask.sum={exclude_mask.sum()}')
+                if exclude_set:
+                    include_mask = np.array(
+                        [sensor not in exclude_set for sensor in ds_sensors_str],
+                        dtype=bool
+                    )
 
-                include_mask = ~exclude_mask
+                else:
+                    # No exclusions, include all
+                    include_mask = np.ones(len(ds_sensors_str), dtype=bool)
+
+                # for each in exclude_sensors[j_index, i_index]:
+                #     logging.info(f'DEBUG: j={j_index} i={i_index}: exclude {each} as part of {exclude_sensors[j_index, i_index]}')
+                #     exclude_mask |= (ds_sensors_str == each)
+                #     # logging.info(f'exclude_mask.sum={exclude_mask.sum()}')
+
+                # include_mask = ~exclude_mask
                 x_in = ds_vx[j_index, i_index, include_mask]
                 y_in = ds_vy[j_index, i_index, include_mask]
                 dt = ds_date_dt[include_mask]
-                vp[j_index, i_index, include_mask] = create_projected_velocity(x_in, y_in, dt)
+                vp[j_index, i_index, include_mask] = create_projected_velocity(
+                    x_in, y_in, dt, DT_MEDIAN_FLOW
+                )
 
         return vp
 
@@ -2585,12 +2614,18 @@ class ITSLiveComposite:
         """
         Compute time average for the datacube [:, :, start_x:stop_index] coordinates.
         Update corresponding entries in output data variables.
+
+        Inputs:
+        -------
+        start_x: Starting index for the X dimension.
+        num_x: Number of X slices to include.
+        start_y: Starting index for the Y dimension.
+        num_y: Number of Y slices to include.
         """
         # Set current block length for the X and Y dimensions
         stop_y = start_y + num_y
         stop_x = start_x + num_x
         ITSLiveComposite.Chunk = Chunk(start_x, stop_x, num_x, start_y, stop_y, num_y)
-        # ITSCube.show_memory_usage(f'before cube_time_mean(): start_x={start_x} start_y={start_y}')
 
         # Start timer
         start_time = timeit.default_timer()
@@ -2670,7 +2705,7 @@ class ITSLiveComposite:
         # Note for v3:
         # Project velocity to median flow unit vector using only valid sensors: this is
         # pre-processing step for the dt_max filter, not used anywhere else.
-        # Note: make it part of the cube_filter(), rename to dt_max_filter().
+        # Note: make it part of the dt_max_filter(), rename to dt_max_filter().
         vp = ITSLiveComposite.project_v_to_median_flow(
             vx,
             vy,
@@ -2683,10 +2718,10 @@ class ITSLiveComposite:
             f'(took {timeit.default_timer() - start_time} seconds)'
         )
 
-        # Note for v3: exclude v > 20000 right before any analysis (before SensorExcludeFilter)
+        # TODO for v3: exclude v > 20000 right before any analysis (before SensorExcludeFilter)
         # filter vp against the same v limit
         vp_invalid_mask = (vp > ITSLiveComposite.V_LIMIT)
-        logging.info(
+        logging.debug(
             f'Setting {np.sum(vp_invalid_mask)} vp elements to nans due to '
             f'exceeding {ITSLiveComposite.V_LIMIT=}'
         )
@@ -2717,14 +2752,14 @@ class ITSLiveComposite:
             v_invalid[:, :, mask], \
                 self.max_dt[start_y:stop_y, start_x:stop_x, i], \
                 self.sensor_include[start_y:stop_y, start_x:stop_x, i] = \
-                cube_filter(
+                dt_max_filter(
                     vp[..., mask],
                     ITSLiveComposite.DATE_DT[mask],
-                    ITSLiveComposite.MAD_STD_RATIO,
                     sensor_group.mission,
                     exclude_sensors
                 )
-            logging.debug(f'Done with dt filter for projected v (took {timeit.default_timer() - start_time} seconds)')
+            logging.debug(f'Done with dt filter for v0 {sensor_group.mission} '
+                f'(took {timeit.default_timer() - start_time} seconds)')
 
         # Load data to avoid NotImplemented exception when invoked on Dask arrays
         logging.debug('Compute invalid mask...')
@@ -3837,21 +3872,8 @@ class ITSLiveComposite:
 
 def cubelsqfit2(
     var_name,
-    # chunk,
-    # start_x,
-    # start_y,
-    # chunk_x_len,
-    # chunk_y_len,
     v,
     v_err_data,
-    # start_decimal_year,
-    # stop_decimal_year,
-    # decimal_dt,
-    # years,
-    # M,
-    # mad_std_ratio,
-    # v0_years,
-    # center_date,
     amplitude,
     phase,
     mean,
@@ -3861,16 +3883,62 @@ def cubelsqfit2(
     count_image_pairs,
     offset,
     slope,
-    se
+    se,
+    num_valid_points = 5
 ):
     """
     Cube LSQ fit with 2 iterations.
 
-    Populate: [amp, phase, mean, err, sigma, cnt]
+    Populates [amplitude, phase, mean, error, sigma, count]
 
-    Inputs:
-    =======
-    TODO:...
+    Performs a cube least squares fit with two iterations over a 3D data array,
+    using Dask for parallel computation.
+
+    This function fits a model to each pixel's time series in a data cube,
+    skipping locations with insufficient valid data.
+    The results are stored in the provided output arrays.
+
+    Parameters
+    ----------
+    var_name : str
+        Name of the variable being fitted.
+    v : np.ndarray
+        3D array of input data values (e.g., velocity) with shape (y, x, t).
+    v_err_data : np.ndarray
+        Array of error estimates for the input data. Can be 1D or 3D.
+    amplitude : np.ndarray
+        Output array to store fitted amplitude values.
+    phase : np.ndarray
+        Output array to store fitted phase values.
+    mean : np.ndarray
+        Output array to store fitted mean values.
+    error : np.ndarray
+        Output array to store error estimates for the fit.
+    sigma : np.ndarray
+        Output array to store fitted sigma values.
+    count : np.ndarray
+        Output array to store the count of valid data points used in the fit.
+    count_image_pairs : np.ndarray
+        Output array to store the count of image pairs used in the fit.
+    offset : np.ndarray
+        Output array to store fitted offset values.
+    slope : np.ndarray
+        Output array to store fitted slope values.
+    se : np.ndarray
+        Output array to store standard error of the fit.
+    num_valid_points : int
+        Minimum number of valid points required for the fit.
+
+    Returns
+    -------
+    None
+        Results are written in-place to the provided output arrays.
+
+    Notes
+    -----
+    - Requires a minimum number of valid (non-NaN) data points to perform the fit.
+    - Uses Dask for parallel computation across spatial dimensions.
+    - Only updates output arrays for locations where the fit is valid.
     """
     # Minimum number of non-NAN values in the data to proceed with LSQ fit
     _num_valid_points = 5
@@ -3897,7 +3965,7 @@ def cubelsqfit2(
     for j in range(0,  ITSLiveComposite.Chunk.y_len):
         for i in range(0,  ITSLiveComposite.Chunk.x_len):
             mask = ~np.isnan(v[j, i, :])
-            if mask.sum() < _num_valid_points:
+            if mask.sum() < num_valid_points:
                 # Skip the point, return no outliers
                 continue
 
