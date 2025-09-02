@@ -533,6 +533,14 @@ if __name__ == '__main__':
         action='store_true',
         help='Dry run, do not actually process any granules'
     )
+    parser.add_argument(
+        '-o', '--overwriteExistingFiles',
+        action='store_true',
+        default=False,
+        help='Flag to overwrite existing files in the target directory if '
+                'they already exist. This is useful when we need to re-create'
+                'metadata files [%(default)s].'
+    )
 
     parser.add_argument(
         '-o', '--overwriteExistingFiles',
