@@ -480,10 +480,38 @@ def create_M(y1, start_year, stop_year, dyr):
     return M
 
 
+@nb.jit(nopython=True)
+def create_D_components(start_decimal_year, stop_decimal_year):
+    """
+    Precompute D matrix components for LSQ fit.
+
+    Inputs:
+    =======
+    start_decimal_year: Decimal year corresponding to the start date.
+    stop_decimal_year: Decimal year corresponding to the stop date.
+
+    Returns:
+    ========
+    D_cos, D_sin: Precomputed D matrix components for LSQ fit.
+    """
+    # Pre-compute trigonometric terms
+    cos_start = np.cos(TWO_PI * start_decimal_year)
+    cos_stop = np.cos(TWO_PI * stop_decimal_year)
+
+    sin_start = np.sin(TWO_PI* start_decimal_year)
+    sin_stop = np.sin(TWO_PI* stop_decimal_year)
+
+    # Pre-compute D matrix components
+    D_cos = (cos_start - cos_stop) / TWO_PI
+    D_sin = (sin_stop - sin_start) / TWO_PI
+
+    return D_cos, D_sin
+
+
 # Disable numba as its wrapper for lstsq does not support "rcond" input
 # parameter for LSQ fit
 # @nb.jit(nopython=True)
-def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
+def itslive_lsqfit_iteration(var_name, d_cos, d_sin, M, w_d, d_obs):
     """
     LSQ fit iteration for a single spacial point of the datacube.
     """
@@ -494,13 +522,7 @@ def itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs):
     # so this matrix is just the definite integral wrt time of
     # a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
     # D = [(cos(2*pi*yr(:,1)) - cos(2*pi*yr(:,2)))./(2*pi).*(M>0) (sin(2*pi*yr(:,2)) - sin(2*pi*yr(:,1)))./(2*pi).*(M>0) M];
-    D = np.stack(
-        (
-            (np.cos(TWO_PI*start_year) - np.cos(TWO_PI*stop_year))/TWO_PI,
-            (np.sin(TWO_PI*stop_year) - np.sin(TWO_PI*start_year))/TWO_PI
-        ),
-        axis=-1
-    )
+    D = np.stack( (d_cos, d_sin), axis=-1)
 
     D = np.concatenate((D, M), axis=1)
 
@@ -531,7 +553,8 @@ def itersect_years(all_years, select_years):
 
 @nb.jit(nopython=True)
 def init_lsq_fit1(
-    v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, M_input
+    v_input, v_err_input, d_cos, d_sin, start_dec_year, stop_dec_year,
+    dec_dt, M_input
 ):
     """
     Initialize variables for LSQ fit.
@@ -544,8 +567,9 @@ def init_lsq_fit1(
         This flag has to be introduced in order to use numba compilation
         otherwise numba-compiled code fails when using empty mask (pure
         Python code does not).
-    start_year, stop_year, v_in, v_err_in, dyr, totalnum, M_in: Filtered by
-        data validity mask and sorted by mid_date all input data variables.
+    d_cos, d_sin, start_year, stop_year, v_in, v_err_in, dyr, totalnum, M_in:
+        Filtered by data validity mask and sorted by mid_date all input data
+        variables.
     """
     # Ensure we're starting with finite data
     isf_mask = np.isfinite(v_input) & np.isfinite(v_err_input)
@@ -558,8 +582,11 @@ def init_lsq_fit1(
         # unhappy
         dy_out = np.zeros_like(start_dec_year)
 
+        # Return dummy data
         return (
             results_valid,
+            dy_out,
+            dy_out,
             dy_out,
             dy_out,
             np.zeros_like(v_input),
@@ -569,6 +596,8 @@ def init_lsq_fit1(
             np.zeros_like(M_input)
         )
 
+    d_cos_filtered = d_cos[isf_mask]
+    d_sin_filtered = d_sin[isf_mask]
     start_year = start_dec_year[isf_mask]
     stop_year = stop_dec_year[isf_mask]
     # dt in decimal years
@@ -585,6 +614,8 @@ def init_lsq_fit1(
     sort_indices = np.argsort(mid_date)
 
     # Sort inputs
+    d_cos_filtered = d_cos_filtered[sort_indices]
+    d_sin_filtered = d_sin_filtered[sort_indices]
     start_year = start_year[sort_indices]
     stop_year = stop_year[sort_indices]
     dyr = dyr[sort_indices]
@@ -595,6 +626,8 @@ def init_lsq_fit1(
 
     return (
         results_valid,
+        d_cos_filtered,
+        d_sin_filtered,
         start_year,
         stop_year,
         v_in,
@@ -605,11 +638,11 @@ def init_lsq_fit1(
     )
 
 
-# FOR_DEBUGGING_ONLY: _enable_debug = True: logging is not working with numba
 @nb.jit(nopython=True)
 def init_lsq_fit2(
-    v_median, v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt,
-    all_years, M_input, mad_thresh, mad_std_ratio, sigma
+    v_median, v_input, v_err_input, d_cos, d_sin,
+    start_dec_year, stop_dec_year, dec_dt, all_years,
+    M_input, mad_thresh, mad_std_ratio, sigma
 ):
     """
     Initialize variables for LSQ fit.
@@ -652,6 +685,8 @@ def init_lsq_fit2(
             results_valid,
             dy_out,
             dy_out,
+            dy_out,
+            dy_out,
             v_out,
             v_err_out,
             np.zeros_like(dec_dt),
@@ -662,10 +697,15 @@ def init_lsq_fit2(
             np.zeros_like(M_input)
         )
 
-    # remove ouliers from v_in, v_error_in, start_dec_year, stop_dec_year
+    # remove ouliers from v_in, v_error_in, start_dec_year, stop_dec_year,
+    # d_cos, d_sin, dec_dt, M_input
+    d_cos_filtered = d_cos[non_outlier_mask]
+    d_sin_filtered = d_sin[non_outlier_mask]
+
     start_year = start_dec_year[non_outlier_mask]
     stop_year = stop_dec_year[non_outlier_mask]
     dyr = dec_dt[non_outlier_mask]
+
     v_in = v_input[non_outlier_mask]
     v_err_in = v_err_input[non_outlier_mask]
     M_in = M_input[non_outlier_mask]
@@ -696,7 +736,10 @@ def init_lsq_fit2(
     year_indices = np.searchsorted(all_years, y1)
     M_in = M_in[:, year_indices]
 
-    return (results_valid, start_year, stop_year, v_in, v_err_in, dyr, w_v, w_d, d_obs, y1, M_in)
+    return (
+        results_valid, d_cos_filtered, d_sin_filtered, start_year, stop_year,
+        v_in, v_err_in, dyr, w_v, w_d, d_obs, y1, M_in
+    )
 
 
 @nb.jit(nopython=True)
@@ -722,6 +765,8 @@ def itslive_lsqfit_annual(
     var_name,
     v_input,
     v_err_input,
+    d_cos_input,
+    d_sin_input,
     start_dec_year,
     stop_dec_year,
     dec_dt,
@@ -770,6 +815,8 @@ def itslive_lsqfit_annual(
     results_valid = True
 
     results_valid, \
+        d_cos_1, \
+        d_sin_1, \
         start_year_1, \
         stop_year_1, \
         v_1, \
@@ -777,7 +824,8 @@ def itslive_lsqfit_annual(
         dyr_1, \
         totalnum, \
         M_1 = init_lsq_fit1(
-            v_input, v_err_input, start_dec_year, stop_dec_year, dec_dt, M_input
+            v_input, v_err_input, d_cos_input, d_sin_input,
+            start_dec_year, stop_dec_year, dec_dt, M_input
         )
 
     empty_results = []
@@ -813,12 +861,23 @@ def itslive_lsqfit_annual(
     d_obs = None
     y1 = None
     M = None
+    d_cos = None
+    d_sin = None
 
-    while (lsq_fit_converged is False) and (number_of_attempts < max_number_attempts):
+    while (lsq_fit_converged is False) and \
+        (number_of_attempts < max_number_attempts):
         try:
-            results_valid, start_year, stop_year, v, v_err, dyr, w_v, w_d, d_obs, y1, M = init_lsq_fit2(
-                v_median, v_1, v_err_1, start_year_1, stop_year_1, dyr_1, all_years, M_1, _mad_thresh, mad_std_ratio, sigma
-            )
+            results_valid, \
+                d_cos, \
+                d_sin, \
+                start_year, \
+                stop_year, \
+                v, v_err, dyr, \
+                w_v, w_d, d_obs, y1, M = init_lsq_fit2(
+                    v_median, v_1, v_err_1, d_cos_1, d_sin_1,
+                    start_year_1, stop_year_1, dyr_1, all_years,
+                    M_1, _mad_thresh, mad_std_ratio, sigma
+                )
 
             if not results_valid:
                 # There is no data to process, exit
@@ -829,25 +888,18 @@ def itslive_lsqfit_annual(
             y1 = y1[hasdata]
             M = M[:, hasdata]
 
-            # if _enable_debug:
-            #     with open(f'{var_name}_dec_year.json', 'w') as fh:
-            #         json.dump(dyr.tolist(), fh, indent=3)
+            # LSQFit iterations
 
-            #     logging.info(f'DEBUG: dyr[:50]: {dyr[:50]}')
-
-            # logging.info(f'Finished building M and filter by M ({timeit.default_timer() - start_time} seconds)')
-            # start_time = timeit.default_timer()
-            # logging.info(f"Start 1st iteration of LSQ")
-
-            #
-            # LSQ iterations
-
-            # Last iteration of LSQ should always skip the outlier filter
+            # Last iteration of LSQFit should always skip the outlier filter
             last_iteration = _mad_filter_iterations - 1
 
             for i in range(0, _mad_filter_iterations):
-                # Displacement Vandermonde matrix: (these are displacements! not velocities, so this matrix is just the definite integral wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-                p, d_model = itslive_lsqfit_iteration(var_name, start_year, stop_year, M, w_d, d_obs)
+                # Displacement Vandermonde matrix: (these are displacements!
+                # not velocities, so this matrix is just the definite integral
+                # wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
+                p, d_model = itslive_lsqfit_iteration(
+                    var_name, d_cos, d_sin, M, w_d, d_obs
+                )
 
                 if i < last_iteration:
                     # Divide by dt to avoid penalizing long dt [asg]
@@ -870,6 +922,8 @@ def itslive_lsqfit_annual(
 
                     # Remove outliers
                     non_outlier_mask = ~outliers
+                    d_cos = d_cos[non_outlier_mask]
+                    d_sin = d_sin[non_outlier_mask]
                     start_year = start_year[non_outlier_mask]
                     stop_year = stop_year[non_outlier_mask]
                     dyr = dyr[non_outlier_mask]
@@ -958,6 +1012,8 @@ def itslive_lsqfit_annual(
     # v0_years[0] <= mid_date < v0_years[-1]+1
     _v0_year_mask = create_v0_years_mask(start_year, stop_year, v0_years)
 
+    d_cos = d_cos[_v0_year_mask]
+    d_sin = d_sin[_v0_year_mask]
     start_year = start_year[_v0_year_mask]
     stop_year = stop_year[_v0_year_mask]
     dyr = dyr[_v0_year_mask]
@@ -982,7 +1038,7 @@ def itslive_lsqfit_annual(
             # not velocities, so this matrix is just the definite integral
             # wrt time of a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
             p, d_model = itslive_lsqfit_iteration(
-                var_name, start_year, stop_year, M, w_d, d_obs
+                var_name, d_cos, d_sin, M, w_d, d_obs
             )
 
             if i < last_iteration:
@@ -1010,6 +1066,8 @@ def itslive_lsqfit_annual(
 
                 # Remove outliers
                 non_outlier_mask = ~outliers
+                d_cos = d_cos[non_outlier_mask]
+                d_sin = d_sin[non_outlier_mask]
                 start_year = start_year[non_outlier_mask]
                 stop_year = stop_year[non_outlier_mask]
                 dyr = dyr[non_outlier_mask]
@@ -2231,6 +2289,8 @@ class ITSLiveComposite:
     STOP_DECIMAL_YEAR = None
     DECIMAL_DT = None
     M = None
+    D_COS = None
+    D_SIN = None
 
     # Dimensions that correspond to the currently processed datacube chunk
     CHUNK = None
@@ -2452,7 +2512,18 @@ class ITSLiveComposite:
             ITSLiveComposite.STOP_DECIMAL_YEAR,
             ITSLiveComposite.DECIMAL_DT
         )
-        logging.info(f'Computed M (took {timeit.default_timer() - start_time} seconds)')
+        logging.info(
+            f'Computed M (took {timeit.default_timer() - start_time} seconds)')
+
+        start_time = timeit.default_timer()
+        ITSLiveComposite.D_COS, ITSLiveComposite.D_SIN = create_D_components(
+            ITSLiveComposite.START_DECIMAL_YEAR,
+            ITSLiveComposite.STOP_DECIMAL_YEAR
+        )
+        logging.info(
+            'Computed D matrix components '
+            f'(took {timeit.default_timer() - start_time} seconds)'
+        )
 
         # Day separation between images (sorted per cube.sortby() call above)
         ITSLiveComposite.DATE_DT = self.stable_shift_filter.exclude(
@@ -3989,6 +4060,8 @@ def cubelsqfit2(
                     var_name,
                     v[j, i, :],
                     v_err[j, i, :],
+                    ITSLiveComposite.D_COS,
+                    ITSLiveComposite.D_SIN,
                     ITSLiveComposite.START_DECIMAL_YEAR,
                     ITSLiveComposite.STOP_DECIMAL_YEAR,
                     ITSLiveComposite.DECIMAL_DT,
