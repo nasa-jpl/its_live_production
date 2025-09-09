@@ -3,7 +3,7 @@
 #
 # To create conda environment, run command:
 #
-# $ conda env create -f cube_environment.yml
+# $ conda env create -f composite_environment.yml
 #
 # Followed by the following command to activate the environment:
 #
