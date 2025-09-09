@@ -2611,6 +2611,10 @@ class ITSLiveComposite:
         # x_start = 300
         # x_num_to_process = 40
 
+        logging.info(
+            f"Cube size: [{self.cube_sizes[Coords.MID_DATE]}, "
+            f"{self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]..."
+        )
         while x_num_to_process > 0:
             # How many tasks to process at a time
             x_num_tasks = ITSLiveComposite.NUM_TO_PROCESS if x_num_to_process > ITSLiveComposite.NUM_TO_PROCESS else x_num_to_process
@@ -2706,13 +2710,11 @@ class ITSLiveComposite:
 
         # ATTN: don't use native xarray functionality is much slower,
         # convert data to numpy types and use numpy only
-        logging.info(f'Loading vx[:, {start_y}:{stop_y}, {start_x}:{stop_x}] out of {self.cube_sizes}...')
-
+        logging.info(f'Loading [:, {start_y}:{stop_y}, {start_x}:{stop_x}]'))
         vx_org = self.data.vx[:, start_y:stop_y, start_x:stop_x].values
         if vx_org.dtype != np.float32:
             vx_org = vx_org.astype(np.float32)
 
-        logging.info(f'Loading vy[:, {start_y}:{stop_y}, {start_x}:{stop_x}] out of [{self.cube_sizes[Coords.MID_DATE]}, {self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]...')
         vy_org = self.data.vy[:, start_y:stop_y, start_x:stop_x].values
         if vy_org.dtype != np.float32:
             vy_org = vy_org.astype(np.float32)
