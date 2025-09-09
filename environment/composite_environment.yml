@@ -12,7 +12,6 @@
 name: itslivecube
 
 channels:
-  - defaults
   - conda-forge
 
 # scipy is required by numba
@@ -33,7 +32,7 @@ channels:
 
 dependencies:
   - python==3.9.6
-  - defaults::numpy==1.21.5
+  - numpy==1.21.5
   - dask==2.30.0
   - geopandas==0.9.0
   - pandas==1.5.3
@@ -48,7 +47,6 @@ dependencies:
   - scipy==1.9.1
   - s3fs==0.4.2
   - fsspec==0.8.3
-  - rtree==1.0.1
   - shapely==2.0.1
   - tqdm==4.65.0
   - utm
