@@ -2710,7 +2710,7 @@ class ITSLiveComposite:
 
         # ATTN: don't use native xarray functionality is much slower,
         # convert data to numpy types and use numpy only
-        logging.info(f'Loading [:, {start_y}:{stop_y}, {start_x}:{stop_x}]'))
+        logging.info(f'Loading [:, {start_y}:{stop_y}, {start_x}:{stop_x}]')
         vx_org = self.data.vx[:, start_y:stop_y, start_x:stop_x].values
         if vx_org.dtype != np.float32:
             vx_org = vx_org.astype(np.float32)
