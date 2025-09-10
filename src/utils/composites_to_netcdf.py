@@ -43,7 +43,7 @@ ENCODING = {
     'vx_phase':                  {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
     'vy_phase':                  {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
     'v_phase':                   {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
-    'dt_max':                    {'_FillValue': 0,     'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
+    'dt_max':                    {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
     'vx0_error':                 {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
     'vy0_error':                 {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
     'v0_error':                  {'_FillValue': 32767, 'dtype': np.uint16, "zlib": True, "complevel": 2, "shuffle": True},
