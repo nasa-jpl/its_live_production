@@ -2631,7 +2631,7 @@ class ITSLiveComposite:
         # Loop through cube in chunks to minimize memory footprint
         x_start = 0
         x_num_to_process = self.cube_sizes[Coords.X]
-        # For validation/debugging only:
+        # For validation/debugging only (RGI12A):
         # python ./new_composite.py -i ITS_LIVE_vel_EPSG32638_G0120_X350000_Y4750000.zarr
         # -o ITS_LIVE_velocity_EPSG32638_120m_X350000_Y475000_new_composite.zarr
         # -b s3://its-live-data/datacubes/v2-updated-october2024/N40E040

@@ -521,7 +521,7 @@ class CompDataVars:
     COUNT = 'count'
     MAX_DT = 'dt_max'
     OUTLIER_FRAC = 'outlier_percent'
-    SENSOR_INCLUDE = 'sensor_flag'
+    SENSOR_INCLUDE = 'sensor_filter_applied'
     VX0 = 'vx0'
     VY0 = 'vy0'
     V0 = 'v0'
@@ -553,7 +553,7 @@ class CompDataVars:
         TIME: 'time',
         COUNT: 'number_of_observations',
         MAX_DT: 'dt_maximum',
-        SENSOR_INCLUDE: 'sensor_flag',
+        SENSOR_INCLUDE: 'sensor_filter_applied',
         OUTLIER_FRAC: 'outlier_percent',
         VX0: 'climatological_x_velocity',
         VY0: 'climatological_y_velocity',
@@ -586,7 +586,7 @@ class CompDataVars:
         V_PHASE: f'day of maximum climatological [%i-%i] seasonal velocity determined from sinusoidal fit to vx and vy; Values represent numerical day of the year.',
         COUNT: 'number of image pairs used in error weighted least squares fit',
         MAX_DT: 'maximum allowable time separation between image pair acquisitions included in error weighted least squares fit',
-        SENSOR_INCLUDE: 'flag = 0 if sensor group is included, flag = 1 if sensor group (see sensor variable) is excluded',
+        SENSOR_INCLUDE: 'flag = 0 if sensor filter is not applied, flag = 1 if sensor (see sensor variable) filter is applied',
         OUTLIER_FRAC: f'percentage of data identified as outliers and excluded from the climatological [%i-%i] error weighted least squares fit',
         SENSORS: 'combinations of unique sensors and missions that are grouped together for date_dt filtering',
         VX0: f'climatological [%i-%i] vx determined by a weighted least squares line fit, described by an offset and slope, to mean annual vx values. The climatology uses a time-intercept of January 1, %i.',
@@ -618,7 +618,7 @@ class BinaryFlag:
         DataVars.INTERP_MASK: 'measured interpolated',
         ShapeFile.LANDICE: 'non-ice ice',
         ShapeFile.FLOATINGICE: 'non-ice ice',
-        CompDataVars.SENSOR_INCLUDE: 'included excluded',
+        CompDataVars.SENSOR_INCLUDE: 'filter_not_applied filter_applied',
         DataVars.ASCENDING_IMG1: 'descending ascending',
         DataVars.ASCENDING_IMG2: 'descending ascending'
     }
