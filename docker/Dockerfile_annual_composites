@@ -43,7 +43,7 @@ WORKDIR /home/conda
 COPY --chown=${CONDA_UID}:${CONDA_GID} ${SOURCE_DIR} /home/conda/itslive
 
 # build datacube conda environment using mamba
-RUN mamba env create -f itslive/env/cube_environment.yml && \
+RUN mamba env create -f itslive/env/composite_environment.yml && \
     mamba clean -afy && \
     conda activate itslivecube && \
     sed -i 's/conda activate base/conda activate itslivecube/g' /home/conda/.profile && \
