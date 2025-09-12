@@ -2052,7 +2052,7 @@ class StableShiftFilter:
 
         # Populate threshold vector with values based on the sensor group
         # each image pair belongs to
-        self.threshold = np.zeros_like(sensor_list)
+        self.threshold = np.zeros_like(sensor_list, dtype=float)
 
         # Step through all mission groups present in the datacube
         for each_group in SensorExcludeFilter.identify_sensor_groups(sensor_list):
