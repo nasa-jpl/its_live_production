@@ -106,6 +106,13 @@ class CompOutput:
     class Values:
         TITLE = 'ITS_LIVE annual composites of image pair velocities'
 
+    # As of zarr v2, "_FillValue" is no longer supported as encoding parameter,
+    # but instead it is set as an attribute of the data variable.
+    # To guarantee conversion of fill_value to NaN when reading the data back in,
+    # the "_FillValue" attribute should be set to the desired fill value as
+    # well.
+    FILL_VALUE_ATTR = 'fill_value'
+
 
 class Coords:
     """

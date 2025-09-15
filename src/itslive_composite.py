@@ -3734,15 +3734,22 @@ class ITSLiveComposite:
             {DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS}
         )
 
+        # Don't set fill_value for the coordinate variables
         for each in [CompDataVars.TIME, CompDataVars.SENSORS, Coords.X, Coords.Y]:
             encoding_settings.setdefault(each, {}).update(
                 {
-                    Output.FILL_VALUE_ATTR: None,
                     Output.COMPRESSOR_ATTR: compressor
                 }
             )
 
-        encoding_settings.setdefault(CompDataVars.SENSORS, {}).update({Output.DTYPE_ATTR: 'str'})
+        encoding_settings.setdefault(CompDataVars.SENSORS, {}).update(
+            {Output.DTYPE_ATTR: 'str'}
+        )
+
+        # Newer xarray versions set "fill_value" as attribute instead of
+        # an encoding parameter. Also, setting "_FillValue" attribute will
+        # enable automatic conversion of "fill_value" to Nans when reading
+        # the data back in.
 
         # Settings for variables of "float" data type
         for each in [
@@ -3757,17 +3764,20 @@ class ITSLiveComposite:
             CompDataVars.SLOPE_V
         ]:
             encoding_settings.setdefault(each, {}).update({
-                Output.FILL_VALUE_ATTR: DataVars.MISSING_VALUE,
                 Output.DTYPE_ATTR: np.float32,
                 Output.COMPRESSOR_ATTR: compressor
             })
+
+            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_VALUE
+            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_VALUE
+
             # No need to set "missing_value" attribute for floating point data
             # as it has _FillValue set for encoding.
             # ds[each].attrs[Output.MISSING_VALUE_ATTR] = DataVars.MISSING_VALUE
 
-        # Don't provide _FillValue for int types as it will avoid datatype specification for the
-        # variable (according to xarray support, _FillValue is used for floating point
-        # datatypes only)
+        # Don't provide _FillValue for int types as it will avoid datatype
+        # specification for the variable (according to xarray support,
+        # _FillValue is used for floating point datatypes only)
 
         # Settings for variables of "uint16" data type
         for each in [
@@ -3791,10 +3801,10 @@ class ITSLiveComposite:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint16,
                 Output.COMPRESSOR_ATTR: compressor,
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_POS_VALUE
             })
 
-            # logging.info(f'{each} attrs: {ds[each].attrs}')
+            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_POS_VALUE
+            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_POS_VALUE
 
         # Settings for variables of "uint8" data type
         for each in [
@@ -3803,8 +3813,10 @@ class ITSLiveComposite:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
                 Output.COMPRESSOR_ATTR: compressor,
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_UINT8_VALUE
             })
+
+            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_UINT8_VALUE
+            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_UINT8_VALUE
 
         # Variables that have missing_value = 0
         for each in [
@@ -3815,9 +3827,12 @@ class ITSLiveComposite:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
                 Output.COMPRESSOR_ATTR: compressor,
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE
             })
 
+            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
+            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
+
+        # NOTE: === this is relative to older versions of xarray ===
         # Settings for variables of "uint32" data type
         # Don't provide _FillValue as it will avoid datatype specification for the
         # variable (according to xarray support, _FillValue is used for floating point
@@ -3829,8 +3844,10 @@ class ITSLiveComposite:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint32,
                 Output.COMPRESSOR_ATTR: compressor,
-                Output.MISSING_VALUE_ATTR: DataVars.MISSING_BYTE
             })
+
+            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
+            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
 
         # Chunking to apply when writing datacube to the Zarr store
         chunks_settings = (1, self.cube_sizes[Coords.Y], self.cube_sizes[Coords.X])
@@ -3879,7 +3896,8 @@ class ITSLiveComposite:
                 Output.CHUNKS_ATTR: chunks_settings
             })
 
-        logging.info(f"Encoding settings: {encoding_settings}")
+        logging.info(f"Encoding settings: {encoding_settings=}")
+
         ds.to_zarr(output_store, encoding=encoding_settings, consolidated=True)
 
 
