@@ -49,7 +49,7 @@ def translate_polygons(geometry_collection: GeometryCollection) -> list:
     Translate Cartesian polygons back to geospacial coordinates
     """
     polygons = []
-    for polygon in geometry_collection:
+    for polygon in geometry_collection.geoms:
         (minx, _, maxx, _) = polygon.bounds
         if minx < -180:
             geo_polygon = affinity.translate(polygon, xoff = 360)
@@ -93,6 +93,8 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
 
         # If ROI does not have any data, skip the whole polygon as there are
         # no cubes to define
+        logging.info(f'Opening ROI {roi_file}...')
+
         roi_ds = gdal.Open(f'/vsicurl/{roi_file}')
         # ROI data is stored in [Y; X] order:
         # Type ROI_array:  <class 'numpy.ndarray'>
@@ -167,7 +169,7 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
             # Convert polygon to target EPSG coords
             epsg_polygon = []
             lon, lat = map(np.array, each_polygon.exterior.coords.xy)
-            logging.info(f"Polygon lon: {lon.shape} lat: {lat.shape}")
+            logging.info(f"Polygon lon: {lon.shape=} lat: {lat.shape=}")
             # This is to prevent corner cases when
             # all original coordinates at latitude=+-90 or longitude=+-180 get
             # projected to the same x/y=(0;0) in target EPSG
@@ -310,39 +312,50 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
                             most_bottom_filter.intersects(geometry_obj):
                             continue
 
+                    # Define cube's polygon in EPSG coordinates
+                    cube_epsg_polygon = [
+                        [cube_x_min, cube_y_min],
+                        [cube_x_max, cube_y_min],
+                        [cube_x_max, cube_y_max],
+                        [cube_x_min, cube_y_max],
+                        [cube_x_min, cube_y_min]
+                    ]
+
                     # Region Of Interest coverage within the cube
                     roi_coverage = roi_data[min_y_ind:max_y_ind, min_x_ind:max_x_ind].sum()/cube_num_cells
 
                     # For each cube capture lon/lat coordinates as geometry
                     # and UTM coordinates as a property to be accessed "manually"
-                    features.append(
-                        geojson.Feature(
-                            geometry=geometry_obj,
-                            properties={
-                                # "stroke-width": 2,
-                                # "stroke-opacity": 1,
-                                "fill-opacity": 1.0 - roi_coverage,
-                                "fill": "red",
-                                'roi_percent_coverage': roi_coverage*100,
-                                'data_epsg':    epsg_code,
-                                'geometry_epsg': geojson.Polygon([[
-                                    [cube_x_min, cube_y_min],
-                                    [cube_x_max, cube_y_min],
-                                    [cube_x_max, cube_y_max],
-                                    [cube_x_min, cube_y_max],
-                                    [cube_x_min, cube_y_min]]]),
-                            }
-                            # Adding "style" does not make opacity work in QGIS either:
-                            # style = {
-                            #     "opacity": 1.0 - roi_coverage,
-                            #     # "fill-opacity": 1.0 - roi_coverage,
-                            #     # "opacity": 1.0 - roi_coverage,
-                            #     "fill": "green" if roi_coverage > 0.5 else "yellow",
-                            #     # "fill": "green" if roi_coverage > 0.5 else "yellow",
-                            #
-                            # }
+                    # Append only cubes with ROI!=0
+                    if roi_coverage > 0.0:
+                        features.append(
+                            geojson.Feature(
+                                geometry=geometry_obj,
+                                properties={
+                                    # "stroke-width": 2,
+                                    # "stroke-opacity": 1,
+                                    "fill-opacity": 1.0 - roi_coverage,
+                                    "fill": "red",
+                                    'roi_percent_coverage': roi_coverage*100,
+                                    'epsg': int(epsg_code.replace('EPSG:', '')),
+                                    'geometry_epsg': geojson.Polygon([[
+                                        [cube_x_min, cube_y_min],
+                                        [cube_x_max, cube_y_min],
+                                        [cube_x_max, cube_y_max],
+                                        [cube_x_min, cube_y_max],
+                                        [cube_x_min, cube_y_min]]]),
+                                }
+                                # Adding "style" does not make opacity work in QGIS either:
+                                # style = {
+                                #     "opacity": 1.0 - roi_coverage,
+                                #     # "fill-opacity": 1.0 - roi_coverage,
+                                #     # "opacity": 1.0 - roi_coverage,
+                                #     "fill": "green" if roi_coverage > 0.5 else "yellow",
+                                #     # "fill": "green" if roi_coverage > 0.5 else "yellow",
+                                #
+                                # }
+                            )
                         )
-                    )
 
     feature_collection = geojson.FeatureCollection(features)
 
@@ -358,39 +371,76 @@ if __name__ == '__main__':
     warnings.filterwarnings('ignore')
 
     # Command-line arguments parser
-    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0],
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('-s', '--shapeFile', type=str, default='/Users/mliukis/Documents/ITS_LIVE/fromAlex/autorift_landice_0120m/autorift_landice_0120m.shp',
-                        help='Regional shape file that defines each of the EPSG polygons in longitude/latitude coordinates.')
-    parser.add_argument('-o', '--outputFile', type=str, default='cubeGrid.json',
-                        help='Geojson file to store cube polygon definitions.')
-    parser.add_argument('-c', '--epsgCode', type=str, default=None,
-                        help='EPGS code(s) as json list to create datacube grid for. Default is None meaning to generate complete datacube grid.')
-    parser.add_argument('-g', '--gridSize', type=int, default=100000,
-                        help='Grid size in meters [%(default)d].')
-    parser.add_argument('-a', '--gridSizeAdjustment', type=float, default=0.0,
-                        help='Grid size adjustment in degrees [%(default)d]. ' \
-                        'The default value is based on default 100km grid size. ' \
-                        'This value should be hand-picked to bring cells into South Pole region to avoid gaps in the cube grid.')
+    parser = argparse.ArgumentParser(
+        description=__doc__.split('\n')[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        '-s', '--shapeFile',
+        type=str,
+        default='/Users/mliukis/Documents/ITS_LIVE/fromAlex/autorift_landice_0120m/autorift_landice_0120m.shp',
+        help='Regional shape file that defines each of the EPSG polygons in '
+            'longitude/latitude coordinates.'
+    )
+    parser.add_argument(
+        '-o', '--outputFile',
+        type=str,
+        default='cubeGrid.json',
+        help='Geojson file to store cube polygon definitions.'
+    )
+    parser.add_argument(
+        '-c', '--epsgCode',
+        type=str,
+        default=None,
+        help='EPGS code(s) as json list to create datacube grid for. Default '
+            'is None meaning to generate complete datacube grid.'
+    )
+    parser.add_argument(
+        '-g', '--gridSize',
+        type=int,
+        default=100000,
+        help='Grid size in meters [%(default)d].'
+    )
+    parser.add_argument(
+        '-a', '--gridSizeAdjustment',
+        type=float,
+        default=0.0,
+        help='Grid size adjustment in degrees [%(default)d]. '
+            'The default value is based on default 100km grid size. '
+            'This value should be hand-picked to bring cells into South Pole '
+            'region to avoid gaps in the cube grid.'
+    )
 
     args = parser.parse_args()
 
     # Map provided EPSG codes to the list of int codes
-    epsg_codes = list(map(int, json.loads(args.epsgCode))) if args.epsgCode is not None else None
+    epsg_codes = list(map(int, json.loads(args.epsgCode))) if args.epsgCode \
+        is not None else None
     if epsg_codes and len(epsg_codes):
         logging.info(f"Got EPSG codes: {epsg_codes}")
 
     if args.gridSize not in GRID_ADJUSTMENT_EPSG3031:
         if args.gridSizeAdjustment != 0:
-            logging.info(f"New EPSG3031 grid adjustment value {args.gridSizeAdjustment} is provided for {grid_size} grid size")
+            logging.info(
+                f"New EPSG3031 grid adjustment value {args.gridSizeAdjustment} "
+                f"is provided for {grid_size} grid size"
+            )
             GRID_ADJUSTMENT_EPSG3031[args.gridSize] = args.gridSizeAdjustment
 
         else:
-            raise RuntimeError(f"EPSG3031 grid adjustment value must be provided for not registered {grid_size} grid size")
+            raise RuntimeError(
+                f"EPSG3031 grid adjustment value must be provided for not "
+                f"registered {grid_size} grid size"
+            )
 
     # This won't allow to replace adjustment value with zero
-    elif args.gridSizeAdjustment != 0 and GRID_ADJUSTMENT_EPSG3031[args.gridSize] != args.gridSizeAdjustment:
-        logging.info(f"Replacing EPSG3031 grid adjustment value {GRID_ADJUSTMENT_EPSG3031[args.gridSize]} with {args.gridSizeAdjustment} for {grid_size} grid size")
+    elif args.gridSizeAdjustment != 0 and \
+        GRID_ADJUSTMENT_EPSG3031[args.gridSize] != args.gridSizeAdjustment:
+        logging.info(
+            f"Replacing EPSG3031 grid adjustment value "
+            f"{GRID_ADJUSTMENT_EPSG3031[args.gridSize]} with "
+            f"{args.gridSizeAdjustment} for {grid_size} grid size"
+        )
         GRID_ADJUSTMENT_EPSG3031[args.gridSize] = args.gridSizeAdjustment
 
     define_cubes(args.shapeFile, args.outputFile, epsg_codes, args.gridSize)
