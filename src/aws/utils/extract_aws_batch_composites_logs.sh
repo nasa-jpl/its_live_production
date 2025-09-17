@@ -39,3 +39,10 @@ if test -f $FILE; then
   echo "Moving log file \"${NEW_FILE}\" to \"itslive_logs/${CUBE_LOG_FILE}\""
   mv $NEW_FILE itslive_logs/${CUBE_LOG_FILE}
 fi
+
+# Sort out all successfully processed jobs
+cd itslive_logs
+mkdir -p done
+
+# Move logs with "Done." message to a separate directory
+find . -type f -exec grep -l "Done\." {} \; | xargs -I {} mv {} done
