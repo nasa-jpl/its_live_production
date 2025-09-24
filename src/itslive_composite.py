@@ -43,6 +43,7 @@ from itscube_types import \
     X_ATTRS, \
     Y_ATTRS
 import itslive_utils
+import aws_utils
 
 # Intercept date used for a weighted linear fit
 CENTER_DATE = datetime.datetime(2018, 1, 1)
@@ -4138,6 +4139,7 @@ if __name__ == '__main__':
 
     logging.info(f"Command-line arguments: {sys.argv}")
     logging.info(f"Command arguments: {args}")
+    logging.info(f"EC2 instance type: {aws_utils.get_instance_type()}")
 
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
