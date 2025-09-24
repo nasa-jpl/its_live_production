@@ -686,7 +686,7 @@ class CubeJson:
     URL = 'zarr_url'
     EXIST_FLAG = 'datacube_exist'
     GRANULE_COUNT = 'granule_count'
-    REGION = 'region'
+    REGION = 'region_id'
     REGION_ID = 'M_ID'
     RGI_CODE = 'RGI_CODE'
     DIRECTORY = 'directory'
