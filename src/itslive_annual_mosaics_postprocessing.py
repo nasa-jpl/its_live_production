@@ -152,10 +152,15 @@ class ITSLiveAnnualMosaicsPostProcess:
 
     def __call__(self, target_bucket: str,  target_bucket_dir):
         """
-        Apply post-processing to identified mosaics files.
+        Apply post-processing to identified mosaics files. Check for polygon
+        overlap with mosaics before creating the grid mask.
 
-        Args:
-            target_bucket (str): Target S3 bucket location to place post-processed mosaics into.
+        Inputs:
+        =======
+        target_bucket (str): Target S3 bucket location to place post-processed
+            mosaics into.
+        target_bucket_dir (str): Target S3 bucket directory to place
+            post-processed mosaics into.
         """
         # Load all shapefile's polygons in and populate mask with grid pixels to exclude from
         # mosaics
@@ -175,9 +180,53 @@ class ITSLiveAnnualMosaicsPostProcess:
             logging.info(f'-->x bounds: {out_x}')
             logging.info(f'-->y bounds: {out_y}')
 
+            # Check if polygon bounds overlap with mosaic bounds before
+            # creating grid
+            polygon_x_min = out_x.min
+            polygon_x_max = out_x.max
+            polygon_y_min = out_y.min
+            polygon_y_max = out_y.max
+
+            # Check for overlap with mosaic bounds
+            x_overlap = not (polygon_x_max < self.grid_x_min or polygon_x_min > self.grid_x_max)
+            y_overlap = not (polygon_y_max < self.grid_y_min or polygon_y_min > self.grid_y_max)
+
+            if not (x_overlap and y_overlap):
+                logging.info(f'Skipping polygon #{index} - no overlap with mosaic bounds')
+                logging.info(f'  Polygon x: [{polygon_x_min:.2f}, {polygon_x_max:.2f}]')
+                logging.info(f'  Mosaic x:  [{self.grid_x_min:.2f}, {self.grid_x_max:.2f}]')
+                logging.info(f'  Polygon y: [{polygon_y_min:.2f}, {polygon_y_max:.2f}]')
+                logging.info(f'  Mosaic y:  [{self.grid_y_min:.2f}, {self.grid_y_max:.2f}]')
+                continue
             # x0_bbox, y0_bbox = Grid.bounding_box(out_x, out_y, self.grid_spacing)
 
-            # Create grid that corresponds to the Polygon
+            logging.info(
+                f'-->Polygon #{index} overlaps with mosaics, creating grid mask...'
+            )
+
+            # Create grid that corresponds to the Polygon overlapping area
+            # with mosaics only
+            clipped_x_min = max(polygon_x_min, self.grid_x_min)
+            clipped_x_max = min(polygon_x_max, self.grid_x_max)
+            clipped_y_min = max(polygon_y_min, self.grid_y_min)
+            clipped_y_max = min(polygon_y_max, self.grid_y_max)
+
+            # Add a small buffer to ensure we capture edge cells
+            clipped_x_min -= self.grid_spacing
+            clipped_x_max += self.grid_spacing
+            clipped_y_min -= self.grid_spacing
+            clipped_y_max += self.grid_spacing
+
+            logging.info(f'-->Creating grid for clipped bounds:')
+            logging.info(f'   x: [{clipped_x_min:.2f}, {clipped_x_max:.2f}]')
+            logging.info(f'   y: [{clipped_y_min:.2f}, {clipped_y_max:.2f}]')
+
+            # Create grid only for the clipped region
+            out_x = Bounds([clipped_x_min, clipped_x_max])
+            out_y = Bounds([clipped_y_min, clipped_y_max])
+            logging.info(f'-->x clipped bounds: {out_x}')
+            logging.info(f'-->y clipped bounds: {out_y}')
+
             mask_x_grid, mask_y_grid = Grid.create(out_x, out_y, self.grid_spacing)
 
             x_grid, y_grid = np.meshgrid(mask_x_grid, mask_y_grid)
@@ -185,11 +234,19 @@ class ITSLiveAnnualMosaicsPostProcess:
             # Check which grid points are inside the polygon
             grid_points = np.column_stack((x_grid.ravel(), y_grid.ravel()))
 
-            points_inside_polygon = np.array([target_polygon.contains(Point(x, y)) for x, y in grid_points])
-            points_inside_polygon = points_inside_polygon.reshape(len(mask_y_grid), len(mask_x_grid))
+            points_inside_polygon = np.array(
+                [target_polygon.contains(Point(x, y)) for x, y in grid_points]
+            )
+            points_inside_polygon = points_inside_polygon.reshape(
+                len(mask_y_grid), len(mask_x_grid)
+            )
 
             polygon_dims = {'x': mask_x_grid, 'y': mask_y_grid}
-            polygon_mask = xr.DataArray(points_inside_polygon, dims=('y', 'x'), coords=polygon_dims)
+            polygon_mask = xr.DataArray(
+                points_inside_polygon,
+                dims=('y', 'x'),
+                coords=polygon_dims
+            )
 
             # Define which points are within mosaic X/Y ranges
             mask_x = (polygon_mask.x >= self.grid_x_min) & (polygon_mask.x <= self.grid_x_max)
