@@ -3102,7 +3102,7 @@ def parse_args():
         '-m', '--mosaicsDir',
         type=str,
         action='store',
-        default='velocity_mosaic/v2.1',
+        default='velocity_mosaic/v2.1/production',
         help="Destination S3 directory to store mosaics to [%(default)s]"
     )
     parser.add_argument(
