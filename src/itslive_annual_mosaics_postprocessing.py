@@ -356,7 +356,7 @@ def parse_args():
         '-b', '--bucket',
         type=str,
         action='store',
-        default='s3://its-live-data/velocity_mosaic/v2_updated-may2025',
+        default='s3://its-live-data/velocity_mosaic/v2.1/production',
         help="S3 bucket location that stores mosaics files for post-processing [%(default)s]."
     )
     parser.add_argument(
@@ -370,7 +370,7 @@ def parse_args():
         '-d', '--targetBucketDir',
         type=str,
         action='store',
-        default='velocity_mosaic/v2_updated-may2025/post_process',
+        default='velocity_mosaic/v2.1/production/post_process',
         help="S3 bucket location to store post-processed mosaics files [%(default)s]"
     )
     parser.add_argument(
