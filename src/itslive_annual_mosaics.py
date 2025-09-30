@@ -2880,7 +2880,15 @@ class ITSLiveAnnualMosaics:
         ds: xr.Dataset object containing the data variable.
         ds_var: name of the data variable.
         """
-        ds[ds_var].attrs[DataVars.STD_NAME] = ds[ds_var].attrs[DataVars.STD_NAME].replace('0', '')
+        if ds_var in [
+            CompDataVars.COUNT0,
+            CompDataVars.VX0_ERROR,
+            CompDataVars.VY0_ERROR,
+            CompDataVars.V0_ERROR
+        ]:
+            # Replace zeros in the variable's stdandard names that include them
+            # (avoids replacement of data ranges that may include zeros)
+            ds[ds_var].attrs[DataVars.STD_NAME] = ds[ds_var].attrs[DataVars.STD_NAME].replace('0', '')
 
         if DataVars.NOTE in ds[ds_var].attrs:
             ds[ds_var].attrs[DataVars.NOTE] = ds[ds_var].attrs[DataVars.NOTE].replace('0', '')
