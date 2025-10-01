@@ -52,7 +52,7 @@ spatial_ref_3031 = "PROJCS[\"WGS 84 / Antarctic Polar Stereographic\"," \
     ",AXIS[\"Easting\",NORTH],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"3031\"]]"
 
 spatial_ref_3413 = "PROJCS[\"WGS 84 / NSIDC Sea Ice Polar Stereographic North\"," \
-    "\"GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563," \
+    "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563," \
     "AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]]" \
     ",PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]]," \
     "UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]," \
@@ -551,6 +551,7 @@ class MosaicsReproject:
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
                 'crs_wkt': spatial_ref_3031,
+                Mapping.SPATIAL_REF: spatial_ref_3031,
                 'proj4text': "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
             }
 
@@ -566,6 +567,7 @@ class MosaicsReproject:
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
                 'crs_wkt': spatial_ref_3413,
+                Mapping.SPATIAL_REF: spatial_ref_3413,
                 'proj4text': "+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
             }
 
@@ -579,6 +581,7 @@ class MosaicsReproject:
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
                 'crs_wkt': spatial_ref_102027,
+                Mapping.SPATIAL_REF: spatial_ref_102027,
                 'proj4text': ESRICode_Proj4
             }
         elif self.xy_epsg == 8859:
@@ -627,6 +630,7 @@ class MosaicsReproject:
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
                 'crs_wkt': spatial_ref_8859,
+                Mapping.SPATIAL_REF: spatial_ref_8859,
                 'proj4text': '+proj=eqearth +lon_0=150 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
             }
 
@@ -1008,10 +1012,27 @@ class MosaicsReproject:
             if MosaicsReproject.VERBOSE:
                 _values = self.ds[CompDataVars.SENSOR_INCLUDE].values
                 verbose_mask = np.isfinite(_values)
-                logging.info(f"Original {CompDataVars.SENSOR_INCLUDE}:  min={np.nanmin(_values[verbose_mask])} max={np.nanmax(_values[verbose_mask])}")
+
+                if np.any(verbose_mask):
+                    logging.info(
+                        f"Original {CompDataVars.SENSOR_INCLUDE}: "
+                        f"min={np.nanmin(_values[verbose_mask])} "
+                        f"max={np.nanmax(_values[verbose_mask])}"
+                    )
+
+                else:
+                    logging.info(f'Original {CompDataVars.SENSOR_INCLUDE}: no valid data')
 
                 verbose_mask = np.isfinite(warp_data)
-                logging.info(f"gdal.warp(): Original {CompDataVars.SENSOR_INCLUDE}:  min={np.nanmin(warp_data[verbose_mask])} max={np.nanmax(warp_data[verbose_mask])}")
+                if np.any(verbose_mask):
+                    logging.info(
+                        f"gdal.warp(): Original {CompDataVars.SENSOR_INCLUDE}: "
+                        f"min={np.nanmin(warp_data[verbose_mask])} "
+                        f"max={np.nanmax(warp_data[verbose_mask])}"
+                    )
+
+                else:
+                    logging.info(f'Warped {CompDataVars.SENSOR_INCLUDE}: no valid data')
 
             warp_data = None
             gc.collect()
