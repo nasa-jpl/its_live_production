@@ -2039,7 +2039,7 @@ class ITSLiveAnnualMosaics:
                     ITSLiveAnnualMosaics.SUMMARY_KEY
                 )
                 logging.info(
-                    f'Got corresponding static mosaics" {static_mosaic_filename}...'
+                    f'Got corresponding static mosaics {static_mosaic_filename}...'
                 )
                 static_ds = static_raw_ds[static_mosaic_filename]
 
