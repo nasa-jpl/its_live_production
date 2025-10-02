@@ -10,12 +10,14 @@ Usage:
 import argparse
 import logging
 import fnmatch
-import os
 from pathlib import Path
 
 import boto3
 import xarray as xr
 from botocore.exceptions import ClientError
+
+
+FIXED_FILES_DIR = Path('original_mosaics_v2.1_to_fix')
 
 
 def setup_logging():
@@ -42,17 +44,16 @@ def list_nc_files(s3_client, bucket: str, prefix: str, pattern: str) -> list:
    if prefix and not prefix.endswith('/'):
       prefix += '/'
 
-   nc_files = []
    matching_files = []
    paginator = s3_client.get_paginator('list_objects_v2')
 
    try:
       for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
          if 'Contents' in page:
-               for obj in page['Contents']:
-                  filename = Path(obj['Key']).name
-                  if fnmatch.fnmatch(filename, pattern):
-                        matching_files.append(obj['Key'])
+            for obj in page['Contents']:
+               filename = Path(obj['Key']).name
+               if fnmatch.fnmatch(filename, pattern):
+                  matching_files.append(obj['Key'])
 
    except ClientError as e:
       logging.error(f"Error listing objects in s3://{bucket}/{prefix}: {e}")
@@ -62,32 +63,26 @@ def list_nc_files(s3_client, bucket: str, prefix: str, pattern: str) -> list:
    return matching_files
 
 
-def process_nc_file(local_path: Path) -> bool:
+def process_nc_file(local_path: str, fixed_file: str) -> bool:
    """
    Add spatial_ref attribute to the 'mapping' variable in a NetCDF file.
 
    Args:
       local_path: Path to local NetCDF file
       spatial_ref_value: WKT string for spatial_ref attribute
-
-   Returns:
-      True if successful, False otherwise
+      fixed_file: Path to save the modified NetCDF file.
    """
-   try:
-      # Open dataset with write permissions
-      with xr.open_dataset(local_path, mode='r+') as ds:
-         # Add or update the spatial_ref attribute to have the same value as
-         # crs_wkt attribute
-         ds.mapping.attrs['spatial_ref'] = ds.mapping.attrs['crs_wkt']
-         logging.info(f"Added spatial_ref attribute to 'mapping' variable in {local_path.name}")
+   # Open dataset with write permissions
+   with xr.open_dataset(local_path, mode='r') as ds:
+      # Add or update the spatial_ref attribute to have the same value as
+      # crs_wkt attribute
+      ds.mapping.attrs['spatial_ref'] = ds.mapping.attrs['crs_wkt']
+      logging.info(f"Added spatial_ref attribute to 'mapping' variable in {local_path}")
 
-      return True
+      # Save changes to a new file
+      logging.info(f"Saving modified file to {fixed_file}")
+      ds.to_netcdf(fixed_file, engine='h5netcdf')
 
-   except Exception as e:
-      logging.error(f"Error processing {local_path.name}: {e}")
-      return False
-
-LOCAL_DIR = 'fix_mosaics_mapping_attribute'
 
 def main():
    parser = argparse.ArgumentParser(
@@ -132,41 +127,33 @@ def main():
       logging.info("Dry run mode - would process the following files:")
       for file_key in nc_files:
          logging.info(f"  {file_key}")
-      return
+      # return
+
+   # Ensure the fixed files directory exists
+   FIXED_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
    # Process each file
-   success_count = 0
-   total_count = len(nc_files)
+   for ifile_key in nc_files:
+      local_file = Path(file_key).name
 
-   temp_path = Path(LOCAL_DIR)
+      logging.info(f'Processing local file: {local_file}')
 
-   for file_key in nc_files:
-      try:
-            local_file = temp_path / Path(file_key).name
+      # Download file from S3
+      logging.info(f"Downloading s3://{args.bucket}/{file_key}")
+      local_file_path = FIXED_FILES_DIR / local_file
 
-            # Download file from S3
-            logging.info(f"Downloading s3://{args.bucket}/{file_key}")
-            s3_client.download_file(args.bucket, file_key, str(local_file))
+      s3_client.download_file(args.bucket, file_key, str(local_file_path))
 
-            # Process the file
-            if process_nc_file(local_file):
-               # Upload modified file back to S3
-               logging.info(f"Uploading modified file to s3://{args.bucket}/{file_key}")
-               s3_client.upload_file(str(local_file), args.bucket, file_key)
-               success_count += 1
+      # Process the file
+      process_nc_file(str(local_file_path), str(local_file))
+      # Upload modified file back to S3
+      logging.info(f"Uploading modified file to s3://{args.bucket}/{file_key}")
 
-            else:
-               logging.warning(f"Skipped {file_key} due to processing error")
+      if not args.dryrun:
+         # Replace file only in non-dryrun mode
+         s3_client.upload_file(str(local_file), args.bucket, file_key)
 
-      except ClientError as e:
-            logging.error(f"AWS error processing {file_key}: {e}")
-      except Exception as e:
-            logging.error(f"Unexpected error processing {file_key}: {e}")
-
-   logging.info(
-      f"Completed processing {total_count} files. "
-      f"Successfully updated {success_count} files."
-   )
+   logging.info("Done")
 
 
 if __name__ == "__main__":
