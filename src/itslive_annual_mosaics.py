@@ -2881,10 +2881,10 @@ class ITSLiveAnnualMosaics:
         ds_var: name of the data variable.
         """
         if ds_var in [
-            CompDataVars.COUNT0,
-            CompDataVars.VX0_ERROR,
-            CompDataVars.VY0_ERROR,
-            CompDataVars.V0_ERROR
+            CompDataVars.COUNT,
+            CompDataVars.VX_ERROR,
+            CompDataVars.VY_ERROR,
+            CompDataVars.V_ERROR
         ]:
             # Replace zeros in the variable's stdandard names that include them
             # (avoids replacement of data ranges that may include zeros)
