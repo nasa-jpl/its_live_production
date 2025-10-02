@@ -203,9 +203,6 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
             logging.info(f"EPGS region expanded to {grid_size}m: x: {new_x} y: {new_y}")
 
             # Define grid for the data cubes
-            x_range = list(range(new_x.min,  new_x.max, grid_size))
-            y_range = list(range(new_y.min,  new_y.max, grid_size))
-
             if epsg_code == 'EPSG:3031':
                 # Extend max latitude by GRID_ADJUSTMENT_EPSG3031[grid_size] degrees
                 # to include cubes slightly outside of the region to avoid gaps
@@ -311,15 +308,6 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
                             most_right_filter.intersects(geometry_obj)) or \
                             most_bottom_filter.intersects(geometry_obj):
                             continue
-
-                    # Define cube's polygon in EPSG coordinates
-                    cube_epsg_polygon = [
-                        [cube_x_min, cube_y_min],
-                        [cube_x_max, cube_y_min],
-                        [cube_x_max, cube_y_max],
-                        [cube_x_min, cube_y_max],
-                        [cube_x_min, cube_y_min]
-                    ]
 
                     # Region Of Interest coverage within the cube
                     roi_coverage = roi_data[min_y_ind:max_y_ind, min_x_ind:max_x_ind].sum()/cube_num_cells
