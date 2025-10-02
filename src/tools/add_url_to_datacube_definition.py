@@ -12,11 +12,10 @@ import math
 import os
 from pathlib import Path
 import s3fs
-import xarray as xr
 
 from grid import Bounds
 import itslive_utils
-from itscube_types import CubeJson, FilenamePrefix, BatchVars, Coords
+from itscube_types import CubeJson, BatchVars, datacube_filename_zarr
 
 
 class DataCubeGlobalDefinition:
@@ -52,7 +51,6 @@ class DataCubeGlobalDefinition:
         """
         Initialize object.
         """
-        self.grid_size_str = f'{grid_size:04d}'
         self.grid_size = grid_size
 
         # Collect existing datacubes in Zarr format
@@ -154,12 +152,13 @@ class DataCubeGlobalDefinition:
 
                 if roi != 0.0:
                     # Format filename for the cube
-                    epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
-                    # Extract int EPSG code
-                    epsg_code = epsg.replace(CubeJson.EPSG_PREFIX, '')
+                    epsg_code = properties[CubeJson.EPSG]
+
+                    # String representation of EPSG code with 'EPSG' prefix
+                    epsg = f'{CubeJson.EPSG_PREFIX}{epsg_code}'
 
                     if len(DataCubeGlobalDefinition.EPSG_TO_UPDATE) and \
-                       epsg_code not in DataCubeGlobalDefinition.EPSG_TO_UPDATE:
+                            epsg_code not in DataCubeGlobalDefinition.EPSG_TO_UPDATE:
                         continue
 
                     coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
@@ -175,19 +174,13 @@ class DataCubeGlobalDefinition:
                     mid_y = int(math.floor(mid_y/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
                     logging.info(f"Mid point at {BatchVars.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
 
-                    # Convert to lon/lat coordinates to format s3 bucket path
-                    # for the datacube
-                    mid_lon_lat = itslive_utils.transform_coord(
-                        epsg_code,
-                        BatchVars.LON_LAT_PROJECTION,
-                        mid_x, mid_y
+                    cube_filename = datacube_filename_zarr(
+                        epsg, self.grid_size, mid_x, mid_y
                     )
-
-                    cube_filename = f"{FilenamePrefix.Datacube}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
                     logging.info(f'Cube name: {cube_filename}')
 
                     if len(DataCubeGlobalDefinition.CUBES_TO_INCLUDE) and \
-                       cube_filename not in DataCubeGlobalDefinition.CUBES_TO_INCLUDE:
+                            cube_filename not in DataCubeGlobalDefinition.CUBES_TO_INCLUDE:
                         logging.info(f'Skipping cube filename: {cube_filename}')
                         continue
 
@@ -202,10 +195,7 @@ class DataCubeGlobalDefinition:
                             # The datacube in Zarr format exists, update GeoJson
                             each_cube[CubeJson.PROPERTIES][CubeJson.URL] = cube_url[0]
                             each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 1
-
-                            # Replace 'data_epsg' with 'epsg' attribute, and store value as integer type
-                            del each_cube[CubeJson.PROPERTIES][CubeJson.DATA_EPSG]
-                            each_cube[CubeJson.PROPERTIES][CubeJson.EPSG] = int(epsg_code)
+                            each_cube[CubeJson.PROPERTIES][CubeJson.EPSG] = epsg_code
 
                             num_cubes += 1
 
@@ -266,9 +256,11 @@ if __name__ == '__main__':
     )
 
     # Command-line arguments parser
-    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0],
-                                     epilog=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__.split('\n')[0],
+        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         '-c', '--cubeDefinitionFile',
         type=str,
@@ -301,7 +293,9 @@ if __name__ == '__main__':
         '--disableReducedCatalog',
         action='store_true',
         default=False,
-        help="Flag to disable reduced (list only the cubes for which Zarr store exists) catalog generation. Default is to generate reduced catalog."
+        help="Flag to disable reduced (list only the cubes for which Zarr "
+            "store exists) catalog generation. Default is to generate "
+            "reduced catalog."
     )
     parser.add_argument(
         '--includeCubesFile',
@@ -314,7 +308,7 @@ if __name__ == '__main__':
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='its-live-data/datacubes/v2',
+        default='its-live-data/datacubes/v2-updated-october2024',
         help="Destination S3 bucket and directory for the datacubes [%(default)s]"
     )
 
