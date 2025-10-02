@@ -76,7 +76,13 @@ def process_nc_file(local_path: str, fixed_file: str) -> bool:
    with xr.open_dataset(local_path, mode='r') as ds:
       # Add or update the spatial_ref attribute to have the same value as
       # crs_wkt attribute
-      ds.mapping.attrs['spatial_ref'] = ds.mapping.attrs['crs_wkt']
+      logging.info(f'Attribute value: {ds.mapping.attrs["crs_wkt"]}')
+
+      # Original value has extra quote before GEOGCS that needs to be removed
+      fixed_value = ds.mapping.attrs['crs_wkt'].replace('"GEOGCS', 'GEOGCS')
+
+      ds.mapping.attrs['crs_wkt'] = fixed_value
+      ds.mapping.attrs['spatial_ref'] = fixed_value
       logging.info(f"Added spatial_ref attribute to 'mapping' variable in {local_path}")
 
       # Save changes to a new file
@@ -133,7 +139,7 @@ def main():
    FIXED_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
    # Process each file
-   for ifile_key in nc_files:
+   for file_key in nc_files:
       local_file = Path(file_key).name
 
       logging.info(f'Processing local file: {local_file}')
