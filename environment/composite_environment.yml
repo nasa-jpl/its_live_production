@@ -7,9 +7,9 @@
 #
 # Followed by the following command to activate the environment:
 #
-# $ conda activate itslivecube
+# $ conda activate itslive_composites
 #
-name: itslivecube
+name: itslive_composites
 channels:
   - conda-forge
 dependencies:
