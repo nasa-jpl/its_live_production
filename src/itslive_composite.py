@@ -474,6 +474,7 @@ def create_D_components(start_decimal_year, stop_decimal_year):
 
 # ATTN: if using "rcond=None" to lstsq(), need to disable numba as its wrapper
 # for lstsq does not support "rcond=None" input parameter for LSQ fit
+# Getting convergence failures with numba enabled for some RGI05A cubes
 @nb.jit(nopython=True)
 def itslive_lsqfit_iteration(var_name, d_cos, d_sin, M, w_d, d_obs):
     """
@@ -955,6 +956,24 @@ def itslive_lsqfit_annual(
             number_of_attempts += 1
             logging.info(
                 f'Got np.linalg.LinAlgError exception using sigma={sigma}, '
+                f'increment sigma by {sigma_delta}, retry #{number_of_attempts}...'
+            )
+            sigma += sigma_delta
+            time.sleep(5)
+
+            if number_of_attempts == max_number_attempts:
+                # Re-raise exception once achieved maximum number of retries
+                raise
+
+        except ValueError as exc:
+            # numba raises ValueError exception when LSQ fit does not converge
+            if not "Internal algorithm failed to converge." in str(exc):
+                # Re-raise exception if it's not the LSQ fit convergence one
+                raise
+
+            number_of_attempts += 1
+            logging.info(
+                f'Got ValueError exception "{exc}" using sigma={sigma}, '
                 f'increment sigma by {sigma_delta}, retry #{number_of_attempts}...'
             )
             sigma += sigma_delta
@@ -2655,8 +2674,8 @@ class ITSLiveComposite:
             y_start = 0
             y_num_to_process = self.cube_sizes[Coords.Y]
             # DEBUG:
-            # y_start = 300
-            # y_num_to_process = 40
+            # y_start = 470
+            # y_num_to_process = 10
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS \
