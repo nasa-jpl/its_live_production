@@ -97,12 +97,12 @@ def main():
    parser.add_argument(
       '--bucket',
       default='its-live-data',
-      help='S3 bucket name'
+      help='S3 bucket name (default: %(default)s)'
    )
    parser.add_argument(
       '--prefix',
       default='velocity_mosaic/v2.1/production/post_process/',
-      help='S3 directory prefix that stores mosaics NetCDF files'
+      help='S3 directory prefix that stores mosaics NetCDF files (default: %(default)s)'
    )
    parser.add_argument(
       '--dryrun',
@@ -112,7 +112,7 @@ def main():
    parser.add_argument(
       '--pattern',
       default='*.nc',
-      help='File pattern to match (default: *.nc)'
+      help='File pattern to match (default: %(default)s)'
    )
 
    args = parser.parse_args()
