@@ -3,22 +3,6 @@ name: itslivecube
 channels:
   - conda-forge
 
-# scipy is required by numba
-# Use MKL installation of numpy: from "defaults" channel,
-# as "conda-forge" channel provides OpenBLAS installation of numpy (slower)
-
-# Have to have specific "fiona" version (1.8.22) as geopandas.read_file(shape_file) raises an exception
-# for annual_composites Docker image:
-# ImportError: the 'read_file' function requires the 'fiona' package, but it is not installed or does not import correctly.
-# Importing fiona resulted in: libtiff.so.5: cannot open shared object file: No such file or directory
-# If specify fiona==1.8.22 in dependencies, then getting circular dependency error,
-# but specifying "defaults" channels first seems to fix the problem.
-
-# October 2, 2024: have to define specific versions for some packages as those were raising from Python interpreter:
-#    File "pandas/_libs/interval.pyx", line 1, in init pandas._libs.interval
-#    ValueError: numpy.dtype size changed, may indicate binary incompatibility. Expected 96 from C header, got 88 from PyObject
-# The reason is that latest rasterio==1.4.1 had a requirement for numpy>=1.21 which resulted in pulling numpy==2.0.2
-
 dependencies:
   - python==3.12
   - boto3
