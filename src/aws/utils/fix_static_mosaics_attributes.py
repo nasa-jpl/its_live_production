@@ -16,6 +16,8 @@ import boto3
 import xarray as xr
 from botocore.exceptions import ClientError
 
+from itscube_types import CompDataVars
+
 
 FIXED_FILES_DIR = Path('original_mosaics_v2.1_to_fix')
 
@@ -74,8 +76,8 @@ def process_nc_file(local_path: str, fixed_file: str):
    """
    # Open dataset with write permissions
    with xr.open_dataset(local_path, mode='r') as ds:
-      # Fix standard_name for some variables
-      ds.count.attrs['standard_name'] = "count"
+      # Fix standard name for some variables
+      ds[CompDataVars.COUNT].attrs['standard_name'] = "count"
       ds.v.attrs['standard_name'] = "climatological [2014-2024] velocity"
       ds.v_amp.attrs['standard_name'] = "climatological [2014-2024] mean seasonal amplitude"
       ds.v_error.attrs['standard_name'] = "v_velocity_error"
