@@ -150,8 +150,8 @@ def main():
       logging.info(f'Processing local file: {local_file}')
 
       # Download file from S3
-      logging.info(f"Downloading s3://{args.bucket}/{file_key}")
       local_file_path = FIXED_FILES_DIR / local_file
+      logging.info(f"Downloading s3://{args.bucket}/{file_key} to {local_file_path}")
 
       s3_client.download_file(args.bucket, file_key, str(local_file_path))
 
