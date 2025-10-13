@@ -63,7 +63,7 @@ def list_nc_files(s3_client, bucket: str, prefix: str, pattern: str) -> list:
    return matching_files
 
 
-def process_nc_file(local_path: str, fixed_file: str) -> bool:
+def process_nc_file(local_path: str, fixed_file: str):
    """
    Add spatial_ref attribute to the 'mapping' variable in a NetCDF file.
 
@@ -102,6 +102,12 @@ def main():
       '--prefix',
       default='velocity_mosaic/v2.1/production/post_process/',
       help='S3 directory prefix that stores mosaics NetCDF files (default: %(default)s)'
+   )
+   parser.add_argument(
+      '--targetPrefix',
+      default='velocity_mosaic/v2.1/static/',
+      help='S3 directory prefix to store corrected mosaics NetCDF files to '
+            '(default: %(default)s)'
    )
    parser.add_argument(
       '--dryrun',
@@ -149,8 +155,10 @@ def main():
 
       # Process the file
       process_nc_file(str(local_file_path), str(local_file))
+
       # Upload modified file back to S3
-      msg = f"uploading {local_file} to s3://{args.bucket}/{file_key}"
+      target_key = file_key.replace(args.prefix, args.targetPrefix)
+      msg = f"uploading {local_file} to s3://{args.bucket}/{target_key}"
 
       if args.dryrun:
          logging.info(f"Dry run - not {msg}")
@@ -158,7 +166,7 @@ def main():
       else:
          # Replace file only in non-dryrun mode
          logging.info(msg)
-         s3_client.upload_file(str(local_file), args.bucket, file_key)
+         s3_client.upload_file(str(local_file), args.bucket, target_key)
 
    logging.info("Done")
 
