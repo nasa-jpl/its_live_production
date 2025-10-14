@@ -41,7 +41,7 @@ if [[ $filename =~ RGI[0-9]{2}A_([0-9]{4})_V ]]; then
    echo "   → Skipping placeholder year (0000)"
    elif (( year >= 1982 && year <= 2024 )); then
    echo "   → ✅ MATCH: Copying $filename"
-   awsv2 s3 cp "s3://its-live-data/$key" "s3://its-live-data/velocity_mosaic/v2.1/annual/$filename" --dryrun < /dev/null
+   awsv2 s3 cp "s3://its-live-data/$key" "s3://its-live-data/velocity_mosaic/v2.1/annual/$filename" < /dev/null
    else
    echo "   → 🚫 Skipping (year out of range): $year"
    fi
