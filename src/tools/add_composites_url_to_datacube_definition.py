@@ -61,7 +61,6 @@ if __name__ == '__main__':
         help="GeoJson file that stores existing composites URLs [%(default)s]."
     )
 
-
     args = parser.parse_args()
     logging.info(f"Command-line arguments: {sys.argv}")
     logging.info(f'Parser arguments: {args}')
@@ -120,6 +119,5 @@ if __name__ == '__main__':
         logging.info(f"Writing updated catalog to the {args.targetCatalog}...")
         with open(args.targetCatalog, 'w') as output_fhandle:
             json.dump(cubes, output_fhandle, indent=4)
-
 
     logging.info("Done")
