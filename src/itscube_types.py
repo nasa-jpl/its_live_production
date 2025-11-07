@@ -684,6 +684,7 @@ class CubeJson:
     EPSG_SEPARATOR = ':'
     EPSG_PREFIX = 'EPSG'
     URL = 'zarr_url'
+    COMPOSITE_URL = 'composite_zarr_url'
     EXIST_FLAG = 'datacube_exist'
     GRANULE_COUNT = 'granule_count'
     REGION = 'region_id'
