@@ -14,7 +14,6 @@ Jet Propulsion Laboratory, California Institute of Technology, Pasadena,
 California
 November 5, 2025
 """
-from ast import For
 import collections
 import datetime
 from dateutil.parser import parse
@@ -972,7 +971,7 @@ def itslive_lsqfit_annual(
 
         except ValueError as exc:
             # numba raises ValueError exception when LSQ fit does not converge
-            if not "Internal algorithm failed to converge." in str(exc):
+            if "Internal algorithm failed to converge." not in str(exc):
                 # Re-raise exception if it's not the LSQ fit convergence one
                 raise
 
@@ -1496,9 +1495,10 @@ class CompositeVariable:
     """
     Class to hold values for v, vx and vy components of the variables.
     """
-   # Index order for data to be continuous in X dimension: [t, y, x]
+    # Index order for data to be continuous in X dimension: [t, y, x]
     # since original order is [y, x, t]
     CONT_IN_X = (2, 0, 1)
+
     def __init__(self, dims: list, name: str):
         """
         Initialize data variables to hold results.
@@ -2458,7 +2458,7 @@ class ITSLiveComposite:
         _, _, existing_ds, _ = ITSCube.init_input_store(
             composite_store,
             s3_bucket='',
-            read_skipped_granules = False
+            read_skipped_granules=False
         )
 
         # Don't need to know skipped granules information for the purpose of composites
@@ -2765,7 +2765,7 @@ class ITSLiveComposite:
         # Read existing composite values for the variable
         self.sensor_include[:, :ITSLiveComposite.X_KEEP, :] = \
             CompositeVariable.getThreeDimData(
-                CompDataVars.CompDataVars.SENSOR_INCLUDE, existing_ds,
+                CompDataVars.SENSOR_INCLUDE, existing_ds,
                 ITSLiveComposite.X_KEEP
             )
 
@@ -2800,7 +2800,6 @@ class ITSLiveComposite:
 
         # TODO: take care of self.date_updated when support for composites updates
         # is implemented
-
 
     def create(self, output_store: str):
         """
@@ -2943,7 +2942,6 @@ class ITSLiveComposite:
         vy.flat = np.transpose(vy_org, ITSLiveComposite.CONT_TIME_ORDER)
 
         # Call filter to exclude sensors if any
-        start_time = timeit.default_timer()
         land_ice_mask = None if self.land_ice_mask is None else self.land_ice_mask[start_y:stop_y, start_x:stop_x]
 
         exclude_sensors = self.sensor_filter(
@@ -2978,7 +2976,6 @@ class ITSLiveComposite:
             # if second LSQ fit iteration will be invoked
             copy_vx = vx.copy()
 
-        start_time = timeit.default_timer()
         # Note for v3:
         # Project velocity to median flow unit vector using only valid sensors: this is
         # pre-processing step for the dt_max filter, not used anywhere else.
@@ -3024,7 +3021,6 @@ class ITSLiveComposite:
         # Mask data
         vx[invalid] = np.nan
         vy[invalid] = np.nan
-
 
         # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
         # Transform vx data to make time series continuous in memory: [y, x, t]
