@@ -1584,7 +1584,7 @@ class CompositeVariable:
         Returns:
             np.array: Values for the range of interest from original dataset.
         """
-        return ds[name].values[:, :x_index].values   # (y, x_keep)
+        return ds[name].values[:, :x_index]   # (y, x_keep)
 
     def setTwoDimData(self, ds, x_index, vars_names):
         """For each of the provided data variables names extract data values
