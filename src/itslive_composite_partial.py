@@ -2676,7 +2676,7 @@ class ITSLiveComposite:
         self.error = CompositeVariable(years_dims, 'error')
         # Load the variable's data and set the data that we should keep
         # from original composite
-        self.error.setThreeDimDataVars(
+        self.error.setThreeDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
             [CompDataVars.V_ERROR, CompDataVars.VX_ERROR, CompDataVars.VY_ERROR]
         )
@@ -2687,7 +2687,7 @@ class ITSLiveComposite:
         )
 
         self.mean = CompositeVariable(years_dims, 'mean')
-        self.mean.setThreeDimDataVars(
+        self.mean.setThreeDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
             [CompDataVars.V, CompDataVars.VX, CompDataVars.VY]
         )
@@ -2816,7 +2816,7 @@ class ITSLiveComposite:
         # Loop through cube in chunks to minimize memory footprint
         x_num_to_process = self.cube_sizes[Coords.X]
         x_start = ITSLiveComposite.X_KEEP
-        # x_num_to_process = 20
+        x_num_to_process = 20
 
         logging.info(
             f"Processing cube size: [{self.cube_sizes[Coords.MID_DATE]}, "
