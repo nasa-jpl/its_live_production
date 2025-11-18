@@ -2681,8 +2681,9 @@ class ITSLiveComposite:
         )
 
         self.count = CompositeVariable(years_dims, 'count')
-        self.count.v[:, :ITSLiveComposite.X_KEEP, :] = CompositeVariable.getThreeDimData(
-            CompDataVars.COUNT, existing_ds, ITSLiveComposite.X_KEEP
+        self.count.setThreeDimData(
+            existing_ds, ITSLiveComposite.X_KEEP,
+            [CompDataVars.COUNT, None, None]
         )
 
         self.mean = CompositeVariable(years_dims, 'mean')
@@ -2700,8 +2701,9 @@ class ITSLiveComposite:
         )
 
         self.count_image_pairs = CompositeVariable(dims, 'count_image_pairs')
-        self.count_image_pairs.vx[:, :ITSLiveComposite.X_KEEP] = CompositeVariable.getTwoDimData(
-            CompDataVars.COUNT0, existing_ds, ITSLiveComposite.X_KEEP
+        self.count_image_pairs.setTwoDimData(
+            existing_ds, ITSLiveComposite.X_KEEP,
+            [None, CompDataVars.COUNT0, None],
         )
 
         self.amplitude = CompositeVariable(dims, 'amplitude')
@@ -2709,6 +2711,7 @@ class ITSLiveComposite:
             existing_ds, ITSLiveComposite.X_KEEP,
             [CompDataVars.V_AMP, CompDataVars.VX_AMP, CompDataVars.VY_AMP],
         )
+
         self.sigma = CompositeVariable(dims, 'sigma')
         self.sigma.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
@@ -2729,7 +2732,7 @@ class ITSLiveComposite:
         )
 
         self.slope = CompositeVariable(dims, 'slope')
-        self.offset.setTwoDimData(
+        self.slope.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
             [CompDataVars.SLOPE_V, CompDataVars.SLOPE_VX, CompDataVars.SLOPE_VY]
         )
@@ -2814,7 +2817,7 @@ class ITSLiveComposite:
         # Loop through cube in chunks to minimize memory footprint
         x_num_to_process = self.cube_sizes[Coords.X]
         x_start = ITSLiveComposite.X_KEEP
-        x_num_to_process = 20
+        x_num_to_process = 10
 
         logging.info(
             f"Processing cube size: [{self.cube_sizes[Coords.MID_DATE]}, "
