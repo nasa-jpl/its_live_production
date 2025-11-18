@@ -1546,7 +1546,7 @@ class CompositeVariable:
         """
         subset = ds[name].values[:, :, :x_index]   # (time, y, x_keep)
         # transpose to (y, x_index, time):
-        return subset.transpose(Coords.Y, Coords.X, CompDataVars.TIME).values
+        return subset.transpose((Coords.Y, Coords.X, CompDataVars.TIME)).values
 
     def setThreeDimData(self, ds, x_index, vars_names):
         """For each of the provided data variables names extract data values
