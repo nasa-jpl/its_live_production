@@ -2683,7 +2683,7 @@ class ITSLiveComposite:
 
         self.count = CompositeVariable(years_dims, 'count')
         self.count.v[:, :ITSLiveComposite.X_KEEP, :] = CompositeVariable.getThreeDimData(
-            CompDataVars.COUNT, existing_ds, x_keep
+            CompDataVars.COUNT, existing_ds, ITSLiveComposite.X_KEEP
         )
 
         self.mean = CompositeVariable(years_dims, 'mean')
@@ -2763,6 +2763,12 @@ class ITSLiveComposite:
         self.max_dt = np.full(sensor_dims, np.nan)
         self.sensor_include = np.ones(sensor_dims)
 
+        # Read existing composite values for the variable
+        self.sensor_include[:, :ITSLiveComposite.X_KEEP, :] = \
+            CompositeVariable.getThreeDimData(
+                CompDataVars.CompDataVars.SENSOR_INCLUDE, existing_ds,
+                ITSLiveComposite.X_KEEP
+            )
 
         # Date when composites were created
         self.date_created = datetime.datetime.now().strftime('%d-%b-%Y %H:%M:%S')
@@ -3693,11 +3699,11 @@ class ITSLiveComposite:
         self.sensor_include = self.sensor_include.transpose(CompositeVariable.CONT_IN_X)
 
         # Flip values: 0 - include; 1 - exclude (decision made at the time mosaics were created)
-        mask_zeros = self.sensor_include[:, ITSLiveComposite.X_KEEP:] == 0
-        mask_ones = self.sensor_include[:, ITSLiveComposite.X_KEEP:] == 1
+        mask_zeros = self.sensor_include[:, :, ITSLiveComposite.X_KEEP:] == 0
+        mask_ones = self.sensor_include[:, :, ITSLiveComposite.X_KEEP:] == 1
 
-        self.sensor_include[:, ITSLiveComposite.X_KEEP:][mask_zeros] = 1
-        self.sensor_include[:, ITSLiveComposite.X_KEEP:][mask_ones] = 0
+        self.sensor_include[:, :, ITSLiveComposite.X_KEEP:][mask_zeros] = 1
+        self.sensor_include[:, :, ITSLiveComposite.X_KEEP:][mask_ones] = 0
 
         self.sensor_include = to_int_type(
             self.sensor_include,
