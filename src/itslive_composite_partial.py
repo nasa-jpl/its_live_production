@@ -2705,7 +2705,7 @@ class ITSLiveComposite:
         )
 
         self.amplitude = CompositeVariable(dims, 'amplitude')
-        self.amplitude.CompositeVariable.setTwoDimData(
+        self.amplitude.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
             [CompDataVars.V_AMP, CompDataVars.VX_AMP, CompDataVars.VY_AMP],
         )
