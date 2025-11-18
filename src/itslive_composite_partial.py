@@ -1544,9 +1544,8 @@ class CompositeVariable:
         Returns:
             np.array: Values for the range of interest from original dataset.
         """
-        subset = ds[name].values[:, :, :x_index]   # (time, y, x_keep)
-        # transpose to (y, x_index, time):
-        return subset.transpose((Coords.Y, Coords.X, CompDataVars.TIME)).values
+        # transpose from (time, y, x)to (y, x, time) dimensions:
+        return ds[name].values[:, :, :x_index].values.transpose((1, 2, 0))
 
     def setThreeDimData(self, ds, x_index, vars_names):
         """For each of the provided data variables names extract data values
