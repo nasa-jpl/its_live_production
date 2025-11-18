@@ -2817,7 +2817,8 @@ class ITSLiveComposite:
         # Loop through cube in chunks to minimize memory footprint
         x_num_to_process = self.cube_sizes[Coords.X]
         x_start = ITSLiveComposite.X_KEEP
-        x_num_to_process = 10
+        x_num_to_process -= ITSLiveComposite.X_KEEP
+        logging.info(f'Start re-processing x=[{x_start}:{x_start + x_num_to_process}]...')
 
         logging.info(
             f"Processing cube size: [{self.cube_sizes[Coords.MID_DATE]}, "
