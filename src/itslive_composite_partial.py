@@ -2803,7 +2803,7 @@ class ITSLiveComposite:
         # is implemented
 
 
-    def create(self, x_start: int, y_start: int):
+    def create(self, output_store: str):
         """
         Create datacube composite: cube time mean values.
 
@@ -2815,8 +2815,8 @@ class ITSLiveComposite:
 
         # Loop through cube in chunks to minimize memory footprint
         x_num_to_process = self.cube_sizes[Coords.X]
-        # x_start = 600
-        # x_num_to_process = 10
+        x_start = ITSLiveComposite.X_KEEP
+        # x_num_to_process = 20
 
         logging.info(
             f"Processing cube size: [{self.cube_sizes[Coords.MID_DATE]}, "
@@ -2828,6 +2828,7 @@ class ITSLiveComposite:
                 if x_num_to_process > ITSLiveComposite.NUM_TO_PROCESS \
                 else x_num_to_process
 
+            y_start = 0
             y_num_to_process = self.cube_sizes[Coords.Y]
             # DEBUG:
             # y_start = 500
@@ -4247,9 +4248,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '-x', '--xStartIndex',
         type=int,
-        default=510,
-        help='X coordinates index to start composite re-generation '
-            '[%(default)d].'
+        default=0,
+        help='X coordinates index to start composite re-generation [%(default)d].'
     )
     parser.add_argument(
         '-i', '--inputCube',
@@ -4262,6 +4262,12 @@ if __name__ == '__main__':
         type=str,
         default="cube_composite.zarr",
         help="Zarr output directory to write composite data to [%(default)s]."
+    )
+    parser.add_argument(
+        '-e', '--existingStore',
+        type=str,
+        default="existing_cube_composite.zarr",
+        help="Zarr store for the existing composite that needs to be updated [%(default)s]."
     )
     parser.add_argument(
         '-b', '--inputBucket',
@@ -4363,7 +4369,7 @@ if __name__ == '__main__':
 
     mosaics = ITSLiveComposite(args.inputCube,
                                args.inputBucket,
-                               args.outputStore)
+                               args.existingStore)
     mosaics.create(args.outputStore)
 
     if os.path.exists(args.outputStore):
