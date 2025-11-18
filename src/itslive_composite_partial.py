@@ -2688,7 +2688,7 @@ class ITSLiveComposite:
         self.mean = CompositeVariable(years_dims, 'mean')
         self.mean.setThreeDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [CompDataVars.V, CompDataVars.VX, CompDataVars.VY]
+            [DataVars.V, DataVars.VX, DataVars.VY]
         )
 
         # Allocate memory for LSQ fit outputs
