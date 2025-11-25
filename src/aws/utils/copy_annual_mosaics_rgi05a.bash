@@ -12,7 +12,7 @@ SOURCE_PREFIX="$1"
 
 awsv2 s3api list-objects-v2 \
 --bucket its-live-data \
---prefix "$SOURCE_PREFIX/ITS_LIVE_velocity_120m_RGI15A" \
+--prefix "$SOURCE_PREFIX/ITS_LIVE_velocity_120m_RGI05A" \
 --query 'Contents[].Key' \
 --output json | jq -r '.[]' | head -5
 
@@ -21,7 +21,7 @@ echo "🔍 Listing and filtering NetCDF files..."
 
 awsv2 s3api list-objects-v2 \
 --bucket its-live-data \
---prefix "$SOURCE_PREFIX/ITS_LIVE_velocity_120m_RGI15A" \
+--prefix "$SOURCE_PREFIX/ITS_LIVE_velocity_120m_RGI05A" \
 --query 'Contents[].Key' \
 --output json |
 jq -r '.[]' |
