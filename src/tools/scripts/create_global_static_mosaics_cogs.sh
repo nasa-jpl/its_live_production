@@ -5,10 +5,10 @@
 set -x
 
 # Specify the S3 bucket target location
-target_bucket="s3://its-live-data/velocity_mosaic/v2/static/cog_global"
+target_bucket="s3://its-live-data/velocity_mosaic/v2.1/static/cog_global"
 
 # S3 bucket location for mosaics COGs
-bucket="s3://its-live-data/velocity_mosaic/v2/static/cog"
+bucket="s3://its-live-data/velocity_mosaic/v2.1/static/cog"
 
 # List of 2d variables for static mosaics
 variables=(
@@ -42,7 +42,7 @@ num_threads=60
 # Iterate over variables
 for var in "${variables[@]}"; do
     # Array of static mosaics TIF files for the variable
-    downloaded_files=$(awsv2 s3 ls "$bucket"/ | grep v02_"$var".tif | awk '{print $NF}')
+    downloaded_files=$(awsv2 s3 ls "$bucket"/ | grep V02.1_"$var".tif | awk '{print $NF}')
 
     reprojected_files=()
     for filename in ${downloaded_files[@]}; do
