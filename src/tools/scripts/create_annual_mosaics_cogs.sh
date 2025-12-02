@@ -22,7 +22,7 @@ variables=(
 )
 
 # Iterate over static mosaics in the S3 bucket location
-for filename in $(aws s3 ls "$bucket"/ | grep .nc | grep -v 2023 | awk '{print $NF}'); do
+for filename in $(aws s3 ls "$bucket"/ | grep .nc | grep -v 2025 | awk '{print $NF}'); do
     # Copy file locally
     aws s3 cp "$bucket/$filename" "$filename"
 
