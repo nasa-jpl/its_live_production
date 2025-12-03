@@ -273,7 +273,7 @@ def main():
    parser.add_argument(
       '--output',
       '-o',
-      default='velocity_mosaic_features.json',
+      default='mosaics_catalog_v2.1.json',
       help='Output GeoJSON file path [%(default)s]'
    )
 
