@@ -21,7 +21,7 @@ num_threads=32
 # Iterate over variables
 for var in "${variables[@]}"; do
     # Array of static mosaics TIF files for the variable
-    downloaded_files=$(aws s3 ls "$bucket"/ | grep v02_"$var".tif | awk '{print $NF}')
+    downloaded_files=$(aws s3 ls "$bucket"/ | grep V02.1_"$var".tif | awk '{print $NF}')
 
     reprojected_files=()
     for filename in ${downloaded_files[@]}; do
