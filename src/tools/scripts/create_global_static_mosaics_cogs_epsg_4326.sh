@@ -21,12 +21,12 @@ num_threads=32
 # Iterate over variables
 for var in "${variables[@]}"; do
     # Array of static mosaics TIF files for the variable
-    downloaded_files=$(awsv2 s3 ls "$bucket"/ | grep v02_"$var".tif | awk '{print $NF}')
+    downloaded_files=$(aws s3 ls "$bucket"/ | grep v02_"$var".tif | awk '{print $NF}')
 
     reprojected_files=()
     for filename in ${downloaded_files[@]}; do
         # Download the file
-        awsv2 s3 cp "$bucket/$filename" "$filename"
+        aws s3 cp "$bucket/$filename" "$filename"
 
         # Format output filename
         output_filename=$(echo "$filename" | sed 's/\.tif/_4326\.tif/')
@@ -56,12 +56,12 @@ for var in "${variables[@]}"; do
     # Copy all contributing TIFs to the VRT to the target S3 destination
     for filename in ${reprojected_files[@]}; do
         # Upload the file
-        awsv2 s3 cp "$filename" "$target_bucket/$filename"
+        aws s3 cp "$filename" "$target_bucket/$filename"
 
         # Remove local copy of the file
         rm "$filename"
     done
 
-    awsv2 s3 cp "$global_filename" "$target_bucket/$global_filename"
+    aws s3 cp "$global_filename" "$target_bucket/$global_filename"
     rm "$global_filename"
 done
