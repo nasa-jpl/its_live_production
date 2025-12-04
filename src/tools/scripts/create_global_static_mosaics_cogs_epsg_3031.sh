@@ -1,14 +1,15 @@
 #!/bin/bash
-# Script to create COGs for 'v' data variable of static mosaics in EPSG 3031 projection.
+# Script to create COGs for 'v' data variable of static mosaics in
+# EPSG 3031 projection.
 
 # Enable command echoing
 set -x
 
 # Specify the S3 bucket target location
-target_bucket="s3://its-live-data/velocity_mosaic/v2/static/cog_global/epsg_3031"
+target_bucket="s3://its-live-data/velocity_mosaic/v2.1/static/cog_global/epsg_3031"
 
 # S3 bucket location for mosaics COGs
-bucket="s3://its-live-data/velocity_mosaic/v2/static/cog"
+bucket="s3://its-live-data/velocity_mosaic/v2.1/static/cog"
 
 # List of 2d variables for static mosaics
 variables=(
@@ -21,7 +22,7 @@ num_threads=46
 # Iterate over variables
 for var in "${variables[@]}"; do
     # Array of static mosaics TIF files for the variable, keep only selected mosaics: RGI 17, 18, 19
-    downloaded_files=$(awsv2 s3 ls "$bucket"/ | grep v02_"$var".tif | grep -E 'RGI1[789]' | awk '{print $NF}')
+    downloaded_files=$(awsv2 s3 ls "$bucket"/ | grep V02.1_"$var".tif | grep -E 'RGI1[789]' | awk '{print $NF}')
 
     reprojected_files=()
     for filename in ${downloaded_files[@]}; do
