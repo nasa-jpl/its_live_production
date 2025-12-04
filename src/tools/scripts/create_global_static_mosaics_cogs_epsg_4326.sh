@@ -5,10 +5,10 @@
 set -x
 
 # Specify the S3 bucket target location
-target_bucket="s3://its-live-data/velocity_mosaic/v2/static/cog_global/epsg_4326"
+target_bucket="s3://its-live-data/velocity_mosaic/v2.1/static/cog_global/epsg_4326"
 
 # S3 bucket location for mosaics COGs
-bucket="s3://its-live-data/velocity_mosaic/v2/static/cog"
+bucket="s3://its-live-data/velocity_mosaic/v2.1/static/cog"
 
 # List of 2d variables for static mosaics
 variables=(
@@ -16,7 +16,7 @@ variables=(
 )
 
 # Number of available CPUs for processing: kh9-vm.12xlarge
-num_threads=46
+num_threads=32
 
 # Iterate over variables
 for var in "${variables[@]}"; do

@@ -17,7 +17,7 @@ variables=(
 )
 
 # Number of available CPUs for processing: kh9-vm.12xlarge
-num_threads=46
+num_threads=32
 
 # Iterate over variables
 for var in "${variables[@]}"; do
