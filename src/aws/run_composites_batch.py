@@ -32,6 +32,94 @@ from itscube_types import BatchVars, \
     composite_filename_zarr
 import itslive_utils
 
+# Define AWS resources for different number of layers in the datacube and for
+# composites creation with slow_error enabled/disabled.
+
+# Previously used AWS Batch job definitions:
+# This job definition has 64GB memory and 8 vCPU and should be used
+# for RGI05A (Greenland) and RGI19A (Antarctica) only - see explanation
+# in the composites code
+# default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-disableSlowError-64Gb:1',
+# default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-64Gb:1',
+# default = 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-256Gb:2',
+# default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-128Gb:1',
+# Use compute optimized env. to re-run composites for ANT and Greenland
+# default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-CO-32Gb:1',
+
+# Previously used AWS Batch queues:
+# default = 'datacube-ondemand-32vCPU-256GB',
+
+# Up to 150000 use SPOT EC2 instances
+# NUM_LAYERS_SPOT = 100_000.   # to force to use ONDEMAND instances
+NUM_LAYERS_SPOT = 300_000
+# Above 150000 and below 500000 use ONDEMAND EC2 instances with 64 Gb of memory
+# Above 500000 use ONDEMAND EC2 instances with 128 Gb of memory
+# NUM_LAYERS_ONDEMAND = 500_000
+NUM_LAYERS_ONDEMAND = 750_000
+
+# 09/25/2025: Change SPOT vs. OnDemand queues and layers thresholds
+def get_aws_disable_slow_error_config(num_layers):
+    """
+    Get AWS Batch job definition and queue based on the number of layers for
+    composites generation with slow_error disabled.
+    """
+    if num_layers <= NUM_LAYERS_SPOT:
+        return {
+            'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-disableSlowError-32Gb:2',
+            'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-spot-4vCPU-32GB',
+            # 'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-ondemand-4vCPU-32GB'
+        }
+    else:  # num_layers <= NUM_LAYERS_ONDEMAND:
+        # return {
+        #     'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-disableSlowError-64Gb:1',
+        #     'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-ondemand-manual-8vCPU-64GB'
+        # }
+        return {
+            'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-disableSlowError-32Gb:2',
+            'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-ondemand-4vCPU-32GB',
+        }
+    # else:
+    #     # Anything above NUM_LAYERS_ONDEMAND
+    #     # return {
+    #     #     'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-disableSlowError-128Gb:1',
+    #     #     'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-ondemand-16vCPU-128GB'
+    #     # }
+    #     return {
+    #         'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-disableSlowError-64Gb:1',
+    #         'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-ondemand-manual-8vCPU-64GB'
+    #     }
+
+def get_aws_enable_slow_error_config(num_layers):
+    """
+    Get AWS Batch job definition and queue based on the number of layers for
+    composites generation with slow_error enabled.
+    """
+    if num_layers <= NUM_LAYERS_SPOT:
+        return {
+            'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-32Gb:1',
+            'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-spot-4vCPU-32GB'
+        }
+    # elif
+    else:   #num_layers <= NUM_LAYERS_ONDEMAND:
+        # return {
+        #     'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-64Gb:1',
+        #     'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-ondemand-manual-8vCPU-64GB'
+        # }
+        return {
+            'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-32Gb:1',
+            'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-ondemand-4vCPU-32GB'
+        }
+    # else:
+    #     # Anything above NUM_LAYERS_ONDEMAND
+    #     # return {
+    #     #     'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-128Gb:1',
+    #     #     'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-ondemand-16vCPU-128GB'
+    #     # }
+    #     return {
+    #         'jobDefinition': 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-64Gb:1',
+    #         'jobQueue': 'arn:aws:batch:us-west-2:849259517355:job-queue/datacube-ondemand-manual-8vCPU-64GB'
+    #     }
+
 
 class DataCubeCompositeBatch:
     """
@@ -42,16 +130,19 @@ class DataCubeCompositeBatch:
     # Chunk size in X and Y dimensions to load data in at one time: [:, 100, 100]
     X_Y_CHUNK = 100
 
+    CUBE_NUM_LAYERS_THRESHOLD = 200000
+
     COMPOSITES_TO_GENERATE = []
 
-    def __init__(self, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
+    # AWS Batch resources to use based on the error_slow usage
+    AWS_RESOURCES = get_aws_disable_slow_error_config
+
+    def __init__(self, grid_size: int, is_dry_run: bool):
         """
         Initialize object.
         """
         self.grid_size_str = f'{grid_size:04d}'
         self.grid_size = grid_size
-        self.batch_job = batch_job
-        self.batch_queue = batch_queue
         self.is_dry_run = is_dry_run
 
         self.s3 = s3fs.S3FileSystem(anon=True)
@@ -79,8 +170,14 @@ class DataCubeCompositeBatch:
         with open(cube_file, 'r') as fhandle:
             cubes = json.load(fhandle)
 
-            # Number of cubes to generate
+            # Number of composites to generate
             num_jobs = 0
+            num_spot_jobs = 0
+            num_ondemand_jobs = 0
+
+            spot_queues = set()
+            ondemand_queues = set()
+
             logging.info(f'Total number of datacubes: {len(cubes["features"])}')
             for each_cube in cubes[CubeJson.FEATURES]:
                 if num_cubes is not None and num_jobs == num_cubes:
@@ -254,10 +351,10 @@ class DataCubeCompositeBatch:
                     # Work around to process only non-existent composites (if they
                     # failed from prevoius run or were not generated to begin with)
                     # TODO: make a command-line option
-                    composite_exists = self.s3.ls(
+                    composite_exists = self.s3.exists(
                         os.path.join(s3_bucket, composite_dir, composite_filename)
                     )
-                    if len(composite_exists) != 0:
+                    if composite_exists:
                         num_existing_composites += 1
                         logging.info(
                             f"Composite "
@@ -275,6 +372,24 @@ class DataCubeCompositeBatch:
                     }
                     logging.info(f'Cube params: {cube_params}')
 
+                    # Record how many layers are in the datacube to process
+                    num_layers = properties[CubeJson.GRANULE_COUNT]
+                    aws_resources = DataCubeCompositeBatch.AWS_RESOURCES(num_layers)
+
+                    queue = aws_resources['jobQueue']
+                    batch_job = aws_resources['jobDefinition']
+
+                    num_retries = 1
+                    if 'spot' in queue:
+                        # Re-try SPOT failures, but not OnDemand ones
+                        num_retries = 2
+                        num_spot_jobs += 1
+                        spot_queues.add(queue)
+
+                    else:
+                        num_ondemand_jobs += 1
+                        ondemand_queues.add(queue)
+
                     # Submit AWS Batch job
                     response = None
                     if self.is_dry_run is False:
@@ -283,8 +398,8 @@ class DataCubeCompositeBatch:
                         # filename but in different target directories
                         response = DataCubeCompositeBatch.CLIENT.submit_job(
                             jobName='composite_'+cube_filename.replace('.zarr', ''),
-                            jobQueue=self.batch_queue,
-                            jobDefinition=self.batch_job,
+                            jobQueue=queue,
+                            jobDefinition=batch_job,
                             parameters=cube_params,
                             # containerOverrides={
                             #     'vcpus': 123,
@@ -300,7 +415,7 @@ class DataCubeCompositeBatch:
                             #     ]
                             # },
                             retryStrategy={
-                                'attempts': 1
+                                'attempts': num_retries
                             },
                             # Set timeout to 72 hours
                             timeout={
@@ -308,20 +423,24 @@ class DataCubeCompositeBatch:
                                 # Change to 6 days (518400)
                                 # Change to 9 days (777600)
                                 # Change to 14 days (1209600)
-                                'attemptDurationSeconds': 1209600
+                                # Change to 21 days (1814400)
+                                # Change to 42 days (3628800)
+                                'attemptDurationSeconds': 3628800
                             }
                         )
 
                         logging.info(f"Response: {response}")
 
                     num_jobs += 1
+
                     jobs.append({
                         'filename': os.path.join(BatchVars.HTTP_PREFIX, composite_dir, composite_filename),
                         's3_filename': os.path.join(s3_bucket, composite_dir, composite_filename),
                         'roi_percent': roi,
+                        'cube_layers': num_layers,
                         'aws_params': cube_params,
-                        'aws': {'queue': self.batch_queue,
-                                'job_definition': self.batch_job,
+                        'aws': {'queue': queue,
+                                'job_definition': batch_job,
                                 'response': response
                                 },
                         'job_params': cube_params
@@ -347,7 +466,12 @@ class DataCubeCompositeBatch:
                     if len(BatchVars.CUBES_TO_GENERATE) and cube_filename in BatchVars.CUBES_TO_GENERATE:
                         logging.info(f'ROI=0 is detected for {cube_filename}')
 
-            logging.info(f"Number of batch jobs submitted: {num_jobs}")
+            logging.info(
+                f"Number of batch jobs submitted: {num_jobs} "
+                f"({num_spot_jobs} {spot_queues}, "
+                f"{num_ondemand_jobs} {ondemand_queues}"
+                f" jobs)"
+            )
 
             # Write job info to the json file
             logging.info(f"Writing AWS job info to the {job_file}...")
@@ -368,8 +492,6 @@ def main(
     dry_run: bool,
     cube_definition_file: str,
     grid_size: int,
-    batch_job: str,
-    batch_queue: str,
     s3_bucket: str,
     bucket_dir: str,
     output_bucket_dir: str,
@@ -382,11 +504,16 @@ def main(
     # Submit Batch job to AWS for each datacube which has ROI!=0
     run_batch = DataCubeCompositeBatch(
         grid_size,
-        batch_job,
-        batch_queue,
         dry_run
     )
-    run_batch(cube_definition_file, s3_bucket, bucket_dir, output_bucket_dir, output_job_file, number_of_cubes)
+    run_batch(
+        cube_definition_file,
+        s3_bucket,
+        bucket_dir,
+        output_bucket_dir,
+        output_job_file,
+        number_of_cubes
+    )
 
 
 def parse_args():
@@ -445,7 +572,7 @@ def parse_args():
         '-o', '--outputBucketDir',
         type=str,
         action='store',
-        default='composites/annual/v2_updated-may2025',
+        default='composites/annual/v2-updated-september2025',
         help="Destination S3 directory for the composites [%(default)s]"
     )
     parser.add_argument(
@@ -454,29 +581,6 @@ def parse_args():
         action='store',
         default=120,
         help="Grid size for the data cube [%(default)d]"
-    )
-    parser.add_argument(
-        '-j', '--batchJobDefinition',
-        type=str,
-        action='store',
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-disableSlowError-64Gb:1',
-        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-64Gb:1',
-        # default = 'arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-256Gb:2',
-        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-128Gb:1',
-        # Use compute optimized env. to re-run composites for ANT and Greenland
-        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-annual-composites-CO-32Gb:1',
-        help="AWS Batch job definition to use [%(default)s]"
-    )
-    parser.add_argument(
-        '-q', '--batchJobQueue',
-        type=str,
-        action='store',
-        default='datacube-spot-8vCPU-64GB',
-        # default='datacube-ondemand-8vCPU-64GB',
-        # default = 'datacube-ondemand-32vCPU-256GB',
-        # default='datacube-spot-16vCPU-128GB',
-        # default='datacube-spot-CO-16vCPU-32GB',
-        help="AWS Batch job queue to use [%(default)s]"
     )
     parser.add_argument(
         '-f', '--outputJobFile',
@@ -514,8 +618,6 @@ def parse_args():
     parser.add_argument(
         '-s', '--chunkSize',
         type=int,
-        # default=100,
-        # default=50,
         default=10,
         help="Size of x and y dimensions for the chunk of spacial points to process at one time [%(default)d]."
     )
@@ -555,6 +657,13 @@ def parse_args():
         default=None,
         help="File that contains JSON list of filenames for composites to process [%(default)s]."
     )
+    parser.add_argument(
+        '--useErrorSlow',
+        action='store_true',
+        help="Enable use of valid v[xy]_error_slow instead of v[xy]_error "
+                "values. Use this option for RGI05 (Greenland) or "
+                "RGI19 (Antarctica) composites only for now."
+    )
 
     args = parser.parse_args()
     logging.info(f"Command-line arguments: {sys.argv}")
@@ -563,6 +672,8 @@ def parse_args():
     BatchVars.HTTP_PREFIX = args.urlPath
     BatchVars.PATH_TOKEN = args.pathToken
     DataCubeCompositeBatch.X_Y_CHUNK = args.chunkSize
+
+    DataCubeCompositeBatch.AWS_RESOURCES = get_aws_enable_slow_error_config if args.useErrorSlow else get_aws_disable_slow_error_config
 
     epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
@@ -669,8 +780,6 @@ if __name__ == '__main__':
         args.dryrun,
         args.cubeDefinitionFile,
         args.gridSize,
-        args.batchJobDefinition,
-        args.batchJobQueue,
         args.bucket,
         args.bucketDir,
         args.outputBucketDir,

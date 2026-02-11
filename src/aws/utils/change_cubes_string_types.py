@@ -22,6 +22,7 @@ import s3fs
 import zarr
 
 import itslive_utils
+from itscube_types import Output
 
 logging.basicConfig(level=logging.INFO)
 
@@ -126,9 +127,9 @@ def change_string_dtype(
             var_attrs = dict(var.attrs)
             # Add missing _ARRAY_DIMENSIONS attribute: required by xarray
             var_attrs['_ARRAY_DIMENSIONS'] = ['mid_date']
+            var_chunks = dict(var.encoding)[Output.CHUNKS_ATTR]
 
-            var_encoding = dict(var.encoding)
-            var_encoding['dtype'] = new_dtype
+            logging.info(f'Original attributes: {var_attrs}')
 
             if zarr_group is None:
                # Open zarr group in write mode
@@ -148,14 +149,14 @@ def change_string_dtype(
             new_array = zarr_group.create_dataset(
                variable_name,
                data=converted_data,
-               # chunks=var.chunks,  # Preserve original chunking
+               chunks=var_chunks,  # Preserve original chunking
+               fill_value=None,
                dtype=np.dtype(new_dtype),
                overwrite=False
             )
 
             # Restore attributes
             new_array.attrs.update(var_attrs)
-            new_array.encoding = var_encoding
 
    if len(changed_vars):
       # Re-consolidate metadata

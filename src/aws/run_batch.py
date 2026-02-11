@@ -14,7 +14,6 @@ from pathlib import Path
 import s3fs
 import sys
 from shapely import geometry
-import time
 
 from grid import Bounds
 import itslive_utils
@@ -33,14 +32,6 @@ class DataCubeBatch:
 
     # Number of Dask threads to generate datacube
     NUM_DASK_THREADS = 8
-
-    # Number of jobs to submit to AWS at a time. This is an attempt to limit
-    # number of concurrent ITS_LIVE searchAPI requests for the granules which allow only 50
-    # such requests on the server side.
-    NUM_SUBMITTED = 4
-
-    # Sleep for 5 minutes between the attemps
-    NUM_SLEEP_BETWEEN_SUBMISSIONS = 300
 
     def __init__(self, grid_size: int, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
@@ -79,9 +70,6 @@ class DataCubeBatch:
             num_jobs = 0
             logging.info(f'Total number of datacubes: {len(cubes["features"])}')
 
-            # Number of cubes for the current batch of submissions (limited by NUM_SUBMITTED)
-            num_current_jobs = 0
-
             for each_cube in cubes[CubeJson.FEATURES]:
                 if num_cubes is not None and num_jobs == num_cubes:
                     # Number of datacubes to generate is provided,
@@ -89,42 +77,12 @@ class DataCubeBatch:
                     logging.info(f'Reached number of cubes to process: {num_cubes}')
                     break
 
-                if num_current_jobs == DataCubeBatch.NUM_SUBMITTED:
-                    # Need to wait with job submission to allow already submitted jobs to
-                    # query ITS_LIVE searchAPI for granules (hopefully - unless AWS queries
-                    # jobs for some extended time and then fires them up at the same time anyway)
-
-                    # A hack to manually check that searchAPI responded to previously submitted jobs, then continue
-                    logging.info(f'Submitted {num_jobs}, please verify that searchAPI responded to the last {DataCubeBatch.NUM_SUBMITTED} jobs')
-
-                    # Write job info to the json file
-                    logging.info(f"Writing AWS job info to the {job_file}...")
-                    with open(job_file, 'w') as output_fhandle:
-                        json.dump(jobs, output_fhandle, indent=4)
-
-                    # Write job files to the json file
-                    job_files_file = f'filenames_{job_file}'
-                    logging.info(f"Writing jobs output files to the {job_files_file}...")
-                    with open(job_files_file, 'w') as output_fhandle:
-                        json.dump(jobs_files, output_fhandle, indent=4)
-
-                    if self.is_dry_run is False:
-                        _ = input('Press enter to continue...')
-
-                    # logging.info(f'Sleeping for {DataCubeBatch.NUM_SLEEP_BETWEEN_SUBMISSIONS} seconds before next batch of jobs (submitted {num_jobs} jobs)...')
-
-                    # if self.is_dry_run is False:
-                    #     time.sleep(DataCubeBatch.NUM_SLEEP_BETWEEN_SUBMISSIONS)
-
-                    # Restart the jobs submitted counter all over for the next batch
-                    num_current_jobs = 0
-
                 # Example of data cube definition in json file
                 # "properties": {
                 #     "fill-opacity": 1.0,
                 #     "fill": "red",
                 #     "roi_percent_coverage": 0.0,
-                #     "data_epsg": "EPSG:32701",
+                #     "epsg": 32701,
                 #     "geometry_epsg": {
                 #         "type": "Polygon",
                 #         "coordinates": [
@@ -161,9 +119,17 @@ class DataCubeBatch:
                 if roi != 0.0:
                     # Submit AWS Batch to generate the cube
                     # Format filename for the cube
-                    epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
-                    # Extract int EPSG code
-                    epsg_code = epsg.replace(CubeJson.EPSG_PREFIX, '')
+                    epsg = None
+                    epsg_code = None
+
+                    # Support new "epsg" property or old "data_epsg" property
+                    if CubeJson.EPSG in properties:
+                        epsg_code = str(properties[CubeJson.EPSG])
+                        epsg = CubeJson.EPSG_PREFIX + epsg_code
+
+                    elif CubeJson.DATA_EPSG in properties:
+                        epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
+                        epsg_code = epsg.replace(CubeJson.EPSG_PREFIX, '')
 
                     # Include only specific EPSG code(s) if specified
                     if len(BatchVars.EPSG_TO_GENERATE) and \
@@ -196,12 +162,24 @@ class DataCubeBatch:
                         mid_x, mid_y
                     )
 
-                    if BatchVars.POLYGON_SHAPE and (not BatchVars.POLYGON_SHAPE.contains(geometry.Point(mid_lon_lat[0], mid_lon_lat[1]))):
+                    if BatchVars.POLYGON_SHAPE and \
+                            (not BatchVars.POLYGON_SHAPE.contains(
+                                    geometry.Point(
+                                        mid_lon_lat[0],
+                                        mid_lon_lat[1]
+                                    )
+                                )
+                            ):
                         logging.info(f"Skipping non-polygon point: {mid_lon_lat}")
                         # Provided polygon does not contain cube's center point
                         continue
 
-                    bucket_dir = itslive_utils.point_to_prefix(mid_lon_lat[1], mid_lon_lat[0], bucket_dir_path)
+                    bucket_dir = itslive_utils.point_to_prefix(
+                        mid_lon_lat[1],
+                        mid_lon_lat[0],
+                        bucket_dir_path
+                    )
+
                     if len(BatchVars.PATH_TOKEN) and BatchVars.PATH_TOKEN not in bucket_dir:
                         # A way to pick specific 10x10 grid cell for the datacube
                         logging.info(f"Skipping non-{BatchVars.PATH_TOKEN}")
@@ -213,20 +191,23 @@ class DataCubeBatch:
                     # Hack to run specific jobs
                     # to test s3fs problem: 'ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr'
                     if len(BatchVars.CUBES_TO_GENERATE) and cube_filename not in BatchVars.CUBES_TO_GENERATE:
-                        logging.info(f"Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
+                        logging.info("Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
                         continue
 
                     if len(BatchVars.CUBES_TO_EXCLUDE) and cube_filename in BatchVars.CUBES_TO_EXCLUDE:
-                        logging.info(f"Skipping as provided in BatchVars.CUBES_TO_EXCLUDE")
+                        logging.info("Skipping as provided in BatchVars.CUBES_TO_EXCLUDE")
                         continue
 
                     # Work around to make sure there are no partially copies cubes from previously
                     # failed runs
                     # TODO: make a command-line option?
-                    # store_exists = self.s3.ls(os.path.join(s3_bucket, bucket_dir, cube_filename))
-                    # if len(store_exists) != 0:
-                    #     logging.info(f"Datacube {os.path.join(s3_bucket, bucket_dir, cube_filename)} exists, skipping datacube generation.")
-                    #     continue
+                    if self.s3.exists(os.path.join(s3_bucket, bucket_dir, cube_filename)):
+                        logging.info(
+                            f"Datacube {os.path.join(s3_bucket, bucket_dir, cube_filename)}"
+                            f" exists, skipping datacube generation."
+                        )
+                        continue
+
                     target_bucket_dir_s3 = target_bucket_dir_path
 
                     if target_bucket_dir_path is not None:
@@ -276,21 +257,13 @@ class DataCubeBatch:
                                 # Change to 48 hours (172800)
                                 # Change to 72 hours (259200) for very large cubes
                                 # Change to 4 days (345600) to support very large cubes
-                                'attemptDurationSeconds': 345600
+                                'attemptDurationSeconds': 1209600
                             }
                         )
 
                         logging.info(f"Response: {response}")
 
-                        # Does not really work - AWS piles up the jobs in the queue,
-                        # then starts a whole bunch at once anyway
-                        # # Sleep for 30 seconds to make sure that all AWS Batch jobs
-                        # # are not started at the same time
-                        # time.sleep(30)
-
                     num_jobs += 1
-                    num_current_jobs += 1
-
                     logging.info(f'Submitted {num_jobs} to AWS')
 
                     # [
@@ -343,6 +316,7 @@ class DataCubeBatch:
 
             return
 
+
 def main(
     dry_run: bool,
     cube_definition_file: str,
@@ -353,7 +327,8 @@ def main(
     bucket_dir: str,
     target_bucket_dir: str,
     output_job_file: str,
-    number_of_cubes: int):
+    number_of_cubes: int
+):
     """
     Driver to submit multiple Batch jobs to AWS.
     """
@@ -366,15 +341,16 @@ def main(
     )
     run_batch(cube_definition_file, s3_bucket, bucket_dir, target_bucket_dir, output_job_file, number_of_cubes)
 
+
 def parse_args():
     """
     Create command-line argument parser and parse arguments.
     """
     # Set up logging
     logging.basicConfig(
-        level = logging.INFO,
-        format = '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt = '%Y-%m-%d %H:%M:%S'
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
 
     # Command-line arguments parser
@@ -402,13 +378,14 @@ def parse_args():
         type=str,
         action='store',
         default='https://its-live-data.s3.amazonaws.com',
-        help="URL for the datacube store in S3 bucket (to provide for easier download option) [%(default)s]"
+        help="URL for the datacube store in S3 bucket (to provide for easier "
+                "download option) [%(default)s]"
     )
     parser.add_argument(
         '-d', '--bucketDir',
         type=str,
         action='store',
-        default='datacubes/v2',
+        default='datacubes/v2-updated-october2024',
         help="Destination S3 bucket for the datacubes [%(default)s]"
     )
     parser.add_argument(
@@ -416,8 +393,10 @@ def parse_args():
         type=str,
         action='store',
         default=None,
-        help="Target destination S3 bucket for the datacubes being updated [%(default)s]. Use this option "
-            "if datacubes are being updated and their target destination should be other than original cubes s3 location."
+        help="Target destination S3 bucket for the datacubes being updated "
+            "[%(default)s]. Use this option if datacubes are being updated "
+            "and their target destination should be other than original "
+            "cubes s3 location."
     )
     parser.add_argument(
         '-g', '--gridSize',
@@ -430,17 +409,17 @@ def parse_args():
         '--numThreads',
         type=int,
         action='store',
-        default=16,
+        default=8,
         help="Number of threads to use for the datacube generation [%(default)d]"
     )
     parser.add_argument(
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
+        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-64Gb:2',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-from-scratch-64Gb:1',
         # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-update-128Gb:1',   # Update datacubes and store to new s3 location
-        default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-128Gb:1',
+        # default='arn:aws:batch:us-west-2:849259517355:job-definition/datacube-create-128Gb:1',
         help="AWS Batch job definition to use [%(default)s]"
     )
     parser.add_argument(
@@ -448,8 +427,8 @@ def parse_args():
         type=str,
         action='store',
         # default='datacube-ondemand-8vCPU-64GB',
-        # default='datacube-spot-8vCPU-64GB',
-        default='datacube-spot-16vCPU-128GB',
+        default='datacube-spot-8vCPU-64GB',
+        # default='datacube-spot-16vCPU-128GB',
         # default='datacube-ondemand-16vCPU-128GB',
         help="AWS Batch job queue to use [%(default)s]"
     )
@@ -477,27 +456,21 @@ def parse_args():
         type=int,
         action='store',
         default=-1,
-        help="Number of datacubes to generate [%(default)d]. If left at default value, then generate all qualifying datacubes."
+        help="Number of datacubes to generate [%(default)d]. If left at "
+            "default value, then generate all qualifying datacubes."
     )
     parser.add_argument(
         '-p', '--parallelGranules',
         type=int,
-        default=1000,
+        default=800,
         help="Number of granules to process in parallel at one time [%(default)d]."
-    )
-    parser.add_argument(
-        '--numberOfCubesToAWS',
-        type=int,
-        action='store',
-        default=4,
-        help="Number of datacubes to submit to AWS in one batch [%(default)d]. The script will pause for 5 minutes before submitting next batch. "
-        "This is to allow for the searchAPI to handle multiple requests at the same time."
     )
     parser.add_argument(
         '-t', '--pathToken',
         type=str,
         default='',
-        help="Path token to be present in datacube S3 target path in order for the datacube to be generated [%(default)s]."
+        help="Path token to be present in datacube S3 target path in order "
+                "for the datacube to be generated [%(default)s]."
     )
     parser.add_argument(
         '--processCubesWithinPolygon',
@@ -543,10 +516,9 @@ def parse_args():
 
     DataCubeBatch.PARALLEL_GRANULES = args.parallelGranules
     DataCubeBatch.NUM_DASK_THREADS = args.numThreads
-    DataCubeBatch.NUM_SUBMITTED = args.numberOfCubesToAWS
 
-    BatchVars.HTTP_PREFIX           = args.urlPath
-    BatchVars.PATH_TOKEN            = args.pathToken
+    BatchVars.HTTP_PREFIX = args.urlPath
+    BatchVars.PATH_TOKEN = args.pathToken
 
     epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
@@ -602,6 +574,7 @@ def parse_args():
 if __name__ == '__main__':
 
     args = parse_args()
+
 
     # Check if target datacube location should be other than original cubes location - this is onlly when
     # updating datacubes
