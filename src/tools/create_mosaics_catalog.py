@@ -22,11 +22,6 @@ logging.basicConfig(
    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# Mapping of RGI region to coordinate list of corresponding polygon.
-# The coordinates are stored in static mosaics json files, so need to collect
-# those first before processing annual mosaics.
-COORDINATE_MAPPING = {}
-
 
 def list_nc_files(s3_client, bucket: str, prefix: str) -> List[str]:
    """
