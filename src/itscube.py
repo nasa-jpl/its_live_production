@@ -3,14 +3,6 @@ ITSCube class creates ITS_LIVE datacube based on target projection,
 bounding polygon and datetime period provided by the caller.
 
 Authors: Masha Liukis, Alex Gardner, Mark Fahnestock
-
-
-    # Set local file path for skipped granules info
-    ITSCube.SKIPPED_GRANULES_FILE = args.outputStore.replace(
-        FileExtension.ZARR,
-        FileExtension.JSON
-    )
-
 """
 from dateutil.parser import parse
 from datetime import datetime, timedelta
