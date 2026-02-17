@@ -20,8 +20,9 @@ import warnings
 import xarray as xr
 import zarr
 
-
-from itscube_types import DataVars, ShapeFile, Coords, Output
+import utils
+import shapefile
+from itscube_types import DataVars, Output
 
 # Encoding settings for Zarr format
 COMPRESSION_ZARR = zarr.Blosc(cname='zlib', clevel=2, shuffle=1)
@@ -74,9 +75,9 @@ ENCODING_ZARR = {
     DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1: {Output.FILL_VALUE_ATTR: None, 'units': 'days since 1970-01-01', 'compressor': COMPRESSION_ZARR},
     DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2: {Output.FILL_VALUE_ATTR: None, 'units': 'days since 1970-01-01', 'compressor': COMPRESSION_ZARR},
     DataVars.ImgPairInfo.DATE_CENTER:           {Output.FILL_VALUE_ATTR: None, 'units': 'days since 1970-01-01', 'compressor': COMPRESSION_ZARR},
-    Coords.MID_DATE:                            {Output.FILL_VALUE_ATTR: None, 'units': 'days since 1970-01-01', 'compressor': COMPRESSION_ZARR},
-    Coords.X:                                   {'compressor': COMPRESSION_ZARR},
-    Coords.Y:                                   {'compressor': COMPRESSION_ZARR},
+    utils.Coords.MID_DATE:                      {Output.FILL_VALUE_ATTR: None, 'units': 'days since 1970-01-01', 'compressor': COMPRESSION_ZARR},
+    utils.Coords.X:                             {'compressor': COMPRESSION_ZARR},
+    utils.Coords.Y:                             {'compressor': COMPRESSION_ZARR},
     DataVars.ImgPairInfo.ROI_VALID_PERCENTAGE:  {Output.FILL_VALUE_ATTR: None, 'dtype': np.float32, 'compressor': COMPRESSION_ZARR},
     DataVars.ImgPairInfo.SATELLITE_IMG1:        {Output.FILL_VALUE_ATTR: None, 'compressor': COMPRESSION_ZARR},
     DataVars.ImgPairInfo.SATELLITE_IMG2:        {Output.FILL_VALUE_ATTR: None, 'compressor': COMPRESSION_ZARR},
@@ -144,15 +145,15 @@ ENCODING = {
     DataVars.ImgPairInfo.SENSOR_IMG1:           {Output.FILL_VALUE_ATTR: None, "zlib": True, "complevel": 2, "shuffle": True},
     DataVars.ImgPairInfo.SENSOR_IMG2:           {Output.FILL_VALUE_ATTR: None, "zlib": True, "complevel": 2, "shuffle": True},
     DataVars.ImgPairInfo.DATE_CENTER:           {Output.FILL_VALUE_ATTR: None, 'units': 'days since 1970-01-01', "zlib": True, "complevel": 2, "shuffle": True},
-    Coords.MID_DATE:                            {Output.FILL_VALUE_ATTR: None, 'units': 'days since 1970-01-01', "zlib": True, "complevel": 2, "shuffle": True},
+    utils.Coords.MID_DATE:                            {Output.FILL_VALUE_ATTR: None, 'units': 'days since 1970-01-01', "zlib": True, "complevel": 2, "shuffle": True},
     DataVars.AUTORIFT_SOFTWARE_VERSION:         {Output.FILL_VALUE_ATTR: None, "zlib": True, "complevel": 2, "shuffle": True},
     DataVars.STABLE_COUNT_SLOW:                 {Output.FILL_VALUE_ATTR: None, 'dtype': DataVars.INT_TYPE[DataVars.STABLE_COUNT_SLOW], "zlib": True, "complevel": 2, "shuffle": True},
     DataVars.STABLE_COUNT_MASK:                 {Output.FILL_VALUE_ATTR: None, 'dtype': DataVars.INT_TYPE[DataVars.STABLE_COUNT_MASK], "zlib": True, "complevel": 2, "shuffle": True},
-    ShapeFile.LANDICE:                          {Output.MISSING_VALUE_ATTR: 255, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
-    ShapeFile.FLOATINGICE:                      {Output.MISSING_VALUE_ATTR: 255, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
+    shapefile.LANDICE:                           {Output.MISSING_VALUE_ATTR: 255, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
+    shapefile.FLOATINGICE:                       {Output.MISSING_VALUE_ATTR: 255, 'dtype': 'ubyte', "zlib": True, "complevel": 2, "shuffle": True},
     DataVars.ImgPairInfo.DATE_DT:               {Output.FILL_VALUE_ATTR: None, "zlib": True, "complevel": 2, "shuffle": True},
-    Coords.X:                                   {Output.FILL_VALUE_ATTR: None, "zlib": True, "complevel": 2, "shuffle": True},
-    Coords.Y:                                   {Output.FILL_VALUE_ATTR: None, "zlib": True, "complevel": 2, "shuffle": True}
+    utils.Coords.X:                                   {Output.FILL_VALUE_ATTR: None, "zlib": True, "complevel": 2, "shuffle": True},
+    utils.Coords.Y:                                   {Output.FILL_VALUE_ATTR: None, "zlib": True, "complevel": 2, "shuffle": True}
 }
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s',
@@ -246,19 +247,25 @@ if __name__ == '__main__':
     warnings.filterwarnings('ignore')
 
     # Command-line arguments parser
-    parser = argparse.ArgumentParser(epilog='\n'.join(__doc__.split('\n')[1:]),
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        epilog='\n'.join(__doc__.split('\n')[1:]),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('-i', '--input', type=str, required=True,
                         help="Input Zarr store directory.")
     parser.add_argument('-o', '--output', type=str, required=True,
                         help="NetCDF filename to store data to.")
-    parser.add_argument('-e', '--engine', type=str, required=False, default='h5netcdf',
-                        help="NetCDF engine to use to store NetCDF data to the file.")
+    parser.add_argument('-e', '--engine', type=str, required=False,
+                        default='h5netcdf',
+                        help="NetCDF engine to use to store NetCDF data to "
+                                "the file.")
     parser.add_argument('-b', '--outputBucket', type=str, default="",
-                        help="S3 bucket to copy datacube in NetCDF format to [%(default)s].")
+                        help="S3 bucket to copy datacube in NetCDF format to "
+                                "[%(default)s].")
     parser.add_argument('-c', '--chunks', type=int, default=250,
-                        help="Dask chunk size for mid_date coordinate [%(default)d]. " \
-                        "This is to handle datacubes that can't fit in memory, and should be read as Dask arrays.")
+                        help="Dask chunk size for mid_date coordinate "
+                                "[%(default)d]. This is to handle datacubes that "
+                                "can't fit in memory, and should be read as "
+                                "Dask arrays.")
 
     args = parser.parse_args()
     logging.info(f"Args: {sys.argv}")
