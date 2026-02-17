@@ -25,7 +25,13 @@
 
 # mkdir done
 # >find . -type f -exec grep -qiF 'Done.' {} \; -exec mv {} done \;
+
+# November 19, 2024: datacubes updates
+# mkdir done
 # >find . -type f -exec grep -l "Done\." {} \; | xargs -I {} mv {} done
+
+# mkdir credential_error
+# find . -name '*.log' -exec grep -l 'Error when retrieving credentials from container-role' {} \; | xargs -I {} mv {} credential_error
 
 # Search only top level directory:
 # find . -maxdepth 1 -type f
@@ -69,6 +75,12 @@
 # List S3 URLs for cubes that failed to copy
 # grep Creating failed_to_copy/* | awk -F'Creating ' '{print $NF}' >> failed_to_copy.txt
 
+# List S3 URLs for cubes that were updated
+# grep Updating *.log | awk -F'Updating ' '{print $NF}' | sort -k 1 | uniq | wc -l
+
+# List maximum number of granules combined for all cubes in all logs
+# grep Combined *log | awk -F' ' '{print $(NF-4)}' | sort -nr | head -n 10
+
 # Find maximum number of time series points for all datacubes listed in file
 # grep '0:100, 0:100' done/*log >> done.txt:
 # ` done/ITS_LIVE_vel_EPSG3031_G0120_X-1050000_Y-1050000.zarr.log:2022-06-25T02:35:24.708Z 06/25/2022 02:35:24 AM - INFO - Loading vx[:, 0:100, 0:100] out of [6240, 833, 833]...`
@@ -94,15 +106,23 @@ FILE="$1/000000.gz"
 # Filename for sorted log stream with "Completed" progress bars removed
 NEW_FILE="$1/000000_sorted_log_compact.txt"
 
+mkdir -p itslive_logs
+
 if test -f $FILE; then
   # Sort the logs
   echo $FILE
   find $FILE -exec zcat {} + | sed -r 's/^[0-9]+/\x0&/' | sort -z | strings | grep -v Completed >> $NEW_FILE
+  ls -lh $NEW_FILE
 
-  # Extract datacube filename the log stream corresponds to
+  # Extract datacube filename the log stream corresponds to - sometimes grep returnes multiple lines even though
+  # there is only one line with the cube name - ???
   # CUBE_NAME=$(grep Creating $NEW_FILE | awk -F/ '{print $NF}')
-  CUBE_NAME=$(grep 'Cube S3: ' $NEW_FILE | awk -F/ '{print $NF}')
-  CUBE_TIME=$(grep 'Cube S3: ' $NEW_FILE | awk -F' ' '{print $1}')
+  CUBE_URL_LINE=$(grep 'Cube S3: ' $NEW_FILE | head -n 1)
+  CUBE_NAME=$(echo $CUBE_URL_LINE | awk -F/ '{print $NF}')
+  CUBE_TIME=$(echo $CUBE_URL_LINE | awk -F' ' '{print $1}')
+
+  echo "Cube name: $CUBE_NAME"
+  echo "Cube time: $CUBE_TIME"
 
   # CUBE_NAME=$(grep 'Cube S3:' $NEW_FILE | awk -F/ '{print $NF}')
 
@@ -113,6 +133,6 @@ if test -f $FILE; then
   # Move sorted log file to the base directory as datacube.log file, add timestamp if there are multiple logs
   # for the same datacube - multiple jobs re-issued for the same cube due to failure
   CUBE_LOG_FILE=${CUBE_NAME}_${CUBE_TIME}.log
-  echo "Moving log file ${NEW_FILE} to ${CUBE_LOG_FILE}"
-  (mv $NEW_FILE $CUBE_LOG_FILE)
+  echo "Moving log file \"${NEW_FILE}\" to \"itslive_logs/${CUBE_LOG_FILE}\""
+  mv $NEW_FILE itslive_logs/${CUBE_LOG_FILE}
 fi
