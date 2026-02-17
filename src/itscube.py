@@ -24,7 +24,6 @@ from dask.diagnostics import ProgressBar
 import numpy as np
 import pandas as pd
 import re
-import rioxarray
 import s3fs
 import subprocess
 from tqdm import tqdm
@@ -35,14 +34,14 @@ from urllib.parse import urlparse
 import itslive_utils
 from grid import Bounds, Grid
 from itscube_types import \
-    Coords, \
     DataVars, \
     BinaryFlag, \
     FileExtension, \
     Output, \
     CubeOutput, \
-    ShapeFile, \
     to_int_type
+import utils
+import shapefile
 import zarr_to_netcdf
 
 # Set up logging
@@ -54,16 +53,16 @@ logging.basicConfig(
 
 # Coordinates attributes for the output store
 MID_DATE_ATTRS = {
-    DataVars.STD_NAME: Coords.STD_NAME[Coords.MID_DATE],
-    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.MID_DATE]
+    DataVars.STD_NAME: utils.Coords.STD_NAME[utils.Coords.MID_DATE],
+    DataVars.DESCRIPTION_ATTR: utils.Coords.DESCRIPTION[utils.Coords.MID_DATE]
 }
 X_ATTRS = {
-    DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
-    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X]
+    DataVars.STD_NAME: utils.Coords.STD_NAME[utils.Coords.X],
+    DataVars.DESCRIPTION_ATTR: utils.Coords.DESCRIPTION[utils.Coords.X]
 }
 Y_ATTRS = {
-    DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
-    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
+    DataVars.STD_NAME: utils.Coords.STD_NAME[utils.Coords.Y],
+    DataVars.DESCRIPTION_ATTR: utils.Coords.DESCRIPTION[utils.Coords.Y]
 }
 
 
@@ -96,8 +95,13 @@ class ITSCube:
     # from 'http://its-live-data.s3.amazonaws.com/file.nc'
     # to
     # 's3://its-live-data/file.nc'
-    PATH_URL = ".s3.amazonaws.com"
-    SHAPE_PATH_URL = '.s3.amazonaws.com'
+    PATH_URL = utils.PATH_URL
+
+    # By default, it's set to the same value as in utils, but utils.PATH_URL
+    # can be set to a different value for some datacubes, so keep its own
+    # path URL for the shape files with ice masks to avoid confusion when
+    # utils.PATH_URL is set to a different value for some datacubes.
+    SHAPE_PATH_URL = utils.PATH_URL
 
     # STAC catalog S3 URL for the ITS_LIVE granules
     STAC_CATALOG = "s3://its-live-data/test-space/stac"
@@ -106,8 +110,8 @@ class ITSCube:
     START_DATE = '1982-01-01'
     END_DATE = None
 
-    # For testing Malaspina cube with latest updates to granules - using file of granules
-    # to use instead of queueing searchAPI
+    # For testing Malaspina cube with latest updates to granules - using file
+    # of granules to use instead of queueing searchAPI
     # PATH_URL = '.s3.us-west-2.amazonaws.com'
 
     # URL path to the target datacube
@@ -251,7 +255,7 @@ class ITSCube:
 
         for each in polygon:
             coords = to_lon_lat_transformer.transform(each[0], each[1])
-            self.polygon_coords.append(list(coords))
+            self.polygon_utils.Coords.append(list(coords))
 
         self.logger.info(f"Polygon's longitude/latitude coordinates: {self.polygon_coords}")
 
@@ -300,19 +304,18 @@ class ITSCube:
         # Number of layers for cube generation based on the searchAPI query return
         self.max_number_of_layers = 0
 
-        # Find corresponding to EPSG land ice mask file for the cube
-        found_row = ITSCube.SHAPE_FILE.loc[ITSCube.SHAPE_FILE[ShapeFile.EPSG] == int(projection)]
-        if len(found_row) != 1:
-            raise RuntimeError(f'Expected one entry for {projection} in shapefile, got {len(found_row)} rows.')
-
+        # Find corresponding to EPSG ice masks for the cube
+        # -------------------------------------------------------------------
         # Land ice mask for the cube
-        self.land_ice_mask, self.land_ice_mask_url = ITSCube.read_ice_mask(
-            found_row, ShapeFile.LANDICE, self.grid_x, self.grid_y
+        self.land_ice_mask, self.land_ice_mask_url = shapefile.read_ice_mask(
+            ITSCube.SHAPE_FILE, shapefile.LANDICE, self.grid_x, self.grid_y,
+            self.projection
         )
 
         # Floating ice coverage for the datacube
-        self.floating_ice_mask, self.floating_ice_mask_url = ITSCube.read_ice_mask(
-            found_row, ShapeFile.FLOATINGICE, self.grid_x, self.grid_y
+        self.floating_ice_mask, self.floating_ice_mask_url = shapefile.read_ice_mask(
+            ITSCube.SHAPE_FILE, shapefile.FLOATINGICE, self.grid_x, self.grid_y,
+            self.projection
         )
 
     def clear_vars(self):
@@ -1014,7 +1017,7 @@ class ITSCube:
             )
 
         # Update with number of layers in existing datacube
-        self.current_cube_layers = cube_ds.dims[Coords.MID_DATE]
+        self.current_cube_layers = cube_ds.dims[utils.Coords.MID_DATE]
 
         self.date_updated = self.date_created
         self.date_created = cube_ds.attrs[CubeOutput.DATE_CREATED]
@@ -1202,7 +1205,7 @@ class ITSCube:
                 # Write updated datacube to original store location,
                 # but at first re-chunk xr.Dataset to avoid errors
                 dropped_ds = dropped_ds.chunk(
-                    {Coords.MID_DATE: ITSCube.NUM_GRANULES_TO_WRITE}
+                    {utils.Coords.MID_DATE: ITSCube.NUM_GRANULES_TO_WRITE}
                 )
 
                 self.logger.info(f"Saving updated {output_dir}")
@@ -1383,7 +1386,7 @@ class ITSCube:
         return xr.DataArray(
             data=np.full((len(self.grid_y), len(self.grid_x)), data_fill_value, dtype=np.dtype(data_dtype)),
             coords=[self.grid_y, self.grid_x],
-            dims=[Coords.Y, Coords.X]
+            dims=[utils.Coords.Y, utils.Coords.X]
         )
 
     @staticmethod
@@ -1642,7 +1645,7 @@ class ITSCube:
             self.layers[error_name] = xr.DataArray(
                 data=error_data,
                 coords=[mid_date_coord],
-                dims=[Coords.MID_DATE],
+                dims=[utils.Coords.MID_DATE],
                 attrs={
                     DataVars.UNITS: DataVars.M_Y_UNITS,
                     DataVars.STD_NAME: error_name,
@@ -1673,7 +1676,7 @@ class ITSCube:
                         for ds, url in zip(self.ds, self.urls)
                     ],
                     coords=[mid_date_coord],
-                    dims=[Coords.MID_DATE],
+                    dims=[utils.Coords.MID_DATE],
                     attrs={
                         DataVars.STD_NAME: each_attr,
                         DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[each_attr]
@@ -1718,7 +1721,7 @@ class ITSCube:
         self.layers[shift_var_name] = xr.DataArray(
             data=stable_shift_values,
             coords=[mid_date_coord],
-            dims=[Coords.MID_DATE],
+            dims=[utils.Coords.MID_DATE],
             attrs={
                 DataVars.UNITS: DataVars.M_Y_UNITS,
                 DataVars.STD_NAME: shift_var_name,
@@ -1743,7 +1746,7 @@ class ITSCube:
                     for ds, url in zip(self.ds, self.urls)
                 ],
                 coords=[mid_date_coord],
-                dims=[Coords.MID_DATE],
+                dims=[utils.Coords.MID_DATE],
                 attrs={
                     DataVars.UNITS: DataVars.M_Y_UNITS,
                     DataVars.STD_NAME: shift_var_name,
@@ -1779,7 +1782,7 @@ class ITSCube:
         self.layers[attr_name] = xr.DataArray(
             data=attr_data,
             coords=[mid_date_coord],
-            dims=[Coords.MID_DATE],
+            dims=[utils.Coords.MID_DATE],
             attrs={
                 DataVars.STD_NAME: attr_name,
                 DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.DR_TO_VR_FACTOR],
@@ -1854,33 +1857,33 @@ class ITSCube:
         wrote_layers = True
 
         start_time = timeit.default_timer()
-        mid_date_coord = pd.Index(self.dates, name=Coords.MID_DATE)
+        mid_date_coord = pd.Index(self.dates, name=utils.Coords.MID_DATE)
 
         self.layers = xr.Dataset(
-            data_vars={DataVars.URL: ([Coords.MID_DATE], self.urls)},
+            data_vars={DataVars.URL: ([utils.Coords.MID_DATE], self.urls)},
             coords={
-                Coords.MID_DATE: (
-                    Coords.MID_DATE,
+                utils.Coords.MID_DATE: (
+                    utils.Coords.MID_DATE,
                     self.dates,
                     {
-                        DataVars.STD_NAME: Coords.STD_NAME[Coords.MID_DATE],
-                        DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.MID_DATE]
+                        DataVars.STD_NAME: utils.Coords.STD_NAME[utils.Coords.MID_DATE],
+                        DataVars.DESCRIPTION_ATTR: utils.Coords.DESCRIPTION[utils.Coords.MID_DATE]
                     }
                 ),
-                Coords.X: (
-                    Coords.X,
+                utils.Coords.X: (
+                    utils.Coords.X,
                     self.grid_x,
                     {
-                        DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
-                        DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X]
+                        DataVars.STD_NAME: utils.Coords.STD_NAME[utils.Coords.X],
+                        DataVars.DESCRIPTION_ATTR: utils.Coords.DESCRIPTION[utils.Coords.X]
                     }
                 ),
-                Coords.Y: (
-                    Coords.Y,
+                utils.Coords.Y: (
+                    utils.Coords.Y,
                     self.grid_y,
                     {
-                        DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
-                        DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y]
+                        DataVars.STD_NAME: utils.Coords.STD_NAME[utils.Coords.Y],
+                        DataVars.DESCRIPTION_ATTR: utils.Coords.DESCRIPTION[utils.Coords.Y]
                     }
                 )
             },
@@ -1987,7 +1990,7 @@ class ITSCube:
             self.layers[DataVars.MAPPING].attrs['GeoTransform'] = new_geo_transform_str
 
             twodim_var_coords = [self.grid_y, self.grid_x]
-            twodim_var_dims = [Coords.Y, Coords.X]
+            twodim_var_dims = [utils.Coords.Y, utils.Coords.X]
 
             # Create ice masks data variables if they exist
             self.land_ice_mask = to_int_type(
@@ -1995,16 +1998,16 @@ class ITSCube:
                 np.uint8,
                 DataVars.MISSING_UINT8_VALUE
             )
-            self.layers[ShapeFile.LANDICE] = xr.DataArray(
+            self.layers[shapefile.LANDICE] = xr.DataArray(
                 data=self.land_ice_mask,
                 coords=twodim_var_coords,
                 dims=twodim_var_dims,
                 attrs={
-                    DataVars.STD_NAME: ShapeFile.Name[ShapeFile.LANDICE],
-                    DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
+                    DataVars.STD_NAME: shapefile.Name[shapefile.LANDICE],
+                    DataVars.DESCRIPTION_ATTR: shapefile.Description[shapefile.LANDICE],
                     DataVars.GRID_MAPPING: DataVars.MAPPING,
                     BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
-                    BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[ShapeFile.LANDICE],
+                    BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[shapefile.LANDICE],
                     CubeOutput.URL: self.land_ice_mask_url
                 }
             )
@@ -2017,16 +2020,16 @@ class ITSCube:
                 DataVars.MISSING_UINT8_VALUE
             )
             # Land ice mask exists for the composite
-            self.layers[ShapeFile.FLOATINGICE] = xr.DataArray(
+            self.layers[shapefile.FLOATINGICE] = xr.DataArray(
                 data=self.floating_ice_mask,
                 coords=twodim_var_coords,
                 dims=twodim_var_dims,
                 attrs={
-                    DataVars.STD_NAME: ShapeFile.Name[ShapeFile.FLOATINGICE],
-                    DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.FLOATINGICE],
+                    DataVars.STD_NAME: shapefile.Name[shapefile.FLOATINGICE],
+                    DataVars.DESCRIPTION_ATTR: shapefile.Description[shapefile.FLOATINGICE],
                     DataVars.GRID_MAPPING: DataVars.MAPPING,
                     BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
-                    BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[ShapeFile.FLOATINGICE],
+                    BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[shapefile.FLOATINGICE],
                     CubeOutput.URL: self.floating_ice_mask_url
                 }
             )
@@ -2186,7 +2189,7 @@ class ITSCube:
                     data_dtype=each_dtype
                 ) for ds, url in zip(self.ds, self.urls)],
                 coords=[mid_date_coord],
-                dims=[Coords.MID_DATE],
+                dims=[utils.Coords.MID_DATE],
                 attrs={
                     DataVars.STD_NAME: DataVars.ImgPairInfo.STD_NAME[each],
                     DataVars.DESCRIPTION_ATTR: DataVars.ImgPairInfo.DESCRIPTION[each]
@@ -2201,7 +2204,7 @@ class ITSCube:
         self.layers[DataVars.AUTORIFT_SOFTWARE_VERSION] = xr.DataArray(
             data=[ds.attrs[DataVars.AUTORIFT_SOFTWARE_VERSION] for ds in self.ds],
             coords=[mid_date_coord],
-            dims=[Coords.MID_DATE],
+            dims=[utils.Coords.MID_DATE],
             attrs={
                 DataVars.STD_NAME: DataVars.AUTORIFT_SOFTWARE_VERSION,
                 DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.AUTORIFT_SOFTWARE_VERSION]
@@ -2211,9 +2214,9 @@ class ITSCube:
         # ATTN: Set attributes for the Dataset coordinates as the very last step:
         # when adding data variables that don't have the same attributes for the
         # coordinates, originally set Dataset coordinates will be wiped out
-        self.layers[Coords.MID_DATE].attrs = MID_DATE_ATTRS
-        self.layers[Coords.X].attrs = X_ATTRS
-        self.layers[Coords.Y].attrs = Y_ATTRS
+        self.layers[utils.Coords.MID_DATE].attrs = MID_DATE_ATTRS
+        self.layers[utils.Coords.X].attrs = X_ATTRS
+        self.layers[utils.Coords.Y].attrs = Y_ATTRS
 
         time_delta = timeit.default_timer() - start_time
         self.logger.info(f"Combined {len(self.urls)} layers (took {time_delta} seconds)")
@@ -2235,13 +2238,13 @@ class ITSCube:
             encoding_settings = {}
 
             # Make sure chunking is set to full X and Y extends
-            encoding_settings.setdefault(Coords.X, {}).update(
+            encoding_settings.setdefault(utils.Coords.X, {}).update(
                 {
                     Output.COMPRESSOR_ATTR: compressor,
                     Output.CHUNKS_ATTR: (len(self.layers.x))
                 }
             )
-            encoding_settings.setdefault(Coords.Y, {}).update(
+            encoding_settings.setdefault(utils.Coords.Y, {}).update(
                 {
                     Output.COMPRESSOR_ATTR: compressor,
                     Output.CHUNKS_ATTR: (len(self.layers.y))
@@ -2264,7 +2267,7 @@ class ITSCube:
             chunking_settings_2d = (len(self.layers.y), len(self.layers.x))
 
             # Settings for variables of "uint8" data type if any variables exist
-            for each in [ShapeFile.LANDICE, ShapeFile.FLOATINGICE]:
+            for each in [shapefile.LANDICE, shapefile.FLOATINGICE]:
                 encoding_settings.setdefault(each, {}).update({
                     Output.DTYPE_ATTR: np.uint8,
                     Output.COMPRESSOR_ATTR: compressor,
@@ -2331,7 +2334,7 @@ class ITSCube:
             # point data variables only.
             # xarray is broken if _FillValue=None is provided along with "chunks"
             # encoding attribute: don't do it.
-            # for each in [Coords.MID_DATE,
+            # for each in [utils.Coords.MID_DATE,
             #              DataVars.STABLE_COUNT_SLOW,
             #              DataVars.STABLE_COUNT_MASK,
             #              DataVars.AUTORIFT_SOFTWARE_VERSION,
@@ -2353,7 +2356,7 @@ class ITSCube:
                 DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
                 DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
                 DataVars.ImgPairInfo.DATE_CENTER,
-                Coords.MID_DATE
+                utils.Coords.MID_DATE
             ]:
                 encoding_settings.setdefault(each, {}).update({DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS})
 
@@ -2477,7 +2480,7 @@ class ITSCube:
                 DataVars.ImgPairInfo.SENSOR_IMG2,
                 DataVars.ImgPairInfo.DATE_CENTER,
                 DataVars.ImgPairInfo.DATE_DT,
-                Coords.MID_DATE
+                utils.Coords.MID_DATE
             ]:
                 # Reset existing encoding settings if any for the data variable
                 self.layers[each].encoding = {}
@@ -2530,7 +2533,7 @@ class ITSCube:
             # Append layers to existing Zarr store
             self.layers.to_zarr(
                 output_dir,
-                append_dim=Coords.MID_DATE,
+                append_dim=utils.Coords.MID_DATE,
                 consolidated=True
             )
 
@@ -2586,8 +2589,8 @@ class ITSCube:
         total_retries: Number of retries in a case of exception
         num_seconds: Number of seconds to sleep between retries.
         """
-        s3_path = each_url.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
-        s3_path = s3_path.replace(ITSCube.PATH_URL, '')
+        s3_path = each_url.replace(utils.HTTP_PREFIX, utils.S3_PREFIX)
+        s3_path = s3_path.replace(utils.PATH_URL, '')
 
         num_retries = 0
         got_granule = False
@@ -2624,17 +2627,17 @@ class ITSCube:
         if boundaries is not None:
             start, end = boundaries
             cube[variable][start:end].plot(
-                x=Coords.X,
-                y=Coords.Y,
-                col=Coords.MID_DATE,
+                x=utils.Coords.X,
+                y=utils.Coords.Y,
+                col=utils.Coords.MID_DATE,
                 col_wrap=5,
                 levels=100)
 
         else:
             cube[variable].plot(
-                x=Coords.X,
-                y=Coords.Y,
-                col=Coords.MID_DATE,
+                x=utils.Coords.X,
+                y=utils.Coords.Y,
+                col=utils.Coords.MID_DATE,
                 col_wrap=5,
                 levels=100)
 
@@ -2746,85 +2749,10 @@ class ITSCube:
         Object representing the shapefile.
         """
         # Make sure it's S3 URL that is provided
-        shape_file = shapefile.replace(ITSCube.HTTP_PREFIX, ITSCube.S3_PREFIX)
-        shape_file = shape_file.replace(ITSCube.PATH_URL, '')
+        shape_file = shapefile.replace(utils.HTTP_PREFIX, utils.S3_PREFIX)
+        shape_file = shape_file.replace(utils.PATH_URL, '')
         return gpd.read_file(shape_file)
 
-    @staticmethod
-    @itslive_utils.retry_decorator()
-    def read_ice_mask(shapefile_row, column_name, grid_x, grid_y):
-        """
-        Read ice mask as stored in "column_name" field of the shapefile's row.
-
-        Inputs:
-        =======
-        found_row: Row from the shape file that corresponds to the datacube's EPSG code
-        column_name: Name of the shape file column that represents the land ice mask.
-        grid_x: X coordinates of the datacube grid.
-        grid_y: Y coordinates of the datacube grid.
-
-        Returns: A tuple of:
-                 * None if there is no overlap between land ice mask and datacube polygon,
-                    or land ice mask for the same grid as datacube polygon.
-                 * URL to the mask file as provided in the shapefile.
-        """
-        ice_mask_file = shapefile_row[column_name].item()
-
-        ice_mask_file = ice_mask_file.replace(
-            ITSCube.HTTP_PREFIX,
-            ITSCube.S3_PREFIX
-        )
-        ice_mask_file = ice_mask_file.replace(ITSCube.PATH_URL, '')
-        logging.info(f'Using {column_name} mask file {ice_mask_file}')
-
-        # Load the mask
-        mask_ds = rioxarray.open_rasterio(ice_mask_file)
-
-        # Zoom into cube polygon
-        mask_x = (mask_ds.x >= grid_x.min()) & (mask_ds.x <= grid_x.max())
-        mask_y = (mask_ds.y >= grid_y.min()) & (mask_ds.y <= grid_y.max())
-        mask = (mask_x & mask_y)
-
-        # Allocate xr.DataArray to match cube dimentions: will be empty if
-        # no overlap exists with the ice mask, or will be set to overlap with
-        # ice mask
-        ice_mask = xr.DataArray(
-            np.zeros((len(grid_y), len(grid_x))),
-            coords={
-                Coords.X: grid_x,
-                Coords.Y: grid_y
-            },
-            dims=[Coords.Y, Coords.X]
-        )
-
-        if mask.sum().item() == 0:
-            # Mask does not overlap with the cube
-            logging.info(f'No overlap is detected with {column_name} mask data {ice_mask_file}')
-
-        else:
-            cropped_mask_ds = mask_ds.where(mask, drop=True)
-
-            # Populate mask data into cube-size array
-            if cropped_mask_ds.ndim == 3:
-                # If it's 3d data, it should have first dimension=1: just
-                # one layer is expected
-                mask_data_sizes = cropped_mask_ds.shape
-                if mask_data_sizes[0] != 1:
-                    raise RuntimeError(f'Unexpected size for mask data from {ice_mask_file} file: {mask_data_sizes}')
-
-                else:
-                    ice_mask.loc[dict(x=cropped_mask_ds.x, y=cropped_mask_ds.y)] = cropped_mask_ds[0]
-
-            else:
-                ice_mask.loc[dict(x=ds.x, y=ds.y)] = cropped_mask_ds
-
-        # Store mask as numpy array since all calcuations are done using
-        # numpy arrays
-        ice = ice_mask.values
-        land_ice_coverage = int(np.sum(ice))/(len(grid_x)*len(grid_y))*100
-        logging.info(f'Got {column_name} mask for {np.round(land_ice_coverage, 2)}% cells of the datacube')
-
-        return (ice, shapefile_row[column_name].item())
 
 
 if __name__ == '__main__':
@@ -2981,7 +2909,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-p', '--pathURLToken',
         type=str,
-        default='.s3.amazonaws.com',
+        default=utils.PATH_URL,
         help='Path URL token to remove from each of the input granules URLs '
              'to allow S3 access [%(default)s].'
     )
@@ -3020,7 +2948,7 @@ if __name__ == '__main__':
     ITSCube.USE_EXISTING_BACKUP = args.useExistingCubeBackup
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
-    ITSCube.PATH_URL = args.pathURLToken
+    utils.PATH_URL = args.pathURLToken
     ITSCube.STAC_CATALOG = args.stacCatalog
     ITSCube.START_DATE = args.searchAPIStartDate
     ITSCube.END_DATE = args.searchAPIStopDate
@@ -3040,12 +2968,12 @@ if __name__ == '__main__':
 
         # URL is valid only if output S3 bucket is provided
         ITSCube.URL = ITSCube.S3.replace(
-            ITSCube.S3_PREFIX,
-            ITSCube.HTTP_PREFIX
+            utils.S3_PREFIX,
+            utils.HTTP_PREFIX
         )
         url_tokens = urlparse(ITSCube.URL)
         ITSCube.URL = url_tokens._replace(
-            netloc=url_tokens.netloc+ITSCube.PATH_URL
+            netloc=url_tokens.netloc+utils.PATH_URL
         ).geturl()
         logging.info(f'Cube URL: {ITSCube.URL}')
 
@@ -3069,7 +2997,7 @@ if __name__ == '__main__':
         )
 
     # Read shape file with ice masks information in
-    ITSCube.SHAPE_FILE = ITSCube.read_shapefile(args.shapeFile)
+    ITSCube.SHAPE_FILE = shapefile.read_file(args.shapeFile)
 
     projection = args.targetProjection
 

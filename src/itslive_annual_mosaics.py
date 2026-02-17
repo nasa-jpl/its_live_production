@@ -49,7 +49,6 @@ from grid import Bounds
 import itslive_utils
 from itscube_types import \
     BinaryFlag, \
-    Coords, \
     DataVars, \
     CompDataVars, \
     Output, \
@@ -57,13 +56,14 @@ from itscube_types import \
     CompOutput, \
     BatchVars, \
     CubeJson, \
-    ShapeFile, \
     annual_mosaics_filename_nc, \
     summary_mosaics_filename_nc, \
     composite_filename_zarr, \
     get_corresponding_static_mosaics_filename, \
     to_int_type, \
     SENSORS_ATTRS
+import shapefile
+import utils
 
 # from reproject_mosaics import main as reproject_main
 from reproject_mosaics import ESRICode, ESRICode_Proj4, MosaicsReproject
@@ -178,8 +178,8 @@ class MosaicsOutputFormat:
     # Data variables which dtype should be uint8 in final mosaics with
     # fill value = 0
     UINT8_TYPES_ZERO_MISSING_VALUE = [
-        ShapeFile.LANDICE,
-        ShapeFile.FLOATINGICE,
+        shapefile.LANDICE,
+        shapefile.FLOATINGICE,
         CompDataVars.SENSOR_INCLUDE
     ]
 
@@ -270,8 +270,8 @@ class ITSLiveAnnualMosaics:
     # overlapped areas
     SUMMARY_VARS = [
         CompDataVars.COUNT0,
-        ShapeFile.LANDICE,
-        ShapeFile.FLOATINGICE,
+        shapefile.LANDICE,
+        shapefile.FLOATINGICE,
         CompDataVars.SLOPE_V,
         CompDataVars.SLOPE_VX,
         CompDataVars.SLOPE_VY,
@@ -297,8 +297,8 @@ class ITSLiveAnnualMosaics:
 
     # Data variables for annual mosaics
     ANNUAL_VARS = [
-        ShapeFile.LANDICE,
-        ShapeFile.FLOATINGICE,
+        shapefile.LANDICE,
+        shapefile.FLOATINGICE,
         CompDataVars.COUNT,
         DataVars.VX,
         DataVars.VY,
@@ -1353,7 +1353,7 @@ class ITSLiveAnnualMosaics:
         concatenated = None
 
         two_coords = [self.y_coords, self.x_coords]
-        two_dims = [Coords.Y, Coords.X]
+        two_dims = [utils.Coords.Y, utils.Coords.X]
         two_dims_len = (len(self.y_coords), len(self.x_coords))
 
         # Step through all datasets and concatenate data in new dimension
@@ -1496,15 +1496,15 @@ class ITSLiveAnnualMosaics:
         # Dataset to represent summary mosaic
         ds = xr.Dataset(
             coords={
-                Coords.X: (
-                    Coords.X,
+                utils.Coords.X: (
+                    utils.Coords.X,
                     self.x_coords,
-                    first_ds[Coords.X].attrs
+                    first_ds[utils.Coords.X].attrs
                 ),
-                Coords.Y: (
-                    Coords.Y,
+                utils.Coords.Y: (
+                    utils.Coords.Y,
                     self.y_coords,
-                    first_ds[Coords.Y].attrs
+                    first_ds[utils.Coords.Y].attrs
                 ),
                 CompDataVars.SENSORS: (
                     CompDataVars.SENSORS,
@@ -1536,11 +1536,11 @@ class ITSLiveAnnualMosaics:
         # Add dt_max data array to Dataset which is based on union of sensor groups
         # of all composites (in case some of them differ in sensor groups)
         three_coords = [self.sensor_coords, self.y_coords, self.x_coords]
-        three_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
+        three_dims = [CompDataVars.SENSORS, utils.Coords.Y, utils.Coords.X]
         three_dims_len = (len(self.sensor_coords), len(self.y_coords), len(self.x_coords))
 
         two_coords = [self.y_coords, self.x_coords]
-        two_dims = [Coords.Y, Coords.X]
+        two_dims = [utils.Coords.Y, utils.Coords.X]
         two_dims_len = (len(self.y_coords), len(self.x_coords))
 
         # Create lists of attributes that correspond to multiple mosaics (already
@@ -1873,8 +1873,8 @@ class ITSLiveAnnualMosaics:
         # when adding data variables that don't have the same attributes for the
         # coordinates, originally set Dataset coordinates attributes will be wiped out
         # (xarray bug?)
-        ds[Coords.X].attrs = first_ds[Coords.X].attrs
-        ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
+        ds[utils.Coords.X].attrs = first_ds[utils.Coords.X].attrs
+        ds[utils.Coords.Y].attrs = first_ds[utils.Coords.Y].attrs
         ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
 
         # Convert dataset to Dask dataset not to run out of memory while writing to the file
@@ -1950,15 +1950,15 @@ class ITSLiveAnnualMosaics:
         # Dataset to represent annual mosaic
         ds = xr.Dataset(
             coords={
-                Coords.X: (
-                    Coords.X,
+                utils.Coords.X: (
+                    utils.Coords.X,
                     self.x_coords,
-                    first_ds[Coords.X].attrs
+                    first_ds[utils.Coords.X].attrs
                 ),
-                Coords.Y: (
-                    Coords.Y,
+                utils.Coords.Y: (
+                    utils.Coords.Y,
                     self.y_coords,
-                    first_ds[Coords.Y].attrs
+                    first_ds[utils.Coords.Y].attrs
                 )
             },
             attrs={
@@ -1991,7 +1991,7 @@ class ITSLiveAnnualMosaics:
             del ds[self.mask_var]
 
         two_coords = [self.y_coords, self.x_coords]
-        two_dims = [Coords.Y, Coords.X]
+        two_dims = [utils.Coords.Y, utils.Coords.X]
         two_dims_len = (len(self.y_coords), len(self.x_coords))
 
         # Concatenate data for each data variable:
@@ -2189,8 +2189,8 @@ class ITSLiveAnnualMosaics:
         # when adding data variables that don't have the same attributes for the
         # coordinates, originally set Dataset coordinates attributes will be wiped out
         # (xarray bug?)
-        ds[Coords.X].attrs = first_ds[Coords.X].attrs
-        ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
+        ds[utils.Coords.X].attrs = first_ds[utils.Coords.X].attrs
+        ds[utils.Coords.Y].attrs = first_ds[utils.Coords.Y].attrs
 
         # Write mosaic to NetCDF format file
         ITSLiveAnnualMosaics.annual_mosaic_to_netcdf(
@@ -2260,15 +2260,15 @@ class ITSLiveAnnualMosaics:
         # Dataset to represent annual mosaic
         ds = xr.Dataset(
             coords={
-                Coords.X: (
-                    Coords.X,
+                utils.Coords.X: (
+                    utils.Coords.X,
                     self.x_coords,
-                    first_ds[Coords.X].attrs
+                    first_ds[utils.Coords.X].attrs
                 ),
-                Coords.Y: (
-                    Coords.Y,
+                utils.Coords.Y: (
+                    utils.Coords.Y,
                     self.y_coords,
-                    first_ds[Coords.Y].attrs
+                    first_ds[utils.Coords.Y].attrs
                 )
             },
             attrs={
@@ -2313,7 +2313,7 @@ class ITSLiveAnnualMosaics:
 
                     if each_var not in ds:
                         # Create data variable in output dataset
-                        if each_var == ShapeFile.LANDICE or each_var == ShapeFile.FLOATINGICE:
+                        if each_var == shapefile.LANDICE or each_var == shapefile.FLOATINGICE:
                             # Variable does not have year dimension
                             ds[each_var] = each_ds.s3.ds[each_var].load()
 
@@ -2329,8 +2329,8 @@ class ITSLiveAnnualMosaics:
 
                     else:
                         # Update data variable in output dataset
-                        if each_var == ShapeFile.LANDICE or \
-                                each_var == ShapeFile.FLOATINGICE:
+                        if each_var == shapefile.LANDICE or \
+                                each_var == shapefile.FLOATINGICE:
                             # Variable does not have year dimension
                             ds[each_var].loc[dict(x=each_ds.x, y=each_ds.y)] = each_ds.s3.ds[each_var].load()
 
@@ -2354,8 +2354,8 @@ class ITSLiveAnnualMosaics:
         # when adding data variables that don't have the same attributes for the
         # coordinates, originally set Dataset coordinates attributes will be wiped out
         # (xarray bug?)
-        ds[Coords.X].attrs = first_ds[Coords.X].attrs
-        ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
+        ds[utils.Coords.X].attrs = first_ds[utils.Coords.X].attrs
+        ds[utils.Coords.Y].attrs = first_ds[utils.Coords.Y].attrs
 
         # Write mosaic to NetCDF format file
         ITSLiveAnnualMosaics.annual_mosaic_to_netcdf(
@@ -2506,7 +2506,7 @@ class ITSLiveAnnualMosaics:
 
         # Set encoding
         encoding_settings = {}
-        for each in [Coords.X, Coords.Y]:
+        for each in [utils.Coords.X, utils.Coords.Y]:
             encoding_settings.setdefault(each, {}).update({Output.FILL_VALUE_ATTR: None})
 
         # Settings for "float" data types
@@ -2616,15 +2616,15 @@ class ITSLiveAnnualMosaics:
         # Dataset to represent summary mosaic
         ds = xr.Dataset(
             coords={
-                Coords.X: (
-                    Coords.X,
+                utils.Coords.X: (
+                    utils.Coords.X,
                     self.x_coords,
-                    first_ds[Coords.X].attrs
+                    first_ds[utils.Coords.X].attrs
                 ),
-                Coords.Y: (
-                    Coords.Y,
+                utils.Coords.Y: (
+                    utils.Coords.Y,
                     self.y_coords,
-                    first_ds[Coords.Y].attrs
+                    first_ds[utils.Coords.Y].attrs
                 ),
                 CompDataVars.SENSORS: (
                     CompDataVars.SENSORS,
@@ -2656,7 +2656,7 @@ class ITSLiveAnnualMosaics:
         # Add dt_max data array to Dataset which is based on union of sensor groups
         # of all composites (in case some of them differ in sensor groups)
         var_coords = [self.sensor_coords, self.y_coords, self.x_coords]
-        var_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
+        var_dims = [CompDataVars.SENSORS, utils.Coords.Y, utils.Coords.X]
         sensor_dims = (len(self.sensor_coords), len(self.y_coords), len(self.x_coords))
 
         # These data variables need to be pre-allocated as their sensor dimension
@@ -2852,8 +2852,8 @@ class ITSLiveAnnualMosaics:
         # when adding data variables that don't have the same attributes for the
         # coordinates, originally set Dataset coordinates attributes will be wiped out
         # (xarray bug?)
-        ds[Coords.X].attrs = first_ds[Coords.X].attrs
-        ds[Coords.Y].attrs = first_ds[Coords.Y].attrs
+        ds[utils.Coords.X].attrs = first_ds[utils.Coords.X].attrs
+        ds[utils.Coords.Y].attrs = first_ds[utils.Coords.Y].attrs
         ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
 
         # Convert dataset to Dask dataset not to run out of memory while writing to the file
@@ -2956,7 +2956,7 @@ class ITSLiveAnnualMosaics:
 
         # Set encoding
         encoding_settings = {}
-        for each in [Coords.X, Coords.Y, CompDataVars.SENSORS]:
+        for each in [utils.Coords.X, utils.Coords.Y, CompDataVars.SENSORS]:
             encoding_settings.setdefault(each, {}).update({Output.FILL_VALUE_ATTR: None})
 
         # Set dtype for "sensor" dimension to S1 so QGIS can at least see the dimension indices.

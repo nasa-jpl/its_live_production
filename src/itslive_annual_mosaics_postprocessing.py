@@ -31,8 +31,10 @@ import xarray as xr
 from grid import Bounds, Grid
 
 from itscube import ITSCube
-from itscube_types import Coords, BatchVars, DataVars, ShapeFile, CompDataVars
+from itscube_types import BatchVars, DataVars, CompDataVars
 from itslive_annual_mosaics import ITSLiveAnnualMosaics, MosaicsOutputFormat
+import shapefile
+import utils
 
 # Set up logging
 logging.basicConfig(
@@ -56,11 +58,11 @@ class ITSLiveAnnualMosaicsPostProcess:
 
     MASK_VAR = 'data'
 
-    def __init__(self, shapefile: str, bucket: str, mosaics_regex: str):
+    def __init__(self, shape_file: str, bucket: str, mosaics_regex: str):
         """Initialize post-processing.
 
         Args:
-            shapefile (str): Shapefile that contains polygons definitions.
+            shape_file (str): Shapefile that contains polygons definitions.
             bucket (str): S3 bucket that contains mosaics files.
             mosaics_regex (str): Regex to match mosaics (by the region) within the S3 bucket.
 
@@ -77,13 +79,13 @@ class ITSLiveAnnualMosaicsPostProcess:
         logging.info(f'Found {len(self.mosaics_files)} mosaics files: {json.dumps(self.mosaics_files, indent=3)}')
 
         # Read shapefile
-        self.mask = ITSCube.read_shapefile(shapefile)
+        self.mask = ITSCube.read_shapefile(shape_file)
 
         if len(self.mask.geometry) == 0:
-            raise RuntimeError(f'No geometry Polygons are provided in {shapefile} shapefile: {self.mask}')
+            raise RuntimeError(f'No geometry Polygons are provided in {shape_file} shapefile: {self.mask}')
 
         else:
-            logging.info(f'{shapefile} file contains {len(self.mask.geometry)} polygons to mask out')
+            logging.info(f'{shape_file} file contains {len(self.mask.geometry)} polygons to mask out')
 
         # To initialize by reading one of the mosaics files
         self.epsg = None
@@ -137,15 +139,15 @@ class ITSLiveAnnualMosaicsPostProcess:
                 # Create xarray mask that represents all polygons
                 self.mask_ds = xr.Dataset(
                     coords={
-                        Coords.X: (
-                            Coords.X,
+                        utils.Coords.X: (
+                            utils.Coords.X,
                             ds.x.values,
-                            ds[Coords.X].attrs
+                            ds[utils.Coords.X].attrs
                         ),
-                        Coords.Y: (
-                            Coords.Y,
+                        utils.Coords.Y: (
+                            utils.Coords.Y,
                             ds.y.values,
-                            ds[Coords.Y].attrs
+                            ds[utils.Coords.Y].attrs
                         )
                     }
                 )
@@ -334,7 +336,7 @@ class ITSLiveAnnualMosaicsPostProcess:
                     ds = ds.load()
 
                     for each_var in ds.keys():
-                        if each_var not in [DataVars.MAPPING, ShapeFile.FLOATINGICE, ShapeFile.LANDICE]:
+                        if each_var not in [DataVars.MAPPING, shapefile.FLOATINGICE, shapefile.LANDICE]:
                             logging.info(f'--->{each_var}')
 
                             other_value = np.nan
@@ -356,8 +358,8 @@ class ITSLiveAnnualMosaicsPostProcess:
                     # Data variables which dtype should be uint8 in final mosaics with
                     # fill value = 0
                     MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE = [
-                        ShapeFile.LANDICE,
-                        ShapeFile.FLOATINGICE,
+                        shapefile.LANDICE,
+                        shapefile.FLOATINGICE,
                         CompDataVars.SENSOR_INCLUDE
                     ]
 

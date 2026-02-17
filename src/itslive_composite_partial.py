@@ -16,6 +16,8 @@ November 5, 2025
 """
 import collections
 import datetime
+from email import utils
+from sys import stdout
 from dateutil.parser import parse
 import gc
 from joblib import Parallel, delayed
@@ -33,12 +35,10 @@ import zarr
 # Local imports
 from itscube import ITSCube
 from itscube_types import \
-    Coords, \
     DataVars, \
     BinaryFlag, \
     Output, \
     CubeOutput, \
-    ShapeFile, \
     CompDataVars, \
     CompOutput, \
     to_int_type, \
@@ -48,6 +48,8 @@ from itscube_types import \
     Y_ATTRS
 import itslive_utils
 import aws_utils
+import shapefile
+import utils
 
 # Intercept date used for a weighted linear fit
 CENTER_DATE = datetime.datetime(2018, 1, 1)
@@ -2471,20 +2473,11 @@ class ITSLiveComposite:
 
         cube_projection = int(self.cube_ds.attrs[CubeOutput.PROJECTION])
 
-        # Find corresponding to EPSG land ice mask file for the cube
-        found_row = ITSLiveComposite.SHAPE_FILE.loc[
-            ITSLiveComposite.SHAPE_FILE[ShapeFile.EPSG] == cube_projection
-        ]
-        if len(found_row) != 1:
-            raise RuntimeError(
-                f'Expected one entry for {cube_projection} in shapefile, got '
-                f'{len(found_row)} rows.'
-            )
-
+        # Find corresponding to EPSG ice mask files for the cube
         # Read land ice mask to be used for processing
-        self.land_ice_mask, _ = ITSCube.read_ice_mask(
-            found_row, ShapeFile.LANDICE_2KM, self.cube_ds.x, self.cube_ds.y
-        )
+        self.land_ice_mask, _ = shapefile.read_ice_mask(
+            ITSLiveComposite.SHAPE_FILE, shapefile.LANDICE_2KM,
+            self.cube_ds.x, self.cube_ds.y, cube_projection)
 
         # This is land ice coverage for the datacube
         # If landice and floating ice masks are provided by the datacube, just use them.
@@ -2493,36 +2486,43 @@ class ITSLiveComposite:
         self.land_ice_mask_composite = None
         self.land_ice_mask_composite_url = None
 
-        if ShapeFile.LANDICE in self.cube_ds:
-            self.land_ice_mask_composite = self.cube_ds[ShapeFile.LANDICE].values
-            self.land_ice_mask_composite_url = self.cube_ds[ShapeFile.LANDICE].attrs[CubeOutput.URL]
+        if shapefile.LANDICE in self.cube_ds:
+            self.land_ice_mask_composite = \
+                self.cube_ds[shapefile.LANDICE].values
+            self.land_ice_mask_composite_url = \
+                self.cube_ds[shapefile.LANDICE].attrs[CubeOutput.URL]
 
         else:
             self.land_ice_mask_composite, \
-                self.land_ice_mask_composite_url = ITSCube.read_ice_mask(
-                    found_row, ShapeFile.LANDICE, self.cube_ds.x, self.cube_ds.y
+                self.land_ice_mask_composite_url = shapefile.read_ice_mask(
+                    ITSLiveComposite.SHAPE_FILE, shapefile.LANDICE,
+                    self.cube_ds.x, self.cube_ds.y, cube_projection
                 )
 
         # This is floating ice coverage for the datacube
         self.floating_ice_mask_composite = None
         self.floating_ice_mask_composite_url = None
 
-        if ShapeFile.FLOATINGICE in self.cube_ds:
-            self.floating_ice_mask_composite = self.cube_ds[ShapeFile.FLOATINGICE].values
-            self.floating_ice_mask_composite_url = self.cube_ds[ShapeFile.FLOATINGICE].attrs[CubeOutput.URL]
+        if shapefile.FLOATINGICE in self.cube_ds:
+            self.floating_ice_mask_composite = \
+                self.cube_ds[shapefile.FLOATINGICE].values
+            self.floating_ice_mask_composite_url = \
+                self.cube_ds[shapefile.FLOATINGICE].attrs[CubeOutput.URL]
 
         else:
             self.floating_ice_mask_composite, \
-                self.floating_ice_mask_composite_url = ITSCube.read_ice_mask(
-                    found_row, ShapeFile.FLOATINGICE, self.cube_ds.x, self.cube_ds.y
-                )
+                self.floating_ice_mask_composite_url = shapefile.read_ice_mask(
+                    ITSLiveComposite.SHAPE_FILE, shapefile.FLOATINGICE,
+                    self.cube_ds.x, self.cube_ds.y, cube_projection)
 
         # Read in only specific data variables
         # Need to sort data by dt to be able to filter with np.searchsorted()
         # (relies on date_dt vector being sorted)
         # Store "shallow" version of the cube for carrying over some of the metadata
         # when writing composites to the Zarr store
-        cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
+        cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(
+            DataVars.ImgPairInfo.DATE_DT
+        )
         logging.info(f'Original datacube sizes: {cube_ds.sizes}')
 
         # Apply StableShiftFilter: revert stable_shift offset and/or exclude
@@ -2541,13 +2541,14 @@ class ITSLiveComposite:
 
         # Update cube sizes with excluded granules
         self.cube_sizes = {
-            Coords.MID_DATE: sizes[Coords.MID_DATE] - self.stable_shift_filter.num_exclude_granules,
-            Coords.X: sizes[Coords.X],
-            Coords.Y: sizes[Coords.Y]
+            utils.Coords.MID_DATE: sizes[utils.Coords.MID_DATE] - \
+                self.stable_shift_filter.num_exclude_granules,
+            utils.Coords.X: sizes[utils.Coords.X],
+            utils.Coords.Y: sizes[utils.Coords.Y]
         }
         logging.info(f'Datacube sizes after StableShiftFilter: {self.cube_sizes}')
 
-        ITSLiveComposite.MID_DATE_LEN = self.cube_sizes[Coords.MID_DATE]
+        ITSLiveComposite.MID_DATE_LEN = self.cube_sizes[utils.Coords.MID_DATE]
 
         # Need to keep original datacube dimensions to revert stable_shift, if any.
         # Then remove any granules for these data variables if any are identified
@@ -2666,8 +2667,8 @@ class ITSLiveComposite:
 
         # These data members will be set for each block of data being currently
         # processed ---> have to change the logic if want to parallelize blocks
-        x_len = self.cube_sizes[Coords.X]
-        y_len = self.cube_sizes[Coords.Y]
+        x_len = self.cube_sizes[utils.Coords.X]
+        y_len = self.cube_sizes[utils.Coords.Y]
 
         # Allocate memory for composite outputs
         years_dims = (y_len, x_len, ITSLiveComposite.YEARS_LEN)
@@ -2815,14 +2816,14 @@ class ITSLiveComposite:
         # Read existing composite in
 
         # Loop through cube in chunks to minimize memory footprint
-        x_num_to_process = self.cube_sizes[Coords.X]
+        x_num_to_process = self.cube_sizes[utils.Coords.X]
         x_start = ITSLiveComposite.X_KEEP
         x_num_to_process -= ITSLiveComposite.X_KEEP
         logging.info(f'Start re-processing x=[{x_start}:{x_start + x_num_to_process}]...')
 
         logging.info(
-            f"Processing cube size: [{self.cube_sizes[Coords.MID_DATE]}, "
-            f"{self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]..."
+            f"Processing cube size: [{self.cube_sizes[utils.Coords.MID_DATE]}, "
+            f"{self.cube_sizes[utils.Coords.Y]}, {self.cube_sizes[utils.Coords.X]}]..."
         )
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -2831,7 +2832,7 @@ class ITSLiveComposite:
                 else x_num_to_process
 
             y_start = 0
-            y_num_to_process = self.cube_sizes[Coords.Y]
+            y_num_to_process = self.cube_sizes[utils.Coords.Y]
             # DEBUG:
             # y_start = 500
             # y_num_to_process = 10
@@ -3313,13 +3314,13 @@ class ITSLiveComposite:
 
         ds = xr.Dataset(
             coords={
-                Coords.X: (
-                    Coords.X,
+                utils.Coords.X: (
+                    utils.Coords.X,
                     self.cube_ds.x.values,
                     X_ATTRS
                 ),
-                Coords.Y: (
-                    Coords.Y,
+                utils.Coords.Y: (
+                    utils.Coords.Y,
                     self.cube_ds.y.values,
                     Y_ATTRS
                 ),
@@ -3375,10 +3376,10 @@ class ITSLiveComposite:
 
         years_coord = pd.Index(ITSLiveComposite.YEARS, name=CompDataVars.TIME)
         var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [CompDataVars.TIME, Coords.Y, Coords.X]
+        var_dims = [CompDataVars.TIME, utils.Coords.Y, utils.Coords.X]
 
         twodim_var_coords = [self.cube_ds.y.values, self.cube_ds.x.values]
-        twodim_var_dims = [Coords.Y, Coords.X]
+        twodim_var_dims = [utils.Coords.Y, utils.Coords.X]
 
         self.land_ice_mask_composite = to_int_type(
             self.land_ice_mask_composite,
@@ -3386,16 +3387,16 @@ class ITSLiveComposite:
             DataVars.MISSING_BYTE
         )
         # Land ice mask exists for the composite
-        ds[ShapeFile.LANDICE] = xr.DataArray(
+        ds[shapefile.LANDICE] = xr.DataArray(
             data=self.land_ice_mask_composite,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: ShapeFile.Name[ShapeFile.LANDICE],
-                DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
+                DataVars.STD_NAME: shapefile.Name[shapefile.LANDICE],
+                DataVars.DESCRIPTION_ATTR: shapefile.Description[shapefile.LANDICE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
-                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[ShapeFile.LANDICE],
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[shapefile.LANDICE],
                 CubeOutput.URL: self.land_ice_mask_composite_url
             }
         )
@@ -3407,17 +3408,17 @@ class ITSLiveComposite:
             np.uint8,
             DataVars.MISSING_BYTE
         )
-        # Land ice mask exists for the composite
-        ds[ShapeFile.FLOATINGICE] = xr.DataArray(
+        # Floating ice mask exists for the composite
+        ds[shapefile.FLOATINGICE] = xr.DataArray(
             data=self.floating_ice_mask_composite,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: ShapeFile.Name[ShapeFile.FLOATINGICE],
-                DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.FLOATINGICE],
+                DataVars.STD_NAME: shapefile.Name[shapefile.FLOATINGICE],
+                DataVars.DESCRIPTION_ATTR: shapefile.Description[shapefile.FLOATINGICE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
-                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[ShapeFile.FLOATINGICE],
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[shapefile.FLOATINGICE],
                 CubeOutput.URL: self.floating_ice_mask_composite_url
             }
         )
@@ -3676,7 +3677,7 @@ class ITSLiveComposite:
         # Use "group" label for each of the sensors used to filter data
         sensor_coord = pd.Index(sensors_labels, name=CompDataVars.SENSORS)
         var_coords = [sensor_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
+        var_dims = [CompDataVars.SENSORS, utils.Coords.Y, utils.Coords.X]
 
         self.max_dt = self.max_dt.transpose(CompositeVariable.CONT_IN_X)
         self.max_dt = to_int_type(self.max_dt)
@@ -3895,8 +3896,8 @@ class ITSLiveComposite:
         # when adding data variables that don't have the same attributes for the
         # coordinates, originally set Dataset coordinates attributes will be wiped out
         # (xarray bug?)
-        ds[Coords.X].attrs = X_ATTRS
-        ds[Coords.Y].attrs = Y_ATTRS
+        ds[utils.Coords.X].attrs = X_ATTRS
+        ds[utils.Coords.Y].attrs = Y_ATTRS
         ds[CompDataVars.TIME].attrs = TIME_ATTRS
         ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
 
@@ -3911,7 +3912,7 @@ class ITSLiveComposite:
         )
 
         # Don't set fill_value for the coordinate variables
-        for each in [CompDataVars.TIME, CompDataVars.SENSORS, Coords.X, Coords.Y]:
+        for each in [CompDataVars.TIME, CompDataVars.SENSORS, utils.Coords.X, utils.Coords.Y]:
             encoding_settings.setdefault(each, {}).update(
                 {
                     Output.COMPRESSOR_ATTR: compressor
@@ -3997,8 +3998,8 @@ class ITSLiveComposite:
         # Variables that have missing_value = 0
         for each in [
             CompDataVars.SENSOR_INCLUDE,
-            ShapeFile.LANDICE,
-            ShapeFile.FLOATINGICE
+            shapefile.LANDICE,
+            shapefile.FLOATINGICE
         ]:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
@@ -4026,7 +4027,7 @@ class ITSLiveComposite:
             ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
 
         # Chunking to apply when writing datacube to the Zarr store
-        chunks_settings = (1, self.cube_sizes[Coords.Y], self.cube_sizes[Coords.X])
+        chunks_settings = (1, self.cube_sizes[utils.Coords.Y], self.cube_sizes[utils.Coords.X])
 
         for each in [
             DataVars.VX,
@@ -4042,7 +4043,7 @@ class ITSLiveComposite:
             })
 
         # Chunking to apply when writing datacube to the Zarr store
-        chunks_settings = (self.cube_sizes[Coords.Y], self.cube_sizes[Coords.X])
+        chunks_settings = (self.cube_sizes[utils.Coords.Y], self.cube_sizes[utils.Coords.X])
 
         for each in [
             CompDataVars.VX_AMP,
@@ -4065,8 +4066,8 @@ class ITSLiveComposite:
             CompDataVars.SLOPE_VX,
             CompDataVars.SLOPE_VY,
             CompDataVars.SLOPE_V,
-            ShapeFile.LANDICE,
-            ShapeFile.FLOATINGICE
+            shapefile.LANDICE,
+            shapefile.FLOATINGICE
         ]:
             encoding_settings[each].update({
                 Output.CHUNKS_ATTR: chunks_settings
@@ -4361,18 +4362,22 @@ if __name__ == '__main__':
         logging.info(f'Composite S3: {ITSLiveComposite.S3}')
 
         # URL is valid only if output S3 bucket is provided
-        ITSLiveComposite.URL = ITSLiveComposite.S3.replace(ITSCube.S3_PREFIX, ITSCube.HTTP_PREFIX)
+        ITSLiveComposite.URL = ITSLiveComposite.S3.replace(utils.S3_PREFIX,
+                                                            utils.HTTP_PREFIX)
         url_tokens = urlparse(ITSLiveComposite.URL)
-        ITSLiveComposite.URL = url_tokens._replace(netloc=url_tokens.netloc+ITSCube.PATH_URL).geturl()
+        ITSLiveComposite.URL = url_tokens._replace(netloc=url_tokens.netloc +
+                                                    utils.PATH_URL).geturl()
         logging.info(f'Composite URL: {ITSLiveComposite.URL}')
 
-    mosaics = ITSLiveComposite(args.inputCube,
-                               args.inputBucket,
-                               args.existingStore)
+    mosaics = ITSLiveComposite(args.inputCube, args.inputBucket,
+                                args.existingStore)
     mosaics.create(args.outputStore)
 
     if os.path.exists(args.outputStore):
-        output_size = subprocess.run(['du', '-skh', args.outputStore], capture_output=True, text=True).stdout.split()[0]
+        output_size = subprocess.run(
+            ['du', '-skh', args.outputStore],
+            capture_output=True, text=True
+        ).stdout.split()[0]
         logging.info(f'Size of {args.outputStore}: {output_size}')
 
     else:

@@ -5,24 +5,8 @@ datacubes, composites, and mosaics.
 from collections import namedtuple
 import numpy as np
 
-
-class ShapeFile:
-    """
-    Variables names specific to the ITS_LIVE shapefiles.
-    """
-    EPSG = 'epsg'
-    LANDICE_2KM = 'landice_2km'
-    LANDICE = 'landice'
-    FLOATINGICE = 'floatingice'
-
-    Name = {
-        LANDICE: 'land_ice_mask',
-        FLOATINGICE: 'floating_ice_mask',
-    }
-    Description = {
-        LANDICE: 'land ice mask, 0 = non-land-ice, 1 = land-ice',
-        FLOATINGICE: 'floating ice mask, 0 = non-floating-ice, 1 = floating-ice',
-    }
+import utils
+import shapefile
 
 
 class Output:
@@ -112,30 +96,6 @@ class CompOutput:
     # the "_FillValue" attribute should be set to the desired fill value as
     # well.
     FILL_VALUE_ATTR = 'fill_value'
-
-
-class Coords:
-    """
-    Coordinates for the data cube.
-    """
-    # For original datacube
-    MID_DATE = 'mid_date'
-    X = 'x'
-    Y = 'y'
-
-    STD_NAME = {
-        MID_DATE: "image_pair_center_date_with_time_separation",
-        X: "projection_x_coordinate",
-        Y: "projection_y_coordinate"
-    }
-
-    DESCRIPTION = {
-        MID_DATE: "midpoint of image 1 and image 2 acquisition date and time "
-                  "with granule's centroid longitude and latitude as "
-                  "microseconds",
-        X: "x coordinate of projection",
-        Y: "y coordinate of projection"
-    }
 
 
 class FileExtension:
@@ -623,8 +583,8 @@ class BinaryFlag:
     # Binary mask meanings
     MEANINGS = {
         DataVars.INTERP_MASK: 'measured interpolated',
-        ShapeFile.LANDICE: 'non-ice ice',
-        ShapeFile.FLOATINGICE: 'non-ice ice',
+        shapefile.LANDICE: 'non-ice ice',
+        shapefile.FLOATINGICE: 'non-ice ice',
         CompDataVars.SENSOR_INCLUDE: 'filter_not_applied filter_applied',
         DataVars.ASCENDING_IMG1: 'descending ascending',
         DataVars.ASCENDING_IMG2: 'descending ascending'
@@ -718,13 +678,13 @@ SENSORS_ATTRS = {
     DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSORS]
 }
 X_ATTRS = {
-    DataVars.STD_NAME: Coords.STD_NAME[Coords.X],
-    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.X],
+    DataVars.STD_NAME: utils.Coords.STD_NAME[utils.Coords.X],
+    DataVars.DESCRIPTION_ATTR: utils.Coords.DESCRIPTION[utils.Coords.X],
     DataVars.UNITS: DataVars.M_UNITS
 }
 Y_ATTRS = {
-    DataVars.STD_NAME: Coords.STD_NAME[Coords.Y],
-    DataVars.DESCRIPTION_ATTR: Coords.DESCRIPTION[Coords.Y],
+    DataVars.STD_NAME: utils.Coords.STD_NAME[utils.Coords.Y],
+    DataVars.DESCRIPTION_ATTR: utils.Coords.DESCRIPTION[utils.Coords.Y],
     DataVars.UNITS: DataVars.M_UNITS
 }
 

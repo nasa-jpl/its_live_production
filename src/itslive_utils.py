@@ -79,7 +79,9 @@ def retry_decorator(
     jitter=True
 ):
     """
-    Decorator to retry a function on any exception.
+    Decorator to retry a function on any exception. This is most useful for
+    functions that perform network calls, such as AWS S3 operations, which
+    can fail due to transient issues.
 
     Args:
         max_retries (int): Number of retry attempts.

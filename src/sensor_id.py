@@ -107,7 +107,8 @@ SENSORS = _sensors()
 
 def all_sensors_description():
     """
-    Function that returns description string to include all unique sensors and their meanings.
+    Function that returns description string to include all unique sensors
+    and their meanings.
     """
     common_str = 'unique sensor id: '
     desc = [str(each) for each in ALL_SENSORS.values()]

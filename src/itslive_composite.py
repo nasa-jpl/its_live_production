@@ -28,13 +28,13 @@ import zarr
 
 # Local imports
 from itscube import ITSCube
+import sensors
+import sensorFilters
 from itscube_types import \
-    Coords, \
     DataVars, \
     BinaryFlag, \
     Output, \
     CubeOutput, \
-    ShapeFile, \
     CompDataVars, \
     CompOutput, \
     to_int_type, \
@@ -44,6 +44,8 @@ from itscube_types import \
     Y_ATTRS
 import itslive_utils
 import aws_utils
+import shapefile
+import utils
 
 # Intercept date used for a weighted linear fit
 CENTER_DATE = datetime.datetime(2018, 1, 1)
@@ -458,16 +460,17 @@ def create_D_components(start_decimal_year, stop_decimal_year):
     ========
     D_cos, D_sin: Precomputed D matrix components for LSQ fit.
     """
-    # Pre-compute trigonometric terms
-    cos_start = np.cos(TWO_PI * start_decimal_year)
-    cos_stop = np.cos(TWO_PI * stop_decimal_year)
+    # Pre-compute trigonometric terms using vectorized computations
+    years = np.column_stack((start_decimal_year, stop_decimal_year))
 
-    sin_start = np.sin(TWO_PI * start_decimal_year)
-    sin_stop = np.sin(TWO_PI * stop_decimal_year)
+    cos_terms = np.cos(TWO_PI * years)
+    sin_terms = np.sin(TWO_PI * years)
 
     # Pre-compute D matrix components
-    D_cos = (cos_start - cos_stop)/TWO_PI
-    D_sin = (sin_stop - sin_start)/TWO_PI
+    # cos_start - cos_stop
+    D_cos = (cos_terms[:, 0] - cos_terms[:, 1]) / TWO_PI
+    # sin_stop - sin_start
+    D_sin = (sin_terms[:, 1] - sin_terms[:, 0]) / TWO_PI
 
     return D_cos, D_sin
 
@@ -486,7 +489,8 @@ def itslive_lsqfit_iteration(var_name, d_cos, d_sin, M, w_d, d_obs):
     # Displacement Vandermonde matrix: (these are displacements! not velocities,
     # so this matrix is just the definite integral wrt time of
     # a*sin(2*pi*yr)+b*cos(2*pi*yr)+c.
-    # D = [(cos(2*pi*yr(:,1)) - cos(2*pi*yr(:,2)))./(2*pi).*(M>0) (sin(2*pi*yr(:,2)) - sin(2*pi*yr(:,1)))./(2*pi).*(M>0) M];
+    # D = [(cos(2*pi*yr(:,1)) - cos(2*pi*yr(:,2)))./(2*pi).*(M>0)
+    #      (sin(2*pi*yr(:,2)) - sin(2*pi*yr(:,1)))./(2*pi).*(M>0) M];
     D = np.stack((d_cos, d_sin), axis=-1)
     D = np.concatenate((D, M), axis=1)
 
@@ -1491,7 +1495,8 @@ class CompositeVariable:
     """
     Class to hold values for v, vx and vy components of the variables.
     """
-    # Index order for data to be continuous in X dimension
+    # Index order for data to be continuous in X dimension: [t, y, x]
+    # since original order is [y, x, t]
     CONT_IN_X = (2, 0, 1)
 
     def __init__(self, dims: list, name: str):
@@ -1531,735 +1536,6 @@ Chunk = collections.namedtuple(
     "Chunk",
     ['start_x', 'stop_x', 'x_len', 'start_y', 'stop_y', 'y_len']
 )
-
-
-class MissionSensor:
-    """
-    Mission and sensor combos that should be grouped during filtering by date_dt.
-    Group together:
-    Sentinel1: 1A and 1B sensors
-    Sentinel2: 2A and 2B sensors
-    Landsat4 and Landsat5
-    Landsat7
-    Landsat8 and Landsat9
-    """
-    # Tuple to represent:
-    # mission - string representation of the mission as it appears in output
-    # sensors - list of sensor identifiers belonging to the mission
-    # label - string representation of the grouped sensors
-    # id - unique identifier for the mission/sensor group. Used for filtering
-    #    and processing (faster to compare int values than strings).
-    MSTuple = collections.namedtuple(
-        "MissionSensorTuple",
-        ['sensors', 'label', 'id']
-    )
-
-    # If datacube contains only numeric sensor values (Landsat8 or Landsat9),
-    # sensor values are of type float, otherwise sensor values are of string type
-    # ---> support both
-    LANDSAT45 = MSTuple(
-        ['4.', '5.', '4.0', '5.0', 4.0, 5.0, '4', '5'],
-        'L4_L5',
-        11
-    )
-    LANDSAT7 = MSTuple(
-        ['7.', '7.0', 7.0, '7'],
-        'L7',
-        12
-    )
-    LANDSAT89 = MSTuple(
-        ['8.', '9.', '8.0', '9.0', 8.0, 9.0, '8', '9'],
-        'L8_L9',
-        13
-    )
-
-    # ATTN: '1' and '2' are added as a workaround for the stripped satellite_img[12] values
-    # when Zarr writes first chunk of the datacube with less than 2 character sensor values
-    SENTINEL1 = MSTuple(
-        ['1A', '1B', '1'],
-        'S1A_S1B',
-        14
-    )
-    SENTINEL2 = MSTuple(
-        ['2A', '2B', '2'],
-        'S2A_S2B',
-        15
-    )
-
-    # TODO: update with new missions groups as their granules are added
-    # to the datacubes
-    ALL_GROUPS = {
-        LANDSAT45.id: LANDSAT45,
-        LANDSAT7.id: LANDSAT7,
-        LANDSAT89.id: LANDSAT89,
-        SENTINEL1.id: SENTINEL1,
-        SENTINEL2.id: SENTINEL2
-    }
-
-    # Mapping of sensor to the group ID
-    GROUPS = {}
-
-    # Mapping of sensor group ID to the group label
-    GROUPS_MISSIONS = {}
-
-    @staticmethod
-    def _groups():
-        """
-        Return mapping of sensor to its corresponding sensor group ID.
-
-        This method builds mapping of the individual sensor to the group ID
-        it belongs to:
-            {
-                '4.':  11,
-                '5.':  11,
-                4.0:   11,
-                5.0:   11,
-                '4.0': 11,
-                '5.0': 11,
-                '7.':  12,
-                '7.0': 12,
-                7.0:   12,
-                '8.':  13,
-                '9.':  13,
-                8.0:   13,
-                9.0:   13,
-                '8.0': 13,
-                '9.0': 13,
-                '1A':  14,
-                '1B':  14,
-                '2A':  15,
-                '2B':  15
-            }
-        """
-        all_sensors = {}
-
-        for each_group in MissionSensor.ALL_GROUPS.values():
-            for each_sensor in each_group.sensors:
-                all_sensors[each_sensor] = each_group.id
-
-        return all_sensors
-
-    @staticmethod
-    def _groups_labels():
-        """
-        Return mapping of group ID to its corresponding sensor group name
-        as stored in the "label" attribute of the group.
-
-        This method builds mapping of the individual sensor to the group
-        it belongs to:
-            {
-                11: 'L4_L5',
-                12: 'L7',
-                13: 'L8_L9',
-                14: 'S1A_S1B',
-                15: 'S2A_S2B'
-            }
-        """
-        all_ids = {}
-        for each_group in MissionSensor.ALL_GROUPS.values():
-            all_ids[each_group.id] = each_group.label
-
-        return all_ids
-
-
-# Initialize static data of the class
-MissionSensor.GROUPS = MissionSensor._groups()
-MissionSensor.GROUPS_MISSIONS = MissionSensor._groups_labels()
-
-
-class SensorExcludeFilter:
-    """
-    This class represents filter to identify sensor groups to exclude based
-    on the timeseries per each spacial point of the datacube.
-    """
-    # Min required values in bin for one sensorgroup to compute stats
-    MIN_COUNT = 3
-
-    # Longest dt to use for all sensor groups
-    MAX_DT = 64
-
-    # Reference sensor group to compare other sensor groups to.
-    # ATTN: this variable serves two purposes and has opposite meaning for two
-    # filters it's used in:
-    #
-    # 1. The first exclude filter (implemented by this SensorExcludeFilter class)
-    # is designed to remove L8 and S1 (and possibly other mission) data over
-    # very narrow glaciers where S2 outperforms.
-    #
-    # 2. The second filter (second step in LSQ fit applied to all but S2 data)
-    # is designed to exclude S2 data in areas of low contrast with very little
-    # stable terrain (i.e. ice sheet interiors)
-    REF_SENSOR = MissionSensor.SENTINEL2
-
-    # Multiplier of standard error to use in comparison
-    SESCALE = 3
-
-    def __init__(
-        self,
-        acquisition_start_time,
-        acquisition_stop_time,
-        sensors,
-        sensors_groups
-    ):
-        """
-        Initialize object.
-
-        Inputs:
-        =======
-        acquisition_start_time - Acquisition datetime for the first image of
-            timeseries.
-        acquisition_stop_time - Acquisition datetime for the second image of
-            timeseries.
-        sensors - Sensor groups IDs for the datacube layers (in time dimension).
-        sensors_groups - List of identified sensor groups in timeseries.
-        """
-        # Flag if filter should be applied to timeseries
-        self.apply = False
-        self.binedges = None
-
-        # Flag if there should be second LSQ fit based on all data except for S2
-        # (this is done to exclude trouble S2 data from composites:
-        # if (amp_all) > (S1+L8_amp) * 2 then use lsqfit_annual output from S1+L8
-        # and add S2 to the excluded sensors mask
-        self.excludeS2FromLSQ = False
-
-        # Mapping of each sensor to its mission group ID
-        self.sensors_ids = sensors
-
-        # Identify if reference sensor group is present in timeseries
-        if SensorExcludeFilter.REF_SENSOR in sensors_groups:
-            logging.info(
-                f'Reference sensor {SensorExcludeFilter.REF_SENSOR.label} '
-                'is present'
-            )
-
-            # Is there any other than reference (S2) data that would need
-            # to be checked against the reference data
-            if len(sensors_groups) > 1:
-                self.excludeS2FromLSQ = True
-                self.apply = True
-
-                # Extract start and end dates that correspond to the sensor group
-                mask = np.isin(self.sensors_ids, SensorExcludeFilter.REF_SENSOR.id)
-
-                start_date = np.array(acquisition_start_time)[mask]
-                stop_date = np.array(acquisition_stop_time)[mask]
-
-                logging.info(
-                    f'Identified reference "{SensorExcludeFilter.REF_SENSOR.label}" '
-                    f'sensor group: start_date={start_date.min().date()} '
-                    f'end_date={stop_date.max().date()}'
-                )
-                self.binedges = np.arange(
-                    start_date.min().date(),
-                    stop_date.max().date(),
-                    np.timedelta64(73, '[D]'),  # 73 D is 1/5 of a year
-                    dtype="datetime64[D]"
-                )
-                logging.info(f'Bin edges: {self.binedges}')
-
-            else:
-                logging.info(
-                    'There is no other than '
-                    f'{SensorExcludeFilter.REF_SENSOR.label} data present, '
-                    'disable SensorExcludeFilter and 2nd LSQ fit.'
-                )
-
-        else:
-            logging.info(
-                f'Reference sensor {SensorExcludeFilter.REF_SENSOR.label} '
-                'is missing, disable SensorExcludeFilter and 2nd LSQ fit.'
-            )
-
-    @staticmethod
-    def map_sensor_to_group(sensors: list):
-        """
-        Map each of the granule's first sensor to the mission group it belongs to.
-
-        Inputs:
-        =======
-        sensors: List of first sensors in the granules.
-        """
-        # Map each sensor to its mission group ID
-        return np.array([MissionSensor.GROUPS[x] for x in sensors])
-
-    @staticmethod
-    def identify_sensor_groups(sensors: list):
-        """
-        Identify unique sensors within provided set and collect mission groups
-        these sensors belong to: to know which missions are represented by
-        the set.
-
-        Inputs:
-        =======
-        sensors: List of sensors groups IDs (that correspond to the datacube
-            layers).
-
-        Returns:
-        ========
-        List of mission groups that correspond to provided sensors groups IDs.
-        """
-        unique_ids = list(set(sensors))
-
-        # Keep values sorted to be consistent
-        unique_ids.sort()
-        logging.info(
-            f'Identified unique sensor groups: '
-            f'{[MissionSensor.GROUPS_MISSIONS[each] for each in unique_ids]}'
-        )
-
-        # Identify sensor groups that correspond to their IDs
-        return [MissionSensor.ALL_GROUPS[each] for each in unique_ids]
-
-    def __call__(self, ds_date_dt, ds_vx, ds_vy, ds_mid_date, ds_land_ice_mask):
-        """
-        Invoke filter for the block of spacial points.
-
-        Inputs:
-        =======
-        ds_date_dt:       Date separation b/w image pairs for spacial points.
-        ds_vx:            X component of velocity for the spacial points.
-        ds_vy:            Y component of velicity for the spacial points.
-        ds_mid_date:      Middle date for the spacial points.
-        ds_land_ice_mask: 2km inbuffer land ice mask for spacial points.
-            SensorExcludeFilter should only be applied if land_ice 2km
-            inbuffer mask == 0.
-
-        Returns:
-        ========
-        Array of lists of sensors to exclude per each spacial point.
-        """
-        y_len, x_len, _ = ds_vx.shape
-        dims = (y_len, x_len)
-        exclude_sensors = np.frompyfunc(set, 0, 1)(np.empty(dims, dtype=object))
-
-        if self.apply:
-            # SensorExcludeFilter should only be applied if land_ice 2km
-            # inbuffer mask == 0. Find such indices in data.
-            if ds_land_ice_mask is not None:
-                valid_mask_ind = np.argwhere(ds_land_ice_mask == 0)
-
-                for each_index in valid_mask_ind:
-                    j_index = each_index[0]
-                    i_index = each_index[1]
-
-                    exclude_sensors[j_index, i_index] = self.iteration(
-                        ds_date_dt,
-                        ds_vx[j_index, i_index, :],
-                        ds_vy[j_index, i_index, :],
-                        ds_mid_date
-                    )
-
-            else:
-                # Apply filter to all points
-                for j_index in range(0, y_len):
-                    for i_index in range(0, x_len):
-                        exclude_sensors[j_index, i_index] = self.iteration(
-                            ds_date_dt,
-                            ds_vx[j_index, i_index, :],
-                            ds_vy[j_index, i_index, :],
-                            ds_mid_date
-                        )
-
-        return exclude_sensors
-
-    def iteration(self, ds_date_dt, ds_vx, ds_vy, ds_mid_date):
-        """
-        Returns list of sensor groups to exclude based on the timeseries for
-        the spacial point.
-
-        Inputs:
-        =======
-        ds_date_dt: date_dt timeseries for spacial point
-        ds_sensors: individual sensors timeseries for spacial point
-        ds_vx:      vx timeseries
-        ds_vy:      vy timeseries
-        ds_mid_date: mid_date timeseries
-
-        Outputs:
-        ========
-        list of sensor groups to exclude for the spacial point.
-        """
-        # Commented code is original code from Mark
-        #     # trim data to reduce computations
-        #     dtind = dt .<= dtmax;
-        #     valid = .~ismissing.(vx)
-        #     ind = dtind .& valid
-        #
-        sensors_to_exclude = set()
-
-        trimmed_index = ((ds_date_dt <= SensorExcludeFilter.MAX_DT) & (~np.isnan(ds_vx)))
-
-        # If no data left, exit the filter
-        if np.sum(trimmed_index) == 0:
-            return sensors_to_exclude
-
-        vx = ds_vx[trimmed_index]
-        vy = ds_vy[trimmed_index]
-        sensor = self.sensors_ids[trimmed_index]
-        mid_dates = ds_mid_date[trimmed_index]
-
-        #
-        #     # determine sensor group ids
-        #     id, sensorgroups = ItsLive.sensorgroup(sensor)
-        #     numsg = length(sensorgroups)
-        #  ItsLive.sensorgroup returns indicies, etc - here just use
-        # sengrp_from_satellite_dict to directly map to sensorgroup
-
-        # sensor needs to be a numpy array to vectorize comparisons below
-        # sensor = np.array([sengrp_from_satellite_dict[x] for x in satellite.values])
-        # logging.info(f'Existing groups: {MissionSensor.GROUPS}')
-        # sensor = np.array([MissionSensor.GROUPS[x].mission for x in satellite])
-
-        # get unique sensorgroup id's
-        sensorgroups = set(sensor)
-
-        if SensorExcludeFilter.REF_SENSOR.id not in sensorgroups:
-            return sensors_to_exclude
-
-        #     # convert date to decimal year
-        #     decyear = ItsLive.decimalyear(mid_date)
-        # skipped this since we are using datetime64's for the comparison
-
-        #     # initialize veriables
-        #     vbin = fill(NaN, (numsg,length(binedges)-1))
-        # do this as a dict of dicts so we can use sensor id as index
-        bindicts = {
-            each_sensor: {
-                'vbin': np.nan * np.ones((len(self.binedges)-1)),
-                'vstdbin': np.nan * np.ones((len(self.binedges)-1)),
-                'vcountbin': np.zeros((len(self.binedges)-1), dtype='int32')
-            } for each_sensor in sensorgroups
-        }
-
-        #
-        #     # loop for each sensor group
-        #     for sg = 1:numsg
-        #         ind = id .== sg;
-        #         vx0 = mean(vx[ind])
-        #         vy0 = mean(vy[ind])
-        #         v0 = sqrt.(vx0.^2 .+ vy0.^2);
-        #         uv = vcat(vx0/v0, vy0/v0)
-        #         vp = hcat(vx[ind],vy[ind]) * uv # flow acceleration in direction of unit flow vector
-        #
-        #         vbin[sg,:], vstdbin[sg,:], vcountbin[sg,:], bincenters = ItsLive.binstats(decyear[ind], vp; binedges)
-        #     end
-        for sen in sensorgroups:
-            ind = np.isin(sensor, sen)
-            vx0 = np.mean(vx[ind])
-            vy0 = np.mean(vy[ind])
-            sen_mid_dates = mid_dates[ind]
-            v0 = np.sqrt(np.power(vx0, 2.0) + np.power(vy0, 2.0))
-
-            uv = np.array([vx0 / v0, vy0 / v0])
-            vp = uv.dot(np.vstack((vx[ind], vy[ind])))
-
-            # do the bin stats here rather than in a separate function - "return" values populate bindicts
-            for bin_num, (be_lo, be_hi) in enumerate(zip(self.binedges[:-1], self.binedges[1:])):
-                bin_ind = (sen_mid_dates >= be_lo) & (sen_mid_dates < be_hi)
-                # these are still numpy.array's - .item() returns sigular
-                # value instead of array(value)
-                num_in_bin = np.sum(bin_ind).item()
-
-                if num_in_bin >= SensorExcludeFilter.MIN_COUNT:
-                    bindicts[sen]['vcountbin'] = num_in_bin
-                    bindicts[sen]['vbin'][bin_num] = np.mean(vp[bin_ind])
-                    bindicts[sen]['vstdbin'][bin_num] = np.std(vp[bin_ind])
-
-        # Check if reference filter made it into the bindicts:
-        refsensor = SensorExcludeFilter.REF_SENSOR.id
-        if refsensor not in bindicts:
-            return sensors_to_exclude
-
-        stats = {each_sensor: {} for each_sensor in sensorgroups}
-
-        for sen in sensorgroups:
-            # No need to check on reference sensor
-            if sen == refsensor:
-                continue
-
-            covalid = (~np.isnan(bindicts[refsensor]['vbin'])) & (~np.isnan(bindicts[sen]['vbin']))
-
-            if sum(covalid) > 3:
-                delta = bindicts[sen]['vbin'][covalid] - bindicts[refsensor]['vbin'][covalid]
-                stats[sen]['mean'] = np.mean(delta)
-                stats[sen]['se'] = np.std(delta)/np.sqrt((sum(covalid)-1))
-                # TODO: Should use absolute difference for sigma comparison?
-                stats[sen]['disagree_with_refsensor'] = (stats[sen]['mean'] + (stats[sen]['se'] * SensorExcludeFilter.SESCALE)) < 0
-                if stats[sen]['disagree_with_refsensor']:
-                    sensors_to_exclude.add(sen)
-
-        return sensors_to_exclude
-
-
-class StableShiftFilter:
-    """
-    Class to implement stable shift filter for the datacube data.
-    It excludes granules that don't pass the filter criteria.
-
-    The class is also responsible for excluding all but specific mission group
-    granules if such option is provided to the composite generation code. This
-    is to isolate granule exclusion to one place (one can't just drop a "mid_date"
-    dimension values for the whole cube xr.Dataset since originally created
-    cubes don't have unique values for the dimension - to be fixed for another
-    run of the datacube generation).
-
-    stable_shift filter prototype code is:
-
-    if (max(abs(vx_stable_shift), abs(vy_stable_shift)) .* date_dt./365.25) > threshold
-        if stable_shift_flag == 1
-            exclude image pair
-
-        else if stable_shift_flag == 2
-            vx += vx_stable_shift
-            vy += vy_stable_shift
-        end
-    end
-
-    Explanation:
-
-    1. If the stable_shift is very large, and stable_shift_flag == 1, then we
-        exclude the image pair from our composite.
-    2. If the stable_shift_flag == 2, then simply remove stable_shift.
-        The correction is subtracted in autoRIFT, so we have to add it back.
-
-    The shift is very large over surface we are "not confident"
-    (stable_shift_flag=2) about, so we decided to remove the stable_shift
-    (reverse it as compared to the granules).
-    """
-    # Thresholds for stable_shift filter
-    THRESHOLD = {
-        MissionSensor.LANDSAT45.id: np.inf,
-        MissionSensor.LANDSAT7.id: np.inf,
-        MissionSensor.LANDSAT89.id: 61.6,
-        MissionSensor.SENTINEL1.id: 1.1,
-        MissionSensor.SENTINEL2.id: 28.5
-    }
-
-    DEC_YEAR_LEN = 365.25
-
-    # If mission group is provided, then include granules for this group into
-    # composites only.
-    KEEP_MISSION_GROUP = None
-
-    # Optional list of missions to exclude from composites.
-    EXCLUDE_MISSION_GROUP = None
-
-    def __init__(self, cube_sensors):
-        """
-        Initialize the filter.
-
-        Inputs:
-        =======
-        cube_sensors: timeseries of sensors in the datacube.
-        """
-        sensor_list = SensorExcludeFilter.map_sensor_to_group(cube_sensors)
-        logging.info(f'Total number of sensors in the cube: {sensor_list.size}')
-
-        # Mask of granules that need their vx and vy readjusted by
-        # their corresponding stable_shift value
-        self.reverse_stable_shift_mask = np.zeros_like(sensor_list, dtype=bool)
-        self.num_reverse_stable_shift_mask = 0
-
-        # Mask of granules that need to be included into composite computations
-        self.keep_granule_mask = np.ones_like(sensor_list, dtype=bool)
-        self.num_exclude_granules = 0
-
-        # stable_shift values that need to be applied to vx and vy: keep only the
-        # values that correspond to the granule mask that need the adjustment
-        self.vx_stable_shift = None
-        self.vy_stable_shift = None
-
-        # Populate threshold vector with values based on the sensor group
-        # each image pair belongs to
-        self.threshold = np.zeros_like(sensor_list, dtype=float)
-
-        # Step through all mission groups present in the datacube
-        for each_group in SensorExcludeFilter.identify_sensor_groups(sensor_list):
-            mask = np.isin(sensor_list, each_group.id)
-
-            if StableShiftFilter.KEEP_MISSION_GROUP and \
-                    each_group.id != StableShiftFilter.KEEP_MISSION_GROUP.id:
-                # Disable other than requested mission group
-                self.keep_granule_mask[mask] = False
-                self.num_exclude_granules += np.sum(mask)
-                logging.info(
-                    f'Need to exclude {np.sum(mask)} granules for '
-                    f'{MissionSensor.GROUPS_MISSIONS[each_group.id]} group '
-                    f'as requested by user.'
-                )
-
-            if StableShiftFilter.EXCLUDE_MISSION_GROUP and \
-                    each_group.id in StableShiftFilter.EXCLUDE_MISSION_GROUP:
-                # Disable requested mission group
-                self.keep_granule_mask[mask] = False
-                self.num_exclude_granules += np.sum(mask)
-                logging.info(
-                    f'Need to exclude {np.sum(mask)} granules for '
-                    f'{MissionSensor.GROUPS_MISSIONS[each_group.id]} group '
-                    f'as requested by user.'
-                )
-
-            # Set threshold for all mission related granules
-            self.threshold[mask] = StableShiftFilter.THRESHOLD[each_group.id]
-
-        # Make sure all missions are encountered for when setting the threshold,
-        # if not then need to update StableShiftFilter.THRESHOLD
-        zero_mask = (self.threshold == 0)
-        if np.any(zero_mask):
-            # There are non populated missions in the dataset, raise an exception
-            unique_values = set(sensor_list[zero_mask])
-            raise RuntimeError(
-                f'Need to set stable_shift threshold for {unique_values} '
-                f'sensor groups in StableShiftFilter.THRESHOLD.'
-            )
-
-    def __call__(self, cube_ds: xr.Dataset):
-        """
-        Invoke stable_shift filter for the datacube.
-
-        Inputs:
-        =======
-        cube_ds: xarray.Dataset that represents the datacube.
-        """
-        # va_stable_shift = cube_ds[DataVars.VA_STABLE_SHIFT].values
-        # vr_stable_shift = cube_ds[DataVars.VR_STABLE_SHIFT].values
-        date_dt = cube_ds[DataVars.ImgPairInfo.DATE_DT].values
-
-        self.vx_stable_shift = cube_ds[DataVars.VX_STABLE_SHIFT].values
-
-        # Some older cubes inherit NaN's from granules for stable_shift
-        # attribute, set them to zero
-        nan_mask = np.isnan(self.vx_stable_shift)
-        self.vx_stable_shift[nan_mask] = 0
-
-        self.vy_stable_shift = cube_ds[DataVars.VY_STABLE_SHIFT].values
-        nan_mask = np.isnan(self.vy_stable_shift)
-        self.vy_stable_shift[nan_mask] = 0
-
-        max_values = np.maximum(
-            np.abs(self.vx_stable_shift),
-            np.abs(self.vy_stable_shift)
-        ) * date_dt / StableShiftFilter.DEC_YEAR_LEN
-
-        filter_mask = np.greater(max_values, self.threshold)
-
-        if np.any(filter_mask):
-            stable_shift = cube_ds[DataVars.FLAG_STABLE_SHIFT].values
-
-            # ATTN: need to apply stable_shift first, if any, then exclude the
-            # granules, if any, as they all use the full dataset length for masking
-
-            # Need to revert stable_shift adjustment if stable_shift == 2
-            _mask = (stable_shift == 2) & filter_mask & self.keep_granule_mask
-            if np.any(_mask):
-                # Add back corresponding stable_shift
-                self.reverse_stable_shift_mask[_mask] = True
-                self.num_reverse_stable_shift_mask = np.sum(_mask)
-
-                self.vx_stable_shift = self.vx_stable_shift[_mask]
-                self.vy_stable_shift = self.vy_stable_shift[_mask]
-
-                # Since vx and vy are 3d data variables, need to reshape
-                # the stable_shift values to the same 3d dimensions
-                self.vx_stable_shift = self.vx_stable_shift.reshape(
-                    (self.num_reverse_stable_shift_mask, 1, 1)
-                )
-                self.vy_stable_shift = self.vy_stable_shift.reshape(
-                    (self.num_reverse_stable_shift_mask, 1, 1)
-                )
-
-                # # Update vx and vy values as we process each chunk of datacube data
-                # vx_stable_shift = np.broadcast_to(self.vx_stable_shift, (np.sum(self.reverse_stable_shift_mask), x_len, y_len))
-                # vx[self.reverse_stable_shift_mask] += self.vx_stable_shift
-                #
-                # # Update vx in dataset
-                # ds[DataVars.VX].loc[dict(x=ds.x, y=ds.y, mid_date=ds.mid_date)] = vx
-
-            # Exclude the granule if stable_shift == 1
-            _mask = (stable_shift == 1) & filter_mask & self.keep_granule_mask
-            if np.any(_mask):
-                self.keep_granule_mask[_mask] = False
-
-                # If only specific mission group is used, then some of the granules
-                # might be set to be excluded already. Get the number of
-                # total excluded granules in the mask.
-                self.num_exclude_granules = np.sum(
-                    np.isin(self.keep_granule_mask, False)
-                ).item()
-
-                # DEBUG: pandas.errors.InvalidIndexError: Reindexing only valid with uniquely valued Index objects:
-                # There are duplicates of mid_date values in some datacubes,
-                # so can't use xr.Dataset.drop_isel()
-                # Solution: to mask each of the data variables required for
-                # composite generation by self.exclude_granule_mask
-
-                # Remove granules if any
-                # result_ds = cube_ds.drop_isel(mid_date=_mask_index)
-
-    def exclude(self, data):
-        """
-        Exclude granules, if any are detected by the filter, from the data.
-
-        ATTN: We had to introduce this method because of the
-        "pandas.errors.InvalidIndexError: Reindexing only valid with uniquely
-        valued Index objects" exception we are getting if calling
-        xr.Dataset.drop_isel()
-        for the datacube with layers with duplicates of "mid_date" values.
-
-        Inputs:
-        =======
-        data: Data to exclude granules from.
-
-        Returns:
-        ========
-        Updated or original data if no exclusions are required.
-        """
-        return_data = data
-        if self.num_exclude_granules > 0:
-            return_data = data[self.keep_granule_mask]
-
-        return return_data
-
-    def apply(self, vx, vy):
-        """
-        Apply stable_shift corrections to the datacube's vx and vy variables
-        and remove excluded granules if any.
-
-        Inputs:
-        =======
-        vx: VX data
-        vy: VY data
-
-        Returns:
-        ========
-        Updated vx and vy data or original data if no corrections are required.
-        """
-        return_vx = vx.copy()
-        return_vy = vy.copy()
-
-        if self.num_reverse_stable_shift_mask > 0:
-            _, y_len, x_len = vx.shape
-
-            # Update vx and vy values as we process each chunk of datacube data
-            vx_stable_shift = np.broadcast_to(
-                self.vx_stable_shift,
-                (self.num_reverse_stable_shift_mask, y_len, x_len)
-            )
-            return_vx[self.reverse_stable_shift_mask] += vx_stable_shift
-
-            vy_stable_shift = np.broadcast_to(
-                self.vy_stable_shift,
-                (self.num_reverse_stable_shift_mask, y_len, x_len)
-            )
-            return_vy[self.reverse_stable_shift_mask] += vy_stable_shift
-
-        if self.num_exclude_granules > 0:
-            # Exclude some of the granules
-            return_vx = return_vx[self.keep_granule_mask, :, :]
-            return_vy = return_vy[self.keep_granule_mask, :, :]
-
-        return (return_vx, return_vy)
 
 
 class ITSLiveComposite:
@@ -2372,19 +1648,11 @@ class ITSLiveComposite:
 
         cube_projection = int(self.cube_ds.attrs[CubeOutput.PROJECTION])
 
-        # Find corresponding to EPSG land ice mask file for the cube
-        found_row = ITSLiveComposite.SHAPE_FILE.loc[
-            ITSLiveComposite.SHAPE_FILE[ShapeFile.EPSG] == cube_projection
-        ]
-        if len(found_row) != 1:
-            raise RuntimeError(
-                f'Expected one entry for {cube_projection} in shapefile, got '
-                f'{len(found_row)} rows.'
-            )
-
+        # Find corresponding to EPSG ice masks files for the cube
         # Read land ice mask to be used for processing
-        self.land_ice_mask, _ = ITSCube.read_ice_mask(
-            found_row, ShapeFile.LANDICE_2KM, self.cube_ds.x, self.cube_ds.y
+        self.land_ice_mask, _ = shapefile.read_ice_mask(
+            ITSLiveComposite.SHAPE_FILE, shapefile.LANDICE_2KM,
+            self.cube_ds.x, self.cube_ds.y, cube_projection
         )
 
         # This is land ice coverage for the datacube
@@ -2394,28 +1662,34 @@ class ITSLiveComposite:
         self.land_ice_mask_composite = None
         self.land_ice_mask_composite_url = None
 
-        if ShapeFile.LANDICE in self.cube_ds:
-            self.land_ice_mask_composite = self.cube_ds[ShapeFile.LANDICE].values
-            self.land_ice_mask_composite_url = self.cube_ds[ShapeFile.LANDICE].attrs[CubeOutput.URL]
+        if shapefile.LANDICE in self.cube_ds:
+            self.land_ice_mask_composite = \
+                self.cube_ds[shapefile.LANDICE].values
+            self.land_ice_mask_composite_url = \
+                self.cube_ds[shapefile.LANDICE].attrs[CubeOutput.URL]
 
         else:
             self.land_ice_mask_composite, \
-                self.land_ice_mask_composite_url = ITSCube.read_ice_mask(
-                    found_row, ShapeFile.LANDICE, self.cube_ds.x, self.cube_ds.y
+                self.land_ice_mask_composite_url = shapefile.read_ice_mask(
+                    ITSLiveComposite.SHAPE_FILE, shapefile.LANDICE,
+                    self.cube_ds.x, self.cube_ds.y, cube_projection
                 )
 
         # This is floating ice coverage for the datacube
         self.floating_ice_mask_composite = None
         self.floating_ice_mask_composite_url = None
 
-        if ShapeFile.FLOATINGICE in self.cube_ds:
-            self.floating_ice_mask_composite = self.cube_ds[ShapeFile.FLOATINGICE].values
-            self.floating_ice_mask_composite_url = self.cube_ds[ShapeFile.FLOATINGICE].attrs[CubeOutput.URL]
+        if shapefile.FLOATINGICE in self.cube_ds:
+            self.floating_ice_mask_composite = \
+                self.cube_ds[shapefile.FLOATINGICE].values
+            self.floating_ice_mask_composite_url = \
+                self.cube_ds[shapefile.FLOATINGICE].attrs[CubeOutput.URL]
 
         else:
             self.floating_ice_mask_composite, \
-                self.floating_ice_mask_composite_url = ITSCube.read_ice_mask(
-                    found_row, ShapeFile.FLOATINGICE, self.cube_ds.x, self.cube_ds.y
+                self.floating_ice_mask_composite_url = shapefile.read_ice_mask(
+                    ITSLiveComposite.SHAPE_FILE, shapefile.FLOATINGICE,
+                    self.cube_ds.x, self.cube_ds.y, cube_projection
                 )
 
         # Read in only specific data variables
@@ -2423,32 +1697,31 @@ class ITSLiveComposite:
         # (relies on date_dt vector being sorted)
         # Store "shallow" version of the cube for carrying over some of the metadata
         # when writing composites to the Zarr store
-        cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
+        cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(
+                    DataVars.ImgPairInfo.DATE_DT
+                )
         logging.info(f'Original datacube sizes: {cube_ds.sizes}')
 
-        # Apply StableShiftFilter: revert stable_shift offset and/or exclude
+        # Setup StableShiftFilter: revert stable_shift offset and/or exclude
         # some granules.
         # Create valid granule mask and "need to adjust vx/vy" mask based on
         # the stable_shift filter
         start_time = timeit.default_timer()
-        self.stable_shift_filter = StableShiftFilter(
-            cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
-        )
-        # Apply stable shift filter to the cube
-        self.stable_shift_filter(cube_ds)
+        self.stable_shift_filter = sensorFilters.StableShiftFilter(cube_ds)
 
         # Remember datacube dimensions
         sizes = cube_ds.sizes
 
         # Update cube sizes with excluded granules
         self.cube_sizes = {
-            Coords.MID_DATE: sizes[Coords.MID_DATE] - self.stable_shift_filter.num_exclude_granules,
-            Coords.X: sizes[Coords.X],
-            Coords.Y: sizes[Coords.Y]
+            utils.Coords.MID_DATE: sizes[utils.Coords.MID_DATE] - \
+                self.stable_shift_filter.num_exclude_granules,
+            utils.Coords.X: sizes[utils.Coords.X],
+            utils.Coords.Y: sizes[utils.Coords.Y]
         }
         logging.info(f'Datacube sizes after StableShiftFilter: {self.cube_sizes}')
 
-        ITSLiveComposite.MID_DATE_LEN = self.cube_sizes[Coords.MID_DATE]
+        ITSLiveComposite.MID_DATE_LEN = self.cube_sizes[utils.Coords.MID_DATE]
 
         # Need to keep original datacube dimensions to revert stable_shift, if any.
         # Then remove any granules for these data variables if any are identified
@@ -2458,10 +1731,12 @@ class ITSLiveComposite:
             DataVars.VY
         ]]
 
-        # From this point on initialize all data based on "reduced" by StableShiftFilter
-        # datacube. Only vx and vy data need to be read in full, reversed stable_shift
-        # adjustment if any, and then reduced to the same size as reduced cube_ds
-        # by removing granules as identified by the StableShiftFilter, if any.
+        # From this point on initialize all data based on "reduced" by
+        # StableShiftFilter datacube.
+        # Only vx and vy data need to be read in full, reversed stable_shift
+        # adjustment if any, and then reduced to the same size as reduced
+        # cube_ds by removing granules as identified by the StableShiftFilter,
+        # if any.
 
         # Add systematic error based on level of co-registration
         # Load Dask arrays before being able to modify their values
@@ -2475,21 +1750,33 @@ class ITSLiveComposite:
         # locations.
         if ITSLiveComposite.USE_ERROR_SLOW:
             # Replace vx_error with valid vx_error_slow
-            vx_error_slow = self.stable_shift_filter.exclude(cube_ds.vx_error_slow.values)
+            vx_error_slow = self.stable_shift_filter.exclude(
+                cube_ds.vx_error_slow.values
+            )
             mask = ~np.isnan(vx_error_slow)
-            logging.info(f'Replacing vx_error with vx_error_slow for {np.sum(mask)} values')
+            logging.info(
+                f'Replacing vx_error with vx_error_slow for {np.sum(mask)} '
+                'values...'
+            )
             self.vx_error[mask] = vx_error_slow[mask]
 
         self.vy_error = self.stable_shift_filter.exclude(cube_ds.vy_error.values)
 
         if ITSLiveComposite.USE_ERROR_SLOW:
             # Replace vy_error with valid vx_error_slow
-            vy_error_slow = self.stable_shift_filter.exclude(cube_ds.vy_error_slow.values)
+            vy_error_slow = self.stable_shift_filter.exclude(
+                cube_ds.vy_error_slow.values
+            )
             mask = ~np.isnan(vy_error_slow)
-            logging.info(f'Replacing vy_error with vy_error_slow for {np.sum(mask)} values')
+            logging.info(
+                f'Replacing vy_error with vy_error_slow for {np.sum(mask)} '
+                'values'
+            )
             self.vy_error[mask] = vy_error_slow[mask]
 
-        stable_shift_values = self.stable_shift_filter.exclude(cube_ds[DataVars.FLAG_STABLE_SHIFT])
+        stable_shift_values = self.stable_shift_filter.exclude(
+            cube_ds[DataVars.FLAG_STABLE_SHIFT]
+        )
         # NOTE V3: a code is written as a simple summation of errors. It might
         # be better to add it as a root sum of squares:
         # sqrt(v[xy]_error**2 + error**2). Something to consider for v3.
@@ -2506,11 +1793,15 @@ class ITSLiveComposite:
         # Images acquisition times and middle_date of each layer as datetime.datetime objects
         acq_datetime_img1 = [
             t.astype('M8[ms]').astype('O') for t in
-            self.stable_shift_filter.exclude(cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1].values)
+            self.stable_shift_filter.exclude(
+                cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1].values
+            )
         ]
         acq_datetime_img2 = [
             t.astype('M8[ms]').astype('O') for t in
-            self.stable_shift_filter.exclude(cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2].values)
+            self.stable_shift_filter.exclude(
+                cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2].values
+        )
         ]
 
         # Compute decimal year representation for start and end dates of each velocity pair
@@ -2567,8 +1858,8 @@ class ITSLiveComposite:
 
         # These data members will be set for each block of data being currently
         # processed ---> have to change the logic if want to parallelize blocks
-        x_len = self.cube_sizes[Coords.X]
-        y_len = self.cube_sizes[Coords.Y]
+        x_len = self.cube_sizes[utils.Coords.X]
+        y_len = self.cube_sizes[utils.Coords.Y]
 
         # Allocate memory for composite outputs
         years_dims = (y_len, x_len, ITSLiveComposite.YEARS_LEN)
@@ -2588,13 +1879,13 @@ class ITSLiveComposite:
         self.std_error = CompositeVariable(dims, 'std_error')
 
         # Sensor data for the cube's layers: map each sensor to its group ID
-        self.sensors = SensorExcludeFilter.map_sensor_to_group(
+        self.sensors = sensorFilters.SensorExcludeFilter.map_sensor_to_group(
             self.stable_shift_filter.exclude(
                 cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
             )
         )
         # Identify sensors groups (L89, S1, S2, etc.) within datacube.
-        self.sensors_groups = SensorExcludeFilter.identify_sensor_groups(
+        self.sensors_groups = sensorFilters.SensorExcludeFilter.identify_sensor_groups(
             self.sensors
         )
 
@@ -2614,7 +1905,7 @@ class ITSLiveComposite:
         self.date_updated = self.date_created
 
         # Initialize sensor exclusion filter
-        self.sensor_filter = SensorExcludeFilter(
+        self.sensor_filter = sensorFilters.SensorExcludeFilter(
             acq_datetime_img1,
             acq_datetime_img2,
             self.sensors,
@@ -2650,7 +1941,7 @@ class ITSLiveComposite:
         """
         # Loop through cube in chunks to minimize memory footprint
         x_start = 0
-        x_num_to_process = self.cube_sizes[Coords.X]
+        x_num_to_process = self.cube_sizes[utils.Coords.X]
         # For validation/debugging only (RGI12A):
         # python ./new_composite.py -i ITS_LIVE_vel_EPSG32638_G0120_X350000_Y4750000.zarr
         # -o ITS_LIVE_velocity_EPSG32638_120m_X350000_Y475000_new_composite.zarr
@@ -2658,12 +1949,10 @@ class ITSLiveComposite:
         # -t s3://its-live-data/test-space/composites-optimize-Sep04.2025
         # --disableErrorSlowUse --chunkSize 10 |& tee
         # ITS_LIVE_velocity_EPSG32638_120m_X350000_Y475000_new_composite_noprint.zarr.log
-        # x_start = 300
-        # x_num_to_process = 40
 
         logging.info(
-            f"Processing cube size: [{self.cube_sizes[Coords.MID_DATE]}, "
-            f"{self.cube_sizes[Coords.Y]}, {self.cube_sizes[Coords.X]}]..."
+            f"Processing cube size: [{self.cube_sizes[utils.Coords.MID_DATE]}, "
+            f"{self.cube_sizes[utils.Coords.Y]}, {self.cube_sizes[utils.Coords.X]}]..."
         )
         while x_num_to_process > 0:
             # How many tasks to process at a time
@@ -2672,10 +1961,7 @@ class ITSLiveComposite:
                 else x_num_to_process
 
             y_start = 0
-            y_num_to_process = self.cube_sizes[Coords.Y]
-            # DEBUG:
-            # y_start = 470
-            # y_num_to_process = 10
+            y_num_to_process = self.cube_sizes[utils.Coords.Y]
 
             while y_num_to_process > 0:
                 y_num_tasks = ITSLiveComposite.NUM_TO_PROCESS \
@@ -2787,8 +2073,8 @@ class ITSLiveComposite:
         vy.flat = np.transpose(vy_org, ITSLiveComposite.CONT_TIME_ORDER)
 
         # Call filter to exclude sensors if any
-        start_time = timeit.default_timer()
-        land_ice_mask = None if self.land_ice_mask is None else self.land_ice_mask[start_y:stop_y, start_x:stop_x]
+        land_ice_mask = None if self.land_ice_mask is None else \
+                        self.land_ice_mask[start_y:stop_y, start_x:stop_x]
 
         exclude_sensors = self.sensor_filter(
             ITSLiveComposite.DATE_DT,
@@ -2948,11 +2234,16 @@ class ITSLiveComposite:
             if run_lsq_fit:
                 # Need to compare to LSQ fit excluding all S2 data: to see if
                 # S2 contains "faulty" data
-                mission_index = self.sensors_groups.index(SensorExcludeFilter.REF_SENSOR)
+                mission_index = self.sensors_groups.index(
+                    sensorFilters.SensorExcludeFilter.REF_SENSOR
+                )
 
                 # Find which layers correspond to the sensor group
                 # mask = (self.sensor_filter.sensors_str == SensorExcludeFilter.REF_SENSOR.mission)
-                mask = np.isin(self.sensor_filter.sensors_ids, SensorExcludeFilter.REF_SENSOR.id)
+                mask = np.isin(
+                    self.sensor_filter.sensors_ids,
+                    sensorFilters.SensorExcludeFilter.REF_SENSOR.id
+                )
                 # logging.info(f'DEBUG: total number of valid S2 points: {np.sum(~np.isnan(vx[:, :, mask]))}')
 
                 # Exclude S2 data from current block's variables
@@ -3157,13 +2448,13 @@ class ITSLiveComposite:
 
         ds = xr.Dataset(
             coords={
-                Coords.X: (
-                    Coords.X,
+                utils.Coords.X: (
+                    utils.Coords.X,
                     self.cube_ds.x.values,
                     X_ATTRS
                 ),
-                Coords.Y: (
-                    Coords.Y,
+                utils.Coords.Y: (
+                    utils.Coords.Y,
                     self.cube_ds.y.values,
                     Y_ATTRS
                 ),
@@ -3219,10 +2510,10 @@ class ITSLiveComposite:
 
         years_coord = pd.Index(ITSLiveComposite.YEARS, name=CompDataVars.TIME)
         var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [CompDataVars.TIME, Coords.Y, Coords.X]
+        var_dims = [CompDataVars.TIME, utils.Coords.Y, utils.Coords.X]
 
         twodim_var_coords = [self.cube_ds.y.values, self.cube_ds.x.values]
-        twodim_var_dims = [Coords.Y, Coords.X]
+        twodim_var_dims = [utils.Coords.Y, utils.Coords.X]
 
         self.land_ice_mask_composite = to_int_type(
             self.land_ice_mask_composite,
@@ -3230,16 +2521,16 @@ class ITSLiveComposite:
             DataVars.MISSING_BYTE
         )
         # Land ice mask exists for the composite
-        ds[ShapeFile.LANDICE] = xr.DataArray(
+        ds[shapefile.LANDICE] = xr.DataArray(
             data=self.land_ice_mask_composite,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: ShapeFile.Name[ShapeFile.LANDICE],
-                DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.LANDICE],
+                DataVars.STD_NAME: shapefile.Name[shapefile.LANDICE],
+                DataVars.DESCRIPTION_ATTR: shapefile.Description[shapefile.LANDICE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
-                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[ShapeFile.LANDICE],
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[shapefile.LANDICE],
                 CubeOutput.URL: self.land_ice_mask_composite_url
             }
         )
@@ -3252,16 +2543,16 @@ class ITSLiveComposite:
             DataVars.MISSING_BYTE
         )
         # Land ice mask exists for the composite
-        ds[ShapeFile.FLOATINGICE] = xr.DataArray(
+        ds[shapefile.FLOATINGICE] = xr.DataArray(
             data=self.floating_ice_mask_composite,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: ShapeFile.Name[ShapeFile.FLOATINGICE],
-                DataVars.DESCRIPTION_ATTR: ShapeFile.Description[ShapeFile.FLOATINGICE],
+                DataVars.STD_NAME: shapefile.Name[shapefile.FLOATINGICE],
+                DataVars.DESCRIPTION_ATTR: shapefile.Description[shapefile.FLOATINGICE],
                 DataVars.GRID_MAPPING: DataVars.MAPPING,
                 BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
-                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[ShapeFile.FLOATINGICE],
+                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[shapefile.FLOATINGICE],
                 CubeOutput.URL: self.floating_ice_mask_composite_url
             }
         )
@@ -3520,7 +2811,7 @@ class ITSLiveComposite:
         # Use "group" label for each of the sensors used to filter data
         sensor_coord = pd.Index(sensors_labels, name=CompDataVars.SENSORS)
         var_coords = [sensor_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [CompDataVars.SENSORS, Coords.Y, Coords.X]
+        var_dims = [CompDataVars.SENSORS, utils.Coords.Y, utils.Coords.X]
 
         self.max_dt = self.max_dt.transpose(CompositeVariable.CONT_IN_X)
         self.max_dt = to_int_type(self.max_dt)
@@ -3739,8 +3030,8 @@ class ITSLiveComposite:
         # when adding data variables that don't have the same attributes for the
         # coordinates, originally set Dataset coordinates attributes will be wiped out
         # (xarray bug?)
-        ds[Coords.X].attrs = X_ATTRS
-        ds[Coords.Y].attrs = Y_ATTRS
+        ds[utils.Coords.X].attrs = X_ATTRS
+        ds[utils.Coords.Y].attrs = Y_ATTRS
         ds[CompDataVars.TIME].attrs = TIME_ATTRS
         ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
 
@@ -3755,7 +3046,7 @@ class ITSLiveComposite:
         )
 
         # Don't set fill_value for the coordinate variables
-        for each in [CompDataVars.TIME, CompDataVars.SENSORS, Coords.X, Coords.Y]:
+        for each in [CompDataVars.TIME, CompDataVars.SENSORS, utils.Coords.X, utils.Coords.Y]:
             encoding_settings.setdefault(each, {}).update(
                 {
                     Output.COMPRESSOR_ATTR: compressor
@@ -3841,8 +3132,8 @@ class ITSLiveComposite:
         # Variables that have missing_value = 0
         for each in [
             CompDataVars.SENSOR_INCLUDE,
-            ShapeFile.LANDICE,
-            ShapeFile.FLOATINGICE
+            shapefile.LANDICE,
+            shapefile.FLOATINGICE
         ]:
             encoding_settings.setdefault(each, {}).update({
                 Output.DTYPE_ATTR: np.uint8,
@@ -3870,7 +3161,7 @@ class ITSLiveComposite:
             ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
 
         # Chunking to apply when writing datacube to the Zarr store
-        chunks_settings = (1, self.cube_sizes[Coords.Y], self.cube_sizes[Coords.X])
+        chunks_settings = (1, self.cube_sizes[utils.Coords.Y], self.cube_sizes[utils.Coords.X])
 
         for each in [
             DataVars.VX,
@@ -3886,7 +3177,7 @@ class ITSLiveComposite:
             })
 
         # Chunking to apply when writing datacube to the Zarr store
-        chunks_settings = (self.cube_sizes[Coords.Y], self.cube_sizes[Coords.X])
+        chunks_settings = (self.cube_sizes[utils.Coords.Y], self.cube_sizes[utils.Coords.X])
 
         for each in [
             CompDataVars.VX_AMP,
@@ -3909,8 +3200,8 @@ class ITSLiveComposite:
             CompDataVars.SLOPE_VX,
             CompDataVars.SLOPE_VY,
             CompDataVars.SLOPE_V,
-            ShapeFile.LANDICE,
-            ShapeFile.FLOATINGICE
+            shapefile.LANDICE,
+            shapefile.FLOATINGICE
         ]:
             encoding_settings[each].update({
                 Output.CHUNKS_ATTR: chunks_settings
@@ -4126,14 +3417,14 @@ if __name__ == '__main__':
         type=str,
         default=None,
         help=f"Mission group ID to create composites for [%(default)s]. "
-            f"One of {list(MissionSensor.ALL_GROUPS.keys())}."
+            f"One of {list(sensors.ALL_GROUPS.keys())}."
     )
     group.add_argument(
         '--excludeMissionGroup',
         type=lambda s: json.loads(s),
         default=None,
         help=f"JSON list of mission groups IDs to exclude from composites "
-            f"[%(default)s]. One of {list(MissionSensor.ALL_GROUPS.keys())}."
+            f"[%(default)s]. One of {list(sensors.ALL_GROUPS.keys())}."
     )
     parser.add_argument(
         '--v0Years',
@@ -4175,11 +3466,12 @@ if __name__ == '__main__':
 
     if args.missionGroup:
         # Mission group is provided
-        StableShiftFilter.KEEP_MISSION_GROUP = MissionSensor.ALL_GROUPS[args.missionGroup]
+        sensorFilters.StableShiftFilter.KEEP_MISSION_GROUP = \
+            sensors.ALL_GROUPS[args.missionGroup]
 
     elif args.excludeMissionGroup:
-        StableShiftFilter.EXCLUDE_MISSION_GROUP = [
-            MissionSensor.ALL_GROUPS[each] for each in args.excludeMissionGroup
+        sensorFilters.StableShiftFilter.EXCLUDE_MISSION_GROUP = [
+            sensors.ALL_GROUPS[each] for each in args.excludeMissionGroup
         ]
 
     ITSLiveComposite.V0_YEARS = json.loads(args.v0Years)
@@ -4192,9 +3484,11 @@ if __name__ == '__main__':
         logging.info(f'Composite S3: {ITSLiveComposite.S3}')
 
         # URL is valid only if output S3 bucket is provided
-        ITSLiveComposite.URL = ITSLiveComposite.S3.replace(ITSCube.S3_PREFIX, ITSCube.HTTP_PREFIX)
+        ITSLiveComposite.URL = ITSLiveComposite.S3.replace(utils.S3_PREFIX,
+                                                            utils.HTTP_PREFIX)
         url_tokens = urlparse(ITSLiveComposite.URL)
-        ITSLiveComposite.URL = url_tokens._replace(netloc=url_tokens.netloc+ITSCube.PATH_URL).geturl()
+        ITSLiveComposite.URL = url_tokens._replace(netloc=url_tokens.netloc +
+                                                    utils.PATH_URL).geturl()
         logging.info(f'Composite URL: {ITSLiveComposite.URL}')
 
     mosaics = ITSLiveComposite(args.inputCube, args.inputBucket)
