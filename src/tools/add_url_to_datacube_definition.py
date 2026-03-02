@@ -14,7 +14,6 @@ from pathlib import Path
 import s3fs
 
 from grid import Bounds
-import itslive_utils
 from itscube_types import CubeJson, BatchVars, datacube_filename_zarr
 
 
@@ -44,7 +43,7 @@ class DataCubeGlobalDefinition:
     # List of datacube filenames to include into catalog.
     CUBES_TO_INCLUDE = []
 
-    HTTP_PREFIX = 'http://its-live-data.s3.amazonaws.com'
+    HTTP_PREFIX = 'https://its-live-data.s3.amazonaws.com'
     S3_PREFIX = 's3://its-live-data'
 
     def __init__(self, grid_size: int):
@@ -58,24 +57,40 @@ class DataCubeGlobalDefinition:
 
         self.all_cubes = []
         self.all_cubes_jsons = []
+
         for each in s3_out.ls(DataCubeGlobalDefinition.CUBES_S3_PATH):
             all_files = s3_out.ls(each)
-            cubes = [each_cube for each_cube in all_files if each_cube.endswith('.zarr')]
-            cubes_jsons = [each_cube for each_cube in all_files if each_cube.endswith('.json')]
+            cubes = [each_cube for each_cube in all_files
+                        if each_cube.endswith('.zarr')]
+
+            cubes_jsons = [each_cube for each_cube in all_files
+                            if each_cube.endswith('.json')]
 
             self.all_cubes.extend(cubes)
             self.all_cubes_jsons.extend(cubes_jsons)
 
         if len(self.all_cubes):
             # Write down all found datacubes to the file
-            with open(DataCubeGlobalDefinition.FOUND_CUBES_FILE , 'w') as outfile:
+            with open(DataCubeGlobalDefinition.FOUND_CUBES_FILE, 'w') as outfile:
                 json.dump(self.all_cubes, outfile, indent=4)
 
-        self.all_cubes = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes]
-        self.all_cubes_jsons = [each.replace(DataCubeGlobalDefinition.AWS_PREFIX, BatchVars.HTTP_PREFIX) for each in self.all_cubes_jsons]
+        self.all_cubes = [
+            each.replace(DataCubeGlobalDefinition.AWS_PREFIX,
+                            BatchVars.HTTP_PREFIX) for each in self.all_cubes
+        ]
+        self.all_cubes_jsons = [
+            each.replace(DataCubeGlobalDefinition.AWS_PREFIX,
+                            BatchVars.HTTP_PREFIX) for each in
+            self.all_cubes_jsons
+        ]
 
-        logging.info(f'Number of datacubes in Zarr format: {len(self.all_cubes)}')
-        logging.info(f'Number of datacubes corresponding jsons: {len(self.all_cubes_jsons)}')
+        logging.info(
+            f'Number of datacubes in Zarr format: {len(self.all_cubes)}'
+        )
+        logging.info(
+            f'Number of datacubes corresponding jsons: '
+            f'{len(self.all_cubes_jsons)}'
+        )
 
     def __call__(self, cube_file: str, output_file: str):
         """
@@ -89,12 +104,9 @@ class DataCubeGlobalDefinition:
             cubes = json.load(fhandle)
 
             # Number of cubes to generate
-            num_jobs = 0
-            logging.info(f'Total number of datacubes: {len(cubes["features"])}')
-
-            if output_file is None:
-                # If output file is not provided, just report how many datacubes exist
-                return
+            logging.info(
+                f'Total number of datacubes: {len(cubes["features"])}'
+            )
 
             # Output only cubes that have Zarr store created for them.
             output_cubes = cubes
@@ -165,14 +177,23 @@ class DataCubeGlobalDefinition:
                     x_bounds = Bounds([each[0] for each in coords])
                     y_bounds = Bounds([each[1] for each in coords])
 
-                    mid_x = int((x_bounds.min + x_bounds.max)/2)
-                    mid_y = int((y_bounds.min + y_bounds.max)/2)
+                    mid_x = int((x_bounds.min + x_bounds.max) / 2)
+                    mid_y = int((y_bounds.min + y_bounds.max) / 2)
 
                     # Get mid point to the nearest 50
                     logging.info(f"Mid point: x={mid_x} y={mid_y}")
-                    mid_x = int(math.floor(mid_x/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
-                    mid_y = int(math.floor(mid_y/BatchVars.MID_POINT_RESOLUTION)*BatchVars.MID_POINT_RESOLUTION)
-                    logging.info(f"Mid point at {BatchVars.MID_POINT_RESOLUTION}: x={mid_x} y={mid_y}")
+                    mid_x = int(
+                        math.floor(mid_x / BatchVars.MID_POINT_RESOLUTION)
+                        * BatchVars.MID_POINT_RESOLUTION
+                    )
+                    mid_y = int(
+                        math.floor(mid_y / BatchVars.MID_POINT_RESOLUTION)
+                        * BatchVars.MID_POINT_RESOLUTION
+                    )
+                    logging.info(
+                        f"Mid point at {BatchVars.MID_POINT_RESOLUTION}: "
+                        f"x={mid_x} y={mid_y}"
+                    )
 
                     cube_filename = datacube_filename_zarr(
                         epsg, self.grid_size, mid_x, mid_y
@@ -186,11 +207,14 @@ class DataCubeGlobalDefinition:
 
                     cube_url = [each for each in self.all_cubes if cube_filename in each]
                     if len(cube_url):
-                        # Check if the cube has a JSON file: it's a complete cube in s3 location
+                        # Check if the cube has a JSON file: it's a complete
+                        # cube in s3 location
                         cube_url_json = cube_url[0].replace('.zarr', '.json')
 
                         if cube_url_json in self.all_cubes_jsons:
-                            logging.info(f'Cube URL has corresponsing json: {cube_url[0]}')
+                            logging.info(
+                                f'Cube URL has corresponsing json: {cube_url[0]}'
+                            )
 
                             # The datacube in Zarr format exists, update GeoJson
                             each_cube[CubeJson.PROPERTIES][CubeJson.URL] = cube_url[0]
@@ -199,11 +223,13 @@ class DataCubeGlobalDefinition:
 
                             num_cubes += 1
 
-                            # If constructing reduced catalog, append cube to the result catalog
+                            # If constructing reduced catalog, append cube to
+                            # the result catalog
                             if not DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG:
                                 output_cubes[CubeJson.FEATURES].append(each_cube)
 
-                            # Write number of granules for existing cube to the catalog geojson file
+                            # Write number of granules for existing cube to
+                            # the catalog geojson file
                             cube_s3_url_meta = os.path.join(
                                 cube_url[0].replace(
                                     DataCubeGlobalDefinition.HTTP_PREFIX,
@@ -212,28 +238,39 @@ class DataCubeGlobalDefinition:
                                 '.zmetadata'
                             )
 
-                            # Open the cube's metadata to get number of granules
+                            # Open the cube's metadata to get number of
+                            # granules
                             with s3.open(cube_s3_url_meta, 'r') as fh:
                                 meta = json.load(fh)
-                                each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT] = meta['metadata']['mid_date/.zarray']['shape'][0]
-                                logging.info(f"Number of granules: {each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT]} for {cube_url[0]}")
+                                each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT] = \
+                                    meta['metadata']['mid_date/.zarray']['shape'][0]
+
+                                logging.info(
+                                    f"Number of granules: "
+                                    f"{each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT]} "
+                                    f"for {cube_url[0]}"
+                                )
 
                         else:
-                            logging.info(f'Cube URL {cube_url[0]} does not have corresponsing json: {cube_url_json}')
+                            logging.info(
+                                f'Cube URL {cube_url[0]} does not have '
+                                f'corresponsing json: {cube_url_json}'
+                            )
 
             logging.info(f"Number of updated entries: {num_cubes}")
 
             # Write job info to the json file
-            logging.info(f"Writing updated datacube info to the {output_file}...")
+            logging.info(
+                f"Writing updated datacube info to the {output_file}..."
+            )
+
             with open(output_file, 'w') as output_fhandle:
                 json.dump(output_cubes, output_fhandle, indent=4)
 
             return
 
-def main(
-    cube_definition_file: str,
-    grid_size: int,
-    output_file: str):
+
+def main(cube_definition_file: str, grid_size: int, output_file: str):
     """
     Driver to update general datacube definition file with existing
     datacube NetCDF S3 URLs.
@@ -250,9 +287,9 @@ if __name__ == '__main__':
 
     # Set up logging
     logging.basicConfig(
-        level = logging.INFO,
-        format = '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt = '%Y-%m-%d %H:%M:%S'
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
 
     # Command-line arguments parser
@@ -280,29 +317,32 @@ if __name__ == '__main__':
         type=str,
         action='store',
         default=None,
-        help="File to capture updated general datacube definition information [%(default)s]"
+        help="File to capture updated general datacube definition information "
+                "[%(default)s]"
     )
     parser.add_argument(
         '-e', '--epsgCode',
         type=str,
         action='store',
         default=None,
-        help="JSON list to specify EPSG codes of interest for the datacubes to generate [%(default)s]"
+        help="JSON list to specify EPSG codes of interest for the datacubes "
+                "to generate [%(default)s]"
     )
     parser.add_argument(
         '--disableReducedCatalog',
         action='store_true',
         default=False,
         help="Flag to disable reduced (list only the cubes for which Zarr "
-            "store exists) catalog generation. Default is to generate "
-            "reduced catalog."
+                "store exists) catalog generation. Default is to generate "
+                "reduced catalog."
     )
     parser.add_argument(
         '--includeCubesFile',
         type=Path,
         action='store',
         default=None,
-        help="File that contains a list of S3 URLs for datacube to include into catalog [%(default)s]."
+        help="File that contains a list of S3 URLs for datacube to include "
+                "into catalog [%(default)s]."
     )
     parser.add_argument(
         '-d', '--bucketDir',
@@ -316,24 +356,30 @@ if __name__ == '__main__':
 
     logging.info(f"Command-line arguments: {sys.argv}")
 
-    epsg_codes = list(map(str, json.loads(args.epsgCode))) if args.epsgCode is not None else None
+    epsg_codes = list(map(str, json.loads(args.epsgCode))) \
+        if args.epsgCode is not None else None
+
     if epsg_codes and len(epsg_codes):
-        logging.info(f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes")
+        logging.info(
+            f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes"
+        )
         DataCubeGlobalDefinition.EPSG_TO_UPDATE = epsg_codes
 
     DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG = args.disableReducedCatalog
     DataCubeGlobalDefinition.CUBES_S3_PATH = args.bucketDir
 
     if args.includeCubesFile is not None:
-        DataCubeGlobalDefinition.CUBES_TO_INCLUDE = [os.path.basename(each) for each in args.includeCubesFile.read_text().split('\n')]
+        DataCubeGlobalDefinition.CUBES_TO_INCLUDE = [
+            os.path.basename(each) for each in
+            args.includeCubesFile.read_text().split('\n')
+        ]
 
     if len(DataCubeGlobalDefinition.CUBES_TO_INCLUDE):
-        logging.info(f"Number of datacubes for catalog: {len(DataCubeGlobalDefinition.CUBES_TO_INCLUDE)}")
+        logging.info(
+            f"Number of datacubes for catalog: "
+            f"{len(DataCubeGlobalDefinition.CUBES_TO_INCLUDE)}"
+        )
 
+    main(args.cubeDefinitionFile, args.gridSize, args.outputFile)
 
-    main(
-        args.cubeDefinitionFile,
-        args.gridSize,
-        args.outputFile)
-
-    logging.info(f"Done")
+    logging.info("Done")

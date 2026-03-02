@@ -14,7 +14,7 @@ import s3fs
 from itscube_types import CubeJson
 
 
-HTTP_PREFIX = 'http://its-live-data.s3.amazonaws.com'
+HTTP_PREFIX = 'https://its-live-data.s3.amazonaws.com'
 S3_PREFIX = 's3://its-live-data'
 
 
@@ -43,14 +43,14 @@ if __name__ == '__main__':
         '-a', '--compositesDir',
         type=str,
         action='store',
-        default='http://its-live-data.s3.amazonaws.com/composites/annual/v2-updated-september2025',
+        default='https://its-live-data.s3.amazonaws.com/composites/annual/v2-updated-september2025',
         help="S3 URL to the composites [%(default)s]."
     )
     parser.add_argument(
         '-c', '--cubesDir',
         type=str,
         action='store',
-        default='http://its-live-data.s3.amazonaws.com/datacubes/v2-updated-october2024',
+        default='https://its-live-data.s3.amazonaws.com/datacubes/v2-updated-october2024',
         help="S3 URL to the composites [%(default)s]."
     )
     parser.add_argument(
@@ -75,6 +75,12 @@ if __name__ == '__main__':
 
         for each_cube in cubes[CubeJson.FEATURES]:
             properties = each_cube[CubeJson.PROPERTIES]
+
+            # Replace HTTP URL with HTTPS - fixes access using python and
+            # julia
+            properties[CubeJson.URL] = properties[CubeJson.URL].replace(
+                'http://', 'https://'
+            )
 
             cube_path, cube_filename = os.path.split(properties[CubeJson.URL])
 
