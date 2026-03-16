@@ -8,9 +8,10 @@ Masha Liukis (JPL), Alex Gardner (JPL), Chad Greene (JPL), Mark Fahnestock (UAF)
 """
 import logging
 import os
+from itslive_mosaics_types import CompositeVars
 import numpy as np
 import xarray as xr
-from itscube_types import CubeOutput, DataVars, CompDataVars
+from itscube_types import Vars, ImgPairInfo
 import sensors
 
 
@@ -414,7 +415,7 @@ class StableShiftFilter:
       =======
       ds: xarray.Dataset containing the datacube.
       """
-      cube_sensors = ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
+      cube_sensors = ds[ImgPairInfo.satellite_img1].values
 
       sensor_list = SensorExcludeFilter.map_sensor_to_group(cube_sensors)
       logging.info(f'Total number of sensors in the cube: {sensor_list.size}')
@@ -499,15 +500,15 @@ class StableShiftFilter:
       cube_ds: xarray.Dataset that represents the datacube.
       """
       # Don't need to do anything about va_stable_shift and vr_stable_shift
-      date_dt = cube_ds[DataVars.ImgPairInfo.DATE_DT].values
-      self.vx_stable_shift = cube_ds[DataVars.VX_STABLE_SHIFT].values
+      date_dt = cube_ds[ImgPairInfo.date_dt].values
+      self.vx_stable_shift = cube_ds[Vars.vx_stable_shift].values
 
       # Some older cubes inherit NaN's from granules for stable_shift
       # attribute, set them to zero
       nan_mask = np.isnan(self.vx_stable_shift)
       self.vx_stable_shift[nan_mask] = 0
 
-      self.vy_stable_shift = cube_ds[DataVars.VY_STABLE_SHIFT].values
+      self.vy_stable_shift = cube_ds[Vars.vy_stable_shift].values
       nan_mask = np.isnan(self.vy_stable_shift)
       self.vy_stable_shift[nan_mask] = 0
 
@@ -519,7 +520,7 @@ class StableShiftFilter:
       filter_mask = np.greater(max_values, self.threshold)
 
       if np.any(filter_mask):
-         stable_shift = cube_ds[DataVars.FLAG_STABLE_SHIFT].values
+         stable_shift = cube_ds[Vars.flag_stable_shift].values
 
          # ATTN: need to apply stable_shift first, if any, then exclude the
          # granules, if any, as they all use the full dataset length for
@@ -672,7 +673,7 @@ def get_cube_data(cube_ds: xr.Dataset, stable_shift_filter: StableShiftFilter):
    # Sensor data for the cube's layers: map each sensor to its group ID
    sensors_ids = SensorExcludeFilter.map_sensor_to_group(
       stable_shift_filter.exclude(
-         cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
+         cube_ds[ImgPairInfo.satellite_img1].values
       )
    )
    # Identify sensors groups (L89, S1, S2, etc.) within datacube.
@@ -682,13 +683,13 @@ def get_cube_data(cube_ds: xr.Dataset, stable_shift_filter: StableShiftFilter):
    datetime_img1 = [
       t.astype('M8[ms]').astype('O') for t in
       stable_shift_filter.exclude(
-         cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1].values
+         cube_ds[ImgPairInfo.acquisition_date_img1].values
       )
    ]
    datetime_img2 = [
       t.astype('M8[ms]').astype('O') for t in
       stable_shift_filter.exclude(
-         cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2].values
+         cube_ds[ImgPairInfo.acquisition_date_img2].values
       )
    ]
 
@@ -698,19 +699,19 @@ def get_cube_data(cube_ds: xr.Dataset, stable_shift_filter: StableShiftFilter):
 # A set of datacube variables that are of interest. Update the list if
 # the list of variables is other than specified.
 CUBE_VARS = [
-   DataVars.VX,
-   DataVars.VY,
-   CompDataVars.VX_ERROR,
-   CompDataVars.VY_ERROR,
-   DataVars.ImgPairInfo.DATE_DT,
-   DataVars.ImgPairInfo.DATE_CENTER,
-   DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
-   DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
-   DataVars.FLAG_STABLE_SHIFT,
-   DataVars.VX_STABLE_SHIFT,
-   DataVars.VY_STABLE_SHIFT,
-   DataVars.ImgPairInfo.SATELLITE_IMG1,
-   DataVars.ImgPairInfo.MISSION_IMG1
+   Vars.vx,
+   Vars.vy,
+   Vars.flag_stable_shift,
+   Vars.vx_stable_shift,
+   Vars.vy_stable_shift,
+   CompositeVars.vx_error,
+   CompositeVars.vy_error,
+   ImgPairInfo.date_dt,
+   ImgPairInfo.date_center,
+   ImgPairInfo.acquisition_date_img1,
+   ImgPairInfo.acquisition_date_img2,
+   ImgPairInfo.satellite_img1,
+   ImgPairInfo.mission_img1
 ]
 
 # Dimensions order of the data to guarantee continuous memory in time dimension
@@ -812,7 +813,7 @@ if __name__ == '__main__':
    # (this is only important when we start applying the filters and need to
    # make sure that the data is in the correct chronological order when
    # creating composites)
-   cube_ds = ds[CUBE_VARS].sortby(DataVars.ImgPairInfo.DATE_DT)
+   cube_ds = ds[CUBE_VARS].sortby(ImgPairInfo.date_dt)
 
    # Load shapefile with ice mask information required for SensorExcludeFilter
    # processing.
@@ -824,7 +825,7 @@ if __name__ == '__main__':
    x = ds.x.values
    y = ds.y.values
 
-   cube_projection = int(cube_ds.attrs[CubeOutput.PROJECTION])
+   cube_projection = int(cube_ds.attrs[utils.OutputFormat.projection])
    land_ice_mask, _ = shapefile.read_ice_mask(shape_ds, shapefile.LANDICE_2KM,
                                                 x, y, cube_projection)
 
@@ -850,8 +851,8 @@ if __name__ == '__main__':
    # demonstration purposes we are just applying the filter to one spatial
    # block defined by i, j, and block size.
    logging.info(f'Loading vx and vy data for the selected spatial block...')
-   vx = cube_ds[DataVars.VX].values[:, j:j + block, i:i + block]
-   vy = cube_ds[DataVars.VY].values[:, j:j + block, i:i + block]
+   vx = cube_ds[Vars.vx].values[:, j:j + block, i:i + block]
+   vy = cube_ds[Vars.vy].values[:, j:j + block, i:i + block]
 
    # Land ice mask is already cropped to the datacube polygon
    land_ice_mask = None if land_ice_mask is None else \
@@ -879,7 +880,7 @@ if __name__ == '__main__':
 
    # Day separation between images
    dt = stable_shift_filter.exclude(
-      cube_ds[DataVars.ImgPairInfo.DATE_DT].values
+      cube_ds[ImgPairInfo.date_dt].values
    )
 
    date_center = stable_shift_filter.exclude(cube_ds[DATE_CENTER].values)

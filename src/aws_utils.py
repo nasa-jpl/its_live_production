@@ -2,6 +2,7 @@
 AWS utilities.
 """
 import requests
+import s3fs
 
 
 def get_instance_type():
@@ -40,6 +41,30 @@ def get_instance_type():
       pass
 
    return instance_type
+
+
+def make_s3fs(no_sign_request: bool = False, **kwargs) -> s3fs.S3FileSystem:
+   """
+   Return an S3FileSystem configured appropriately for the given options.
+   Public buckets get anon=True (equivalent to --no-sign-request).
+   Private buckets use AWS credential chain.
+
+   Input:
+      no_sign_request: Whether to disable signing the request (default: False).
+         If True, the request will be unsigned (anon=True), which is
+         appropriate for public buckets. If False, the request will be signed
+         using AWS credentials.
+      **kwargs: Additional keyword arguments to pass to the S3FileSystem
+      constructor.
+
+   Output:
+      An S3FileSystem instance configured according to the given options.
+   """
+   return s3fs.S3FileSystem(
+            anon=no_sign_request,
+            skip_instance_cache=True,
+            **kwargs
+         )
 
 
 if __name__ == "__main__":

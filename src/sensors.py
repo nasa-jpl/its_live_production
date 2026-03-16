@@ -39,6 +39,8 @@ LANDSAT89 = SensorGroup(['8.', '9.', '8.0', '9.0', 8.0, 9.0, '8', '9'],
 SENTINEL1 = SensorGroup(['1A', '1B', '1'], 'S1A_S1B', 11)
 SENTINEL2 = SensorGroup(['2A', '2B', '2'], 'S2A_S2B', 21)
 
+NISAR = SensorGroup(['A'], 'NISAR', 31)
+
 # TODO: update with new missions groups as they become available
 # to be included into datacubes
 ALL_GROUPS = {
@@ -46,7 +48,8 @@ ALL_GROUPS = {
    LANDSAT7.id: LANDSAT7,
    LANDSAT89.id: LANDSAT89,
    SENTINEL1.id: SENTINEL1,
-   SENTINEL2.id: SENTINEL2
+   SENTINEL2.id: SENTINEL2,
+   NISAR.id: NISAR
 }
 
 

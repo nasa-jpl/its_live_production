@@ -17,7 +17,6 @@ November 5, 2025
 import collections
 import datetime
 from email import utils
-from sys import stdout
 from dateutil.parser import parse
 import gc
 from joblib import Parallel, delayed
@@ -34,18 +33,10 @@ import zarr
 
 # Local imports
 from itscube import ITSCube
-from itscube_types import \
-    DataVars, \
-    BinaryFlag, \
-    Output, \
-    CubeOutput, \
-    CompDataVars, \
-    CompOutput, \
-    to_int_type, \
-    TIME_ATTRS, \
-    SENSORS_ATTRS, \
-    X_ATTRS, \
-    Y_ATTRS
+from itscube_types import CubeFormat, ImgPairInfo, Mapping, Vars
+from itslive_mosaics_types import TIME_ATTRS, SENSORS_ATTRS, X_ATTRS, Y_ATTRS
+from itslive_mosaics_types import CompositeVars
+from itslive_binary_type import BinaryFlag
 import itslive_utils
 import aws_utils
 import shapefile
@@ -1528,9 +1519,9 @@ class CompositeVariable:
         """
         Convert data to uint16 datatype to store to output file.
         """
-        self.v = to_int_type(self.v)
-        self.vx = to_int_type(self.vx)
-        self.vy = to_int_type(self.vy)
+        self.v = utils.to_int_type(self.v)
+        self.vx = utils.to_int_type(self.vx)
+        self.vy = utils.to_int_type(self.vy)
 
     @staticmethod
     def getThreeDimData(name, ds, x_index):
@@ -2208,16 +2199,16 @@ class StableShiftFilter:
         """
         # va_stable_shift = cube_ds[DataVars.VA_STABLE_SHIFT].values
         # vr_stable_shift = cube_ds[DataVars.VR_STABLE_SHIFT].values
-        date_dt = cube_ds[DataVars.ImgPairInfo.DATE_DT].values
+        date_dt = cube_ds[ImgPairInfo.date_dt].values
 
-        self.vx_stable_shift = cube_ds[DataVars.VX_STABLE_SHIFT].values
+        self.vx_stable_shift = cube_ds[Vars.vx_stable_shift].values
 
         # Some older cubes inherit NaN's from granules for stable_shift
         # attribute, set them to zero
         nan_mask = np.isnan(self.vx_stable_shift)
         self.vx_stable_shift[nan_mask] = 0
 
-        self.vy_stable_shift = cube_ds[DataVars.VY_STABLE_SHIFT].values
+        self.vy_stable_shift = cube_ds[Vars.vy_stable_shift].values
         nan_mask = np.isnan(self.vy_stable_shift)
         self.vy_stable_shift[nan_mask] = 0
 
@@ -2229,7 +2220,7 @@ class StableShiftFilter:
         filter_mask = np.greater(max_values, self.threshold)
 
         if np.any(filter_mask):
-            stable_shift = cube_ds[DataVars.FLAG_STABLE_SHIFT].values
+            stable_shift = cube_ds[Vars.flag_stable_shift].values
 
             # ATTN: need to apply stable_shift first, if any, then exclude the
             # granules, if any, as they all use the full dataset length for masking
@@ -2357,20 +2348,20 @@ class ITSLiveComposite:
 
     # Only the following datacube variables are needed for composites/mosaics
     VARS = [
-        DataVars.VX,
-        DataVars.VY,
-        CompDataVars.VX_ERROR,
-        CompDataVars.VY_ERROR,
-        DataVars.ImgPairInfo.DATE_DT,
-        DataVars.ImgPairInfo.DATE_CENTER,
-        DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1,
-        DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2,
-        DataVars.FLAG_STABLE_SHIFT,
-        DataVars.VX_STABLE_SHIFT,
-        DataVars.VY_STABLE_SHIFT,
-        DataVars.ImgPairInfo.SATELLITE_IMG1,
-        DataVars.ImgPairInfo.MISSION_IMG1
-        # DataVars.URL  # for debugging only
+        Vars.vx,
+        Vars.vy,
+        Vars.flag_stable_shift,
+        Vars.vx_stable_shift,
+        Vars.vy_stable_shift,
+        CompositeVars.vx_error,
+        CompositeVars.vy_error,
+        ImgPairInfo.date_dt,
+        ImgPairInfo.date_center,
+        ImgPairInfo.acquisition_date_img1,
+        ImgPairInfo.acquisition_date_img2,
+        ImgPairInfo.satellite_img1,
+        ImgPairInfo.mission_img1
+        # Vars.url  # for debugging only
     ]
 
     # S3 store location for the Zarr composite
@@ -2471,7 +2462,7 @@ class ITSLiveComposite:
             read_skipped_granules=read_skipped_granules_flag
         )
 
-        cube_projection = int(self.cube_ds.attrs[CubeOutput.PROJECTION])
+        cube_projection = int(self.cube_ds.attrs[utils.OutputFormat.projection])
 
         # Find corresponding to EPSG ice mask files for the cube
         # Read land ice mask to be used for processing
@@ -2490,7 +2481,7 @@ class ITSLiveComposite:
             self.land_ice_mask_composite = \
                 self.cube_ds[shapefile.LANDICE].values
             self.land_ice_mask_composite_url = \
-                self.cube_ds[shapefile.LANDICE].attrs[CubeOutput.URL]
+                self.cube_ds[shapefile.LANDICE].attrs[utils.OutputFormat.url]
 
         else:
             self.land_ice_mask_composite, \
@@ -2507,7 +2498,7 @@ class ITSLiveComposite:
             self.floating_ice_mask_composite = \
                 self.cube_ds[shapefile.FLOATINGICE].values
             self.floating_ice_mask_composite_url = \
-                self.cube_ds[shapefile.FLOATINGICE].attrs[CubeOutput.URL]
+                self.cube_ds[shapefile.FLOATINGICE].attrs[utils.OutputFormat.url]
 
         else:
             self.floating_ice_mask_composite, \
@@ -2521,7 +2512,7 @@ class ITSLiveComposite:
         # Store "shallow" version of the cube for carrying over some of the metadata
         # when writing composites to the Zarr store
         cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(
-            DataVars.ImgPairInfo.DATE_DT
+            ImgPairInfo.date_dt
         )
         logging.info(f'Original datacube sizes: {cube_ds.sizes}')
 
@@ -2531,7 +2522,7 @@ class ITSLiveComposite:
         # the stable_shift filter
         start_time = timeit.default_timer()
         self.stable_shift_filter = StableShiftFilter(
-            cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
+            cube_ds[ImgPairInfo.satellite_img1].values
         )
         # Apply stable shift filter to the cube
         self.stable_shift_filter(cube_ds)
@@ -2554,8 +2545,8 @@ class ITSLiveComposite:
         # Then remove any granules for these data variables if any are identified
         # by the StableShiftFilter.
         self.data = cube_ds[[
-            DataVars.VX,
-            DataVars.VY
+            Vars.vx,
+            Vars.vy
         ]]
 
         # From this point on initialize all data based on "reduced" by StableShiftFilter
@@ -2589,7 +2580,7 @@ class ITSLiveComposite:
             logging.info(f'Replacing vy_error with vy_error_slow for {np.sum(mask)} values')
             self.vy_error[mask] = vy_error_slow[mask]
 
-        stable_shift_values = self.stable_shift_filter.exclude(cube_ds[DataVars.FLAG_STABLE_SHIFT])
+        stable_shift_values = self.stable_shift_filter.exclude(cube_ds[Vars.flag_stable_shift])
         # NOTE V3: a code is written as a simple summation of errors. It might
         # be better to add it as a root sum of squares:
         # sqrt(v[xy]_error**2 + error**2). Something to consider for v3.
@@ -2606,11 +2597,11 @@ class ITSLiveComposite:
         # Images acquisition times and middle_date of each layer as datetime.datetime objects
         acq_datetime_img1 = [
             t.astype('M8[ms]').astype('O') for t in
-            self.stable_shift_filter.exclude(cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG1].values)
+            self.stable_shift_filter.exclude(cube_ds[ImgPairInfo.acquisition_date_img1].values)
         ]
         acq_datetime_img2 = [
             t.astype('M8[ms]').astype('O') for t in
-            self.stable_shift_filter.exclude(cube_ds[DataVars.ImgPairInfo.ACQUISITION_DATE_IMG2].values)
+            self.stable_shift_filter.exclude(cube_ds[ImgPairInfo.acquisition_date_img2].values)
         ]
 
         # Compute decimal year representation for start and end dates of each velocity pair
@@ -2662,7 +2653,7 @@ class ITSLiveComposite:
 
         # Day separation between images (sorted per cube.sortby() call above)
         ITSLiveComposite.DATE_DT = self.stable_shift_filter.exclude(
-            cube_ds[DataVars.ImgPairInfo.DATE_DT].values
+            cube_ds[ImgPairInfo.date_dt].values
         )
 
         # These data members will be set for each block of data being currently
@@ -2678,19 +2669,19 @@ class ITSLiveComposite:
         # from original composite
         self.error.setThreeDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [CompDataVars.V_ERROR, CompDataVars.VX_ERROR, CompDataVars.VY_ERROR]
+            [CompositeVars.v_error, CompositeVars.vx_error, CompositeVars.vy_error]
         )
 
         self.count = CompositeVariable(years_dims, 'count')
         self.count.setThreeDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [CompDataVars.COUNT, None, None]
+            [CompositeVars.count, None, None]
         )
 
         self.mean = CompositeVariable(years_dims, 'mean')
         self.mean.setThreeDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [DataVars.V, DataVars.VX, DataVars.VY]
+            [Vars.v, Vars.vx, Vars.vy]
         )
 
         # Allocate memory for LSQ fit outputs
@@ -2698,56 +2689,56 @@ class ITSLiveComposite:
         dims = (y_len, x_len)
         self.outlier_fraction = np.full(dims, np.nan)
         self.outlier_fraction[:, :ITSLiveComposite.X_KEEP] = CompositeVariable.getTwoDimData(
-            CompDataVars.OUTLIER_FRAC, existing_ds, ITSLiveComposite.X_KEEP
+            CompositeVars.outlier_frac, existing_ds, ITSLiveComposite.X_KEEP
         )
 
         self.count_image_pairs = CompositeVariable(dims, 'count_image_pairs')
         self.count_image_pairs.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [None, CompDataVars.COUNT0, None],
+            [None, CompositeVars.count0, None],
         )
 
         self.amplitude = CompositeVariable(dims, 'amplitude')
         self.amplitude.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [CompDataVars.V_AMP, CompDataVars.VX_AMP, CompDataVars.VY_AMP],
+            [CompositeVars.v_amp, CompositeVars.vx_amp, CompositeVars.vy_amp],
         )
 
         self.sigma = CompositeVariable(dims, 'sigma')
         self.sigma.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [CompDataVars.V_AMP_ERROR, CompDataVars.VX_AMP_ERROR,
-                CompDataVars.VY_AMP_ERROR]
+            [CompositeVars.v_amp_error, CompositeVars.vx_amp_error,
+                CompositeVars.vy_amp_error]
         )
 
         self.phase = CompositeVariable(dims, 'phase')
         self.phase.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [CompDataVars.V_PHASE, CompDataVars.VX_PHASE, CompDataVars.VY_PHASE]
+            [CompositeVars.v_phase, CompositeVars.vx_phase, CompositeVars.vy_phase]
         )
 
         self.offset = CompositeVariable(dims, 'offset')
         self.offset.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [CompDataVars.V0, CompDataVars.VX0, CompDataVars.VY0]
+            [CompositeVars.v0, CompositeVars.vx0, CompositeVars.vy0]
         )
 
         self.slope = CompositeVariable(dims, 'slope')
         self.slope.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [CompDataVars.SLOPE_V, CompDataVars.SLOPE_VX, CompDataVars.SLOPE_VY]
+            [CompositeVars.slope_v, CompositeVars.slope_vx, CompositeVars.slope_vy]
         )
 
         self.std_error = CompositeVariable(dims, 'std_error')
         self.std_error.setTwoDimData(
             existing_ds, ITSLiveComposite.X_KEEP,
-            [CompDataVars.V0_ERROR, CompDataVars.VX0_ERROR, CompDataVars.VY0_ERROR]
+            [CompositeVars.v0_error, CompositeVars.vx0_error, CompositeVars.vy0_error]
         )
 
         # Sensor data for the cube's layers: map each sensor to its group ID
         self.sensors = SensorExcludeFilter.map_sensor_to_group(
             self.stable_shift_filter.exclude(
-                cube_ds[DataVars.ImgPairInfo.SATELLITE_IMG1].values
+                cube_ds[ImgPairInfo.satellite_img1].values
             )
         )
         # Identify sensors groups (L89, S1, S2, etc.) within datacube.
@@ -2759,7 +2750,7 @@ class ITSLiveComposite:
         # adjusted by milliseconds to guarantee uniqueness of the values so we
         # can manipulate the whole xr.Dataset based on "mid_date" dimension
         self.date_center = self.stable_shift_filter.exclude(
-            cube_ds[DataVars.ImgPairInfo.DATE_CENTER].values
+            cube_ds[ImgPairInfo.date_center].values
         )
 
         sensor_dims = (y_len, x_len, len(self.sensors_groups))
@@ -2769,7 +2760,7 @@ class ITSLiveComposite:
         # Read existing composite values for the variable
         self.sensor_include[:, :ITSLiveComposite.X_KEEP, :] = \
             CompositeVariable.getThreeDimData(
-                CompDataVars.SENSOR_INCLUDE, existing_ds,
+                CompositeVars.SENSOR_INCLUDE, existing_ds,
                 ITSLiveComposite.X_KEEP
             )
 
@@ -3324,67 +3315,83 @@ class ITSLiveComposite:
                     self.cube_ds.y.values,
                     Y_ATTRS
                 ),
-                CompDataVars.TIME: (
-                    CompDataVars.TIME,
+                utils.Coords.TIME: (
+                    utils.Coords.TIME,
                     ITSLiveComposite.YEARS,
                     TIME_ATTRS
                 ),
-                CompDataVars.SENSORS: (
-                    CompDataVars.SENSORS,
+                utils.Coords.SENSORS: (
+                    utils.Coords.SENSORS,
                     sensors_labels,
                     SENSORS_ATTRS
                 )
             },
             attrs={
-                CubeOutput.AUTHOR: CubeOutput.Values.AUTHOR
+                utils.OutputFormat.author: CubeFormat.values[utils.OutputFormat.author]
             }
         )
 
-        ds.attrs[CompOutput.COMPOSITES_SOFTWARE_VERSION] = ITSLiveComposite.VERSION
-        ds.attrs[CubeOutput.DATE_CREATED] = self.date_created
-        ds.attrs[CubeOutput.DATE_UPDATED] = self.date_updated
+        ds.attrs[CompositeVars.attrs.composites_software_version] = ITSLiveComposite.VERSION
+        ds.attrs[CubeFormat.date_created] = self.date_created
+        ds.attrs[CubeFormat.date_updated] = self.date_updated
 
         # To support old format datacubes for testing
         # TODO: remove check for existence once done testing with old cubes (to compare to Matlab)
-        if CubeOutput.S3 in self.cube_ds.attrs:
-            ds.attrs[CompOutput.DATACUBE_S3] = self.cube_ds.attrs[CubeOutput.S3]
-            ds.attrs[CompOutput.DATACUBE_URL] = self.cube_ds.attrs[CubeOutput.URL]
+        if utils.OutputFormat.s3 in self.cube_ds.attrs:
+            ds.attrs[CompositeVars.attrs.datacube_s3] = \
+                self.cube_ds.attrs[utils.OutputFormat.s3]
+            ds.attrs[CompositeVars.attrs.datacube_url] = \
+                self.cube_ds.attrs[utils.OutputFormat.url]
 
-        ds.attrs[CompOutput.DATACUBE_CREATED] = self.cube_ds.attrs[CubeOutput.DATE_CREATED]
-        ds.attrs[CompOutput.DATACUBE_UPDATED] = self.cube_ds.attrs[CubeOutput.DATE_UPDATED]
-        ds.attrs[CubeOutput.DATACUBE_SOFTWARE_VERSION] = self.cube_ds.attrs[CubeOutput.DATACUBE_SOFTWARE_VERSION]
-        ds.attrs[CompOutput.DATACUBE_AUTORIFT_PARAMETER_FILE] = self.cube_ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE]
+        ds.attrs[CompositeVars.attrs.datacube_created] = \
+            self.cube_ds.attrs[CubeFormat.date_created]
 
-        ds.attrs[CubeOutput.GDAL_AREA_OR_POINT] = CubeOutput.Values.AREA
+        ds.attrs[CompositeVars.attrs.datacube_updated] = \
+            self.cube_ds.attrs[CubeFormat.date_updated]
+
+        ds.attrs[CompositeVars.attrs.datacube_software_version] = \
+            self.cube_ds.attrs[CubeFormat.datacube_software_version]
+
+        ds.attrs[CompositeVars.attrs.datacube_autorift_parameter_file] = \
+            self.cube_ds.attrs[Vars.attrs.autorift_param_file]
+
+        ds.attrs[CubeFormat.gdal_area_or_point] = \
+            CubeFormat.values[CubeFormat.gdal_area_or_point]
 
         # To support old format datacubes for testing
         # TODO: remove once done testing with old cubes (to compare to Matlab)
-        if CubeOutput.GEO_POLYGON in self.cube_ds.attrs:
-            ds.attrs[CubeOutput.GEO_POLYGON] = self.cube_ds.attrs[CubeOutput.GEO_POLYGON]
-            ds.attrs[CubeOutput.PROJ_POLYGON] = self.cube_ds.attrs[CubeOutput.PROJ_POLYGON]
+        if CubeFormat.GEO_POLYGON in self.cube_ds.attrs:
+            ds.attrs[CubeFormat.geo_polygon] = \
+                self.cube_ds.attrs[CubeFormat.geo_polygon]
+            ds.attrs[CubeFormat.proj_polygon] = \
+                self.cube_ds.attrs[CubeFormat.proj_polygon]
 
-        ds.attrs[CubeOutput.INSTITUTION] = CubeOutput.Values.INSTITUTION
-        ds.attrs[CubeOutput.LATITUDE] = self.cube_ds.attrs[CubeOutput.LATITUDE]
-        ds.attrs[CubeOutput.LONGITUDE] = self.cube_ds.attrs[CubeOutput.LONGITUDE]
-        ds.attrs[CubeOutput.PROJECTION] = self.cube_ds.attrs[CubeOutput.PROJECTION]
-        ds.attrs[CubeOutput.S3] = ITSLiveComposite.S3
-        ds.attrs[CubeOutput.URL] = ITSLiveComposite.URL
-        ds.attrs[CubeOutput.TITLE] = CubeOutput.Values.TITLE
+        ds.attrs[utils.OutputFormat.institution] = \
+            CubeFormat.values[utils.OutputFormat.institution]
+        ds.attrs[utils.OutputFormat.latitude] = \
+            self.cube_ds.attrs[utils.OutputFormat.latitude]
+        ds.attrs[utils.OutputFormat.longitude] = \
+            self.cube_ds.attrs[utils.OutputFormat.longitude]
+        ds.attrs[utils.OutputFormat.projection] = self.cube_ds.attrs[utils.OutputFormat.projection]
+        ds.attrs[utils.OutputFormat.s3] = ITSLiveComposite.S3
+        ds.attrs[utils.OutputFormat.url] = ITSLiveComposite.URL
+        ds.attrs[utils.OutputFormat.title] = \
+            CubeFormat.values[utils.OutputFormat.title]
 
         # Add data as variables
-        ds[DataVars.MAPPING] = self.cube_ds[DataVars.MAPPING]
+        ds[Mapping.name] = self.cube_ds[Mapping.name]
 
-        years_coord = pd.Index(ITSLiveComposite.YEARS, name=CompDataVars.TIME)
+        years_coord = pd.Index(ITSLiveComposite.YEARS, name=utils.Coords.TIME)
         var_coords = [years_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [CompDataVars.TIME, utils.Coords.Y, utils.Coords.X]
+        var_dims = [utils.Coords.TIME, utils.Coords.Y, utils.Coords.X]
 
         twodim_var_coords = [self.cube_ds.y.values, self.cube_ds.x.values]
         twodim_var_dims = [utils.Coords.Y, utils.Coords.X]
 
-        self.land_ice_mask_composite = to_int_type(
+        self.land_ice_mask_composite = utils.to_int_type(
             self.land_ice_mask_composite,
             np.uint8,
-            DataVars.MISSING_BYTE
+            utils.Missing.byte
         )
         # Land ice mask exists for the composite
         ds[shapefile.LANDICE] = xr.DataArray(
@@ -3392,21 +3399,21 @@ class ITSLiveComposite:
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: shapefile.Name[shapefile.LANDICE],
-                DataVars.DESCRIPTION_ATTR: shapefile.Description[shapefile.LANDICE],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
-                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[shapefile.LANDICE],
-                CubeOutput.URL: self.land_ice_mask_composite_url
+                Vars.attrs.std_name: shapefile.Name[shapefile.LANDICE],
+                Vars.attrs.description: shapefile.Description[shapefile.LANDICE],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                BinaryFlag.attrs.values: BinaryFlag.values,
+                BinaryFlag.attrs.meanings: BinaryFlag.meanings[shapefile.LANDICE],
+                utils.OutputFormat.url: self.land_ice_mask_composite_url
             }
         )
         self.land_ice_mask_composite = None
         gc.collect()
 
-        self.floating_ice_mask_composite = to_int_type(
+        self.floating_ice_mask_composite = utils.to_int_type(
             self.floating_ice_mask_composite,
             np.uint8,
-            DataVars.MISSING_BYTE
+            utils.Missing.byte
         )
         # Floating ice mask exists for the composite
         ds[shapefile.FLOATINGICE] = xr.DataArray(
@@ -3414,12 +3421,12 @@ class ITSLiveComposite:
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: shapefile.Name[shapefile.FLOATINGICE],
-                DataVars.DESCRIPTION_ATTR: shapefile.Description[shapefile.FLOATINGICE],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
-                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[shapefile.FLOATINGICE],
-                CubeOutput.URL: self.floating_ice_mask_composite_url
+                Vars.attrs.std_name: shapefile.Name[shapefile.FLOATINGICE],
+                Vars.attrs.description: shapefile.Description[shapefile.FLOATINGICE],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                BinaryFlag.attrs.values: BinaryFlag.values,
+                BinaryFlag.attrs.meanings: BinaryFlag.meanings[shapefile.FLOATINGICE],
+                utils.OutputFormat.url: self.floating_ice_mask_composite_url
             }
         )
         self.floating_ice_mask_composite = None
@@ -3438,236 +3445,236 @@ class ITSLiveComposite:
 
         # Only these components are used in output, no need to convert the rest
         # of components
-        self.count.v = to_int_type(
+        self.count.v = utils.to_int_type(
             self.count.v,
             np.uint32,
-            DataVars.MISSING_BYTE
+            utils.Missing.byte
         )
-        self.count_image_pairs.vx = to_int_type(
+        self.count_image_pairs.vx = utils.to_int_type(
             self.count_image_pairs.vx,
             np.uint32,
-            DataVars.MISSING_BYTE
+            utils.Missing.byte
         )
 
-        ds[DataVars.V] = xr.DataArray(
+        ds[Vars.v] = xr.DataArray(
             data=self.mean.v,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[DataVars.V],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[DataVars.V],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[Vars.v],
+                Vars.attrs.description: CompositeVars.description[Vars.v],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.mean.v = None
         gc.collect()
 
-        ds[CompDataVars.V_ERROR] = xr.DataArray(
+        ds[CompositeVars.v_error] = xr.DataArray(
             data=self.error.v,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_ERROR],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v_error],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.v_error],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.error.v = None
         gc.collect()
 
-        ds[DataVars.VX] = xr.DataArray(
+        ds[Vars.vx] = xr.DataArray(
             data=self.mean.vx,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[DataVars.VX],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[DataVars.VX],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[Vars.vx],
+                Vars.attrs.description: CompositeVars.description[Vars.vx],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.mean.vx = None
         gc.collect()
 
-        ds[CompDataVars.VX_ERROR] = xr.DataArray(
+        ds[CompositeVars.vx_error] = xr.DataArray(
             data=self.error.vx,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX_ERROR],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vx_error],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vx_error],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.error.vx = None
         gc.collect()
 
-        ds[DataVars.VY] = xr.DataArray(
+        ds[Vars.vy] = xr.DataArray(
             data=self.mean.vy,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[DataVars.VY],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[DataVars.VY],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[Vars.vy],
+                Vars.attrs.description: CompositeVars.description[Vars.vy],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.mean.vy = None
         gc.collect()
 
-        ds[CompDataVars.VY_ERROR] = xr.DataArray(
+        ds[CompositeVars.vy_error] = xr.DataArray(
             data=self.error.vy,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY_ERROR],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vy_error],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vy_error],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.error.vy = None
         gc.collect()
 
-        ds[CompDataVars.V_AMP] = xr.DataArray(
+        ds[CompositeVars.v_amp] = xr.DataArray(
             data=self.amplitude.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_AMP] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_AMP] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v_amp] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.DESCRIPTION[CompositeVars.v_amp] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.amplitude.v = None
         gc.collect()
 
-        ds[CompDataVars.V_AMP_ERROR] = xr.DataArray(
+        ds[CompositeVars.v_amp_error] = xr.DataArray(
             data=self.sigma.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_AMP_ERROR],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_AMP_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v_amp_error],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.v_amp_error],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.sigma.v = None
         gc.collect()
 
-        ds[CompDataVars.V_PHASE] = xr.DataArray(
+        ds[CompositeVars.v_phase] = xr.DataArray(
             data=self.phase.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V_PHASE],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V_PHASE] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.DAY_OF_YEAR_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v_phase],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.v_phase] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.day_of_year
             }
         )
         self.phase.v = None
         gc.collect()
 
-        ds[CompDataVars.VX_AMP] = xr.DataArray(
+        ds[CompositeVars.vx_amp] = xr.DataArray(
             data=self.amplitude.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX_AMP],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_AMP] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vx_amp],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vx_amp] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.amplitude.vx = None
         gc.collect()
 
-        ds[CompDataVars.VX_AMP_ERROR] = xr.DataArray(
+        ds[CompositeVars.vx_amp_error] = xr.DataArray(
             data=self.sigma.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX_AMP_ERROR],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_AMP_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vx_amp_error],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vx_amp_error],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.sigma.vx = None
         gc.collect()
 
-        ds[CompDataVars.VX_PHASE] = xr.DataArray(
+        ds[CompositeVars.vx_phase] = xr.DataArray(
             data=self.phase.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX_PHASE],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX_PHASE] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.DAY_OF_YEAR_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vx_phase],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vx_phase] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.day_of_year
             }
         )
         self.phase.vx = None
         gc.collect()
 
-        ds[CompDataVars.VY_AMP] = xr.DataArray(
+        ds[CompositeVars.vy_amp] = xr.DataArray(
             data=self.amplitude.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY_AMP],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_AMP] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vy_amp],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vy_amp] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.amplitude.vy = None
         gc.collect()
 
-        ds[CompDataVars.VY_AMP_ERROR] = xr.DataArray(
+        ds[CompositeVars.vy_amp_error] = xr.DataArray(
             data=self.sigma.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY_AMP_ERROR],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_AMP_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vy_amp_error],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vy_amp_error],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.sigma.vy = None
         gc.collect()
 
-        ds[CompDataVars.VY_PHASE] = xr.DataArray(
+        ds[CompositeVars.vy_phase] = xr.DataArray(
             data=self.phase.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY_PHASE],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY_PHASE] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.DAY_OF_YEAR_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vy_phase],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vy_phase] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.day_of_year
             }
         )
         self.phase.vy = None
         gc.collect()
 
-        ds[CompDataVars.COUNT] = xr.DataArray(
+        ds[CompositeVars.count] = xr.DataArray(
             data=self.count.v,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.COUNT],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.COUNT],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.COUNT_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.count],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.count],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.count
             }
         )
         self.count.v = None
@@ -3675,23 +3682,23 @@ class ITSLiveComposite:
 
         # Add max_dt (per sensor)
         # Use "group" label for each of the sensors used to filter data
-        sensor_coord = pd.Index(sensors_labels, name=CompDataVars.SENSORS)
+        sensor_coord = pd.Index(sensors_labels, name=utils.Coords.SENSORS)
         var_coords = [sensor_coord, self.cube_ds.y.values, self.cube_ds.x.values]
-        var_dims = [CompDataVars.SENSORS, utils.Coords.Y, utils.Coords.X]
+        var_dims = [utils.Coords.SENSORS, utils.Coords.Y, utils.Coords.X]
 
         self.max_dt = self.max_dt.transpose(CompositeVariable.CONT_IN_X)
-        self.max_dt = to_int_type(self.max_dt)
+        self.max_dt = utils.to_int_type(self.max_dt)
 
-        ds[CompDataVars.MAX_DT] = xr.DataArray(
+        ds[CompositeVars.max_dt] = xr.DataArray(
             data=self.max_dt,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.MAX_DT],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.MAX_DT],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                CompOutput.SENSORS_LABELS: sensors_labels_attr,
-                DataVars.UNITS: DataVars.ImgPairInfo.UNITS[DataVars.ImgPairInfo.DATE_DT]
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.max_dt],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.max_dt],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                CompositeVars.attrs.sensors_labels: sensors_labels_attr,
+                utils.Units.name: utils.Units.dt
             }
         )
         self.max_dt = None
@@ -3706,23 +3713,23 @@ class ITSLiveComposite:
         self.sensor_include[:, :, ITSLiveComposite.X_KEEP:][mask_zeros] = 1
         self.sensor_include[:, :, ITSLiveComposite.X_KEEP:][mask_ones] = 0
 
-        self.sensor_include = to_int_type(
+        self.sensor_include = utils.to_int_type(
             self.sensor_include,
             np.uint8,
-            DataVars.MISSING_BYTE
+            utils.Missing.byte
         )
 
-        ds[CompDataVars.SENSOR_INCLUDE] = xr.DataArray(
+        ds[CompositeVars.sensor_include] = xr.DataArray(
             data=self.sensor_include,
             coords=var_coords,
             dims=var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SENSOR_INCLUDE],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SENSOR_INCLUDE],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
-                BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[CompDataVars.SENSOR_INCLUDE],
-                CompOutput.SENSORS_LABELS: sensors_labels_attr
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.sensor_include],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.sensor_include],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                BinaryFlag.attrs.values: BinaryFlag.values,
+                BinaryFlag.attrs.meanings: BinaryFlag.meanings[CompositeVars.sensor_include],
+                CompositeVars.attrs.sensors_labels: sensors_labels_attr
             }
         )
         self.sensor_include = None
@@ -3731,162 +3738,162 @@ class ITSLiveComposite:
         # Convert to percent and use uint8 datatype
         self.outlier_fraction[:, ITSLiveComposite.X_KEEP:] *= 100
 
-        self.outlier_fraction = to_int_type(
+        self.outlier_fraction = utils.to_int_type(
             self.outlier_fraction,
             np.uint8,
-            DataVars.MISSING_UINT8_VALUE
+            utils.Missing.u8value
         )
 
-        ds[CompDataVars.OUTLIER_FRAC] = xr.DataArray(
+        ds[CompositeVars.outlier_frac] = xr.DataArray(
             data=self.outlier_fraction,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.OUTLIER_FRAC],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.OUTLIER_FRAC] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.PERCENT_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.outlier_frac],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.outlier_frac] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.percent
             }
         )
         self.outlier_fraction = None
         gc.collect()
 
-        ds[CompDataVars.VX0] = xr.DataArray(
+        ds[CompositeVars.vx0] = xr.DataArray(
             data=self.offset.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX0],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1], CENTER_DATE.year),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vx0],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vx0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1], CENTER_DATE.year),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.offset.vx = None
         gc.collect()
 
-        ds[CompDataVars.VY0] = xr.DataArray(
+        ds[CompositeVars.vy0] = xr.DataArray(
             data=self.offset.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY0],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1], CENTER_DATE.year),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vy0],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vy0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1], CENTER_DATE.year),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.offset.vy = None
         gc.collect()
 
-        ds[CompDataVars.V0] = xr.DataArray(
+        ds[CompositeVars.v0] = xr.DataArray(
             data=self.offset.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V0] %(CENTER_DATE.year),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.v0] %(CENTER_DATE.year),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.offset.v = None
         gc.collect()
 
-        ds[CompDataVars.VX0_ERROR] = xr.DataArray(
+        ds[CompositeVars.vx0_error] = xr.DataArray(
             data=self.std_error.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VX0_ERROR],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VX0_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vx0_error],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vx0_error],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.std_error.vx = None
         gc.collect()
 
-        ds[CompDataVars.VY0_ERROR] = xr.DataArray(
+        ds[CompositeVars.vy0_error] = xr.DataArray(
             data=self.std_error.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.VY0_ERROR],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.VY0_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.vy0_error],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vy0_error],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.std_error.vy = None
         gc.collect()
 
-        ds[CompDataVars.V0_ERROR] = xr.DataArray(
+        ds[CompositeVars.v0_error] = xr.DataArray(
             data=self.std_error.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.V0_ERROR],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.V0_ERROR],
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v0_error],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.v0_error],
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y
             }
         )
         self.std_error.v = None
         gc.collect()
 
-        ds[CompDataVars.SLOPE_V] = xr.DataArray(
+        ds[CompositeVars.slope_v] = xr.DataArray(
             data=self.slope.v,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SLOPE_V],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SLOPE_V] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y2_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.slope_v],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.slope_v] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y2
             }
         )
         self.slope.v = None
         gc.collect()
 
-        ds[CompDataVars.SLOPE_VX] = xr.DataArray(
+        ds[CompositeVars.slope_vx] = xr.DataArray(
             data=self.slope.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SLOPE_VX],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SLOPE_VX] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y2_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.slope_vx],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.slope_vx] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y2
             }
         )
         self.slope.vx = None
         gc.collect()
 
-        ds[CompDataVars.SLOPE_VY] = xr.DataArray(
+        ds[CompositeVars.slope_vy] = xr.DataArray(
             data=self.slope.vy,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.SLOPE_VY],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.SLOPE_VY] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.UNITS: DataVars.M_Y2_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.slope_vy],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.slope_vy] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                utils.Units.name: utils.Units.m_y2
             }
         )
         self.slope.vy = None
         gc.collect()
 
-        ds[CompDataVars.COUNT0] = xr.DataArray(
+        ds[CompositeVars.count0] = xr.DataArray(
             data=self.count_image_pairs.vx,
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                DataVars.STD_NAME: CompDataVars.STD_NAME[CompDataVars.COUNT0],
-                DataVars.DESCRIPTION_ATTR: CompDataVars.DESCRIPTION[CompDataVars.COUNT0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                DataVars.GRID_MAPPING: DataVars.MAPPING,
-                DataVars.NOTE: f'{CompDataVars.COUNT0} may not equal the sum of annual counts, as a single image pair can contribute to the least squares fit for multiple years',
-                DataVars.UNITS: DataVars.COUNT_UNITS
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.count0],
+                Vars.attrs.description: CompositeVars.description[CompositeVars.count0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Mapping.attrs.grid_mapping: Mapping.name,
+                Vars.attrs.note: f'{CompositeVars.count0} may not equal the sum of annual counts, as a single image pair can contribute to the least squares fit for multiple years',
+                utils.Units.name: utils.Units.count
             }
         )
         self.count_image_pairs = None
@@ -3898,8 +3905,8 @@ class ITSLiveComposite:
         # (xarray bug?)
         ds[utils.Coords.X].attrs = X_ATTRS
         ds[utils.Coords.Y].attrs = Y_ATTRS
-        ds[CompDataVars.TIME].attrs = TIME_ATTRS
-        ds[CompDataVars.SENSORS].attrs = SENSORS_ATTRS
+        ds[utils.Coords.TIME].attrs = TIME_ATTRS
+        ds[utils.Coords.SENSORS].attrs = SENSORS_ATTRS
 
         # Set encoding
         encoding_settings = {}
@@ -3907,20 +3914,20 @@ class ITSLiveComposite:
         # Compression for the data
         compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
 
-        encoding_settings.setdefault(CompDataVars.TIME, {}).update(
-            {DataVars.UNITS: DataVars.ImgPairInfo.DATE_UNITS}
+        encoding_settings.setdefault(utils.Coords.TIME, {}).update(
+            {utils.Units.name: utils.Units.date}
         )
 
         # Don't set fill_value for the coordinate variables
-        for each in [CompDataVars.TIME, CompDataVars.SENSORS, utils.Coords.X, utils.Coords.Y]:
+        for each in [utils.Coords.TIME, utils.Coords.SENSORS, utils.Coords.X, utils.Coords.Y]:
             encoding_settings.setdefault(each, {}).update(
                 {
-                    Output.COMPRESSOR_ATTR: compressor
+                    utils.OutputFormat.compressor: compressor
                 }
             )
 
-        encoding_settings.setdefault(CompDataVars.SENSORS, {}).update(
-            {Output.DTYPE_ATTR: 'str'}
+        encoding_settings.setdefault(utils.Coords.SENSORS, {}).update(
+            {utils.OutputFormat.dtype: 'str'}
         )
 
         # Newer xarray versions set "fill_value" as attribute instead of
@@ -3930,27 +3937,27 @@ class ITSLiveComposite:
 
         # Settings for variables of "float" data type
         for each in [
-            DataVars.VX,
-            DataVars.VY,
-            DataVars.V,
-            CompDataVars.VX0,
-            CompDataVars.VY0,
-            CompDataVars.V0,
-            CompDataVars.SLOPE_VX,
-            CompDataVars.SLOPE_VY,
-            CompDataVars.SLOPE_V
+            Vars.vx,
+            Vars.vy,
+            Vars.v,
+            CompositeVars.vx0,
+            CompositeVars.vy0,
+            CompositeVars.v0,
+            CompositeVars.slope_vx,
+            CompositeVars.slope_vy,
+            CompositeVars.slope_v
         ]:
             encoding_settings.setdefault(each, {}).update({
-                Output.DTYPE_ATTR: np.float32,
-                Output.COMPRESSOR_ATTR: compressor
+                utils.OutputFormat.dtype: np.float32,
+                utils.OutputFormat.compressor: compressor
             })
 
-            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_VALUE
-            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_VALUE
+            ds[each].attrs[CompositeVars.attrs.fill_value_attr] = utils.Missing.value
+            ds[each].attrs[utils.OutputFormat.fill_value] = utils.Missing.value
 
             # No need to set "missing_value" attribute for floating point data
             # as it has _FillValue set for encoding.
-            # ds[each].attrs[Output.MISSING_VALUE_ATTR] = DataVars.MISSING_VALUE
+            # ds[each].attrs[utils.Missing.name] = utils.Missing.value
 
         # Don't provide _FillValue for int types as it will avoid datatype
         # specification for the variable (according to xarray support,
@@ -3958,56 +3965,56 @@ class ITSLiveComposite:
 
         # Settings for variables of "uint16" data type
         for each in [
-            CompDataVars.VX_ERROR,
-            CompDataVars.VY_ERROR,
-            CompDataVars.V_ERROR,
-            CompDataVars.VX_AMP_ERROR,
-            CompDataVars.VY_AMP_ERROR,
-            CompDataVars.V_AMP_ERROR,
-            CompDataVars.VX_AMP,
-            CompDataVars.VY_AMP,
-            CompDataVars.V_AMP,
-            CompDataVars.VX_PHASE,
-            CompDataVars.VY_PHASE,
-            CompDataVars.V_PHASE,
-            CompDataVars.VX0_ERROR,
-            CompDataVars.VY0_ERROR,
-            CompDataVars.V0_ERROR,
-            CompDataVars.MAX_DT
+            CompositeVars.vx_error,
+            CompositeVars.vy_error,
+            CompositeVars.v_error,
+            CompositeVars.vx_amp_error,
+            CompositeVars.vy_amp_error,
+            CompositeVars.v_amp_error,
+            CompositeVars.vx_amp,
+            CompositeVars.vy_amp,
+            CompositeVars.v_amp,
+            CompositeVars.vx_phase,
+            CompositeVars.vy_phase,
+            CompositeVars.v_phase,
+            CompositeVars.vx0_error,
+            CompositeVars.vy0_error,
+            CompositeVars.v0_error,
+            CompositeVars.max_dt
         ]:
             encoding_settings.setdefault(each, {}).update({
-                Output.DTYPE_ATTR: np.uint16,
-                Output.COMPRESSOR_ATTR: compressor,
+                utils.OutputFormat.dtype: np.uint16,
+                utils.OutputFormat.compressor: compressor,
             })
 
-            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_POS_VALUE
-            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_POS_VALUE
+            ds[each].attrs[CompositeVars.attrs.fill_value_attr] = utils.Missing.uvalue
+            ds[each].attrs[utils.OutputFormat.fill_value] = utils.Missing.uvalue
 
         # Settings for variables of "uint8" data type
         for each in [
-            CompDataVars.OUTLIER_FRAC
+            CompositeVars.outlier_frac
         ]:
             encoding_settings.setdefault(each, {}).update({
-                Output.DTYPE_ATTR: np.uint8,
-                Output.COMPRESSOR_ATTR: compressor,
+                utils.OutputFormat.dtype: np.uint8,
+                utils.OutputFormat.compressor: compressor,
             })
 
-            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_UINT8_VALUE
-            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_UINT8_VALUE
+            ds[each].attrs[CompositeVars.attrs.fill_value_attr] = utils.Missing.u8value
+            ds[each].attrs[utils.OutputFormat.fill_value] = utils.Missing.u8value
 
         # Variables that have missing_value = 0
         for each in [
-            CompDataVars.SENSOR_INCLUDE,
+            CompositeVars.sensor_include,
             shapefile.LANDICE,
             shapefile.FLOATINGICE
         ]:
             encoding_settings.setdefault(each, {}).update({
-                Output.DTYPE_ATTR: np.uint8,
-                Output.COMPRESSOR_ATTR: compressor,
+                utils.OutputFormat.dtype: np.uint8,
+                utils.OutputFormat.compressor: compressor,
             })
 
-            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
-            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
+            ds[each].attrs[CompositeVars.attrs.fill_value_attr] = utils.Missing.byte
+            ds[each].attrs[utils.OutputFormat.fill_value] = utils.Missing.byte
 
         # NOTE: === this is relative to older versions of xarray ===
         # Settings for variables of "uint32" data type
@@ -4015,62 +4022,62 @@ class ITSLiveComposite:
         # variable (according to xarray support, _FillValue is used for floating point
         # datatypes only)
         for each in [
-            CompDataVars.COUNT,
-            CompDataVars.COUNT0
+            CompositeVars.count,
+            CompositeVars.count0
         ]:
             encoding_settings.setdefault(each, {}).update({
-                Output.DTYPE_ATTR: np.uint32,
-                Output.COMPRESSOR_ATTR: compressor,
+                utils.OutputFormat.dtype: np.uint32,
+                utils.OutputFormat.compressor: compressor,
             })
 
-            ds[each].attrs[CompOutput.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
-            ds[each].attrs[Output.FILL_VALUE_ATTR] = DataVars.MISSING_BYTE
+            ds[each].attrs[CompositeVars.attrs.fill_value_attr] = utils.Missing.byte
+            ds[each].attrs[utils.OutputFormat.fill_value] = utils.Missing.byte
 
         # Chunking to apply when writing datacube to the Zarr store
         chunks_settings = (1, self.cube_sizes[utils.Coords.Y], self.cube_sizes[utils.Coords.X])
 
         for each in [
-            DataVars.VX,
-            DataVars.VY,
-            DataVars.V,
-            CompDataVars.VX_ERROR,
-            CompDataVars.VY_ERROR,
-            CompDataVars.V_ERROR,
-            CompDataVars.MAX_DT
+            Vars.vx,
+            Vars.vy,
+            Vars.v,
+            CompositeVars.vx_error,
+            CompositeVars.vy_error,
+            CompositeVars.v_error,
+            CompositeVars.max_dt
         ]:
             encoding_settings[each].update({
-                Output.CHUNKS_ATTR: chunks_settings
+                utils.OutputFormat.chunks: chunks_settings
             })
 
         # Chunking to apply when writing datacube to the Zarr store
         chunks_settings = (self.cube_sizes[utils.Coords.Y], self.cube_sizes[utils.Coords.X])
 
         for each in [
-            CompDataVars.VX_AMP,
-            CompDataVars.VY_AMP,
-            CompDataVars.V_AMP,
-            CompDataVars.VX_PHASE,
-            CompDataVars.VY_PHASE,
-            CompDataVars.V_PHASE,
-            CompDataVars.VX_AMP_ERROR,
-            CompDataVars.VY_AMP_ERROR,
-            CompDataVars.V_AMP_ERROR,
-            CompDataVars.OUTLIER_FRAC,
-            CompDataVars.SENSOR_INCLUDE,
-            CompDataVars.VX0,
-            CompDataVars.VY0,
-            CompDataVars.V0,
-            CompDataVars.VX0_ERROR,
-            CompDataVars.VY0_ERROR,
-            CompDataVars.V0_ERROR,
-            CompDataVars.SLOPE_VX,
-            CompDataVars.SLOPE_VY,
-            CompDataVars.SLOPE_V,
+            CompositeVars.vx_amp,
+            CompositeVars.vy_amp,
+            CompositeVars.v_amp,
+            CompositeVars.vx_phase,
+            CompositeVars.vy_phase,
+            CompositeVars.v_phase,
+            CompositeVars.vx_amp_error,
+            CompositeVars.vy_amp_error,
+            CompositeVars.v_amp_error,
+            CompositeVars.outlier_frac,
+            CompositeVars.sensor_include,
+            CompositeVars.vx0,
+            CompositeVars.vy0,
+            CompositeVars.v0,
+            CompositeVars.vx0_error,
+            CompositeVars.vy0_error,
+            CompositeVars.v0_error,
+            CompositeVars.slope_vx,
+            CompositeVars.slope_vy,
+            CompositeVars.slope_v,
             shapefile.LANDICE,
             shapefile.FLOATINGICE
         ]:
             encoding_settings[each].update({
-                Output.CHUNKS_ATTR: chunks_settings
+                utils.OutputFormat.chunks: chunks_settings
             })
 
         logging.info(f"Encoding settings: {encoding_settings=}")
@@ -4337,8 +4344,8 @@ if __name__ == '__main__':
 
     if ITSLiveComposite.USE_ERROR_SLOW:
         # Extend variables to load for processing
-        ITSLiveComposite.VARS.append(f'{DataVars.VX}_{DataVars.ERROR_SLOW}')
-        ITSLiveComposite.VARS.append(f'{DataVars.VY}_{DataVars.ERROR_SLOW}')
+        ITSLiveComposite.VARS.append(f'{Vars.vx}_{Vars.postfix.error_slow}')
+        ITSLiveComposite.VARS.append(f'{Vars.vy}_{Vars.postfix.error_slow}')
 
     # Read shape file with ice masks information in
     ITSLiveComposite.SHAPE_FILE = ITSCube.read_shapefile(args.shapeFile)

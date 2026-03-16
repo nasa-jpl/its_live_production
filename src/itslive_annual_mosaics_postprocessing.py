@@ -31,7 +31,8 @@ import xarray as xr
 from grid import Bounds, Grid
 
 from itscube import ITSCube
-from itscube_types import BatchVars, DataVars, CompDataVars
+from itscube_types import BatchVars
+from itslive_mosaics_types import CompositeVars
 from itslive_annual_mosaics import ITSLiveAnnualMosaics, MosaicsOutputFormat
 import shapefile
 import utils
@@ -340,19 +341,19 @@ class ITSLiveAnnualMosaicsPostProcess:
                             logging.info(f'--->{each_var}')
 
                             other_value = np.nan
-                            if each_var in [CompDataVars.SENSOR_INCLUDE]:
+                            if each_var in [CompositeVars.sensor_include]:
                                 # Use binary flag's "include" value for masked out polygons:
                                 # per Alex: "1 = excluded by the filtering algorithm... not the masking"
                                 other_value = 0
 
                             ds[each_var] = ds[each_var].where(~self.mask_ds[ITSLiveAnnualMosaicsPostProcess.MASK_VAR], other=other_value)
 
-                    # Change missing_value for CompDataVars.SENSOR_INCLUDE
+                    # Change missing_value for CompositeVars.sensor_include
 
                     # Data variables which dtype should be uint8 in final mosaics with
                     # fill value = 255
                     MosaicsOutputFormat.UINT8_TYPES = [
-                        CompDataVars.OUTLIER_FRAC
+                        CompositeVars.outlier_frac
                     ]
 
                     # Data variables which dtype should be uint8 in final mosaics with
@@ -360,10 +361,10 @@ class ITSLiveAnnualMosaicsPostProcess:
                     MosaicsOutputFormat.UINT8_TYPES_ZERO_MISSING_VALUE = [
                         shapefile.LANDICE,
                         shapefile.FLOATINGICE,
-                        CompDataVars.SENSOR_INCLUDE
+                        CompositeVars.sensor_include
                     ]
 
-                    if ITSLiveAnnualMosaics.SUMMARY_KEY in basename_file:
+                    if utils.File.mosaicsSummaryKey in basename_file:
                         # This is a summary mosaic
                         ITSLiveAnnualMosaics.summary_mosaic_to_netcdf(
                             ds,

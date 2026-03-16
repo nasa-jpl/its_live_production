@@ -35,7 +35,14 @@ Description = {
    LANDICE: 'land ice mask, 0 = non-land-ice, 1 = land-ice',
    FLOATINGICE: 'floating ice mask, 0 = non-floating-ice, 1 = floating-ice',
 }
-
+Type = {
+   LANDICE: np.uint8,
+   FLOATINGICE: np.uint8,
+}
+MissingValue = {
+   LANDICE: utils.Missing.u8value,
+   FLOATINGICE: utils.Missing.u8value,
+}
 
 @itslive_utils.retry_decorator()
 def read_file(shapeFile: str):
