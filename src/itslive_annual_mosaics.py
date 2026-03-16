@@ -674,7 +674,8 @@ class ITSLiveAnnualMosaics:
         script_path = os.path.dirname(os.path.abspath(__file__))
 
         # Use "subprocess" as can't import taichi with numba at the same time
-        # (both use JIT compilers causing a conflict at import and initialization)
+        # (both use JIT compilers causing a conflict at import and
+        # initialization)
         command_line = [
             "python",
             os.path.join(script_path, "tools", "reproject_mosaics_taichi.py"),
