@@ -28,7 +28,7 @@ import xarray as xr
 from grid import Grid, Bounds
 from itscube_types import Mapping, Vars
 from itslive_mosaics_types import CompositeVars
-from nsidc_types import Mapping
+from nsidc_types import Mapping as NSIDCMapping
 import shapefile
 import utils
 
@@ -90,53 +90,50 @@ PROJECTION_ATTR = 'projection'
 
 # Non-EPSG projection that can be provided on output
 ESRICode = 102027
-
-# last: ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
 ESRICode_Proj4 = '+proj=lcc +lat_0=30 +lon_0=95 +lat_1=15 +lat_2=65 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs'
-# ESRICode_Proj4 = '+proj=lcc +lat_1=15 +lat_2=65 +lat_0=30 +lon_0=95 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
 
 required_mapping_attributes = {
     32610: {
-        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -123.0,
-        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
-        Mapping.FALSE_EASTING: 500000.0,
-        Mapping.FALSE_NORTHING: 0.0,
-        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+        NSIDCMapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -123.0,
+        NSIDCMapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        NSIDCMapping.FALSE_EASTING: 500000.0,
+        NSIDCMapping.FALSE_NORTHING: 0.0,
+        NSIDCMapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
     },
     32632: {
-        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 9.0,
-        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
-        Mapping.FALSE_EASTING: 500000.0,
-        Mapping.FALSE_NORTHING: 0.0,
-        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+        NSIDCMapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 9.0,
+        NSIDCMapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        NSIDCMapping.FALSE_EASTING: 500000.0,
+        NSIDCMapping.FALSE_NORTHING: 0.0,
+        NSIDCMapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
     },
     32638: {
-        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 45.0,
-        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
-        Mapping.FALSE_EASTING: 500000.0,
-        Mapping.FALSE_NORTHING: 0.0,
-        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+        NSIDCMapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 45.0,
+        NSIDCMapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        NSIDCMapping.FALSE_EASTING: 500000.0,
+        NSIDCMapping.FALSE_NORTHING: 0.0,
+        NSIDCMapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
     },
     32645: {
-        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 87.0,
-        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
-        Mapping.FALSE_EASTING: 500000.0,
-        Mapping.FALSE_NORTHING: 0.0,
-        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+        NSIDCMapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 87.0,
+        NSIDCMapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        NSIDCMapping.FALSE_EASTING: 500000.0,
+        NSIDCMapping.FALSE_NORTHING: 0.0,
+        NSIDCMapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
     },
     32718: {
-        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -75.0,
-        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
-        Mapping.FALSE_EASTING: 500000.0,
-        Mapping.FALSE_NORTHING: 10000000.0,
-        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+        NSIDCMapping.LONGITUDE_OF_CENTRAL_MERIDIAN: -75.0,
+        NSIDCMapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        NSIDCMapping.FALSE_EASTING: 500000.0,
+        NSIDCMapping.FALSE_NORTHING: 10000000.0,
+        NSIDCMapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
     },
     32759: {
-        Mapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 171.0,
-        Mapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
-        Mapping.FALSE_EASTING: 500000.0,
-        Mapping.FALSE_NORTHING: 10000000.0,
-        Mapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
+        NSIDCMapping.LONGITUDE_OF_CENTRAL_MERIDIAN: 171.0,
+        NSIDCMapping.LATITUDE_OF_PROJECTION_ORIGIN: 0.0,
+        NSIDCMapping.FALSE_EASTING: 500000.0,
+        NSIDCMapping.FALSE_NORTHING: 10000000.0,
+        NSIDCMapping.SCALE_FACTOR_AT_CENTRAL_MERIDIAN: 0.9996
     }
 }
 
@@ -554,7 +551,7 @@ class MosaicsReproject:
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
                 'crs_wkt': spatial_ref_3031,
-                Mapping.SPATIAL_REF: spatial_ref_3031,
+                Mapping.attrs.spatial_epsg: spatial_ref_3031,
                 'proj4text': "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
             }
 
@@ -570,7 +567,7 @@ class MosaicsReproject:
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
                 'crs_wkt': spatial_ref_3413,
-                Mapping.SPATIAL_REF: spatial_ref_3413,
+                Mapping.attrs.spatial_epsg: spatial_ref_3413,
                 'proj4text': "+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
             }
 
@@ -584,7 +581,7 @@ class MosaicsReproject:
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
                 'crs_wkt': spatial_ref_102027,
-                Mapping.SPATIAL_REF: spatial_ref_102027,
+                Mapping.attrs.spatial_epsg: spatial_ref_102027,
                 'proj4text': ESRICode_Proj4
             }
         elif self.xy_epsg == 8859:
@@ -633,7 +630,7 @@ class MosaicsReproject:
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
                 'crs_wkt': spatial_ref_8859,
-                Mapping.SPATIAL_REF: spatial_ref_8859,
+                Mapping.attrs.spatial_epsg: spatial_ref_8859,
                 'proj4text': '+proj=eqearth +lon_0=150 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
             }
 
@@ -662,9 +659,9 @@ class MosaicsReproject:
                 'utm_zone_number': zone,
                 'semi_major_axis': 6378137.0,
                 'inverse_flattening': 298.257223563,
-                Mapping.CRS_WKT: spacial_ref_value,
-                Mapping.SPATIAL_REF: spacial_ref_value,
-                Mapping.PROJ4TEXT: f"+proj=utm +zone={zone} +datum=WGS84 +units=m +no_defs"
+                NSIDCMapping.CRS_WKT: spacial_ref_value,
+                NSIDCMapping.SPATIAL_REF: spacial_ref_value,
+                NSIDCMapping.PROJ4TEXT: f"+proj=utm +zone={zone} +datum=WGS84 +units=m +no_defs"
             }
 
             if self.xy_epsg in required_mapping_attributes:
