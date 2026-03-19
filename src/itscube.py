@@ -1091,7 +1091,7 @@ class ITSCube:
             # Set autoRIFT attribute for newly appended layers to what
             # is already in the datacube
             self.autoRIFTParamFile = cube_ds.attrs[
-                Vars.autorift_param_file
+                Vars.attrs.autorift_param_file
             ]
 
             for each in [
