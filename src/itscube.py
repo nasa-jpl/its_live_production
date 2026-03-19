@@ -393,12 +393,18 @@ class ITSCube:
             "coordinates": [self.polygon_coords]
         }
 
-        found_urls = itslive_utils.serverless_search(
+        # found_urls = itslive_utils.serverless_search(
+        #     epsg_code=self.projection,
+        #     start_date=ITSCube.START_DATE,
+        #     end_date=ITSCube.END_DATE,
+        #     roi=roi,
+        #     base_catalog_href=ITSCube.STAC_CATALOG,
+        # )
+        found_urls = itslive_utils.serverless_search_itslive(
             epsg_code=self.projection,
             start_date=ITSCube.START_DATE,
             end_date=ITSCube.END_DATE,
-            roi=roi,
-            base_catalog_href=ITSCube.STAC_CATALOG,
+            roi=roi
         )
         total_num = len(found_urls)
         self.logger.info(

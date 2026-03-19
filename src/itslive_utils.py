@@ -20,6 +20,9 @@ import zarr
 # Local imports
 from grid import Bounds
 
+import itslive
+from itslive.search import EQ, GTE
+
 # Number of 'aws s3 cp' retries in case of a failure
 _NUM_AWS_COPY_RETRIES = 20
 
@@ -554,6 +557,67 @@ def build_cql2_filter(filters_list):
 
     return filters_list[0] if len(filters_list) == 1 else \
         {"op": "and", "args": filters_list}
+
+
+@timing_decorator
+def serverless_search_itslive(
+    epsg_code: str,
+    start_date: str,
+    end_date: str,
+    roi: dict,
+    percent_valid_pixels: float = 1.0,
+):
+    """Get list of granules using itslive Python package.
+
+    Returns:
+        list(str): Found list of granule URLs.
+
+    For example, this query should return all the granules that intersect
+    with the provided polygon and have 100% valid pixels in EPSG:32717
+    projection between 1982-01-01 and 2026-03-04:
+
+    urls = itslive.velocity_pairs.find(
+        engine="duckdb",
+        geojson={
+            "type": "Polygon",
+            "coordinates": [[
+                [-79.20094379386568, -2.7128288679416928],
+                [-78.97615089345577, -2.7124718244728148],
+                [-78.75138943360363, -2.7120728681102473],
+                [-78.52666289912634, -2.711632029553526],
+                [-78.301974772136,   -2.7111493427123956],
+                [-78.30245463061306, -2.485223527607242],
+                [-78.30289263885614, -2.259296852744831],
+                [-78.3032888305625,  -2.0333693961602926],
+                [-78.30364323620105, -1.8074412359243268],
+                [-78.52819277641638, -1.8077629004547089],
+                [-78.75278060638821, -1.8080566770534239],
+                [-78.97740325463644, -1.8083225431391514],
+                [-79.20205724699625, -1.8085604782683422],
+                [-79.20182073376273, -2.0346286492152004],
+                [-79.20155633443191, -2.260696153747212],
+                [-79.20126402864005, -2.486762917947902],
+                [-79.20094379386568, -2.7128288679416928],
+            ]]
+        },
+        start="1982-01-01",
+        end="2026-03-04",
+        filters={
+            "percent_valid_pixels": GTE(1.0),
+            "proj:code": EQ("EPSG:32717"),
+        }
+    )
+    """
+    return itslive.velocity_pairs.find(
+        engine="duckdb",
+        geojson=roi,
+        start=start_date,
+        end=end_date,
+        filters={
+            "percent_valid_pixels": GTE(percent_valid_pixels),
+            "proj:code": EQ(f"EPSG:{epsg_code}"),
+        }
+    )
 
 
 @timing_decorator
