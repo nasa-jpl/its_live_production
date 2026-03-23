@@ -1459,15 +1459,6 @@ class ITSCube:
                                 variable is not present in the input dataset
                                 'ds'. Default is utils.Missing.value.
         """
-        # if var_name not in ds:
-        #     logging.info(f"Variable '{var_name}' not found in dataset. "
-        #                     f"Corresponding url = {self.urls[index]}")
-        # else:
-        #     logging.info(f"Variable '{var_name}' found in dataset. "
-        #                     f"Corresponding url = {self.urls[index]}")
-
-
-
         if var_name in ds:
             _dims = [
                 d for d in ds[var_name].dims
@@ -1485,7 +1476,7 @@ class ITSCube:
                 # Don't preserve "time" dimension from original granule
                 return xr.DataArray(
                     data=utils.to_int_type(
-                        ds[var_name].values[0, :, :],
+                        ds[var_name].values[0, :, :].drop_vars(utils.Coords.TIME),
                         data_type=np.dtype(data_dtype),
                         fill_value=data_fill_value
                     ),
@@ -2261,8 +2252,12 @@ class ITSCube:
 
         # Process 'v' (all formats have v variable - variable's attributes
         # are inherited, so no need to set them manually)
-        v_layers = xr.concat([each_ds.v[0] for each_ds in self.ds],
-                                mid_date_coord)
+        v_layers = xr.concat(
+            [
+                each_ds.v[0].drop_vars(utils.Coords.TIME) for each_ds in self.ds
+            ],
+            mid_date_coord
+        )
 
         self.layers[Vars.v] = v_layers
         self.layers[Vars.v].attrs[Vars.attrs.description] = \
@@ -2308,7 +2303,13 @@ class ITSCube:
 
         # Process 'v[xy]' data variables and their attributes
         for each_var in [Vars.vx, Vars.vy]:
-            self.layers[each_var] = xr.concat([ds[each_var][0] for ds in self.ds], mid_date_coord)
+            self.layers[each_var] = xr.concat(
+                [
+                    ds[each_var][0].drop_vars(utils.Coords.TIME) for ds in
+                    self.ds
+                ],
+                mid_date_coord
+            )
             self.layers[each_var].attrs[Vars.attrs.description] = Vars.description[each_var]
             new_v_vars.append(each_var)
             new_v_vars.extend(self.process_v_attributes(each_var, mid_date_coord))
@@ -2321,7 +2322,12 @@ class ITSCube:
 
         # Process 'v[ar]' data variables and their attributes
         for each_var in [Vars.va, Vars.vr]:
-            self.layers[each_var] = xr.concat([self.get_data_var(ds, each_var, i) for i, ds in enumerate(self.ds)], mid_date_coord)
+            self.layers[each_var] = xr.concat(
+                [
+                    self.get_data_var(ds, each_var, i) for i, ds in
+                    enumerate(self.ds)
+                ],
+            mid_date_coord)
             self.layers[each_var].attrs[Vars.attrs.description] = Vars.description[each_var]
             new_v_vars.append(each_var)
             new_v_vars.extend(self.process_v_attributes(each_var, mid_date_coord))
@@ -2335,7 +2341,12 @@ class ITSCube:
         new_vars_zero_missing_value = []
         # Process 'M1[12]' data variables of radar format, if any, and their attributes
         for each_var in [Vars.m11, Vars.m12]:
-            self.layers[each_var] = xr.concat([self.get_data_var(ds, each_var) for ds in self.ds], mid_date_coord)
+            self.layers[each_var] = xr.concat(
+                [
+                    self.get_data_var(ds, each_var) for ds in self.ds
+                ],
+                mid_date_coord
+            )
             self.layers[each_var].attrs[Vars.attrs.std_name] = Vars.name[each_var]
             self.layers[each_var].attrs[Vars.attrs.description] = Vars.description[each_var]
             self.layers[each_var].attrs[utils.Units.name] = utils.Units.pixel_per_m_year
@@ -2351,13 +2362,14 @@ class ITSCube:
         # Process chip_size_height: dtype=ushort
         # Optical legacy granules might not have chip_size_height set, use
         # chip_size_width value instead
-        self.layers[Vars.chip_size_height] = xr.concat([
-                ds.chip_size_height[0] if
+        self.layers[Vars.chip_size_height] = xr.concat(
+            [
+                ds.chip_size_height[0].drop_vars(utils.Coords.TIME) if
                 np.ma.masked_equal(
                     ds.chip_size_height[0].values,
                     ITSCube.CHIP_SIZE_HEIGHT_NO_VALUE
                 ).count() != 0 else
-                ds.chip_size_width[0] for ds in self.ds
+                ds.chip_size_width[0].drop_vars(utils.Coords.TIME) for ds in self.ds
             ],
             mid_date_coord
         )
@@ -2387,7 +2399,11 @@ class ITSCube:
 
         # Process chip_size_width: dtype=ushort
         self.layers[Vars.chip_size_width] = xr.concat(
-            [ds.chip_size_width[0] for ds in self.ds], mid_date_coord
+            [
+                ds.chip_size_width[0].drop_vars(utils.Coords.TIME) for ds in
+                self.ds
+            ],
+            mid_date_coord
         )
         self.layers[Vars.chip_size_width].attrs[Vars.attrs.chip_size_coords] = \
             Vars.description[Vars.attrs.chip_size_coords]
@@ -2402,7 +2418,10 @@ class ITSCube:
 
         # Process interp_mask: dtype=ubyte
         self.layers[Vars.interp_mask] = xr.concat(
-            [ds.interp_mask[0] for ds in self.ds], mid_date_coord
+            [
+                ds.interp_mask[0].drop_vars(utils.Coords.TIME) for ds in self.ds
+            ],
+            mid_date_coord
         )
         self.layers[Vars.interp_mask].attrs[Vars.attrs.std_name] = \
             Vars.name[Vars.interp_mask]
