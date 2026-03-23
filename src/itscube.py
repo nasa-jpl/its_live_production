@@ -1476,7 +1476,7 @@ class ITSCube:
                 # Don't preserve "time" dimension from original granule
                 return xr.DataArray(
                     data=utils.to_int_type(
-                        ds[var_name].values[0, :, :].drop_vars(utils.Coords.TIME),
+                        ds[var_name].values[0, :, :],
                         data_type=np.dtype(data_dtype),
                         fill_value=data_fill_value
                     ),
