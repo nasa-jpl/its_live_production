@@ -212,10 +212,10 @@ class SensorExcludeFilter:
       """
       y_len, x_len, _ = ds_vx.shape
       dims = (y_len, x_len)
-      logging.info(
-         f'Applying SensorExcludeFilter to the block of spacial points with '
-         f'dimensions {dims}...'
-      )
+      # logging.info(
+      #    f'Applying SensorExcludeFilter to the block of spacial points with '
+      #    f'dimensions {dims}...'
+      # )
       exclude_sensors = np.frompyfunc(set, 0, 1)(np.empty(dims, dtype=object))
 
       if self.apply:
