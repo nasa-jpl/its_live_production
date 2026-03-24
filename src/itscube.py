@@ -7,7 +7,6 @@ Authors: Masha Liukis, Alex Gardner, Mark Fahnestock
 from dateutil.parser import parse
 from datetime import datetime
 import gc
-import geopandas as gpd
 import json
 import logging
 import os
@@ -195,7 +194,6 @@ class ITSCube:
     # existing backup.
     USE_EXISTING_BACKUP = False
 
-
     def __init__(self, polygon: tuple, projection: str):
         """
         Initialize object.
@@ -226,8 +224,8 @@ class ITSCube:
         self.y_cell = self.grid_y[1] - self.grid_y[0]
 
         # Grid cell half sizes
-        self.half_x_cell = self.x_cell/2.0
-        self.half_y_cell = self.y_cell/2.0
+        self.half_x_cell = self.x_cell / 2.0
+        self.half_y_cell = self.y_cell / 2.0
 
         abs_x_size = np.abs(self.half_x_cell)
         abs_y_size = np.abs(self.half_y_cell)
@@ -250,7 +248,7 @@ class ITSCube:
         mid_y = (self.grid_y.min() + self.grid_y.max()) / 2
 
         # Convert centroid to lon/lat coordinates
-        self.center_lon_lat = to_lon_lat_transformer.transform(mid_x, mid_y )
+        self.center_lon_lat = to_lon_lat_transformer.transform(mid_x, mid_y)
 
         # Convert polygon from its target projection to longitude/latitude
         # coordinates which are used by granule search API
@@ -323,7 +321,6 @@ class ITSCube:
             self.projection
         )
 
-
     def clear_vars(self):
         """
         Clear current set of cube layers.
@@ -337,7 +334,6 @@ class ITSCube:
         gc.collect()
 
         self.ds = []
-
 
     def clear(self):
         """
@@ -355,7 +351,6 @@ class ITSCube:
             SkippedGranules.duplicate: [],
             SkippedGranules.projection: {}
         }
-
 
     def request_granules(self, num_granules: int):
         """
@@ -445,7 +440,6 @@ class ITSCube:
         # return sentinel_granules
 
         return urls
-
 
     @staticmethod
     def skip_duplicate_l89_granules(found_urls):
@@ -768,7 +762,6 @@ class ITSCube:
 
         return granules, cube_layers_to_delete
 
-
     @staticmethod
     def get_tokens_from_filename(filename):
         """
@@ -802,7 +795,6 @@ class ITSCube:
 
         return url_proc_date_1, url_proc_date_2, id
 
-
     def add_layer(self, is_empty, layer_projection, mid_date, url, data):
         """
         Examine the layer if it qualifies to be added as a cube layer.
@@ -828,7 +820,6 @@ class ITSCube:
                     layer_projection, []
                 ).append(url)
 
-
     @staticmethod
     def init_output_store(output_dir: str):
         """
@@ -844,7 +835,6 @@ class ITSCube:
         if os.path.exists(output_dir):
             logging.info(f"Removing existing {output_dir}")
             shutil.rmtree(output_dir)
-
 
     @staticmethod
     def exists(output_dir: str, s3_bucket: str):
@@ -876,7 +866,6 @@ class ITSCube:
 
         logging.info(f'{cube_path} exists: {cube_exists is True}')
         return cube_exists
-
 
     @staticmethod
     def init_input_store(
@@ -1007,7 +996,6 @@ class ITSCube:
         # file-like access.
         return s3_in, cube_store, ds_from_zarr, skipped_granules
 
-
     def create_or_update(
         self,
         output_dir: str,
@@ -1040,7 +1028,6 @@ class ITSCube:
         else:
             # Create new datacube
             self.create_parallel(output_dir, output_bucket, num_granules)
-
 
     def update_parallel(
         self,
@@ -1308,7 +1295,7 @@ class ITSCube:
 
             tasks = [
                 dask.delayed(self.read_s3_dataset)(each_file, s3) for
-                each_file in found_urls[start:start+num_tasks]
+                each_file in found_urls[start:start + num_tasks]
             ]
             self.logger.info(
                 f"Processing {len(tasks)} tasks out of {num_to_process} "
@@ -1316,7 +1303,7 @@ class ITSCube:
             )
 
             results = None
-            with ProgressBar(): # Does not work with Client() scheduler
+            with ProgressBar():  # Does not work with Client() scheduler
                 results = dask.compute(
                     tasks,
                     scheduler=ITSCube.DASK_SCHEDULER,
@@ -1345,7 +1332,6 @@ class ITSCube:
             start += num_tasks
 
         return found_urls
-
 
     def create_parallel(
         self,
@@ -1393,7 +1379,7 @@ class ITSCube:
                     num_to_process
             tasks = [
                 dask.delayed(self.read_s3_dataset)(each_file, s3) for each_file
-                in found_urls[start:start+num_tasks]
+                in found_urls[start:start + num_tasks]
             ]
             self.logger.info(
                 f"Processing {len(tasks)} tasks out of {num_to_process} remaining"
@@ -1431,7 +1417,6 @@ class ITSCube:
             start += num_tasks
 
         return found_urls
-
 
     def get_data_var(
         self,
@@ -1497,7 +1482,6 @@ class ITSCube:
             coords=[self.grid_y, self.grid_x],
             dims=[utils.Coords.Y, utils.Coords.X]
         )
-
 
     @staticmethod
     def get_data_var_attr(
@@ -1582,7 +1566,6 @@ class ITSCube:
 
         return missing_value
 
-
     def preprocess_dataset(self, ds: xr.Dataset, ds_url: str):
         """
         Pre-process ITS_LIVE granule dataset in preparation to be added to
@@ -1629,7 +1612,6 @@ class ITSCube:
             )
             return True, int(ds_projection), None, ds_url, None
 
-
         # Consider granules that have data only within the target projection
         if str(int(ds_projection)) == self.projection:
             # Use granule's "time" dimension value as middle date for the
@@ -1659,8 +1641,9 @@ class ITSCube:
 
                     # Verify that granule is defined on the same grid cell size as
                     # expected output datacube.
-                    cell_x_size = np.abs(mask_data.x.values[0] -
-                                            mask_data.x.values[1])
+                    cell_x_size = np.abs(
+                        mask_data.x.values[0] - mask_data.x.values[1]
+                    )
                     if cell_x_size != ITSCube.CELL_SIZE:
                         raise RuntimeError(
                             f"Unexpected grid cell size ({cell_x_size}) is "
@@ -1678,7 +1661,6 @@ class ITSCube:
         # Have to return URL for the dataset, which is provided as an input
         # to the method, to track URL per granule in parallel processing
         return empty, int(ds_projection), mid_date, ds_url, mask_data
-
 
     def process_v_attributes(self, var_name: str, mid_date_coord):
         """
@@ -1922,7 +1904,6 @@ class ITSCube:
         # settings for writing to the file store.
         return return_vars
 
-
     def process_m_attributes(self, var_name: str, mid_date_coord):
         """
         Helper method to clean up attributes for M1[12]-related data variables.
@@ -1971,7 +1952,6 @@ class ITSCube:
         # for writing to the file store.
         return attr_name
 
-
     def set_grid_mapping_attr(self, var_name: str):
         """
         Check on existence of "grid_mapping" attribute for the variable, set
@@ -1985,7 +1965,6 @@ class ITSCube:
             return
 
         self.layers[var_name].attrs[Mapping.attrs.grid_mapping] = Mapping.name
-
 
     @staticmethod
     def show_memory_usage(msg: str = ''):
@@ -2005,10 +1984,9 @@ class ITSCube:
             memory_msg += msg
 
         logging.info(
-            f"{memory_msg}: total={usage.total/_GB}Gb "
-            f"used={usage.used/_GB}Gb available={usage.available/_GB}Gb"
+            f"{memory_msg}: total={usage.total / _GB}Gb "
+            f"used={usage.used / _GB}Gb available={usage.available / _GB}Gb"
         )
-
 
     def combine_layers(self, output_dir, is_first_write=False):
         """
@@ -2122,7 +2100,7 @@ class ITSCube:
             CubeFormat.values[utils.OutputFormat.conventions]
         self.layers.attrs[CubeFormat.datacube_software_version] = ITSCube.Version
         self.layers.attrs[CubeFormat.date_created] = self.date_created
-        self.layers.attrs[CubeFormat.date_updated] =  self.date_updated \
+        self.layers.attrs[CubeFormat.date_updated] = self.date_updated \
             if self.date_updated is not None else self.date_created
         self.layers.attrs[CubeFormat.gdal_area_or_point] = \
             CubeFormat.values[CubeFormat.gdal_area_or_point]
@@ -2825,7 +2803,6 @@ class ITSCube:
         # Return a flag if any layers were written to the store
         return wrote_layers
 
-
     def format_stats(self):
         """
         Format statistics of the run. Don't display statistics if using
@@ -2866,7 +2843,6 @@ class ITSCube:
                 f"{sorted(self.skipped_granules[SkippedGranules.projection].keys())}"
             )
 
-
     @itslive_utils.retry_decorator(max_retries=5)
     def read_s3_dataset(
         self,
@@ -2894,7 +2870,6 @@ class ITSCube:
             ) as ds:
                 return self.preprocess_dataset(ds, each_url)
                 # return results
-
 
     @staticmethod
     def validate_cube(ds: xr.Dataset, start_date: str, cube_url: str):
@@ -2943,7 +2918,6 @@ class ITSCube:
         values = ds.mid_date.values
         if values.min() < start_date:
             raise RuntimeError(f"Unexpected mid_date: {values.min()}")
-
 
     @staticmethod
     def remove_s3_datacube(
