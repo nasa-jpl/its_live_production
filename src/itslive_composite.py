@@ -1690,7 +1690,7 @@ class ITSLiveComposite:
         # Store "shallow" version of the cube for carrying over some of the metadata
         # when writing composites to the Zarr store
         cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(
-                    utils.Units.date
+                    ImgPairInfo.date_dt
                 )
         logging.info(f'Original datacube sizes: {cube_ds.sizes}')
 
