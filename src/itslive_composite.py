@@ -1548,7 +1548,7 @@ class ITSLiveComposite:
         Vars.vy_stable_shift,
         CompositeVars.vx_error,
         CompositeVars.vy_error,
-        utils.Units.date,
+        ImgPairInfo.date_dt,
         ImgPairInfo.date_center,
         ImgPairInfo.acquisition_date_img1,
         ImgPairInfo.acquisition_date_img2,
@@ -1845,7 +1845,7 @@ class ITSLiveComposite:
 
         # Day separation between images (sorted per cube.sortby() call above)
         ITSLiveComposite.DATE_DT = self.stable_shift_filter.exclude(
-            cube_ds[utils.Units.date].values
+            cube_ds[ImgPairInfo.date_dt].values
         )
 
         # These data members will be set for each block of data being currently
