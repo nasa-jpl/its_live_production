@@ -14,7 +14,7 @@ channels:
   - conda-forge
 dependencies:
   # Core Python
-  - python=3.9.*
+  - python=3.10.*
 
   # Scientific computing
   - numpy=1.21.*
@@ -55,3 +55,4 @@ dependencies:
     - awscliv2==2.2.0
     - rioxarray==0.15.0
     - pystac-client
+    - git+https://github.com/nasa-jpl/itslive-py
