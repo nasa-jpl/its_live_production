@@ -2468,8 +2468,8 @@ class ITSLiveComposite:
 
         ds.attrs[CompositeVars.attrs.composites_software_version] = \
             ITSLiveComposite.VERSION
-        ds.attrs[CompositeVars.attrs.date_created] = self.date_created
-        ds.attrs[CompositeVars.attrs.date_updated] = self.date_updated
+        ds.attrs[CubeFormat.date_created] = self.date_created
+        ds.attrs[CubeFormat.date_updated] = self.date_updated
 
         # To support old format datacubes for testing
         # TODO: remove check for existence once done testing with old cubes
