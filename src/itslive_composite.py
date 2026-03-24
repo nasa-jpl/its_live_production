@@ -3470,7 +3470,7 @@ if __name__ == '__main__':
         ITSLiveComposite.VARS.append(f'{Vars.vy}_{Vars.postfix.error_slow}')
 
     # Read shape file with ice masks information in
-    ITSLiveComposite.SHAPE_FILE = ITSCube.read_shapefile(args.shapeFile)
+    ITSLiveComposite.SHAPE_FILE = shapefile.read_file(args.shapeFile)
 
     if args.missionGroup:
         # Mission group is provided
