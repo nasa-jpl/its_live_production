@@ -2487,7 +2487,7 @@ class ITSLiveComposite:
         ds.attrs[CubeFormat.datacube_software_version] = \
             self.cube_ds.attrs[CubeFormat.datacube_software_version]
         ds.attrs[CompositeVars.attrs.datacube_autorift_parameter_file] = \
-            self.cube_ds.attrs[DataVars.AUTORIFT_PARAMETER_FILE]
+            self.cube_ds.attrs[Vars.attrs.autorift_param_file]
 
         ds.attrs[CubeFormat.gdal_area_or_point] = \
             CubeFormat.values[CubeFormat.gdal_area_or_point]
