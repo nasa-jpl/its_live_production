@@ -169,9 +169,9 @@ def create_projected_velocity(
         x0_in = np.full_like(x_in, np.inf)
         return x0_in
 
-    uv_x = vx0/v0  # unit flow vector
-    uv_y = vy0/v0
-    x0_in = x_in*uv_x + y_in*uv_y  # projected flow vector
+    uv_x = vx0 / v0  # unit flow vector
+    uv_y = vy0 / v0
+    x0_in = x_in * uv_x + y_in * uv_y  # projected flow vector
 
     return x0_in
 
@@ -195,7 +195,7 @@ def dt_max_filter_iteration(vp, dt, dt_edge, min_ref_bin_count=50):
     is_invalid: Mask for invalid values of the input vector based on dt_max
         filter. These values will be excluded from the composites.
     """
-    _num_bins = len(dt_edge)-1
+    _num_bins = len(dt_edge) - 1
 
     # Make numba happy - use np.bool_ type
     is_invalid = np.zeros(len(dt), dtype=np.bool_)
@@ -375,7 +375,7 @@ def weighted_std(values, weights):
     Weighted standard deviation of the input values.
     """
     average = np.average(values, weights=weights)
-    variance = np.average((values-average)**2, weights=weights)
+    variance = np.average((values - average)**2, weights=weights)
     return np.sqrt(variance)
 
 
@@ -488,7 +488,9 @@ def itslive_lsqfit_iteration(var_name, d_cos, d_sin, M, w_d, d_obs):
 
     # Solve for coefficients of each column in the Vandermonde:
     # p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=None)[0]
-    p = np.linalg.lstsq(w_d.reshape((len(w_d), 1)) * D, w_d*d_obs, rcond=1e-15)[0]
+    p = np.linalg.lstsq(
+        w_d.reshape((len(w_d), 1)) * D, w_d * d_obs, rcond=1e-15
+    )[0]
 
     # Goodness of fit: modeled displacements (m)
     d_model = D @ p
@@ -586,7 +588,7 @@ def init_lsq_fit1(
     totalnum = len(start_year)
 
     # Sort arrays based on the mid_date
-    mid_date = start_year + (stop_year - start_year)/2.0
+    mid_date = start_year + (stop_year - start_year) / 2.0
     sort_indices = np.argsort(mid_date)
 
     # Sort inputs
@@ -659,7 +661,7 @@ def init_lsq_fit2(
     v_residual = np.abs(v_input - v_median)
 
     # Take median of residual, multiply median of residual * 1.4826 = sigma
-    v_sigma = np.median(v_residual)*mad_std_ratio
+    v_sigma = np.median(v_residual) * mad_std_ratio
 
     non_outlier_mask = ~(v_residual > (sigma * mad_thresh * v_sigma))
 
@@ -704,16 +706,16 @@ def init_lsq_fit2(
     M_in = M_input[non_outlier_mask]
 
     # Weights for velocities
-    w_v = 1/(v_err_in**2)
+    w_v = 1 / (v_err_in**2)
 
     # Weights (correspond to displacement error, not velocity error):
     # Matlab comment: Not squared because the p= line below would then have to include
     # sqrt(w) on both accounts
-    w_d = 1/(v_err_in*dyr)
+    w_d = 1 / (v_err_in * dyr)
     # logging.info(f"w_d.shape: {w_d.shape}")
 
     # Observed displacement in meters
-    d_obs = v_in*dyr
+    d_obs = v_in * dyr
     # logging.info(f"d_obs.shape: {d_obs.shape}")
 
     # logging.info(f'Finished init of itslive_lsqfit_annual ({timeit.default_timer() - start_time} seconds)')
@@ -749,7 +751,7 @@ def create_v0_years_mask(start_year, stop_year, v0_years_start, v0_years_end):
     """
     #  Reduce number of image pairs only to the provided range:
     # v0_years[0] <= mid_date < v0_years[-1]+1
-    mid_date = start_year + (stop_year - start_year)/2.0
+    mid_date = start_year + (stop_year - start_year) / 2.0
 
     v0_year_mask = (mid_date >= v0_years_start) & (mid_date < (v0_years_end + 1))
     return v0_year_mask
@@ -907,10 +909,10 @@ def itslive_lsqfit_annual(
 
                 if i < last_iteration:
                     # Divide by dt to avoid penalizing long dt [asg]
-                    d_resid = np.abs(d_obs - d_model)/dyr
+                    d_resid = np.abs(d_obs - d_model) / dyr
 
                     # Robust standard deviation of errors, using median absolute deviation
-                    d_sigma = np.median(d_resid)*mad_std_ratio
+                    d_sigma = np.median(d_resid) * mad_std_ratio
 
                     outliers = d_resid > (_mad_thresh * d_sigma)
                     if np.all(outliers):
@@ -963,7 +965,7 @@ def itslive_lsqfit_annual(
 
         except ValueError as exc:
             # numba raises ValueError exception when LSQ fit does not converge
-            if not "Internal algorithm failed to converge." in str(exc):
+            if "Internal algorithm failed to converge." not in str(exc):
                 # Re-raise exception if it's not the LSQ fit convergence one
                 raise
 
@@ -990,7 +992,7 @@ def itslive_lsqfit_annual(
     # Reshape array to have the same number of dimensions as M for multiplication
     w_v = w_v.reshape((1, w_v.shape[0]))
 
-    v_int_err = 1/np.sqrt((w_v@M).sum(axis=0))
+    v_int_err = 1 / np.sqrt((w_v @ M).sum(axis=0))
 
     # Identify year's indices to assign return values to in "final" composite
     # variables
@@ -1077,11 +1079,11 @@ def itslive_lsqfit_annual(
 
             if i < last_iteration:
                 # Divide by dt to avoid penalizing long dt [asg]
-                d_resid = np.abs(d_obs - d_model)/dyr
+                d_resid = np.abs(d_obs - d_model) / dyr
 
                 # Robust standard deviation of errors, using median
                 # absolute deviation
-                d_sigma = np.median(d_resid)*mad_std_ratio
+                d_sigma = np.median(d_resid) * mad_std_ratio
 
                 outliers = d_resid > (_mad_thresh * d_sigma)
                 if np.all(outliers):
@@ -1140,7 +1142,7 @@ def itslive_lsqfit_annual(
         ph_rad = np.arctan2(p[1], p[0])
 
         # phase converted such that it reflects the day when value is maximized
-        ph = 365.25*((0.25 - ph_rad/TWO_PI) % 1)
+        ph = 365.25 * ((0.25 - ph_rad / TWO_PI) % 1)
 
         # A_err is the *velocity* (not displacement) error, which is the
         # displacement error divided by the weighted mean dt:
@@ -1153,11 +1155,11 @@ def itslive_lsqfit_annual(
             # asg replaced call to wmean
             _w_d_ind = w_d[ind]
             A_err[k] = weighted_std(
-                d_obs[ind]-d_model[ind], _w_d_ind
-            ) / ((_w_d_ind*dyr[ind]).sum() / _w_d_ind.sum())
+                d_obs[ind] - d_model[ind], _w_d_ind
+            ) / ((_w_d_ind * dyr[ind]).sum() / _w_d_ind.sum())
 
         # Compute climatology amplitude error based on annual values
-        amp_error = np.sqrt((A_err**2).sum())/(Nyrs-1)
+        amp_error = np.sqrt((A_err**2).sum()) / (Nyrs - 1)
 
     return (
         results_valid,
@@ -1298,8 +1300,8 @@ def climatology_magnitude(
         vx0[invalid_mask] = np.nan
         vy0[invalid_mask] = np.nan
 
-    uv_x = vx0/v  # unit flow vector in x direction
-    uv_y = vy0/v  # unit flow vector in y direction
+    uv_x = vx0 / v  # unit flow vector in x direction
+    uv_y = vy0 / v  # unit flow vector in y direction
 
     dv_dt = dvx_dt * uv_x  # flow acceleration in direction of unit flow vector
     dv_dt += dvy_dt * uv_y
@@ -1321,8 +1323,8 @@ def climatology_magnitude(
     # defined by vx0 and vy0 then one of the rotated component is in the
     # direction of v0 and the other is perpendicular to v0.
     # We only want to retain the component that is in the direction of v0."
-    vx_phase_rad = vx_phase/365.25
-    vy_phase_rad = vy_phase/365.25
+    vx_phase_rad = vx_phase / 365.25
+    vy_phase_rad = vy_phase / 365.25
 
     # Convert degrees to radians as numpy trig. functions take angles in radians
     vx_phase_rad *= TWO_PI
@@ -1346,8 +1348,8 @@ def climatology_magnitude(
     sin_theta = np.sin(theta)
     cos_theta = np.cos(theta)
 
-    A1 = vx_amp*cos_theta
-    B1 = vy_amp*sin_theta
+    A1 = vx_amp * cos_theta
+    B1 = vy_amp * sin_theta
 
     # Matlab prototype code:
     # vx_amp_r   =   hypot(A1.*cosd(vx_phase_deg) + B1.*cosd(vy_phase_deg),  A1.*sind(vx_phase_deg) + B1.*sind(vy_phase_deg));
@@ -1359,14 +1361,18 @@ def climatology_magnitude(
     v_phase = np.full_like(vx_phase, np.nan)
 
     v_amp[valid_mask] = np.hypot(
-        A1[valid_mask]*np.cos(vx_phase_rad[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_rad[valid_mask]),
-        A1[valid_mask]*np.sin(vx_phase_rad[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_rad[valid_mask])
+        A1[valid_mask] * np.cos(vx_phase_rad[valid_mask]) + \
+            B1[valid_mask] * np.cos(vy_phase_rad[valid_mask]),
+        A1[valid_mask] * np.sin(vx_phase_rad[valid_mask]) + \
+            B1[valid_mask]*np.sin(vy_phase_rad[valid_mask])
     )
     # np.arctan2 returns phase in radians, convert to degrees
     v_phase[valid_mask] = np.arctan2(
-        A1[valid_mask]*np.sin(vx_phase_rad[valid_mask]) + B1[valid_mask]*np.sin(vy_phase_rad[valid_mask]),
-        A1[valid_mask]*np.cos(vx_phase_rad[valid_mask]) + B1[valid_mask]*np.cos(vy_phase_rad[valid_mask])
-    )*180.0/np.pi
+        A1[valid_mask] * np.sin(vx_phase_rad[valid_mask]) + \
+            B1[valid_mask]*np.sin(vy_phase_rad[valid_mask]),
+        A1[valid_mask] * np.cos(vx_phase_rad[valid_mask]) + \
+            B1[valid_mask] * np.cos(vy_phase_rad[valid_mask])
+    ) * 180.0 / np.pi
 
     mask = v_amp < 0
     v_amp[mask] *= -1.0
@@ -1388,7 +1394,7 @@ def climatology_magnitude(
     # so we don't need to do it after rotation in direction of v0
 
     # Convert phase to the day of the year
-    v_phase = v_phase*365.25/360
+    v_phase = v_phase * 365.25 / 360
 
     return v, dv_dt, v_amp, v_amp_err, v_phase, v_se
 
@@ -1457,12 +1463,12 @@ def weighted_linear_fit(yr, v, v_err):
             error = np.nan
 
         else:
-            error = np.sqrt((v_err[valid]**2).sum())/(valid.sum()-1)
+            error = np.sqrt((v_err[valid]**2).sum()) / (valid.sum() - 1)
 
         return offset, slope, error
 
     # Normalize the weights per Chad's suggestion before LSQ fit:
-    w_v = np.sqrt(w_v/np.mean(w_v))
+    w_v = np.sqrt(w_v / np.mean(w_v))
 
     # create design matrix
     D = np.ones((len(yr), 2))
@@ -1473,12 +1479,14 @@ def weighted_linear_fit(yr, v, v_err):
     D = D[valid, :]
 
     # Julia: offset, slope = (w_v[valid].*D[valid,:]) \ (w_v[valid].*v[valid]);
-    offset, slope = np.linalg.lstsq(w_v.reshape((len(w_v), 1)) * D, w_v*v[valid])[0]
+    offset, slope = np.linalg.lstsq(
+        w_v.reshape((len(w_v), 1)) * D, w_v * v[valid]
+    )[0]
     # offset = p[0]
     # slope = p[1]
 
     # Julia: error = sqrt(sum(v_err[valid].^2))/(sum(valid)-1)
-    error = np.sqrt((v_err[valid]**2).sum())/(valid.sum()-1)
+    error = np.sqrt((v_err[valid]**2).sum()) / (valid.sum() - 1)
 
     return offset, slope, error
 
@@ -1690,8 +1698,8 @@ class ITSLiveComposite:
         # Store "shallow" version of the cube for carrying over some of the metadata
         # when writing composites to the Zarr store
         cube_ds = self.cube_ds[ITSLiveComposite.VARS].sortby(
-                    ImgPairInfo.date_dt
-                )
+            ImgPairInfo.date_dt
+        )
         logging.info(f'Original datacube sizes: {cube_ds.sizes}')
 
         # Setup StableShiftFilter: revert stable_shift offset and/or exclude
@@ -1818,7 +1826,7 @@ class ITSLiveComposite:
         stop_year = int(np.floor(np.max(ITSLiveComposite.STOP_DECIMAL_YEAR)))
 
         # Years to generate mosaics for
-        ITSLiveComposite.YEARS = np.array(range(start_year, stop_year+1))
+        ITSLiveComposite.YEARS = np.array(range(start_year, stop_year + 1))
         ITSLiveComposite.YEARS_LEN = ITSLiveComposite.YEARS.size
         logging.info(f'Years for composite: {ITSLiveComposite.YEARS.tolist()}')
 
@@ -1921,7 +1929,6 @@ class ITSLiveComposite:
 
         # TODO: take care of self.date_updated when support for composites updates
         # is implemented
-
 
     def create(self, output_store: str):
         """
@@ -2100,7 +2107,6 @@ class ITSLiveComposite:
             # if second LSQ fit iteration will be invoked
             copy_vx = vx.copy()
 
-        start_time = timeit.default_timer()
         # Note for v3:
         # Project velocity to median flow unit vector using only valid sensors: this is
         # pre-processing step for the dt_max filter, not used anywhere else.
@@ -2146,7 +2152,6 @@ class ITSLiveComposite:
         # Mask data
         vx[invalid] = np.nan
         vy[invalid] = np.nan
-
 
         # logging.info(f'DEBUG:  Before LSQ fit: vx: min={np.nanmin(vx)} max={np.nanmax(vx)}')
         # Transform vx data to make time series continuous in memory: [y, x, t]
@@ -2311,12 +2316,12 @@ class ITSLiveComposite:
                 # if (amp_all) > (S1+L8_amp) * 2 and (amp_all) - (S1+L8_amp) > 5)
                 # then use lsqfit_annual output from S1+L8 and add S2 to the excluded sensors mask
                 amp_mask = (
-                    self.amplitude.v[start_y:stop_y, start_x:stop_x] >
+                    self.amplitude.v[start_y:stop_y, start_x:stop_x] > \
                     (self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x] * ITSLiveComposite.LSQ_AMP_SCALE)
                 ) & \
                     (
                         (
-                            self.amplitude.v[start_y:stop_y, start_x:stop_x] -
+                            self.amplitude.v[start_y:stop_y, start_x:stop_x] - \
                             self.excludeS2_amplitude.v[start_y:stop_y, start_x:stop_x]
                         ) > ITSLiveComposite.LSQ_MIN_AMP_DIFF
                     )
@@ -2680,8 +2685,10 @@ class ITSLiveComposite:
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v_amp] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                Vars.attrs.description: CompositeVars.description[CompositeVars.v_amp] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v_amp] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.v_amp] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.m_y
             }
@@ -2709,7 +2716,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.v_phase],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.v_phase] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.v_phase] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.day_of_year
             }
@@ -2723,7 +2731,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.vx_amp],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.vx_amp] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vx_amp] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.m_y
             }
@@ -2751,7 +2760,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.vx_phase],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.vx_phase] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vx_phase] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.day_of_year
             }
@@ -2765,7 +2775,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.vy_amp],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.vy_amp] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vy_amp] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.m_y
             }
@@ -2793,7 +2804,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.vy_phase],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.vy_phase] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vy_phase] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.day_of_year
             }
@@ -2885,7 +2897,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.outlier_frac],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.outlier_frac] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.outlier_frac] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.percent
             }
@@ -2899,7 +2912,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.vx0],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.vx0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1], CENTER_DATE.year),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vx0] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1], CENTER_DATE.year),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.m_y
             }
@@ -2913,7 +2927,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.vy0],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.vy0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1], CENTER_DATE.year),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.vy0] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1], CENTER_DATE.year),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.m_y
             }
@@ -2926,8 +2941,10 @@ class ITSLiveComposite:
             coords=twodim_var_coords,
             dims=twodim_var_dims,
             attrs={
-                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
-                Vars.attrs.description: CompositeVars.description[CompositeVars.v0] %(CENTER_DATE.year),
+                Vars.attrs.std_name: CompositeVars.name[CompositeVars.v0] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.v0] \
+                    %(CENTER_DATE.year),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.m_y
             }
@@ -2983,7 +3000,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.slope_v],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.slope_v] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.slope_v] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.m_y2
             }
@@ -2997,7 +3015,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.slope_vx],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.slope_vx] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.slope_vx] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.m_y2
             }
@@ -3011,7 +3030,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.slope_vy],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.slope_vy] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.slope_vy] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 utils.Units.name: utils.Units.m_y2
             }
@@ -3025,7 +3045,8 @@ class ITSLiveComposite:
             dims=twodim_var_dims,
             attrs={
                 Vars.attrs.std_name: CompositeVars.name[CompositeVars.count0],
-                Vars.attrs.description: CompositeVars.description[CompositeVars.count0] %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
+                Vars.attrs.description: CompositeVars.description[CompositeVars.count0] \
+                    %(ITSLiveComposite.V0_YEARS[0], ITSLiveComposite.V0_YEARS[-1]),
                 Mapping.attrs.grid_mapping: Mapping.name,
                 Vars.attrs.note: f'{CompositeVars.count0} may not equal the sum of annual counts, as a single image pair can contribute to the least squares fit for multiple years',
                 utils.Units.name: utils.Units.count
@@ -3054,7 +3075,12 @@ class ITSLiveComposite:
         )
 
         # Don't set fill_value for the coordinate variables
-        for each in [utils.Coords.TIME, utils.Coords.SENSORS, utils.Coords.X, utils.Coords.Y]:
+        for each in [
+            utils.Coords.TIME,
+            utils.Coords.SENSORS,
+            utils.Coords.X,
+            utils.Coords.Y
+        ]:
             encoding_settings.setdefault(each, {}).update(
                 {
                     utils.OutputFormat.compressor: compressor
@@ -3495,7 +3521,7 @@ if __name__ == '__main__':
         ITSLiveComposite.URL = ITSLiveComposite.S3.replace(utils.S3_PREFIX,
                                                             utils.HTTP_PREFIX)
         url_tokens = urlparse(ITSLiveComposite.URL)
-        ITSLiveComposite.URL = url_tokens._replace(netloc=url_tokens.netloc +
+        ITSLiveComposite.URL = url_tokens._replace(netloc=url_tokens.netloc + \
                                                     utils.PATH_URL).geturl()
         logging.info(f'Composite URL: {ITSLiveComposite.URL}')
 
