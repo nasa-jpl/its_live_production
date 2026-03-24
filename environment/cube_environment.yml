@@ -35,5 +35,6 @@ dependencies:
   - python-duckdb=1.3.0
   - rustac>=0.8
   - pip
+  - pip:
     - git+https://github.com/nasa-jpl/itslive-py
 
