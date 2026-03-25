@@ -1,9 +1,9 @@
 import boto3
 import collections
-import dask
 import functools
 import gc
 import itertools
+from joblib import Parallel, delayed
 import json
 import logging
 import math
@@ -12,6 +12,7 @@ import os
 import pyproj
 import random
 import time
+from tqdm import tqdm
 from shapely.geometry import shape, box
 import s3fs
 import subprocess
@@ -45,30 +46,19 @@ CHUNKS_FILE_EXTENSION = '.chunks.json'
 
 
 def timing_decorator(func):
-    """Decorator to time function execution.
-
-    Args:
-        func: Function to invoke.
-    """
+    """Decorator to time function execution."""
     def wrapper(*args, **kwargs):
-        # Start the timer
         start_time = time.time()
-
-        # Call the function
         result = func(*args, **kwargs)
+        elapsed_time = time.time() - start_time
 
-        # Stop the timer
-        end_time = time.time()
-
-        # Calculate elapsed time
-        elapsed_time = end_time - start_time
-        logging.info(
-            f"Function {func.__name__}() executed in {elapsed_time:.6f} "
-            f"seconds ({elapsed_time/60:.6f} minutes)"
+        msg = (
+            f"Function {func.__name__}() executed in "
+            f"{elapsed_time:.1f}s ({elapsed_time/60:.2f} min)"
         )
+        logging.info(msg)
 
         return result
-
     return wrapper
 
 
@@ -106,7 +96,7 @@ def retry_decorator(
                     sleep_time = random.uniform(0, delay) if jitter else delay
 
                     logging.info(
-                        f"[Retry {attempt}] {type(e).__name__}: {e} — "
+                        f"[Retry {attempt}] {func.__name__}(): {type(e).__name__}: {e} — "
                         f"retrying in {sleep_time:.2f}s..."
                     )
                     time.sleep(sleep_time)
@@ -188,20 +178,24 @@ def download_chunk(bucket_name, s3_path, each_chunk, local_path):
     )
 
 
-def backup_chunk(bucket, source_path, filename, target_path):
+@retry_decorator(max_retries=5)
+def backup_chunk(bucket_name, source_path, filename, target_path):
     """Helper function to copy Zarr chunk stored in S3 bucket
     from one location to another. This is used to create a backup
     of the datacube in S3.
 
     Args:
-        bucket (boto3.Bucket): S3 bucket.
+        bucket_name (str): Name of the S3 bucket.
         source_path (str): Path to the datacube or its variable in S3.
         filename (str): Name of the file to copy.
         target_path (str): Target path to copy the chunk to.
     """
+    s3 = boto3.resource('s3')           # thread-local, cheap to create
+    bucket = s3.Bucket(bucket_name)
+
     # logging.info(f'Copying {source_path=} {filename=} to {local_key}')
     copy_source = {
-        'Bucket': bucket.name,
+        'Bucket': bucket_name,
         'Key': os.path.join(source_path, filename)
     }
     bucket.copy(copy_source, os.path.join(target_path, filename))
@@ -286,14 +280,52 @@ def identify_datacube_latest_chunks(bucket_url: str):
     return last_chunk_map
 
 
+def backup_variable(
+    each_var,
+    each_chunk_info,
+    bucket_name,
+    source_url,
+    target_url):
+    """Back up all chunks for a single variable.
+
+    Inputs:
+    =======
+    - each_var: variable name (e.g. velocity)
+    - each_chunk_info: ZarrChunk object with chunk ranges for the variable
+    - bucket_name: S3 bucket name
+    - source_url: S3 path to the datacube
+                    (e.g. "its-live-data/test-space/datacube.zarr")
+    - target_url: S3 path to the backup location
+                    (e.g. "its-live-data/test-space/datacube_backup.zarr")
+    """
+    s3_var_path = os.path.join(source_url, each_var)
+    s3_target = os.path.join(target_url, each_var)
+
+    logging.info(f'Backing up {each_var}: {each_chunk_info.last_dim_ranges=}')
+    all_chunks = list(itertools.product(*each_chunk_info.last_dim_ranges))
+    total_chunks = len(all_chunks)
+
+    Parallel(n_jobs=-1, backend='threading')(
+        delayed(backup_chunk)(
+            bucket_name,
+            s3_var_path,
+            ".".join(map(str, each_chunk)),
+            s3_target,
+        ) for each_chunk in all_chunks
+    )
+
+    # Single clean line per variable on completion
+    logging.info(f"{each_var}: {total_chunks} chunks backed up")
+
+    # Copy variable metadata files
+    for each_meta in VAR_META:
+        backup_chunk(bucket_name, s3_var_path, each_meta, s3_target)
+
+
 @timing_decorator
-@retry_decorator()
 def backup_datacube_latest_chunks(
     bucket_url: str,
-    backup_url: str,
-    num_threads: int = 4,
-    num_chunks_in_parallel: int = 500,
-    dask_scheduler: str = 'threads'
+    backup_url: str
 ):
     """
     Create backup of metadata files and latest chunks for each of the data
@@ -303,10 +335,6 @@ def backup_datacube_latest_chunks(
         bucket_url (str): s3 bucket path for the datacube to backup.
         backup_url (str): s3 bucket path for the datacube to backup latest
             Zarr chunks to.
-        num_threads (int): Number of threads to use for the backup copy.
-            Default is 4.
-        dask_scheduler (str): Dask scheduler to use for parallel downloads.
-            Default is 'threads'.
 
     Returns:
         Map of data variable to the ranges for existing data chunks,
@@ -341,61 +369,19 @@ def backup_datacube_latest_chunks(
     # Backup metadata files
     for each_meta in CUBE_META:
         # Backup the file
-        # logging.info(
-        #     f'Backup cube {each_meta} to {target_url}'
-        # )
-        backup_chunk(s3_bucket, source_url, each_meta, target_url)
+        logging.info(
+            f'Backup cube {each_meta} to {target_url}'
+        )
+        backup_chunk(bucket_name, source_url, each_meta, target_url)
 
     # Backup latest chunks and metadata files for each data variable
-    for each_var, each_chunk_info in last_chunk_map.items():
-        s3_var_path = os.path.join(source_url, each_var)
-        s3_target = os.path.join(target_url, each_var)
-
-        logging.info(f'Backup {each_var}: {each_chunk_info.last_dim_ranges=}')
-
-        # Step through Cartesian values of the last dimension ranges
-        chunk_iterator = itertools.product(*each_chunk_info.last_dim_ranges)
-
-        for chunks in iter(
-            lambda: list(
-                itertools.islice(
-                    chunk_iterator,
-                    num_chunks_in_parallel)
-                ),
-            []
-        ):
-            tasks = [dask.delayed(backup_chunk)(
-                s3_bucket,
-                s3_var_path,
-                ".".join(map(str, each_chunk)),
-                s3_target,
-            ) for each_chunk in chunks]
-
-            # with ProgressBar():
-            _ = dask.compute(
-                tasks,
-                scheduler=dask_scheduler,
-                num_workers=num_threads
-            )
-
-            # logging.info(
-            #     f'Completed backup {each_var} {len(chunks)} chunks: '
-            #     f'{chunks[0]=} to {chunks[-1]=}'
-            # )
-
-            del tasks
-            gc.collect()
-
-        # Copy variable metadata files
-        for each_meta in VAR_META:
-            # Download the file
-            # logging.info(f'Backup {each_meta=} to {s3_target}')
-            backup_chunk(
-                s3_bucket,
-                s3_var_path,
-                each_meta,
-                s3_target
-            )
+    # Variables are independent — back them up concurrently
+    Parallel(n_jobs=len(last_chunk_map), backend='threading')(
+        delayed(backup_variable)(
+            each_var, each_chunk_info, bucket_name, source_url, target_url
+        )
+        for each_var, each_chunk_info in last_chunk_map.items()
+    )
 
     return last_chunk_map
 

@@ -8,6 +8,7 @@ from dateutil.parser import parse
 from datetime import datetime
 import gc
 import json
+from joblib import Parallel, delayed
 import logging
 import os
 from pathlib import Path
@@ -16,14 +17,13 @@ import pyproj
 import shutil
 import timeit
 import zarr
-import dask
-from dask.diagnostics import ProgressBar
 import numpy as np
 import pandas as pd
 import re
 import s3fs
 import subprocess
 from tqdm import tqdm
+from tqdm_joblib import tqdm_joblib
 import xarray as xr
 from urllib.parse import urlparse
 
@@ -89,9 +89,6 @@ class ITSCube:
     # Number of chunks to backup in parallel if updating
     # the datacube in S3 bucket
     NUM_CHUNKS_TO_BACKUP = 1000
-
-    # Dask scheduler for parallel processing
-    DASK_SCHEDULER = "processes"
 
     # String representation of longitude/latitude projection
     LON_LAT_PROJECTION = 'EPSG:4326'
@@ -194,6 +191,17 @@ class ITSCube:
     # existing backup.
     USE_EXISTING_BACKUP = False
 
+    # Grid boundaries for the datacube based on its bounding polygon, to filter
+    # each granule's spacial extents by
+    GRID_X_MIN = None
+    GRID_X_MAX = None
+    GRID_Y_MIN = None
+    GRID_Y_MAX = None
+
+    # Cube target projection - to consider granules that have data only
+    # within the target projection
+    PROJECTION = None
+
     def __init__(self, polygon: tuple, projection: str):
         """
         Initialize object.
@@ -205,7 +213,7 @@ class ITSCube:
         self.logger.info(f"Polygon: {polygon}")
         self.logger.info(f"Projection: {projection}")
 
-        self.projection = projection
+        ITSCube.PROJECTION = projection
         self.polygon = polygon
 
         # All layers are required to have the same autoRIFT parameter file:
@@ -231,11 +239,11 @@ class ITSCube:
         abs_y_size = np.abs(self.half_y_cell)
 
         # Define range for x and y based on grid edges
-        self.grid_x_min = self.grid_x.min() - abs_x_size
-        self.grid_x_max = self.grid_x.max() + abs_x_size
+        ITSCube.GRID_X_MIN = self.grid_x.min() - abs_x_size
+        ITSCube.GRID_X_MAX = self.grid_x.max() + abs_x_size
 
-        self.grid_y_min = self.grid_y.min() - abs_y_size
-        self.grid_y_max = self.grid_y.max() + abs_y_size
+        ITSCube.GRID_Y_MIN = self.grid_y.min() - abs_y_size
+        ITSCube.GRID_Y_MAX = self.grid_y.max() + abs_y_size
 
         # Ensure lonlat output order
         to_lon_lat_transformer = pyproj.Transformer.from_crs(
@@ -311,14 +319,14 @@ class ITSCube:
         self.land_ice_mask, \
         self.land_ice_mask_url = shapefile.read_ice_mask(
             ITSCube.SHAPE_FILE, shapefile.LANDICE, self.grid_x, self.grid_y,
-            self.projection
+            ITSCube.PROJECTION
         )
 
         # Floating ice coverage for the datacube
         self.floating_ice_mask, \
         self.floating_ice_mask_url = shapefile.read_ice_mask(
             ITSCube.SHAPE_FILE, shapefile.FLOATINGICE, self.grid_x, self.grid_y,
-            self.projection
+            ITSCube.PROJECTION
         )
 
     def clear_vars(self):
@@ -389,14 +397,14 @@ class ITSCube:
         }
 
         # found_urls = itslive_utils.serverless_search(
-        #     epsg_code=self.projection,
+        #     epsg_code=ITSCube.PROJECTION,
         #     start_date=ITSCube.START_DATE,
         #     end_date=ITSCube.END_DATE,
         #     roi=roi,
         #     base_catalog_href=ITSCube.STAC_CATALOG,
         # )
         found_urls = itslive_utils.serverless_search_itslive(
-            epsg_code=self.projection,
+            epsg_code=ITSCube.PROJECTION,
             start_date=ITSCube.START_DATE,
             end_date=ITSCube.END_DATE,
             roi=roi
@@ -795,10 +803,24 @@ class ITSCube:
 
         return url_proc_date_1, url_proc_date_2, id
 
-    def add_layer(self, is_empty, layer_projection, mid_date, url, data):
+    def add_layer(self, is_empty, layer_projection, mid_date, url, data, msgs):
         """
-        Examine the layer if it qualifies to be added as a cube layer.
+        Examine the layer if it qualifies to be added as a cube layer and
+        add it to the cube if it does. If layer is not added, keep track of the
+        reason for it to be skipped.
+
+        Inputs:
+        is_empty (bool): Flag indicating whether the layer contains valid
+                        data for the region of interest.
+        layer_projection (str): Projection code for the layer.
+        mid_date (datetime): Middle date for the layer.
+        url (str): URL for the layer.
+        data (xarray.Dataset): Data for the layer.
+        msgs (list): List of messages to log for the layer.
         """
+        if len(msgs):
+            # Log messages for the layer if there are any
+            self.logger.info(f"Messages for {url}: {msgs}")
 
         if data is not None:
             # "Duplicate" granules are handled apriori for newly constructed
@@ -1168,8 +1190,6 @@ class ITSCube:
                 _ = itslive_utils.backup_datacube_latest_chunks(
                     cube_url,
                     backup_url,
-                    num_threads=ITSCube.NUM_THREADS,
-                    num_chunks_in_parallel=ITSCube.NUM_CHUNKS_TO_BACKUP,
                 )
 
             # Download chunks per just created backup (to guarantee that
@@ -1293,30 +1313,23 @@ class ITSCube:
                 num_to_process > ITSCube.NUM_GRANULES_TO_WRITE else \
                 num_to_process
 
-            tasks = [
-                dask.delayed(self.read_s3_dataset)(each_file, s3) for
-                each_file in found_urls[start:start + num_tasks]
-            ]
-            self.logger.info(
-                f"Processing {len(tasks)} tasks out of {num_to_process} "
-                "remaining"
-            )
+            # self.logger.info(
+            #     f"Processing {num_tasks} tasks out of {num_to_process} "
+            #     "remaining"
+            # )
+
+            # Run in parallel with joblib
+            log_msg = f"Processing {num_tasks} tasks out of " \
+                        f"{num_to_process} remaining"
 
             results = None
-            with ProgressBar():  # Does not work with Client() scheduler
-                results = dask.compute(
-                    tasks,
-                    scheduler=ITSCube.DASK_SCHEDULER,
-                    num_workers=ITSCube.NUM_THREADS
+            with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
+                results = Parallel(n_jobs=-1, backend='threading')(
+                    delayed(ITSCube.read_s3_dataset)(each_file, s3) for
+                    each_file in found_urls[start:start + num_tasks]
                 )
 
-            del tasks
-            gc.collect()
-
-            for each_ds in results[0]:
-                # if len(each_ds[0]):
-                #     # There were exceptions reading the data, log it
-                #     self.logger.info('--->'.join(each_ds[0]))
+            for each_ds in results:
                 self.add_layer(*each_ds)
 
             del results
@@ -1377,31 +1390,18 @@ class ITSCube:
             num_tasks = ITSCube.NUM_GRANULES_TO_WRITE if \
                 num_to_process > ITSCube.NUM_GRANULES_TO_WRITE else \
                     num_to_process
-            tasks = [
-                dask.delayed(self.read_s3_dataset)(each_file, s3) for each_file
-                in found_urls[start:start + num_tasks]
-            ]
-            self.logger.info(
-                f"Processing {len(tasks)} tasks out of {num_to_process} remaining"
-            )
+            # Run in parallel with joblib
+            log_msg = f"Processing {num_tasks} tasks out of " \
+                        f"{num_to_process} remaining"
 
             results = None
-            with ProgressBar():  # Does not work with Client() scheduler
-                results = dask.compute(
-                    tasks,
-                    scheduler=ITSCube.DASK_SCHEDULER,
-                    num_workers=ITSCube.NUM_THREADS
+            with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
+                results = Parallel(n_jobs=-1, backend='threading')(
+                    delayed(ITSCube.read_s3_dataset)(each_file, s3) for
+                    each_file in found_urls[start:start + num_tasks]
                 )
 
-            del tasks
-            gc.collect()
-
-            for each_ds in results[0]:
-                # if len(each_ds[0]):
-                #     # There were exceptions reading the data, log it
-                #     self.logger.info('--->'.join(each_ds[0]))
-
-                # self.add_layer(*each_ds[1:])
+            for each_ds in results:
                 self.add_layer(*each_ds)
 
             del results
@@ -1566,7 +1566,8 @@ class ITSCube:
 
         return missing_value
 
-    def preprocess_dataset(self, ds: xr.Dataset, ds_url: str):
+    @staticmethod
+    def preprocess_dataset(ds: xr.Dataset, ds_url: str):
         """
         Pre-process ITS_LIVE granule dataset in preparation to be added to
         the datacube.
@@ -1587,8 +1588,9 @@ class ITSCube:
                     processing: no track of inputs for each task, but have
                     output available for each task).
         """
-        # Tried to load the whole dataset into memory to avoid penalty for random read access
-        # when accessing S3 bucket (?) - does not make any difference.
+        # Tried to load the whole dataset into memory to avoid penalty for
+        # random read access when accessing S3 bucket (?) - does not make any
+        # difference.
         # ds.load()
 
         # Flag if layer data is empty
@@ -1601,26 +1603,31 @@ class ITSCube:
         mid_date = None
 
         # Granule's projection
-        ds_projection = ds.mapping.spatial_epsg
+        ds_projection = int(ds.mapping.spatial_epsg)
+
+        # Any messages to log during pre-processing of the dataset, e.g. if
+        # dataset does not have expected dimensions
+        msgs = []
 
         # Nisar workaround:
         # *_P000.nc don't have time dimension, skip those granules as we
         # won't be able to assign unique mid_date to them
         if utils.Coords.TIME not in ds.dims:
-            self.logger.info(
+            msgs.append(
                 f'{ds_url=} does not have "time" dimension, skipping...'
             )
-            return True, int(ds_projection), None, ds_url, None
+            empty = True
+            return empty, ds_projection, mid_date, ds_url, mask_data, msgs
 
         # Consider granules that have data only within the target projection
-        if str(int(ds_projection)) == self.projection:
+        if str(ds_projection) == ITSCube.PROJECTION:
             # Use granule's "time" dimension value as middle date for the
             # layer. It's guaranteed to be unique across multiple granules.
             mid_date = ds.time.values[0]
 
             # Define which points are within target polygon.
-            mask_lon = (ds.x >= self.grid_x_min) & (ds.x <= self.grid_x_max)
-            mask_lat = (ds.y >= self.grid_y_min) & (ds.y <= self.grid_y_max)
+            mask_lon = (ds.x >= ITSCube.GRID_X_MIN) & (ds.x <= ITSCube.GRID_X_MAX)
+            mask_lat = (ds.y >= ITSCube.GRID_Y_MIN) & (ds.y <= ITSCube.GRID_Y_MAX)
             mask = (mask_lon & mask_lat)
             if mask.values.sum() == 0:
                 # One or both masks resulted in no coverage
@@ -1660,7 +1667,7 @@ class ITSCube:
 
         # Have to return URL for the dataset, which is provided as an input
         # to the method, to track URL per granule in parallel processing
-        return empty, int(ds_projection), mid_date, ds_url, mask_data
+        return empty, ds_projection, mid_date, ds_url, mask_data, msgs
 
     def process_v_attributes(self, var_name: str, mid_date_coord):
         """
@@ -2110,7 +2117,7 @@ class ITSCube:
         self.layers.attrs[utils.OutputFormat.latitude] = round(self.center_lon_lat[1], 2)
         self.layers.attrs[utils.OutputFormat.longitude] = round(self.center_lon_lat[0], 2)
         self.layers.attrs[CubeFormat.proj_polygon] = json.dumps(self.polygon)
-        self.layers.attrs[utils.OutputFormat.projection] = str(self.projection)
+        self.layers.attrs[utils.OutputFormat.projection] = str(ITSCube.PROJECTION)
         self.layers.attrs[utils.OutputFormat.s3] = ITSCube.S3
 
         # Store path to the file with skipped granules (the ones that didn't
@@ -2844,8 +2851,8 @@ class ITSCube:
             )
 
     @itslive_utils.retry_decorator(max_retries=5)
+    @staticmethod
     def read_s3_dataset(
-        self,
         each_url: str,
         s3: s3fs.S3FileSystem,
     ):
@@ -2868,8 +2875,7 @@ class ITSCube:
             with xr.open_dataset(
                 fhandle, engine=ITSCube.NC_ENGINE
             ) as ds:
-                return self.preprocess_dataset(ds, each_url)
-                # return results
+                return ITSCube.preprocess_dataset(ds, each_url)
 
     @staticmethod
     def validate_cube(ds: xr.Dataset, start_date: str, cube_url: str):
