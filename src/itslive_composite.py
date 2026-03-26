@@ -3435,7 +3435,25 @@ if __name__ == '__main__':
         '-t', '--targetBucket',
         type=str,
         default='',
-        help="S3 bucket to store cube composite in Zarr format to [%(default)s]."
+        help="S3 bucket directory to store cube composite in Zarr format to "
+            "[%(default)s]. For example, "
+            "s3://its-live-data/composites/v2/S70W100"
+    )
+    parser.add_argument(
+        '-bb', '--backupBucket',
+        type=str,
+        default='',
+        help="S3 bucket directory to backup original composites to before "
+            "new composites are generated[%(default)s]. For example, "
+            "s3://its-live-data/composites/v2/backup/S70W100"
+    )
+    parser.add_argument(
+        '--noAWSSigning',
+        action='store_true',
+        default=False,
+        help='Use no AWS signing for S3 requests. If set, requests will be '
+            'unsigned (anon=True) which should be used for public buckets '
+            '[%(default)d].'
     )
     parser.add_argument(
         '-s', '--shapeFile',
@@ -3476,14 +3494,40 @@ if __name__ == '__main__':
     parser.add_argument(
         '--disableErrorSlowUse',
         action='store_false',
-        help="Disable use of valid v[xy]_error_slow instead of v[xy]_error values [False]."
+        help="Disable use of valid v[xy]_error_slow instead of v[xy]_error "
+            "values [False]."
     )
 
     args = parser.parse_args()
-
     logging.info(f"Command-line arguments: {sys.argv}")
     logging.info(f"Command arguments: {args}")
     logging.info(f"EC2 instance type: {aws_utils.get_instance_type()}")
+
+    ITSCube.NO_AWS_SIGNING = args.noAWSSigning
+
+    # If original composite exists and backup s3 location is provided, copy
+    # existing composite to backup location before it gets overwritten by the
+    # new composite
+    if ITSCube.exists(args.outputStore, args.targetBucket) and \
+        len(args.backupBucket):
+        # Use "subprocess" as s3fs.S3FileSystem leaves unclosed connections
+        # resulting in as many error messages as there are files in Zarr store
+        # to copy
+        existing_url = os.path.join(args.targetBucket, args.outputStore)
+        backup_url = existing_url.replace(args.targetBucket, args.backupBucket)
+        logging.info(
+            f'Backing up existing composite from {existing_url} to '
+            f'{backup_url}'
+        )
+        command_line = [
+            "aws", "s3", "cp", "--recursive",
+            existing_url,
+            backup_url,
+            "--acl", "bucket-owner-full-control"
+        ]
+
+        env_copy = os.environ.copy()
+        itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
 
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
@@ -3529,7 +3573,11 @@ if __name__ == '__main__':
     mosaics.create(args.outputStore)
 
     if os.path.exists(args.outputStore):
-        output_size = subprocess.run(['du', '-skh', args.outputStore], capture_output=True, text=True).stdout.split()[0]
+        output_size = subprocess.run(
+            ['du', '-skh', args.outputStore],
+            capture_output=True,
+            text=True
+        ).stdout.split()[0]
         logging.info(f'Size of {args.outputStore}: {output_size}')
 
     else:
