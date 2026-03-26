@@ -42,6 +42,7 @@ dependencies:
   - s3fs>=2022.1.0
   - fsspec>=2022.1.0
   - boto3=1.39.11
+  - awscli
 
   # Utilities
   - tqdm=4.65.0
@@ -52,7 +53,7 @@ dependencies:
   - pip
   - pip:
     - geojson==3.0.1
-    - awscliv2==2.2.0
+  #  - awscliv2==2.2.0
     - rioxarray==0.15.0
     - pystac-client
     - git+https://github.com/nasa-jpl/itslive-py
