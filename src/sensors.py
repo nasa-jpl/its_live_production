@@ -36,8 +36,8 @@ LANDSAT89 = SensorGroup(['8.', '9.', '8.0', '9.0', 8.0, 9.0, '8', '9'],
 # ATTN: '1' and '2' are added as a workaround for the stripped
 # satellite_img[12] values when Zarr writes first chunk of the datacube
 # with less than 2 characters per sensor values
-SENTINEL1 = SensorGroup(['1A', '1B', '1C', '1D', '1'], 'S1A_S1B', 11)
-SENTINEL2 = SensorGroup(['2A', '2B', '2C', '2D', '2'], 'S2A_S2B', 21)
+SENTINEL1 = SensorGroup(['1A', '1B', '1C', '1D', '1'], 'S1', 11)
+SENTINEL2 = SensorGroup(['2A', '2B', '2C', '2D', '2'], 'S2', 21)
 
 NISAR = SensorGroup(['A'], 'NISAR', 31)
 
@@ -103,8 +103,8 @@ def _groups_labels():
          4: 'L4_L5',
          7: 'L7',
          8: 'L8_L9',
-         11: 'S1A_S1B',
-         21: 'S2A_S2B'
+         11: 'S1',
+         21: 'S2'
       }
    """
    all_ids = {}
