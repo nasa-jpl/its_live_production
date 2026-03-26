@@ -3115,7 +3115,6 @@ if __name__ == '__main__':
             'unsigned (anon=True) which should be used for public buckets '
             '[%(default)d].'
     )
-
     parser.add_argument(
         '--useGranulesFile',
         type=Path,
