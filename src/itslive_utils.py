@@ -188,6 +188,7 @@ def download_chunk(bucket_name, s3_path, each_chunk, local_path):
     )
 
 
+@retry_decorator()
 def backup_chunk(bucket, source_path, filename, target_path):
     """Helper function to copy Zarr chunk stored in S3 bucket
     from one location to another. This is used to create a backup
@@ -199,6 +200,8 @@ def backup_chunk(bucket, source_path, filename, target_path):
         filename (str): Name of the file to copy.
         target_path (str): Target path to copy the chunk to.
     """
+    # s3 = boto3.resource('s3')           # thread-local, cheap to create
+    # bucket = s3.Bucket(bucket_name)
     # logging.info(f'Copying {source_path=} {filename=} to {local_key}')
     copy_source = {
         'Bucket': bucket.name,
@@ -287,7 +290,6 @@ def identify_datacube_latest_chunks(bucket_url: str):
 
 
 @timing_decorator
-@retry_decorator()
 def backup_datacube_latest_chunks(
     bucket_url: str,
     backup_url: str,
@@ -340,7 +342,6 @@ def backup_datacube_latest_chunks(
 
     # Backup metadata files
     for each_meta in CUBE_META:
-        # Backup the file
         # logging.info(
         #     f'Backup cube {each_meta} to {target_url}'
         # )
