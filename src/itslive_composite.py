@@ -3542,7 +3542,7 @@ if __name__ == '__main__':
             # resulting in as many error messages as there are files in Zarr store
             # to copy
             command_line = [
-                "awsv2", "s3", "cp", "--recursive",
+                "aws", "s3", "cp", "--recursive",
                 args.outputStore,
                 os.path.join(args.targetBucket, os.path.basename(args.outputStore)),
                 "--acl", "bucket-owner-full-control"
