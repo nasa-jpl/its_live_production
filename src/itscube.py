@@ -8,7 +8,7 @@ from dateutil.parser import parse
 from datetime import datetime
 import gc
 import json
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_config
 import logging
 import os
 from pathlib import Path
@@ -954,7 +954,10 @@ class ITSCube:
             logging.info(f"Reading existing {cube_path}")
 
             # Open S3FS access to S3 bucket with input datacube
-            s3_in = aws_utils.make_s3fs(no_sign_request=ITSCube.NO_AWS_SIGNING)
+            s3_in = aws_utils.make_s3fs(
+                max_connections=ITSCube.MAX_AWS_CONNECTIONS,
+                no_sign_request=ITSCube.NO_AWS_SIGNING
+            )
             cube_store = s3fs.S3Map(root=cube_path, s3=s3_in, check=False)
             ds_from_zarr = xr.open_dataset(
                 cube_store,
@@ -1133,7 +1136,10 @@ class ITSCube:
         if s3 is None:
             # If input datacube is on the local filesystem, open S3FS for reading
             # granules from S3 bucket
-            s3 = aws_utils.make_s3fs(no_sign_request=ITSCube.NO_AWS_SIGNING)
+            s3 = aws_utils.make_s3fs(
+                max_connections=ITSCube.MAX_AWS_CONNECTIONS,
+                no_sign_request=ITSCube.NO_AWS_SIGNING
+            )
 
         self.clear()
 
@@ -1307,42 +1313,36 @@ class ITSCube:
         # For debugging only:
         # num_to_process = 500
 
-        while num_to_process > 0:
-            # How many tasks to process at a time
-            num_tasks = ITSCube.NUM_GRANULES_TO_WRITE if \
-                num_to_process > ITSCube.NUM_GRANULES_TO_WRITE else \
-                num_to_process
+        with parallel_config(backend='threading', n_jobs=ITSCube.NUM_THREADS):
+            while num_to_process > 0:
+                # How many tasks to process at a time
+                num_tasks = min(num_to_process, ITSCube.NUM_GRANULES_TO_WRITE)
 
-            # self.logger.info(
-            #     f"Processing {num_tasks} tasks out of {num_to_process} "
-            #     "remaining"
-            # )
+                # Run in parallel with joblib
+                log_msg = f"Processing {num_tasks} tasks out of " \
+                            f"{num_to_process} remaining"
 
-            # Run in parallel with joblib
-            log_msg = f"Processing {num_tasks} tasks out of " \
-                        f"{num_to_process} remaining"
+                results = None
+                with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
+                    results = Parallel()(
+                        delayed(ITSCube.read_s3_dataset)(each_file, s3) for
+                        each_file in found_urls[start:start + num_tasks]
+                    )
 
-            results = None
-            with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
-                results = Parallel(n_jobs=-1, backend='threading')(
-                    delayed(ITSCube.read_s3_dataset)(each_file, s3) for
-                    each_file in found_urls[start:start + num_tasks]
-                )
+                for each_ds in results:
+                    self.add_layer(*each_ds)
 
-            for each_ds in results:
-                self.add_layer(*each_ds)
+                del results
+                gc.collect()
 
-            del results
-            gc.collect()
+                wrote_layers = self.combine_layers(output_dir, is_first_write)
+                if is_first_write and wrote_layers:
+                    is_first_write = False
 
-            wrote_layers = self.combine_layers(output_dir, is_first_write)
-            if is_first_write and wrote_layers:
-                is_first_write = False
+                self.format_stats()
 
-            self.format_stats()
-
-            num_to_process -= num_tasks
-            start += num_tasks
+                num_to_process -= num_tasks
+                start += num_tasks
 
         return found_urls
 
@@ -1379,42 +1379,45 @@ class ITSCube:
             return found_urls
 
         # Parallelize layer collection
-        s3 = aws_utils.make_s3fs(no_sign_request=ITSCube.NO_AWS_SIGNING)
+        s3 = aws_utils.make_s3fs(
+            max_connections=ITSCube.MAX_AWS_CONNECTIONS,
+            no_sign_request=ITSCube.NO_AWS_SIGNING
+        )
 
         is_first_write = True
         start = 0
         num_to_process = len(found_urls)
 
-        while num_to_process > 0:
-            # How many tasks to process at a time
-            num_tasks = ITSCube.NUM_GRANULES_TO_WRITE if \
-                num_to_process > ITSCube.NUM_GRANULES_TO_WRITE else \
-                    num_to_process
-            # Run in parallel with joblib
-            log_msg = f"Processing {num_tasks} tasks out of " \
-                        f"{num_to_process} remaining"
+        with parallel_config(backend='threading', n_jobs=ITSCube.NUM_THREADS):
+            while num_to_process > 0:
+                # How many tasks to process at a time
+                num_tasks = min(num_to_process, ITSCube.NUM_GRANULES_TO_WRITE)
 
-            results = None
-            with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
-                results = Parallel(n_jobs=-1, backend='threading')(
-                    delayed(ITSCube.read_s3_dataset)(each_file, s3) for
-                    each_file in found_urls[start:start + num_tasks]
-                )
+                # Run in parallel with joblib
+                log_msg = f"Processing {num_tasks} tasks out of " \
+                            f"{num_to_process} remaining"
 
-            for each_ds in results:
-                self.add_layer(*each_ds)
+                results = None
+                with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
+                    results = Parallel()(
+                        delayed(ITSCube.read_s3_dataset)(each_file, s3) for
+                        each_file in found_urls[start:start + num_tasks]
+                    )
 
-            del results
-            gc.collect()
+                for each_ds in results:
+                    self.add_layer(*each_ds)
 
-            wrote_layers = self.combine_layers(output_dir, is_first_write)
-            if is_first_write and wrote_layers:
-                is_first_write = False
+                del results
+                gc.collect()
 
-            self.format_stats()
+                wrote_layers = self.combine_layers(output_dir, is_first_write)
+                if is_first_write and wrote_layers:
+                    is_first_write = False
 
-            num_to_process -= num_tasks
-            start += num_tasks
+                self.format_stats()
+
+                num_to_process -= num_tasks
+                start += num_tasks
 
         return found_urls
 
@@ -3012,8 +3015,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '-t', '--threads',
         type=int,
-        default=8,
-        help='Number of Dask workers to use for parallel processing [%(default)d].'
+        default=32,
+        help='Number of threads to use for parallel processing [%(default)d].'
     )
     parser.add_argument(
         '-r', '--removeExistingCube',

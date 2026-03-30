@@ -43,7 +43,11 @@ def get_instance_type():
    return instance_type
 
 
-def make_s3fs(no_sign_request: bool = False, **kwargs) -> s3fs.S3FileSystem:
+def make_s3fs(
+   max_connections: int = 32,
+   no_sign_request: bool = False,
+   **kwargs
+) -> s3fs.S3FileSystem:
    """
    Return an S3FileSystem configured appropriately for the given options.
    Public buckets get anon=True (equivalent to --no-sign-request).
@@ -61,6 +65,7 @@ def make_s3fs(no_sign_request: bool = False, **kwargs) -> s3fs.S3FileSystem:
       An S3FileSystem instance configured according to the given options.
    """
    return s3fs.S3FileSystem(
+            config_kwargs={'max_pool_connections': max_connections},
             anon=no_sign_request,
             skip_instance_cache=True,
             **kwargs
