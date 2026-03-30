@@ -1,9 +1,11 @@
+from asyncio import all_tasks
+
 import boto3
+from botocore.config import Config
 import collections
 import functools
-import gc
 import itertools
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_config
 import json
 import logging
 import math
@@ -179,23 +181,20 @@ def download_chunk(bucket_name, s3_path, each_chunk, local_path):
 
 
 @retry_decorator(max_retries=5)
-def backup_chunk(bucket_name, source_path, filename, target_path):
+def backup_chunk(bucket, source_path, filename, target_path):
     """Helper function to copy Zarr chunk stored in S3 bucket
     from one location to another. This is used to create a backup
     of the datacube in S3.
 
     Args:
-        bucket_name (str): Name of the S3 bucket.
+        bucket (boto3.resources.factory.s3.Bucket): S3 bucket resource.
         source_path (str): Path to the datacube or its variable in S3.
         filename (str): Name of the file to copy.
         target_path (str): Target path to copy the chunk to.
     """
-    s3 = boto3.resource('s3')           # thread-local, cheap to create
-    bucket = s3.Bucket(bucket_name)
-
     # logging.info(f'Copying {source_path=} {filename=} to {local_key}')
     copy_source = {
-        'Bucket': bucket_name,
+        'Bucket': bucket.name,
         'Key': os.path.join(source_path, filename)
     }
     bucket.copy(copy_source, os.path.join(target_path, filename))
@@ -325,7 +324,8 @@ def backup_variable(
 @timing_decorator
 def backup_datacube_latest_chunks(
     bucket_url: str,
-    backup_url: str
+    backup_url: str,
+    num_threads: int = 32
 ):
     """
     Create backup of metadata files and latest chunks for each of the data
@@ -335,6 +335,8 @@ def backup_datacube_latest_chunks(
         bucket_url (str): s3 bucket path for the datacube to backup.
         backup_url (str): s3 bucket path for the datacube to backup latest
             Zarr chunks to.
+        num_threads (int): Number of threads to use for parallel processing.
+            Default is 32.
 
     Returns:
         Map of data variable to the ranges for existing data chunks,
@@ -359,7 +361,7 @@ def backup_datacube_latest_chunks(
             indent=3
         )
 
-    s3 = boto3.resource('s3')
+    s3 = boto3.resource('s3', config=Config(max_pool_connections=num_threads))
     s3_bucket = s3.Bucket(bucket_name)
 
     # Upload chunk information file to the backup path
@@ -372,16 +374,38 @@ def backup_datacube_latest_chunks(
         logging.info(
             f'Backup cube {each_meta} to {target_url}'
         )
-        backup_chunk(bucket_name, source_url, each_meta, target_url)
+        backup_chunk(s3_bucket, source_url, each_meta, target_url)
 
-    # Backup latest chunks and metadata files for each data variable
-    # Variables are independent — back them up concurrently
-    Parallel(n_jobs=len(last_chunk_map), backend='threading')(
-        delayed(backup_variable)(
-            each_var, each_chunk_info, bucket_name, source_url, target_url
-        )
+    # Build flat list of all (var, chunk) copy tasks across all variables,
+    # and corresponding variable metadata files to copy.
+    all_tasks = [
+        (each_var, ".".join(map(str, each_chunk)))
         for each_var, each_chunk_info in last_chunk_map.items()
+        for each_chunk in itertools.product(*each_chunk_info.last_dim_ranges)
+    ] + [
+        (each_var, each_meta)
+        for each_var in last_chunk_map
+        for each_meta in VAR_META
+    ]
+
+    logging.info(
+        f"Backing up {len(all_tasks)} chunks across {len(last_chunk_map)} "
+        "variables..."
     )
+
+    with parallel_config(backend='threading', n_jobs=num_threads):
+        Parallel()(
+            delayed(backup_chunk)(
+                s3_bucket,
+                os.path.join(source_url, each_var),
+                each_chunk_key,
+                os.path.join(target_url, each_var),
+            )
+            for each_var, each_chunk_key in tqdm(all_tasks,
+                                                    desc='Backing up chunks',
+                                                    total=len(all_tasks)
+                                                )
+        )
 
     return last_chunk_map
 
