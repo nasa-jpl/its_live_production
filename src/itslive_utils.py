@@ -279,48 +279,6 @@ def identify_datacube_latest_chunks(bucket_url: str):
     return last_chunk_map
 
 
-def backup_variable(
-    each_var,
-    each_chunk_info,
-    bucket_name,
-    source_url,
-    target_url):
-    """Back up all chunks for a single variable.
-
-    Inputs:
-    =======
-    - each_var: variable name (e.g. velocity)
-    - each_chunk_info: ZarrChunk object with chunk ranges for the variable
-    - bucket_name: S3 bucket name
-    - source_url: S3 path to the datacube
-                    (e.g. "its-live-data/test-space/datacube.zarr")
-    - target_url: S3 path to the backup location
-                    (e.g. "its-live-data/test-space/datacube_backup.zarr")
-    """
-    s3_var_path = os.path.join(source_url, each_var)
-    s3_target = os.path.join(target_url, each_var)
-
-    logging.info(f'Backing up {each_var}: {each_chunk_info.last_dim_ranges=}')
-    all_chunks = list(itertools.product(*each_chunk_info.last_dim_ranges))
-    total_chunks = len(all_chunks)
-
-    Parallel(n_jobs=-1, backend='threading')(
-        delayed(backup_chunk)(
-            bucket_name,
-            s3_var_path,
-            ".".join(map(str, each_chunk)),
-            s3_target,
-        ) for each_chunk in all_chunks
-    )
-
-    # Single clean line per variable on completion
-    logging.info(f"{each_var}: {total_chunks} chunks backed up")
-
-    # Copy variable metadata files
-    for each_meta in VAR_META:
-        backup_chunk(bucket_name, s3_var_path, each_meta, s3_target)
-
-
 @timing_decorator
 def backup_datacube_latest_chunks(
     bucket_url: str,
