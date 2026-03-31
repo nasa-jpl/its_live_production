@@ -192,7 +192,6 @@ def backup_chunk(bucket, source_path, filename, target_path):
         filename (str): Name of the file to copy.
         target_path (str): Target path to copy the chunk to.
     """
-    # logging.info(f'Copying {source_path=} {filename=} to {local_key}')
     copy_source = {
         'Bucket': bucket.name,
         'Key': os.path.join(source_path, filename)
@@ -528,7 +527,7 @@ def build_cql2_filter(filters_list):
 
 
 @timing_decorator
-def serverless_search_itslive(
+def serverless_search(
     epsg_code: str,
     start_date: str,
     end_date: str,
@@ -588,167 +587,6 @@ def serverless_search_itslive(
     )
 
 
-@timing_decorator
-@retry_decorator()
-def serverless_search(
-    epsg_code: str,
-    start_date: str,
-    end_date: str,
-    roi: dict,
-    percent_valid_pixels: float = 1.0,
-    base_catalog_href: str = "s3://its-live-data/test-space/stac/geoparquet/h3r2",
-    engine: str = "duckdb",
-    reduce_spatial_search=True,
-    partition_type: str = "h3",
-    resolution: int = 2,
-    overlap: str = "bbox_overlap"
-):
-    """
-    Performs a serverless!! search over partitioned STAC catalogs stored in
-    Parquet format for the ITS_LIVE project.
-
-    Parameters
-    ----------
-    epsg_code : str
-        EPSG code of the coordinate reference system to use for the search.
-    start_date : str
-        Start date of the search range in ISO 8601 format (e.g., "2020-01-01").
-    end_date : str
-        End date of the search range in ISO 8601 format (e.g., "2020-12-31").
-    roi : list
-        A GeoJSON-like dictionary defining the region of interest (ROI) for
-        the search. It should contain a "type" key (e.g., "Polygon") and a
-        "coordinates" key with a list of coordinates defining the geometry.
-    percent_valid_pixels : float, optional
-        Minimum percentage of valid pixels required for an asset to be
-        included in the results.
-        Defaults to 1.0 (100% valid pixels).
-    base_catalog_href : str
-        Base URI of the ITS_LIVE STAC catalog or geoparquet collection. This
-        should point to the root location where spatial partitions are stored
-        (e.g. "s3://its-live-data/test-space/stac/geoparquet/latlon").
-    engine : str, optional
-        The backend engine to use for querying. Supported options:
-        - "rustac": Uses the Rust STAC client (`rustac.DuckdbClient`)
-        - "duckdb": Uses DuckDB SQL for querying parquet partitions
-    reduce_spatial_search : bool, optional
-        Whether to pre-filter the list of parquet files using overlapping
-        spatial partitions. If False, all files under the base path will be
-        searched.
-    partition_type : str, optional
-        The spatial partitioning scheme used. Supports:
-        - "latlon": 10x10 degree tiles (default)
-        - "h3": Hexagonal grid (requires `resolution` and `overlap`)
-    resolution : int, optional
-        Only used if `partition_type` is "h3". Defines the granularity of H3
-        spatial partitioning.
-    overlap : str, optional
-        Only used with H3 partitioning. Passed to the
-        `h3shape_to_cells_experimental()` function to handle partial overlaps.
-
-    Returns
-    -------
-    List[str]
-        A list of asset URLs (typically `.nc` NetCDF files) that match the search criteria.
-
-    """
-    import duckdb
-    import rustac
-
-    # Connect to DuckDB
-    con = duckdb.connect()
-    # Load spatial extension required for the spatial queries
-    con.execute("INSTALL spatial")
-    con.execute("LOAD spatial")
-
-    client = rustac.DuckdbClient()
-    store = base_catalog_href
-
-    filters = [
-        {
-            "op": ">=",
-            "args": [{"property": "percent_valid_pixels"}, percent_valid_pixels]
-        },
-        {
-            "op": "=",
-            "args": [{"property": "proj:code"}, f'EPSG:{epsg_code}']
-        }
-    ]
-    filters_sql = filters_to_where(filters)
-
-    search_kwargs = {
-        "intersects": roi,  # <- has to be in lat lon
-        "datetime": f"{start_date}/{end_date}",
-        "filter": build_cql2_filter(filters)
-    }
-
-    logging.info(f"Search filters: {search_kwargs}")
-
-    if reduce_spatial_search:
-        if "intersects" in search_kwargs:
-            search_prefixes = get_overlapping_grid_names(
-                base_href=store,
-                geojson_geometry=search_kwargs["intersects"],
-                partition_type=partition_type,
-                resolution=resolution,
-                overlap=overlap
-            )
-
-    else:
-        if partition_type == "latlon":
-            search_prefixes = [
-                f"{store}/{mission}/**/*.parquet" for mission
-                in ["landsatOLI", "sentinel1", "sentinel2"]
-            ]
-
-        else:
-            search_prefixes = [f"{store}/**/*.parquet"]
-
-    logging.info((f"Searching in {search_prefixes}"))
-
-    hrefs = []
-    # TODO: this could run in parallel on a thread or could be passed all
-    # to DuckDB/rustac as a combined list of paths.
-    # for debugging purposes querying one by one is more convenient for now.
-    for prefix in search_prefixes:
-        # try:
-        if engine == "duckdb":
-            # TODO: make it more flexible
-            logging.info(f"Filters as SQL: {filters_sql}")
-            geojson_str = json.dumps(search_kwargs["intersects"])
-            query = f"""
-                SELECT
-                    '{prefix}' AS source_parquet,
-                    assets -> 'data' ->> 'href' AS data_href
-                FROM read_parquet('{prefix}', union_by_name=true)
-                WHERE ST_Intersects(
-                    geometry,
-                    ST_GeomFromGeoJSON('{geojson_str}')
-                ) AND {filters_sql}
-            """
-            items = con.execute(query).df()
-            links = items["data_href"].to_list()
-            hrefs.extend(links)
-
-        elif engine == "rustac":
-            # can we use include to only bring the asset links?
-            items = client.search(prefix, **search_kwargs)
-            for item in items:
-                for asset in item["assets"].values():
-                    if "data" in asset["roles"] and asset["href"].endswith(".nc"):
-                        hrefs.append(asset["href"])
-
-        else:
-            raise NotImplementedError(f"Not a valid query engine: {engine}")
-
-        logging.info(f"Prefx: {prefix} items found: {len(items)}")
-
-        # except Exception as e:
-        #     raise (f"Error while searching in {prefix}: {e}")
-
-    return sorted(list(set(hrefs)))
-
-
 def get_min_lon_lat_max_lon_lat(coordinates: list):
     """
     Compute longitude and latitude extends for provided coordinates list.
@@ -803,7 +641,11 @@ def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool 
 
         if command_return.returncode != 0:
             # Report the whole stdout stream as one logging message
-            logging.warning(f"Failed to invoke: {' '.join(command_line)} with returncode={command_return.returncode}: {command_return.stdout}")
+            logging.warning(
+                f"Failed to invoke: {' '.join(command_line)} with "
+                f"returncode={command_return.returncode}: "
+                f"{command_return.stdout}"
+            )
 
             num_retries += 1
             # If failed due to AWS SlowDown error, retry

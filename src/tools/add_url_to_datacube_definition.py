@@ -14,7 +14,9 @@ from pathlib import Path
 import s3fs
 
 from grid import Bounds
-from itscube_types import CubeJson, BatchVars, datacube_filename_zarr
+from itscube_types import BatchVars
+from itslive_mosaics_types import GeoJsonVars
+from utils import File
 
 
 class DataCubeGlobalDefinition:
@@ -114,11 +116,11 @@ class DataCubeGlobalDefinition:
             # If need to create reduced catalog of datacubes
             if not DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG:
                 output_cubes = copy.deepcopy(cubes)
-                output_cubes[CubeJson.FEATURES] = []
+                output_cubes[GeoJsonVars.features] = []
 
             s3 = s3fs.S3FileSystem(skip_instance_cache=True)
 
-            for each_cube in cubes[CubeJson.FEATURES]:
+            for each_cube in cubes[GeoJsonVars.features]:
                 # Example of data cube definition in json file
                 # "properties": {
                 #     "fill-opacity": 1.0,
@@ -155,25 +157,25 @@ class DataCubeGlobalDefinition:
                 # }
 
                 # Start the Batch job for each cube with ROI != 0
-                properties = each_cube[CubeJson.PROPERTIES]
+                properties = each_cube[GeoJsonVars.properties]
 
-                roi = properties[CubeJson.ROI_PERCENT_COVERAGE]
+                roi = properties[GeoJsonVars.roi_percent_coverage]
 
                 # Default: datacube does not exist
-                each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 0
+                each_cube[GeoJsonVars.properties][GeoJsonVars.exist_flag] = 0
 
                 if roi != 0.0:
                     # Format filename for the cube
-                    epsg_code = properties[CubeJson.EPSG]
+                    epsg_code = properties[GeoJsonVars.epsg]
 
                     # String representation of EPSG code with 'EPSG' prefix
-                    epsg = f'{CubeJson.EPSG_PREFIX}{epsg_code}'
+                    epsg = f'{GeoJsonVars.epsg_prefix}{epsg_code}'
 
                     if len(DataCubeGlobalDefinition.EPSG_TO_UPDATE) and \
                             epsg_code not in DataCubeGlobalDefinition.EPSG_TO_UPDATE:
                         continue
 
-                    coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
+                    coords = properties[GeoJsonVars.geometry_epsg][GeoJsonVars.coordinates][0]
                     x_bounds = Bounds([each[0] for each in coords])
                     y_bounds = Bounds([each[1] for each in coords])
 
@@ -195,7 +197,7 @@ class DataCubeGlobalDefinition:
                         f"x={mid_x} y={mid_y}"
                     )
 
-                    cube_filename = datacube_filename_zarr(
+                    cube_filename = File.datacube_filename_zarr(
                         epsg, self.grid_size, mid_x, mid_y
                     )
                     logging.info(f'Cube name: {cube_filename}')
@@ -217,16 +219,16 @@ class DataCubeGlobalDefinition:
                             )
 
                             # The datacube in Zarr format exists, update GeoJson
-                            each_cube[CubeJson.PROPERTIES][CubeJson.URL] = cube_url[0]
-                            each_cube[CubeJson.PROPERTIES][CubeJson.EXIST_FLAG] = 1
-                            each_cube[CubeJson.PROPERTIES][CubeJson.EPSG] = epsg_code
+                            each_cube[GeoJsonVars.properties][GeoJsonVars.url] = cube_url[0]
+                            each_cube[GeoJsonVars.properties][GeoJsonVars.exist_flag] = 1
+                            each_cube[GeoJsonVars.properties][GeoJsonVars.epsg] = epsg_code
 
                             num_cubes += 1
 
                             # If constructing reduced catalog, append cube to
                             # the result catalog
                             if not DataCubeGlobalDefinition.DISABLE_REDUCED_CATALOG:
-                                output_cubes[CubeJson.FEATURES].append(each_cube)
+                                output_cubes[GeoJsonVars.features].append(each_cube)
 
                             # Write number of granules for existing cube to
                             # the catalog geojson file
@@ -242,12 +244,12 @@ class DataCubeGlobalDefinition:
                             # granules
                             with s3.open(cube_s3_url_meta, 'r') as fh:
                                 meta = json.load(fh)
-                                each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT] = \
+                                each_cube[GeoJsonVars.properties][GeoJsonVars.granule_count] = \
                                     meta['metadata']['mid_date/.zarray']['shape'][0]
 
                                 logging.info(
                                     f"Number of granules: "
-                                    f"{each_cube[CubeJson.PROPERTIES][CubeJson.GRANULE_COUNT]} "
+                                    f"{each_cube[GeoJsonVars.properties][GeoJsonVars.granule_count]} "
                                     f"for {cube_url[0]}"
                                 )
 
