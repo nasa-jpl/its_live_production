@@ -396,14 +396,7 @@ class ITSCube:
             "coordinates": [self.polygon_coords]
         }
 
-        # found_urls = itslive_utils.serverless_search(
-        #     epsg_code=ITSCube.PROJECTION,
-        #     start_date=ITSCube.START_DATE,
-        #     end_date=ITSCube.END_DATE,
-        #     roi=roi,
-        #     base_catalog_href=ITSCube.STAC_CATALOG,
-        # )
-        found_urls = itslive_utils.serverless_search_itslive(
+        found_urls = itslive_utils.serverless_search(
             epsg_code=ITSCube.PROJECTION,
             start_date=ITSCube.START_DATE,
             end_date=ITSCube.END_DATE,
