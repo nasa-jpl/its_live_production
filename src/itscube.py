@@ -12,7 +12,6 @@ from joblib import Parallel, delayed, parallel_config
 import logging
 import os
 from pathlib import Path
-import psutil
 import pyproj
 import shutil
 import timeit
@@ -83,8 +82,9 @@ class ITSCube:
     # Current ITSCube software version
     Version = '1.0'
 
-    # Number of threads for parallel processing
-    NUM_THREADS = 4
+    # Number of connections in the connection pool for AWS S3 access, to be
+    # used when creating S3FileSystem instance.
+    MAX_AWS_CONNECTIONS = 32
 
     # Number of chunks to backup in parallel if updating
     # the datacube in S3 bucket
@@ -426,8 +426,9 @@ class ITSCube:
                 f"found granules"
             )
 
-        # Number of found URL's should report number of granules as returned by
-        # searchAPI to provide correct % value for skipped granules if updating the cube
+        # Number of found URL's should report number of granules as returned
+        # by searchAPI to provide correct % value for skipped granules if
+        # updating the cube
         self.num_urls_from_api = len(found_urls)
 
         urls, self.skipped_granules[SkippedGranules.duplicate] = \
@@ -999,7 +1000,7 @@ class ITSCube:
                 )
 
                 command_line = [
-                    "awsv2", "s3", "cp",
+                    "aws", "s3", "cp",
                     skipped_granules_file,
                     os.path.join(
                         backup_bucket,
@@ -1076,8 +1077,6 @@ class ITSCube:
         self.logger.info(
             f"Updating {os.path.join(output_bucket, output_dir)}"
         )
-
-        ITSCube.show_memory_usage('update()')
 
         # Backup skipped granules info to the backup bucket if provided
         # and open existing datacube (if it exists) to update with new layers
@@ -1202,7 +1201,7 @@ class ITSCube:
             )
 
             command_line = [
-                "awsv2", "s3", "cp",
+                "aws", "s3", "cp",
                 backup_url,
                 os.path.basename(output_dir),
                 "--recursive",
@@ -1306,7 +1305,10 @@ class ITSCube:
         # For debugging only:
         # num_to_process = 500
 
-        with parallel_config(backend='threading', n_jobs=ITSCube.NUM_THREADS):
+        with parallel_config(
+            backend='threading',
+            n_jobs=ITSCube.MAX_AWS_CONNECTIONS
+        ):
             while num_to_process > 0:
                 # How many tasks to process at a time
                 num_tasks = min(num_to_process, ITSCube.NUM_GRANULES_TO_WRITE)
@@ -1363,7 +1365,6 @@ class ITSCube:
             f"Creating {os.path.join(output_bucket, output_dir)}"
         )
 
-        ITSCube.show_memory_usage('create()')
         ITSCube.init_output_store(output_dir)
 
         self.clear()
@@ -1381,7 +1382,9 @@ class ITSCube:
         start = 0
         num_to_process = len(found_urls)
 
-        with parallel_config(backend='threading', n_jobs=ITSCube.NUM_THREADS):
+        with parallel_config(
+            backend='threading', n_jobs=ITSCube.MAX_AWS_CONNECTIONS
+        ):
             while num_to_process > 0:
                 # How many tasks to process at a time
                 num_tasks = min(num_to_process, ITSCube.NUM_GRANULES_TO_WRITE)
@@ -1969,28 +1972,6 @@ class ITSCube:
 
         self.layers[var_name].attrs[Mapping.attrs.grid_mapping] = Mapping.name
 
-    @staticmethod
-    def show_memory_usage(msg: str = ''):
-        """
-        Display current memory usage.
-
-        Inputs:
-        msg (str): Optional message to include in the log for context.
-        """
-        _GB = 1024 ** 3
-        usage = psutil.virtual_memory()
-
-        # Use standard logging to be able to use the method without ITSCube
-        # object
-        memory_msg = 'Memory '
-        if len(msg):
-            memory_msg += msg
-
-        logging.info(
-            f"{memory_msg}: total={usage.total / _GB}Gb "
-            f"used={usage.used / _GB}Gb available={usage.available / _GB}Gb"
-        )
-
     def combine_layers(self, output_dir, is_first_write=False):
         """
         Combine selected layers into one xr.Dataset object and write (append)
@@ -2020,7 +2001,6 @@ class ITSCube:
             self.logger.info('No layers to combine, continue')
             return wrote_layers
 
-        # ITSCube.show_memory_usage('before combining layers')
         wrote_layers = True
 
         start_time = timeit.default_timer()
@@ -2472,7 +2452,6 @@ class ITSCube:
         self.logger.info(
             f"Combined {len(self.urls)} layers (took {time_delta} seconds)"
         )
-        # ITSCube.show_memory_usage('after combining layers')
 
         compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
         compression = {"compressor": compressor}
@@ -2946,7 +2925,7 @@ class ITSCube:
             cube_s3_path = os.path.join(s3_bucket, cube_store)
 
             command_line = [
-                "awsv2", "s3", "rm", "--recursive", "--quiet",
+                "aws", "s3", "rm", "--recursive", "--quiet",
                 cube_s3_path
             ]
             logging.info(
@@ -2970,7 +2949,7 @@ class ITSCube:
             json_s3_path = os.path.join(s3_bucket, skipped_granules_file)
 
             command_line = [
-                "awsv2", "s3", "rm", "--quiet",
+                "aws", "s3", "rm", "--quiet",
                 json_s3_path
             ]
             logging.info(
@@ -3193,7 +3172,7 @@ if __name__ == '__main__':
             f'extension, got {args.outputStore}'
         )
 
-    ITSCube.NUM_THREADS = args.threads
+    ITSCube.MAX_AWS_CONNECTIONS = args.threads
     ITSCube.NUM_CHUNKS_TO_BACKUP = args.numberBackupChunks
     ITSCube.USE_EXISTING_BACKUP = args.useExistingCubeBackup
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
@@ -3296,8 +3275,6 @@ if __name__ == '__main__':
     # Debugging only: don't remove local copy of the cube and don't copy to s3
     # sys.exit()
 
-    ITSCube.show_memory_usage('at the end of datacube generation')
-
     try:
         if not args.disableCubeValidation and os.path.exists(args.outputStore):
             with xr.open_zarr(
@@ -3362,7 +3339,7 @@ if __name__ == '__main__':
                     [True, False],  # recursive option for copy
                     [True, False]   # flag if need to validate the store once it's copied over to the s3 target location
                 ):
-                    command_line = ["awsv2", "s3", "cp"]
+                    command_line = ["aws", "s3", "cp"]
 
                     if each_recursive_option:
                         command_line.append('--recursive')
