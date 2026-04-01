@@ -86,8 +86,8 @@ class MosaicsOutputFormat:
     ATTR_MAP = {
         CubeFormat.date_created: COMPOSITES_CREATED,
         CubeFormat.date_updated: COMPOSITES_UPDATED,
-        utils.OutputFormat.s3:           COMPOSITES_S3,
-        utils.OutputFormat.url:          COMPOSITES_URL
+        utils.OutputFormat.s3:   COMPOSITES_S3,
+        utils.OutputFormat.url:  COMPOSITES_URL
     }
 
     # This is to fix the case when composites attributes were collected using
@@ -317,7 +317,8 @@ class ITSLiveAnnualMosaics:
         utils.OutputFormat.url
     ]
 
-    # Name of new dimension to use when concatenating multiple composites into one xr.DataArray
+    # Name of new dimension to use when concatenating multiple composites
+    # into one xr.DataArray
     CONCAT_DIM_NAME = 'new_dim'
 
     def __init__(self, epsg: int, is_dry_run: bool):
@@ -3021,6 +3022,7 @@ class ITSLiveAnnualMosaics:
         """
         return filename.replace('.nc', '.json')
 
+    @staticmethod
     def copy_to_s3_bucket(local_filename, target_s3_filename):
         """
         Copy local NetCDF file to S3 bucket.
@@ -3075,36 +3077,42 @@ def parse_args():
     """
 
     # Command-line arguments parser
-    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0],
-                                     epilog=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__.split('\n')[0],
+        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         '-c', '--cubeDefinitionFile',
         type=str,
         action='store',
         default=None,
-        help="GeoJson file that stores existing datacubes Zarr S3 URLs [%(default)s]."
+        help="GeoJson file that stores existing datacubes Zarr S3 URLs "
+            "[%(default)s]."
     )
     parser.add_argument(
         '--processCubesWithinPolygon',
         type=str,
         action='store',
         default=None,
-        help="GeoJSON file that stores polygon the cubes centers should belong to [%(default)s]."
+        help="GeoJSON file that stores polygon the cubes centers should "
+            "belong to [%(default)s]."
     )
     parser.add_argument(
         '-b', '--bucket',
         type=str,
         action='store',
         default='s3://its-live-data',
-        help="S3 bucket to store datacubes, composites and mosaics [%(default)s]"
+        help="S3 bucket to store datacubes, composites and mosaics "
+            "[%(default)s]"
     )
     parser.add_argument(
         '-u', '--urlPath',
         type=str,
         action='store',
         default='http://its-live-data.s3.amazonaws.com',
-        help="URL for the store in S3 bucket (to provide for easier download option) [%(default)s]"
+        help="URL for the store in S3 bucket (to provide for easier "
+            "download option) [%(default)s]"
     )
     parser.add_argument(
         '-s', '--compositesDir',
@@ -3132,14 +3140,16 @@ def parse_args():
         type=str,
         action='store',
         default=None,
-        help="JSON list to specify EPSG codes of interest for the datacubes to process [%(default)s]"
+        help="JSON list to specify EPSG codes of interest for the datacubes "
+            "to process [%(default)s]"
     )
     parser.add_argument(
         '--excludeEPSG',
         type=str,
         action='store',
         default=None,
-        help="JSON list of EPSG codes to exclude from the datacube processing [%(default)s]"
+        help="JSON list of EPSG codes to exclude from the datacube "
+            "processing [%(default)s]"
     )
     parser.add_argument(
         '--mosaicsEpsgCode',
@@ -3153,26 +3163,29 @@ def parse_args():
         type=int,
         action='store',
         default=None,
-        help='EPSG code to create intermediate mosaics for [%(default)s] (lazy parallelization).'
+        help="EPSG code to create intermediate mosaics for [%(default)s] "
+            "(lazy parallelization)."
     )
     parser.add_argument(
         '--mergeYear',
         type=str,
         action='store',
         default=None,
-        help='Year to merge intermediate mosaics for [%(default)s] (lazy parallelization)'
+        help="Year to merge intermediate mosaics for [%(default)s] "
+            "(lazy parallelization)."
     )
     parser.add_argument(
         '-g', '--gridCellSize',
         type=int,
         default=120,
-        help="Grid cell size of input ITS_LIVE datacube composites [%(default)d]."
+        help="Grid cell size of input ITS_LIVE datacube composites "
+            "[%(default)d]."
     )
     parser.add_argument(
         '--dryrun',
         action='store_true',
         default=False,
-        help='Dry run, do not copy mosaics to AWS S3 bucket'
+        help="Dry run, do not copy mosaics to AWS S3 bucket"
     )
     parser.add_argument(
         '-n', '--engine',
@@ -3185,13 +3198,15 @@ def parse_args():
         '-t', '--transformation_matrix_file',
         default='transformation_matrix.npz',
         type=str,
-        help='Store transformation matrix to provided file and re-use it to build all mosaics for the same region [%(default)s]'
+        help="Store transformation matrix to provided file and re-use it to "
+            "build all mosaics for the same region [%(default)s]"
     )
     parser.add_argument(
         '--use_existing_files',
         action='store_true',
         default=False,
-        help='Use existing mosaics files if they exist [%(default)s]. This is to pick up from where previous processing stopped.'
+        help="Use existing mosaics files if they exist [%(default)s]. This "
+            "is to pick up from where previous processing stopped."
     )
 
     # One of --processCubes or --processCubesFile options is allowed for the datacube names
@@ -3208,7 +3223,8 @@ def parse_args():
         type=str,
         action='store',
         default=None,
-        help="JSON file that contains a list of filenames for datacubes to process [%(default)s]."
+        help="JSON file that contains a list of filenames for datacubes to "
+            "process [%(default)s]."
     )
 
     args = parser.parse_args()
@@ -3224,12 +3240,16 @@ def parse_args():
     ITSLiveAnnualMosaics.CREATE_EPSG_ONLY = args.createEPSG
     ITSLiveAnnualMosaics.MERGE_YEAR_ONLY = args.mergeYear
 
-    epsg_codes = list(map(int, json.loads(args.epsgCode))) if args.epsgCode is not None else None
+    epsg_codes = list(map(int, json.loads(args.epsgCode))) \
+        if args.epsgCode is not None else None
     if epsg_codes and len(epsg_codes):
-        logging.info(f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes")
+        logging.info(
+            f"Got EPSG codes: {epsg_codes}, ignoring all other EPGS codes"
+        )
         BatchVars.EPSG_TO_GENERATE = epsg_codes
 
-    epsg_codes = list(map(int, json.loads(args.excludeEPSG))) if args.excludeEPSG is not None else None
+    epsg_codes = list(map(int, json.loads(args.excludeEPSG))) if \
+        args.excludeEPSG is not None else None
     if epsg_codes and len(epsg_codes):
         logging.info(f"Got EPSG codes to exclude: {epsg_codes}")
         BatchVars.EPSG_TO_EXCLUDE = epsg_codes
