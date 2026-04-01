@@ -54,6 +54,8 @@ def make_s3fs(
    Private buckets use AWS credential chain.
 
    Input:
+      max_connections: Maximum number of connections in the connection pool
+         (default: 32).
       no_sign_request: Whether to disable signing the request (default: False).
          If True, the request will be unsigned (anon=True), which is
          appropriate for public buckets. If False, the request will be signed
