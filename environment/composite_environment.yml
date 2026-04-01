@@ -12,6 +12,7 @@
 name: itslive_composites
 channels:
   - conda-forge
+
 dependencies:
   # Core Python
   - python=3.10.*
@@ -31,6 +32,7 @@ dependencies:
 
   # Data handling
   - xarray=2023.1.*
+  - rioxarray==0.15.0
   - h5py=3.9.0
   - h5netcdf
   - netcdf4
@@ -42,17 +44,16 @@ dependencies:
   - fsspec>=2022.1.0
   - boto3>=1.26
   - awscli
+  # - pystac-client
 
   # Utilities
   - tqdm>=4.65
   - utm
   - flake8=6.0.0
+  - geojson==3.0.1
 
   # Pip dependencies
   - pip
   - pip:
-    - geojson==3.0.1
-    - rioxarray==0.15.0
-    - pystac-client
     - git+https://github.com/nasa-jpl/itslive-py
     - tqdm_joblib
