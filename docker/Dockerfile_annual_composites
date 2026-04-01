@@ -48,8 +48,7 @@ RUN mamba env create -f itslive/env/composite_environment.yml && \
     conda activate itslive_composites && \
     sed -i 's/conda activate base/conda activate itslive_composites/g' /home/conda/.profile && \
     mkdir -p /home/conda/.aws && \
-    cat itslive/env/aws_config >> /home/conda/.aws/config && \
-    awsv2 --install
+    cat itslive/env/aws_config >> /home/conda/.aws/config
 
 # Set directory and entrypoint
 WORKDIR /home/conda
