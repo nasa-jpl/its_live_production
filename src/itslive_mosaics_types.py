@@ -2,7 +2,7 @@
 """
 from dataclasses import dataclass
 
-from itscube_types import Vars, CubeFormat
+from itscube_types import Vars
 from utils import Coords, Units, OutputFormat
 
 
