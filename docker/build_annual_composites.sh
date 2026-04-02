@@ -47,7 +47,6 @@ cp -r ${WORKSPACE}/src/itscube_types.py ${WORKSPACE}/src/itscube.py \
       ${WORKSPACE}/src/sensors.py ${WORKSPACE}/src/sensorFilters.py \
       ${WORKSPACE}/src/itslive_mosaics_types.py \
       ${WORKSPACE}/src/utils/zarr_to_netcdf.py \
-
       ${WORKSPACE}/LICENSE \
       ${TEMP_STAGING_DIR}/
 
