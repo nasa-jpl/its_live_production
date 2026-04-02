@@ -41,9 +41,13 @@ mkdir -p ${TEMP_STAGING_DIR}/env
 # Copy files to the staging area and build the PGE docker image
 cp -r ${WORKSPACE}/src/itscube_types.py ${WORKSPACE}/src/itscube.py \
       ${WORKSPACE}/src/grid.py ${WORKSPACE}/src/itslive_utils.py \
-      ${WORKSPACE}/src/itslive_composite.py \
+      ${WORKSPACE}/src/itslive_binary_type.py \
+      ${WORKSPACE}/src/utils.py ${WORKSPACE}/src/shapefile.py \
+      ${WORKSPACE}/src/itslive_composite.py ${WORKSPACE}/src/aws_utils.py \
+      ${WORKSPACE}/src/sensors.py ${WORKSPACE}/src/sensorFilters.py \
+      ${WORKSPACE}/src/itslive_mosaics_types.py \
       ${WORKSPACE}/src/utils/zarr_to_netcdf.py \
-      ${WORKSPACE}/src/aws_utils.py \
+
       ${WORKSPACE}/LICENSE \
       ${TEMP_STAGING_DIR}/
 
