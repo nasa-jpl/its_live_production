@@ -1316,13 +1316,14 @@ class ITSCube:
                 # Run in parallel with joblib
                 log_msg = f"Processing {num_tasks} tasks out of " \
                             f"{num_to_process} remaining"
+                logging.info(log_msg)
 
-                results = None
-                with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
-                    results = Parallel()(
-                        delayed(ITSCube.read_s3_dataset)(each_file, s3) for
-                        each_file in found_urls[start:start + num_tasks]
-                    )
+                # results = None
+                # with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
+                results = Parallel()(
+                    delayed(ITSCube.read_s3_dataset)(each_file, s3) for
+                    each_file in found_urls[start:start + num_tasks]
+                )
 
                 for each_ds in results:
                     self.add_layer(*each_ds)
@@ -1392,13 +1393,14 @@ class ITSCube:
                 # Run in parallel with joblib
                 log_msg = f"Processing {num_tasks} tasks out of " \
                             f"{num_to_process} remaining"
+                logging.info(log_msg)
 
-                results = None
-                with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
-                    results = Parallel()(
-                        delayed(ITSCube.read_s3_dataset)(each_file, s3) for
-                        each_file in found_urls[start:start + num_tasks]
-                    )
+                # results = None
+                # with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
+                results = Parallel()(
+                    delayed(ITSCube.read_s3_dataset)(each_file, s3) for
+                    each_file in found_urls[start:start + num_tasks]
+                )
 
                 for each_ds in results:
                     self.add_layer(*each_ds)
