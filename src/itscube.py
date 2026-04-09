@@ -2453,7 +2453,9 @@ class ITSCube:
             f"Combined {len(self.urls)} layers (took {time_delta} seconds)"
         )
 
-        compressor = zarr.Blosc(cname="zlib", clevel=2, shuffle=1)
+        compressor = zarr.Blosc(
+            cname="lz4", clevel=1, shuffle=zarr.Blosc.BITSHUFFLE
+        )
         compression = {"compressor": compressor}
 
         start_time = timeit.default_timer()
@@ -3098,8 +3100,8 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--useGranulesFile',
-        type=Path,
-        default=None,
+        type=str,
+        default='s3://its-live-data/test-space/velocity_image_pair/nisar/granulesApril01.2026.json',
         help='Json file that stores a list of ITS_LIVE image velocity granules '
             'to build datacube from [%(default)s].'
     )
@@ -3185,10 +3187,21 @@ if __name__ == '__main__':
 
     if args.useGranulesFile:
         # Check for this option first as another mutually exclusive option has a default value
-        ITSCube.USE_GRANULES = json.loads(args.useGranulesFile.read_text())
+        if ITSCube.S3_PREFIX in args.useGranulesFile:
+            # File is in s3 bucket
+            s3 = s3fs.S3FileSystem(anon=True)
+            granules_file = args.useGranulesFile.replace(ITSCube.S3_PREFIX, '')
+
+            with s3.open(granules_file, 'r') as ins3file:
+                ITSCube.USE_GRANULES = json.load(ins3file)
+
+        else:
+            granules_file = Path(args.useGranulesFile)
+            ITSCube.USE_GRANULES = json.loads(granules_file.read_text())
+
         logging.info(
             f'Using {len(ITSCube.USE_GRANULES)} granules as provided in '
-            f'{args.useGranulesFile.name} file'
+            f'{args.useGranulesFile} file'
         )
 
     if len(args.outputBucket):
