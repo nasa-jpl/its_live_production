@@ -27,7 +27,7 @@ import itslive
 from itslive.search import EQ, GTE
 
 # Number of 'aws s3 cp' retries in case of a failure
-_NUM_AWS_COPY_RETRIES = 20
+_NUM_AWS_COPY_RETRIES = 5
 
 # Number of seconds to sleep between 'aws s3 cp' retries
 _AWS_COPY_SLEEP_SECONDS = 60
@@ -460,8 +460,8 @@ def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool 
     """
     _quiet_flag = "--quiet"
 
-    if is_quiet and _quiet_flag not in command_line:
-        command_line.append(_quiet_flag)
+    # if is_quiet and _quiet_flag not in command_line:
+    #     command_line.append(_quiet_flag)
 
     logging.info(f'aws s3 command: {" ".join(command_line)}')
 
