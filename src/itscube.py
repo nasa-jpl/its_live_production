@@ -22,7 +22,6 @@ import re
 import s3fs
 import subprocess
 from tqdm import tqdm
-from tqdm_joblib import tqdm_joblib
 import xarray as xr
 from urllib.parse import urlparse
 
@@ -1035,18 +1034,21 @@ class ITSCube:
         num_granules (int):
             Number of first granules to examine. This is used for testing only.
         """
-        if ITSCube.exists(output_dir, output_bucket):
-            # Datacube exists, update
-            self.update_parallel(
-                output_dir,
-                output_bucket,
-                backup_bucket,
-                num_granules
-            )
+        # NISAR specific - disable check is cube already exists in the s3 -
+        # some cubes got corrupted by previous processing, so just replace them
+        # with new cubes
+        # if ITSCube.exists(output_dir, output_bucket):
+        #     # Datacube exists, update
+        #     self.update_parallel(
+        #         output_dir,
+        #         output_bucket,
+        #         backup_bucket,
+        #         num_granules
+        #     )
 
-        else:
-            # Create new datacube
-            self.create_parallel(output_dir, output_bucket, num_granules)
+        # else:
+        # Create new datacube
+        self.create_parallel(output_dir, output_bucket, num_granules)
 
     def update_parallel(
         self,
@@ -2306,7 +2308,8 @@ class ITSCube:
         for each_var in [Vars.m11, Vars.m12]:
             self.layers[each_var] = xr.concat(
                 [
-                    self.get_data_var(ds, each_var) for ds in self.ds
+                    self.get_data_var(ds, each_var, data_dtype=np.float32) \
+                        for ds in self.ds
                 ],
                 mid_date_coord
             )
