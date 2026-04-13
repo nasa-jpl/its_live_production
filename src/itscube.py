@@ -1509,7 +1509,7 @@ class ITSCube:
                                 'ds'. Default is utils.Missing.value.
         """
         if var_name in ds:
-            return ds[var_name][0, :, :]
+            return ds[var_name][0, :, :].drop_vars(utils.Coords.TIME)
 
         # Create empty array as it is not provided in the granule,
         # use the same coordinates as for any cube's data variables.
