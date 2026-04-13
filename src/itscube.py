@@ -1486,6 +1486,42 @@ class ITSCube:
             dims=[utils.Coords.Y, utils.Coords.X]
         )
 
+    def get_data_var_float(
+        self,
+        ds: xr.Dataset,
+        var_name: str,
+        data_fill_value: int = utils.Missing.value
+    ):
+        """
+        Return xr.DataArray that corresponds to the data variable of floating
+        point datatype if it exists in the 'ds' dataset, or an empty
+        xr.DataArray if it is not present in the input dataset 'ds'.
+        Empty xr.DataArray assumes the same dimensions as input ds.v data
+        array.
+
+        Inputs:
+        ds (xarray.Dataset):    The dataset the variable belongs to.
+        var_name (str):         Name of the variable to extract.
+        data_dtype (str):       Datatype to use for the data variable. Default
+                                is 'short'.
+        data_fill_value (int):   Value to use for filling empty data array if
+                                variable is not present in the input dataset
+                                'ds'. Default is utils.Missing.value.
+        """
+        if var_name in ds:
+            return ds[var_name][0, :, :]
+
+        # Create empty array as it is not provided in the granule,
+        # use the same coordinates as for any cube's data variables.
+        # ATTN: Can't use None as data to create xr.DataArray - won't be able
+        # to set dtype='short' in encoding for writing to the file.
+        return xr.DataArray(
+            data=np.full((len(self.grid_y), len(self.grid_x)),
+                            data_fill_value, dtype=np.dtype(np.float32)),
+            coords=[self.grid_y, self.grid_x],
+            dims=[utils.Coords.Y, utils.Coords.X]
+        )
+
     @staticmethod
     def get_data_var_attr(
         ds: xr.Dataset,
@@ -2308,8 +2344,7 @@ class ITSCube:
         for each_var in [Vars.m11, Vars.m12]:
             self.layers[each_var] = xr.concat(
                 [
-                    self.get_data_var(ds, each_var, data_dtype=np.float32) \
-                        for ds in self.ds
+                    self.get_data_var_float(ds, each_var) for ds in self.ds
                 ],
                 mid_date_coord
             )
