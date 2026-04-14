@@ -3102,6 +3102,12 @@ if __name__ == '__main__':
         help='Number of granules to write at a time [%(default)d].'
     )
     parser.add_argument(
+        '-e', '--encodingTimeChunk',
+        type=int,
+        default=500,
+        help='Encoding time chunk size to use when storing Zarr cube [%(default)d].'
+    )
+    parser.add_argument(
         '--targetProjection',
         type=str,
         required=True,
@@ -3224,6 +3230,8 @@ if __name__ == '__main__':
     ITSCube.START_DATE = args.searchAPIStartDate
     ITSCube.END_DATE = args.searchAPIStopDate
     ITSCube.NO_AWS_SIGNING = args.noAWSSigning
+    ITSCube.TIME_CHUNK_VALUE = args.encodingTimeChunk
+    ITSCube.TIME_CHUNK_VALUE_1D = args.encodingTimeChunk * 10
 
     if args.useGranulesFile:
         # Check for this option first as another mutually exclusive option has a default value
