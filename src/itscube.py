@@ -1962,7 +1962,8 @@ class ITSCube:
         attr_name = f'{var_name}{_name_sep}{Vars.postfix.dr_to_vr_factor}'
 
         attr_data = [
-            ITSCube.get_data_var_attr(ds, url, var_name, attr_name,
+            ITSCube.get_data_var_attr(ds, url, var_name,
+                                        Vars.postfix.dr_to_vr_factor,
                                         utils.Missing.byte)
             for ds, url in zip(self.ds, self.urls)
         ]
