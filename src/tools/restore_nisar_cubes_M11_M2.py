@@ -251,7 +251,7 @@ class FixDatacubes:
                 data=ascending_img1, coords=new_coords, dims=new_dims
             )
             ds[Vars.ascending_img1].attrs = {
-                Vars.attrs.name: Vars.name[Vars.ascending_img1],
+                Vars.attrs.std_name: Vars.name[Vars.ascending_img1],
                 Vars.attrs.description: Vars.description[Vars.ascending_img1],
                 BinaryFlag.attrs.values: BinaryFlag.values,
                 BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img1]
@@ -261,7 +261,7 @@ class FixDatacubes:
                 data=ascending_img2, coords=new_coords, dims=new_dims
             )
             ds[Vars.ascending_img2].attrs = {
-                Vars.attrs.name: Vars.name[Vars.ascending_img2],
+                Vars.attrs.std_name: Vars.name[Vars.ascending_img2],
                 Vars.attrs.description: Vars.description[Vars.ascending_img2],
                 BinaryFlag.attrs.values: BinaryFlag.values,
                 BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img2]
