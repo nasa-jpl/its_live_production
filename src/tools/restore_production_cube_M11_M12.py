@@ -177,7 +177,7 @@ class FixDatacubes:
         if not is_rslc:
             return result
 
-        # Determine the granule's spatial overlap with the cube bounding box
+        # Crop the granule to the cube's spatial bounding box
         grid_x_min, grid_x_max = cube_x.min(), cube_x.max()
         grid_y_min, grid_y_max = cube_y.min(), cube_y.max()
 
@@ -185,13 +185,23 @@ class FixDatacubes:
         mask_y = (granule_ds.y >= grid_y_min) & (granule_ds.y <= grid_y_max)
         cropped_ds = granule_ds.where(mask_x & mask_y, drop=True)
 
+        if cropped_ds.x.size == 0 or cropped_ds.y.size == 0:
+            logging.warning(f'[{index}] RSLC granule has no overlap with cube: {granule_s3}')
+            return result
+
         result.x_coords = cropped_ds.x.values
         result.y_coords = cropped_ds.y.values
 
-        # Resolve integer positions into cube axes once here, so apply_result
-        # can use direct numpy fancy indexing without any pandas overhead.
-        result.x_idx = np.searchsorted(cube_x, result.x_coords)
-        result.y_idx = np.searchsorted(cube_y, result.y_coords)
+        # Resolve cropped coordinates to integer positions in the cube axes.
+        # np.clip guards against floating-point edge cases where a coordinate
+        # sits exactly at (or epsilon beyond) the cube boundary and searchsorted
+        # returns len(axis) instead of len(axis)-1.
+        result.x_idx = np.clip(
+            np.searchsorted(cube_x, result.x_coords), 0, len(cube_x) - 1
+        )
+        result.y_idx = np.clip(
+            np.searchsorted(cube_y, result.y_coords), 0, len(cube_y) - 1
+        )
 
         # Extract M11/M12 as plain numpy arrays — drop time dim (shape: [y, x])
         result.m11_data = cropped_ds[Vars.m11].isel(time=0).drop_vars(utils.Coords.TIME).values
@@ -264,11 +274,11 @@ class FixDatacubes:
         bucket's original location.
 
         The inner loop over granules is fully parallelized:
-        1. All granules are fetched from S3 concurrently (I/O-bound,
-            threads spend most of their time waiting on the network).
-        2. Results are applied to the shared in-memory dataset serially.
-            Each result targets a unique time index, so step 2 is fast
-            (pure numpy, no I/O) and does not benefit from parallelism.
+          1. All granules are fetched from S3 concurrently (I/O-bound,
+             threads spend most of their time waiting on the network).
+          2. Results are applied to the shared in-memory dataset serially.
+             Each result targets a unique time index, so step 2 is fast
+             (pure numpy, no I/O) and does not benefit from parallelism.
 
         Args:
             cube_url (str): S3 URL of the datacube Zarr store to fix.
@@ -526,7 +536,7 @@ def main():
         type=int,
         default=8,
         help='Number of threads for parallel granule fetching within each '
-                'cube [%(default)d].'
+             'cube [%(default)d].'
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -542,14 +552,14 @@ def main():
         action='store',
         default=None,
         help='File that contains JSON list of datacubes filenames in s3 bucket '
-                'to process [%(default)s].'
+             'to process [%(default)s].'
     )
     parser.add_argument(
         '-l', '--local_dir',
         type=str,
         default='sandbox-fixed-nisar',
         help='Directory to store fixed datacubes before uploading them to the '
-                'S3 bucket [%(default)s]'
+             'S3 bucket [%(default)s]'
     )
     parser.add_argument(
         '-o', '--local_original_cube_dir',
@@ -562,7 +572,7 @@ def main():
         type=int,
         default=0,
         help='Index for the start datacube to process (if previous processing '
-                'terminated) [%(default)d]'
+             'terminated) [%(default)d]'
     )
     parser.add_argument(
         '--dryrun',
