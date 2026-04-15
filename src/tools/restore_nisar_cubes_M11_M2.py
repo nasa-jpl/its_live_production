@@ -157,6 +157,9 @@ class FixDatacubes:
 
         time_chunks = 250
 
+        # Fill value for new data variables
+        ascending_fill_value = Vars.intMissingValue[Vars.ascending_img1]
+
         with xr.open_dataset(local_original_cube, decode_timedelta=False,
                                 engine='zarr', consolidated=True) as ds:
             msgs.append(f'Cube dimensions: {ds.dims}')
@@ -179,6 +182,9 @@ class FixDatacubes:
             num_rslc_layers = np.sum(rslc_mask)
             msgs.append(f'Identified {num_rslc_layers} RSLC layers in the cube')
 
+            ascending_img1 = np.full((len(ds.mid_date)), ascending_fill_value, dtype=np.ubyte)
+            ascending_img2 = np.full((len(ds.mid_date)), ascending_fill_value, dtype=np.ubyte)
+
             if num_rslc_layers:
                 mask_i = np.where(rslc_mask == True)
 
@@ -186,14 +192,12 @@ class FixDatacubes:
                 # them. Otherwise it silently ignores values when updating
                 # (xarray bug?)
                 for each_var in [
-                    Vars.m11, Vars.m12,
-                    'M11_dr_to_vr_factor', 'M12_dr_to_vr_factor'
+                    Vars.m11, Vars.m12
                 ]:
-                    m_values = ds[each_var].values
-                    msgs.append(f'cube {each_var}: min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
+                    _ = ds[each_var].values
 
                     factor_var = f'{each_var}_{Vars.postfix.dr_to_vr_factor}'
-                    m_values = ds[factor_var].values
+                    _ = ds[factor_var].values
 
                 # If there are no RSLC granules, nothing to do
                 for each_index in mask_i[0]:
@@ -234,6 +238,34 @@ class FixDatacubes:
                                 # # Show restored values
                                 # m_values = ds[each_var][each_index, :, :].values
                                 # print(f'====>assigned ds {each_var}: m_values.shape={m_values.shape} min={np.nanmin(m_values)} max={np.nanmax(m_values)}')
+
+                        # Extract flight direction for both images of the granule
+                        ascending_img1[each_index] = granule_ds.img_pair_info.attrs[ImgPairInfo.flight_direction_img1].strip() == ImgPairInfo.ascending
+                        ascending_img2[each_index] = granule_ds.img_pair_info.attrs[ImgPairInfo.flight_direction_img2].strip() == ImgPairInfo.ascending
+
+            new_coords = ds[ImgPairInfo.satellite_img1].coords
+            new_dims = ds[ImgPairInfo.satellite_img1].dims
+
+            # Add new variables to the datacube - just use existing 1-d data variable coords and dims
+            ds[Vars.ascending_img1] = xr.DataArray(
+                data=ascending_img1, coords=new_coords, dims=new_dims
+            )
+            ds[Vars.ascending_img1].attrs = {
+                Vars.attrs.name: Vars.name[Vars.ascending_img1],
+                Vars.attrs.description: Vars.description[Vars.ascending_img1],
+                BinaryFlag.attrs.values: BinaryFlag.values,
+                BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img1]
+            }
+
+            ds[Vars.ascending_img2] = xr.DataArray(
+                data=ascending_img2, coords=new_coords, dims=new_dims
+            )
+            ds[Vars.ascending_img2].attrs = {
+                Vars.attrs.name: Vars.name[Vars.ascending_img2],
+                Vars.attrs.description: Vars.description[Vars.ascending_img2],
+                BinaryFlag.attrs.values: BinaryFlag.values,
+                BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img2]
+            }
 
             # Apply chunking settings in the cube, use them as golden standard for all variables
             chunking_1d = (ds[ImgPairInfo.date_dt].encoding[utils.OutputFormat.chunks])
@@ -299,6 +331,19 @@ class FixDatacubes:
                     "aws", "s3", "cp", "--recursive",
                     f'{fixed_file}/{factor_var}',
                     f'{cube_url}/{factor_var}',
+                    "--acl", "bucket-owner-full-control"
+                ]
+
+                msgs.append(' '.join(command_line))
+                if not FixDatacubes.DRY_RUN:
+                    itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
+
+            for each_var in [Vars.ascending_img1, Vars.ascending_img2]:
+                # Copy fixed variable and corresponding attribute values
+                command_line = [
+                    "aws", "s3", "cp", "--recursive",
+                    f'{fixed_file}/{each_var}',
+                    f'{cube_url}/{each_var}',
                     "--acl", "bucket-owner-full-control"
                 ]
 

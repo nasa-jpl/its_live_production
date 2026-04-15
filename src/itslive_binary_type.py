@@ -5,7 +5,6 @@ import numpy as np
 
 import shapefile
 from itscube_types import Vars
-from itslive_mosaics_types import CompositeVars
 
 
 @dataclass(frozen=True)
