@@ -34,6 +34,19 @@ import itslive_utils
 import utils
 
 
+class GranuleFilter:
+    """
+    Supported granule filter modes for selecting which layers within a
+    datacube carry M11/M12 data and need restoration.
+
+    RSLC: match granule URLs that contain the substring 'RSLC' (NISAR).
+    S1:   match granule URLs whose basename starts with 'S1' (Sentinel-1).
+    """
+    RSLC = 'RSLC'
+    S1 = 'S1'
+    ALL = [RSLC, S1]
+
+
 # Result container for one granule's fetched data.
 # All fields are plain Python/numpy — no xarray, no shared state.
 class GranuleResult:
@@ -99,15 +112,27 @@ class FixDatacubes:
         os.makedirs(self.local_dir, exist_ok=True)
         os.makedirs(self.local_original_cube_dir, exist_ok=True)
 
-    def __call__(self, num_threads: int = 8, start_cube: int = 0):
+    def __call__(
+        self,
+        num_threads: int = 8,
+        start_cube: int = 0,
+        granule_filter: str = GranuleFilter.RSLC,
+    ):
         """
         Restore M11 and M12 related data for the ITS_LIVE datacubes stored
         in S3 bucket. Outer loop over cubes runs serially; inner loop over
         granules within each cube is parallelized.
+
+        Args:
+            num_threads (int): Number of parallel threads for granule fetching.
+            start_cube (int): Index of the first cube to process (allows
+                resuming after a failed run).
+            granule_filter (str): Which granule type carries M11/M12 data.
+                Must be one of GranuleFilter.ALL. Defaults to GranuleFilter.RSLC.
         """
         num_to_process = len(self.all_zarr_datacubes) - start_cube
 
-        logging.info(f"{num_to_process} datacubes to fix...")
+        logging.info(f"{num_to_process} datacubes to fix (filter={granule_filter})...")
 
         if num_to_process <= 0:
             logging.info("Nothing to fix, exiting.")
@@ -119,7 +144,8 @@ class FixDatacubes:
                 self.local_original_cube_dir,
                 self.local_dir,
                 self.s3,
-                num_threads
+                num_threads,
+                granule_filter,
             )
             logging.info("\n-->".join(msgs))
 
@@ -268,6 +294,7 @@ class FixDatacubes:
         local_dir: str,
         s3: s3fs.S3FileSystem,
         num_threads: int = 8,
+        granule_filter: str = GranuleFilter.RSLC,
     ) -> list[str]:
         """
         Fix M11 and M12 related data in one datacube and copy it to the S3
@@ -287,6 +314,10 @@ class FixDatacubes:
             local_dir (str): Local path to write the fixed cube to.
             s3 (s3fs.S3FileSystem): Shared s3fs handle used for granule reads.
             num_threads (int): Number of parallel threads for granule fetching.
+            granule_filter (str): Which granule type carries M11/M12 data.
+                GranuleFilter.RSLC matches URLs containing 'RSLC' (NISAR).
+                GranuleFilter.S1 matches URLs whose basename starts with 'S1'
+                (Sentinel-1).
 
         Returns:
             List of log message strings.
@@ -327,13 +358,30 @@ class FixDatacubes:
             cube_x = ds.x.values.copy()
             cube_y = ds.y.values.copy()
 
-            # Build RSLC boolean mask over the time dimension
-            rslc_mask = np.char.find(
-                ds['granule_url'].values.astype(str), 'RSLC'
-            ) >= 0
+            # Build a boolean mask over the time dimension identifying which
+            # layers carry M11/M12 data and need restoration.
+            # The mask logic depends on the chosen granule_filter:
+            #   RSLC — substring match anywhere in the URL (NISAR granules)
+            #   S1   — basename starts with 'S1' (Sentinel-1 granules)
+            granule_urls_str = ds['granule_url'].values.astype(str)
+
+            if granule_filter == GranuleFilter.RSLC:
+                target_mask = np.char.find(granule_urls_str, 'RSLC') >= 0
+            elif granule_filter == GranuleFilter.S1:
+                basenames = np.array([os.path.basename(u) for u in granule_urls_str])
+                target_mask = np.char.startswith(basenames, 'S1')
+            else:
+                raise ValueError(
+                    f"Unknown granule_filter={granule_filter!r}. "
+                    f"Must be one of {GranuleFilter.ALL}."
+                )
+
+            # Keep the internal name generic so the rest of the method is
+            # filter-agnostic.
+            rslc_mask = target_mask
             num_rslc_layers = int(rslc_mask.sum())
             msgs.append(
-                f'Identified {num_rslc_layers} RSLC layers in {cube_basename}'
+                f'Identified {num_rslc_layers} {granule_filter} layers in {cube_basename}'
             )
             logging.info(msgs[-1])
 
@@ -463,8 +511,6 @@ class FixDatacubes:
 
             ds[Vars.ascending_img1].encoding[utils.OutputFormat.dtype] = np.ubyte
             ds[Vars.ascending_img2].encoding[utils.OutputFormat.dtype] = np.ubyte
-            # ds[Vars.ascending_img1].encoding[utils.Missing.name] = utils.Missing.byte
-            # ds[Vars.ascending_img2].encoding[utils.Missing.name] = utils.Missing.byte
 
             msgs.append(f"Saving datacube to {fixed_file}")
             logging.info(msgs[-1])
@@ -579,6 +625,18 @@ def main():
         action='store_true',
         help='Dry run, do not actually submit AWS push/pull commands.'
     )
+    parser.add_argument(
+        '--granuleFilter',
+        type=str,
+        default=GranuleFilter.RSLC,
+        choices=GranuleFilter.ALL,
+        help=(
+            'Which granule type carries M11/M12 data and needs restoration. '
+            f'{GranuleFilter.RSLC}: match URLs containing \'RSLC\' (NISAR, default). '
+            f'{GranuleFilter.S1}: match URLs whose basename starts with \'S1\' (Sentinel-1). '
+            '[%(default)s]'
+        )
+    )
 
     args = parser.parse_args()
     logging.basicConfig(
@@ -609,7 +667,7 @@ def main():
         args.local_dir
     )
 
-    fix_cubes(args.threads, args.start_cube)
+    fix_cubes(args.threads, args.start_cube, args.granuleFilter)
 
 
 if __name__ == '__main__':
