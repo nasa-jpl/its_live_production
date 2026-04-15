@@ -463,8 +463,8 @@ class FixDatacubes:
 
             ds[Vars.ascending_img1].encoding[utils.OutputFormat.dtype] = np.ubyte
             ds[Vars.ascending_img2].encoding[utils.OutputFormat.dtype] = np.ubyte
-            ds[Vars.ascending_img1].encoding[utils.Missing.name] = utils.Missing.byte
-            ds[Vars.ascending_img2].encoding[utils.Missing.name] = utils.Missing.byte
+            # ds[Vars.ascending_img1].encoding[utils.Missing.name] = utils.Missing.byte
+            # ds[Vars.ascending_img2].encoding[utils.Missing.name] = utils.Missing.byte
 
             msgs.append(f"Saving datacube to {fixed_file}")
             logging.info(msgs[-1])
