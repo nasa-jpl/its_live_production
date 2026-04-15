@@ -143,15 +143,19 @@ class FixDatacubes:
         env_copy = os.environ.copy()
 
         local_original_cube = os.path.join(local_original_cube_dir, cube_basename)
-        command_line = [
-            "aws", "s3", "cp", "--recursive",
-            cube_url,
-            local_original_cube
-        ]
 
-        msgs.append(f"Creating local copy of {cube_url}: {local_original_cube}")
-        msgs.append(' '.join(command_line))
-        itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
+        # If previous run already copied the cube, skip the copying from s3
+        # which takes long time
+        if not os.path.exists(local_original_cube):
+            command_line = [
+                "aws", "s3", "cp", "--recursive",
+                cube_url,
+                local_original_cube
+            ]
+
+            msgs.append(f"Creating local copy of {cube_url}: {local_original_cube}")
+            msgs.append(' '.join(command_line))
+            itslive_utils.s3_copy_using_subprocess(command_line, env_copy)
 
         # Write datacube locally, upload it to the bucket, remove file
         fixed_file = os.path.join(local_dir, cube_basename)
