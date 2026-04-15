@@ -29,6 +29,7 @@ import xarray as xr
 import zarr
 
 from itscube_types import Vars, ImgPairInfo
+from itslive_binary_type import BinaryFlag
 import itslive_utils
 import utils
 
