@@ -160,8 +160,6 @@ class FixDatacubes:
         # Write datacube locally, upload it to the bucket, remove file
         fixed_file = os.path.join(local_dir, cube_basename)
 
-        time_chunks = 250
-
         # Fill value for new data variables
         ascending_fill_value = Vars.intMissingValue[Vars.ascending_img1]
 
@@ -206,22 +204,38 @@ class FixDatacubes:
                     factor_var = f'{each_var}_{Vars.postfix.dr_to_vr_factor}'
                     _ = ds[factor_var].values
 
-                # If there are no RSLC granules, nothing to do
-                for each_index in mask_i[0]:
-                    # Read URL of the granule. For example, granules paths will be in the format:
-                    # https://its-live-data.s3.amazonaws.com/velocity_image_pair/sentinel1/v02/N70W060/S1A_IW_SLC__1SSH_20160728T113645_20160728T113712_012348_0133B2_74C0_X_S1A_IW_SLC__1SSH_20160809T113646_20160809T113713_012523_013989_2C50_G0120V02_P030.nc
-                    granule = str(ds.granule_url[each_index].values)
+            for each_index in range(0, len(ds.mid_date)):
+                # Read URL of the granule. For example, granules paths will be in the format:
+                # https://its-live-data.s3.amazonaws.com/velocity_image_pair/sentinel1/v02/N70W060/S1A_IW_SLC__1SSH_20160728T113645_20160728T113712_012348_0133B2_74C0_X_S1A_IW_SLC__1SSH_20160809T113646_20160809T113713_012523_013989_2C50_G0120V02_P030.nc
+                granule = str(ds.granule_url[each_index].values)
 
-                    each_granule_s3 = granule.replace('https://', '')
-                    each_granule_s3 = each_granule_s3.replace('.s3.amazonaws.com', '')
+                each_granule_s3 = granule.replace('https://', '')
+                each_granule_s3 = each_granule_s3.replace('.s3.amazonaws.com', '')
 
-                    # Open the granule
-                    with s3.open(each_granule_s3, mode='rb') as fhandle:
-                        with xr.open_dataset(fhandle, engine=utils.NC_ENGINE) as granule_ds:
-                            granule_ds = granule_ds.load()
+                # Open the granule
+                with s3.open(each_granule_s3, mode='rb') as fhandle:
+                    with xr.open_dataset(fhandle, engine=utils.NC_ENGINE) as granule_ds:
+                        granule_ds = granule_ds.load()
 
-                            msgs.append(f'Granule for index={each_index}: {each_granule_s3};')
-                            logging.info(msgs[-1])
+                        msgs.append(f'Granule for index={each_index}: {each_granule_s3};')
+                        logging.info(msgs[-1])
+
+                        # If there are no RSLC granules, nothing to do
+                        if (num_rslc_layers > 0) and (each_index in mask_i[0]):
+                            # # Read URL of the granule. For example, granules paths will be in the format:
+                            # # https://its-live-data.s3.amazonaws.com/velocity_image_pair/sentinel1/v02/N70W060/S1A_IW_SLC__1SSH_20160728T113645_20160728T113712_012348_0133B2_74C0_X_S1A_IW_SLC__1SSH_20160809T113646_20160809T113713_012523_013989_2C50_G0120V02_P030.nc
+                            # granule = str(ds.granule_url[each_index].values)
+
+                            # each_granule_s3 = granule.replace('https://', '')
+                            # each_granule_s3 = each_granule_s3.replace('.s3.amazonaws.com', '')
+
+                            # # Open the granule
+                            # with s3.open(each_granule_s3, mode='rb') as fhandle:
+                            #     with xr.open_dataset(fhandle, engine=utils.NC_ENGINE) as granule_ds:
+                            #         granule_ds = granule_ds.load()
+
+                            #         msgs.append(f'Granule for index={each_index}: {each_granule_s3};')
+                            #         logging.info(msgs[-1])
 
                             # Zoom into cube polygon
                             mask_x = (granule_ds.x >= grid_x_min) & (granule_ds.x <= grid_x_max)
