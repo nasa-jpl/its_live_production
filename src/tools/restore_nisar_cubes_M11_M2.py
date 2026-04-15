@@ -143,7 +143,7 @@ class FixDatacubes:
 
         local_original_cube = os.path.join(local_original_cube_dir, cube_basename)
         command_line = [
-            "awsv2", "s3", "cp", "--recursive",
+            "aws", "s3", "cp", "--recursive",
             cube_url,
             local_original_cube
         ]
