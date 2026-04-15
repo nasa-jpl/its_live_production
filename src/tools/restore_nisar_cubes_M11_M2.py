@@ -314,7 +314,7 @@ class FixDatacubes:
             logging.info(msgs[-1])
 
             # Re-chunk xr.Dataset to avoid memory errors when writing to the ZARR store
-            ds = ds.chunk({utils.Coords.MID_DATE: time_chunks})
+            # ds = ds.chunk({utils.Coords.MID_DATE: time_chunks})
             ds.to_zarr(fixed_file, consolidated=True)
 
 
