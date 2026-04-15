@@ -168,6 +168,7 @@ class FixDatacubes:
         with xr.open_dataset(local_original_cube, decode_timedelta=False,
                                 engine='zarr', consolidated=True) as ds:
             msgs.append(f'Cube dimensions: {ds.dims}')
+            logging.info(msgs[-1])
 
             x_values = ds.x.values
             grid_x_min, grid_x_max = x_values.min(), x_values.max()
@@ -185,7 +186,8 @@ class FixDatacubes:
 
             # Number of RSLC layers in the datacube
             num_rslc_layers = np.sum(rslc_mask)
-            msgs.append(f'Identified {num_rslc_layers} RSLC layers in the cube')
+            msgs.append(f'Identified {num_rslc_layers} RSLC layers in the {cube_basename} cube')
+            logging.info(msgs[-1])
 
             ascending_img1 = np.full((len(ds.mid_date)), ascending_fill_value, dtype=np.ubyte)
             ascending_img2 = np.full((len(ds.mid_date)), ascending_fill_value, dtype=np.ubyte)
@@ -219,6 +221,7 @@ class FixDatacubes:
                             granule_ds = granule_ds.load()
 
                             msgs.append(f'Granule for index={each_index}: {each_granule_s3};')
+                            logging.info(msgs[-1])
 
                             # Zoom into cube polygon
                             mask_x = (granule_ds.x >= grid_x_min) & (granule_ds.x <= grid_x_max)
@@ -308,6 +311,7 @@ class FixDatacubes:
             ds[Vars.m11].encoding[utils.Missing.name] = utils.Missing.value
             ds[Vars.m12].encoding[utils.Missing.name] = utils.Missing.value
             msgs.append(f"Saving datacube to {fixed_file}")
+            logging.info(msgs[-1])
 
             # Re-chunk xr.Dataset to avoid memory errors when writing to the ZARR store
             ds = ds.chunk({utils.Coords.MID_DATE: time_chunks})
