@@ -187,6 +187,14 @@ class FixDatacubes:
         """
         result = GranuleResult(index)
 
+        granule_basename = os.path.basename(granule_url)
+        if not granule_basename.startswith('S1') and \
+            not granule_basename.startswith('NISAR'):
+                # Only radar data of Sentinel-1 and NISAR missions have
+                # flight direction information in img_pair_info attributes.
+                # For other missions, we skip fetching the granule
+                return result
+
         granule_s3 = granule_url.replace('https://', '').replace('.s3.amazonaws.com', '')
 
         with s3.open(granule_s3, mode='rb') as fhandle:
@@ -195,12 +203,12 @@ class FixDatacubes:
 
         logging.info(f'[{index}] Fetched {granule_s3}')
 
-        # Flight direction flags — present for all granules
-        result.ascending_img1 = np.ubyte(
+        # Flight direction flags — present for all granules in radar layers
+        result.ascending_img1 = np.uint8(
             granule_ds.img_pair_info.attrs[ImgPairInfo.flight_direction_img1].strip()
             == ImgPairInfo.ascending
         )
-        result.ascending_img2 = np.ubyte(
+        result.ascending_img2 = np.uint8(
             granule_ds.img_pair_info.attrs[ImgPairInfo.flight_direction_img2].strip()
             == ImgPairInfo.ascending
         )
@@ -347,7 +355,8 @@ class FixDatacubes:
 
         # ascending_img1/img2: explicit ubyte dtype
         for asc_var in [Vars.ascending_img1, Vars.ascending_img2]:
-            encoding.setdefault(asc_var, {})[utils.OutputFormat.dtype] = np.ubyte
+            encoding.setdefault(asc_var, {})[utils.OutputFormat.dtype] = np.uint8
+            encoding[asc_var][utils.Missing.name] = utils.Missing.u8value
             # New 1-D variables — assign the same 1-D chunking
             encoding[asc_var][utils.OutputFormat.chunks] = chunking_1d
             encoding[asc_var][utils.OutputFormat.compressor] = compression_zarr
