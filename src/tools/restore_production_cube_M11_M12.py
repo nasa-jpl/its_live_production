@@ -566,69 +566,55 @@ class FixDatacubes:
                 # in RAM.
                 # --------------------------------------------------------------
                 if is_first_chunk:
-                    # Slice the full dataset to this chunk along mid_date.
-                    # All non-time variables (x, y, mapping, …) are included
-                    # automatically; xarray streams them from the original store.
-                    chunk_ds = ds.isel(mid_date=slice(chunk_start, chunk_end))
+                    # Write the full dataset to create the output Zarr store
+                    # with correct shapes, coordinates, encoding, and all
+                    # non-modified variables.
+                    #
+                    # We pass the full `ds` (not a chunk slice) so xarray
+                    # creates arrays with the correct full time-axis shape
+                    # (e.g. 111698). xarray streams each variable directly
+                    # from the original store without loading it fully into
+                    # memory — only one Zarr chunk at a time is held in RAM
+                    # during this write.
+                    #
+                    # We then immediately overwrite the first chunk's slice
+                    # of M11/M12/factors/ascending with the corrected data
+                    # via zarr directly, same as all subsequent chunks.
+                    # This means the ascending_img1/img2 variables are written
+                    # as fill values for their full extent on this pass, then
+                    # filled in chunk by chunk in the zarr write below.
 
-                    # Attach ascending vars to the chunk dataset (they don't
-                    # exist yet in the original cube)
-                    new_coords = chunk_ds[ImgPairInfo.satellite_img1].coords
-                    new_dims   = chunk_ds[ImgPairInfo.satellite_img1].dims
+                    # Attach ascending vars to ds before writing — they don't
+                    # exist in the original cube so to_zarr must create them.
+                    # Use fill-value arrays of full length so the store is
+                    # created with the correct shape immediately.
+                    new_coords = ds[ImgPairInfo.satellite_img1].coords
+                    new_dims   = ds[ImgPairInfo.satellite_img1].dims
+                    asc_fill    = np.full(num_layers, ascending_fill_value, dtype=np.uint8)
 
-                    chunk_ds[Vars.ascending_img1] = xr.DataArray(
-                        data=ascending_img1[chunk_start:chunk_end],
-                        coords=new_coords, dims=new_dims
+                    ds[Vars.ascending_img1] = xr.DataArray(
+                        data=asc_fill, coords=new_coords, dims=new_dims
                     )
-                    chunk_ds[Vars.ascending_img1].attrs = {
+                    ds[Vars.ascending_img1].attrs = {
                         Vars.attrs.std_name: Vars.name[Vars.ascending_img1],
                         Vars.attrs.description: Vars.description[Vars.ascending_img1],
                         BinaryFlag.attrs.values: BinaryFlag.values,
                         BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img1],
                     }
-                    chunk_ds[Vars.ascending_img2] = xr.DataArray(
-                        data=ascending_img2[chunk_start:chunk_end],
-                        coords=new_coords, dims=new_dims
+                    ds[Vars.ascending_img2] = xr.DataArray(
+                        data=asc_fill.copy(), coords=new_coords, dims=new_dims
                     )
-                    chunk_ds[Vars.ascending_img2].attrs = {
+                    ds[Vars.ascending_img2].attrs = {
                         Vars.attrs.std_name: Vars.name[Vars.ascending_img2],
                         Vars.attrs.description: Vars.description[Vars.ascending_img2],
                         BinaryFlag.attrs.values: BinaryFlag.values,
                         BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img2],
                     }
 
-                    # Overwrite M11/M12/factors in the chunk dataset with
-                    # corrected numpy arrays before writing to disk.
-                    # Wrap in xr.DataArray to preserve coordinates.
-                    chunk_ds[Vars.m11] = xr.DataArray(
-                        data=m11_chunk,
-                        coords=chunk_ds[Vars.m11].coords,
-                        dims=chunk_ds[Vars.m11].dims,
-                        attrs=chunk_ds[Vars.m11].attrs,
-                    )
-                    chunk_ds[Vars.m12] = xr.DataArray(
-                        data=m12_chunk,
-                        coords=chunk_ds[Vars.m12].coords,
-                        dims=chunk_ds[Vars.m12].dims,
-                        attrs=chunk_ds[Vars.m12].attrs,
-                    )
-                    chunk_ds[factor_m11] = xr.DataArray(
-                        data=factor_m11_chunk,
-                        coords=chunk_ds[factor_m11].coords,
-                        dims=chunk_ds[factor_m11].dims,
-                        attrs=chunk_ds[factor_m11].attrs,
-                    )
-                    chunk_ds[factor_m12] = xr.DataArray(
-                        data=factor_m12_chunk,
-                        coords=chunk_ds[factor_m12].coords,
-                        dims=chunk_ds[factor_m12].dims,
-                        attrs=chunk_ds[factor_m12].attrs,
-                    )
-
                     msgs.append(f"Creating output Zarr store: {fixed_file}")
                     logging.info(msgs[-1])
 
-                    chunk_ds.to_zarr(
+                    ds.to_zarr(
                         fixed_file,
                         encoding=encoding,
                         consolidated=False,  # consolidate once at the very end
@@ -636,18 +622,18 @@ class FixDatacubes:
                     )
                     is_first_chunk = False
 
-                else:
-                    # All subsequent chunks: write via zarr directly to avoid
-                    # allocating full-length arrays.
-                    t_slice = slice(chunk_start, chunk_end)
+                # All chunks (including the first): write corrected data for
+                # this chunk's time slice via zarr directly.  On the first
+                # chunk this overwrites the placeholder values written above.
+                t_slice = slice(chunk_start, chunk_end)
 
-                    out_store = zarr.open_group(fixed_file, mode='r+')
-                    out_store[Vars.m11][t_slice, :, :]  = m11_chunk
-                    out_store[Vars.m12][t_slice, :, :]  = m12_chunk
-                    out_store[factor_m11][t_slice]       = factor_m11_chunk
-                    out_store[factor_m12][t_slice]       = factor_m12_chunk
-                    out_store[Vars.ascending_img1][t_slice] = ascending_img1[chunk_start:chunk_end]
-                    out_store[Vars.ascending_img2][t_slice] = ascending_img2[chunk_start:chunk_end]
+                out_store = zarr.open_group(fixed_file, mode='r+')
+                out_store[Vars.m11][t_slice, :, :]      = m11_chunk
+                out_store[Vars.m12][t_slice, :, :]      = m12_chunk
+                out_store[factor_m11][t_slice]           = factor_m11_chunk
+                out_store[factor_m12][t_slice]           = factor_m12_chunk
+                out_store[Vars.ascending_img1][t_slice]  = ascending_img1[chunk_start:chunk_end]
+                out_store[Vars.ascending_img2][t_slice]  = ascending_img2[chunk_start:chunk_end]
 
                 # Free chunk arrays before loading the next chunk
                 del m11_chunk, m12_chunk, factor_m11_chunk, factor_m12_chunk, results
