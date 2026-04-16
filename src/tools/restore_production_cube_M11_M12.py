@@ -63,8 +63,8 @@ class GranuleResult:
 
     def __init__(self, index: int):
         self.index = index
-        self.ascending_img1 = None
-        self.ascending_img2 = None
+        self.ascending_img1 = Vars.intMissingValue[Vars.ascending_img1]
+        self.ascending_img2 = Vars.intMissingValue[Vars.ascending_img2]
         self.m11_data = None
         self.m12_data = None
         self.m11_factor = None
@@ -479,8 +479,8 @@ class FixDatacubes:
             # memory (ubyte, ~100 KB for 111k layers), accumulated across all
             # chunks and written in a single pass at the end.
             # ------------------------------------------------------------------
-            ascending_img1 = np.full(num_layers, ascending_fill_value, dtype=np.ubyte)
-            ascending_img2 = np.full(num_layers, ascending_fill_value, dtype=np.ubyte)
+            ascending_img1 = np.full(num_layers, ascending_fill_value, dtype=np.uint8)
+            ascending_img2 = np.full(num_layers, ascending_fill_value, dtype=np.uint8)
 
             # ------------------------------------------------------------------
             # Chunked processing loop

@@ -265,8 +265,8 @@ class VarsInfo:
     # Map of variables with integer data type
     intType = {
         interp_mask: np.ubyte,
-        ascending_img1: np.ubyte,
-        ascending_img2: np.ubyte,
+        ascending_img1: np.uint8,
+        ascending_img2: np.uint8,
         chip_size_height: np.uint16,
         chip_size_width: np.uint16,
         flag_stable_shift: np.uint8,
@@ -291,8 +291,8 @@ class VarsInfo:
     # Missing value for data variables of integer data type
     intMissingValue = {
         interp_mask: utils.Missing.byte,
-        ascending_img1: utils.Missing.byte,
-        ascending_img2: utils.Missing.byte,
+        ascending_img1: utils.Missing.u8value,
+        ascending_img2: utils.Missing.u8value,
         chip_size_height: utils.Missing.byte,
         chip_size_width: utils.Missing.byte,
         v: utils.Missing.value,
