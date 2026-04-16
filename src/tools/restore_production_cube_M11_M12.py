@@ -53,7 +53,7 @@ class GranuleResult:
     __slots__ = (
         'index',
         'ascending_img1', 'ascending_img2',
-        # M11/M12 fields — None when granule is not RSLC
+        # M11/M12 fields — None when granule is not RSLC/S1
         'm11_data', 'm12_data',
         'm11_factor', 'm12_factor',
         'x_coords', 'y_coords',
@@ -88,6 +88,11 @@ class FixDatacubes:
     the s3 cube's original location as np.float32 dtype.
     """
     DRY_RUN = False
+
+    # Number of time layers to process in one in-memory chunk.
+    # At 1000 layers × 833 × 834 × float32 ≈ 2.6 GiB for M11+M12 combined,
+    # well within 60 GB RAM even with other variables resident.
+    TIME_CHUNK_SIZE = 1000
 
     def __init__(
         self, cubes_to_process, local_original_cube_dir: str, local_dir: str
@@ -155,7 +160,7 @@ class FixDatacubes:
         granule_url: str,
         cube_x: np.ndarray,
         cube_y: np.ndarray,
-        is_rslc: bool,
+        is_target: bool,
         s3: s3fs.S3FileSystem,
     ) -> GranuleResult:
         """
@@ -173,7 +178,7 @@ class FixDatacubes:
             granule_url (str): HTTP(S) URL of the source granule NetCDF file.
             cube_x (np.ndarray): Sorted x-coordinate array of the datacube.
             cube_y (np.ndarray): Sorted y-coordinate array of the datacube.
-            is_rslc (bool): Whether this granule is an RSLC granule that
+            is_target (bool): Whether this granule matches the filter and
                 carries M11/M12 data.
             s3 (s3fs.S3FileSystem): Shared s3fs handle (thread-safe for reads).
 
@@ -200,7 +205,7 @@ class FixDatacubes:
             == ImgPairInfo.ascending
         )
 
-        if not is_rslc:
+        if not is_target:
             return result
 
         # Crop the granule to the cube's spatial bounding box
@@ -212,7 +217,7 @@ class FixDatacubes:
         cropped_ds = granule_ds.where(mask_x & mask_y, drop=True)
 
         if cropped_ds.x.size == 0 or cropped_ds.y.size == 0:
-            logging.warning(f'[{index}] RSLC granule has no overlap with cube: {granule_s3}')
+            logging.warning(f'[{index}] Granule has no overlap with cube: {granule_s3}')
             return result
 
         result.x_coords = cropped_ds.x.values
@@ -240,52 +245,114 @@ class FixDatacubes:
 
     @staticmethod
     def apply_result(
-        ds: xr.Dataset,
         result: GranuleResult,
-        m11_values: np.ndarray,
-        m12_values: np.ndarray,
+        chunk_offset: int,
+        m11_chunk: np.ndarray,
+        m12_chunk: np.ndarray,
+        factor_m11_chunk: np.ndarray,
+        factor_m12_chunk: np.ndarray,
         ascending_img1: np.ndarray,
         ascending_img2: np.ndarray,
     ) -> None:
         """
-        Write one GranuleResult into the shared in-memory arrays.
+        Write one GranuleResult into the current in-memory chunk arrays.
 
-        This function runs serially after all parallel fetches complete.
-        Writes are safe because each result has a unique time index.
-
-        Direct numpy indexing is used throughout — no xarray label alignment,
-        no pandas overhead.
+        Runs serially after all parallel fetches for a chunk complete.
+        Each result has a unique time index so writes never conflict.
+        Direct numpy indexing is used throughout — no xarray, no pandas.
 
         Args:
-            ds (xr.Dataset): The fully loaded in-memory datacube dataset.
             result (GranuleResult): Fetched data for one granule.
-            m11_values (np.ndarray): Pre-extracted m11 backing array
-                (shape: [time, y, x]), writable view of ds[Vars.m11].values.
-            m12_values (np.ndarray): Pre-extracted m12 backing array,
-                same shape as m11_values.
-            ascending_img1 (np.ndarray): 1-D output array for flight
-                direction flag, image 1.
-            ascending_img2 (np.ndarray): 1-D output array for flight
-                direction flag, image 2.
+            chunk_offset (int): Absolute time index of the first layer in the
+                current chunk. Used to convert result.index (absolute) to a
+                position within the chunk arrays (relative).
+            m11_chunk (np.ndarray): In-memory M11 slice for the current chunk,
+                shape (chunk_size, ny, nx). Modified in place.
+            m12_chunk (np.ndarray): In-memory M12 slice, same shape. Modified
+                in place.
+            factor_m11_chunk (np.ndarray): 1-D dr_to_vr_factor array for M11,
+                length chunk_size. Modified in place.
+            factor_m12_chunk (np.ndarray): 1-D dr_to_vr_factor array for M12.
+                Modified in place.
+            ascending_img1 (np.ndarray): Full-length 1-D output array for
+                flight direction flag, image 1. Indexed by result.index.
+            ascending_img2 (np.ndarray): Full-length 1-D output array for
+                flight direction flag, image 2. Indexed by result.index.
         """
-        i = result.index
-        ascending_img1[i] = result.ascending_img1
-        ascending_img2[i] = result.ascending_img2
+        i_abs = result.index
+        i_rel = i_abs - chunk_offset  # position within the current chunk
+
+        ascending_img1[i_abs] = result.ascending_img1
+        ascending_img2[i_abs] = result.ascending_img2
 
         if result.m11_data is None:
-            # Non-RSLC granule: nothing more to do
+            # Non-target granule: nothing more to do
             return
 
-        # np.ix_ builds the open mesh for fancy indexing into [y, x] slice
+        # np.ix_ builds the open mesh for fancy indexing into the [y, x] slice
         yx_idx = np.ix_(result.y_idx, result.x_idx)
 
-        m11_values[i][yx_idx] = result.m11_data
-        m12_values[i][yx_idx] = result.m12_data
+        m11_chunk[i_rel][yx_idx] = result.m11_data
+        m12_chunk[i_rel][yx_idx] = result.m12_data
 
-        factor_m11 = f'{Vars.m11}_{Vars.postfix.dr_to_vr_factor}'
-        factor_m12 = f'{Vars.m12}_{Vars.postfix.dr_to_vr_factor}'
-        ds[factor_m11].values[i] = result.m11_factor
-        ds[factor_m12].values[i] = result.m12_factor
+        factor_m11_chunk[i_rel] = result.m11_factor
+        factor_m12_chunk[i_rel] = result.m12_factor
+
+    @staticmethod
+    def _build_encoding(ds: xr.Dataset) -> dict:
+        """
+        Build the encoding dict for all variables in ds, using the chunking
+        already present in the original cube as the golden standard and
+        applying lz4/BITSHUFFLE compression uniformly.
+
+        M11 and M12 are re-typed to float32. ascending_img1/img2 are typed
+        as ubyte. All other variables keep their existing dtype.
+
+        Args:
+            ds (xr.Dataset): The lazily-opened original cube dataset, whose
+                .encoding attributes carry the on-disk chunking to preserve.
+
+        Returns:
+            Dict mapping variable name -> encoding kwargs for to_zarr().
+        """
+        chunking_1d = ds[ImgPairInfo.date_dt].encoding[utils.OutputFormat.chunks]
+        chunking_2d = (len(ds.y), len(ds.x))
+        chunking_3d = ds[Vars.chip_size_height].encoding[utils.OutputFormat.chunks]
+        compression_zarr = zarr.Blosc(
+            cname="lz4", clevel=1, shuffle=zarr.Blosc.BITSHUFFLE
+        )
+
+        encoding = {}
+
+        for var in ds:
+            var_enc = dict(ds[var].encoding)  # copy so we don't mutate the dataset
+            var_enc.pop('source', None)        # xarray internal — not valid for to_zarr
+
+            if utils.OutputFormat.chunks in var_enc:
+                ndim = len(var_enc[utils.OutputFormat.chunks])
+                if ndim == 1:
+                    var_enc[utils.OutputFormat.chunks] = chunking_1d
+                elif ndim == 2:
+                    var_enc[utils.OutputFormat.chunks] = chunking_2d
+                elif ndim == 3:
+                    var_enc[utils.OutputFormat.chunks] = chunking_3d
+
+            var_enc[utils.OutputFormat.compressor] = compression_zarr
+            encoding[var] = var_enc
+
+        # M11/M12: promote to float32 with a proper fill value
+        for m_var in [Vars.m11, Vars.m12]:
+            encoding.setdefault(m_var, {})[utils.OutputFormat.dtype] = np.float32
+            encoding[m_var][utils.Missing.name] = utils.Missing.value
+
+        # ascending_img1/img2: explicit ubyte dtype
+        for asc_var in [Vars.ascending_img1, Vars.ascending_img2]:
+            encoding.setdefault(asc_var, {})[utils.OutputFormat.dtype] = np.ubyte
+            # New 1-D variables — assign the same 1-D chunking
+            encoding[asc_var][utils.OutputFormat.chunks] = chunking_1d
+            encoding[asc_var][utils.OutputFormat.compressor] = compression_zarr
+
+        return encoding
 
     @staticmethod
     def all(
@@ -300,12 +367,19 @@ class FixDatacubes:
         Fix M11 and M12 related data in one datacube and copy it to the S3
         bucket's original location.
 
-        The inner loop over granules is fully parallelized:
-          1. All granules are fetched from S3 concurrently (I/O-bound,
-             threads spend most of their time waiting on the network).
-          2. Results are applied to the shared in-memory dataset serially.
-             Each result targets a unique time index, so step 2 is fast
-             (pure numpy, no I/O) and does not benefit from parallelism.
+        Processing strategy for large cubes that exceed available RAM:
+          - The time axis is processed in chunks of TIME_CHUNK_SIZE layers.
+          - For each chunk:
+              1. Granules are fetched from S3 in parallel (I/O-bound).
+              2. M11/M12/factor data is assembled into small numpy arrays
+                 (one chunk at a time) and written to the fixed Zarr store.
+          - The first chunk creates the output Zarr store via xr.Dataset.to_zarr
+            (using the original cube's encoding as the golden standard).
+            Subsequent chunks write directly via zarr.open_group to avoid
+            ever allocating the full time-axis arrays in memory.
+          - ascending_img1/img2 are accumulated across all chunks in full-
+            length 1-D arrays (cheap: ubyte, num_layers bytes each) and
+            written in a single pass at the end.
 
         Args:
             cube_url (str): S3 URL of the datacube Zarr store to fix.
@@ -341,7 +415,12 @@ class FixDatacubes:
 
         fixed_file = os.path.join(local_dir, cube_basename)
         ascending_fill_value = Vars.intMissingValue[Vars.ascending_img1]
+        factor_m11 = f'{Vars.m11}_{Vars.postfix.dr_to_vr_factor}'
+        factor_m12 = f'{Vars.m12}_{Vars.postfix.dr_to_vr_factor}'
 
+        # Open the original cube lazily — no large arrays loaded yet.
+        # We keep this handle open for the full duration so we can read
+        # metadata, coordinates, and small variables without re-opening.
         with xr.open_dataset(
             local_original_cube,
             decode_timedelta=False,
@@ -360,9 +439,6 @@ class FixDatacubes:
 
             # Build a boolean mask over the time dimension identifying which
             # layers carry M11/M12 data and need restoration.
-            # The mask logic depends on the chosen granule_filter:
-            #   RSLC — substring match anywhere in the URL (NISAR granules)
-            #   S1   — basename starts with 'S1' (Sentinel-1 granules)
             granule_urls_str = ds['granule_url'].values.astype(str)
 
             if granule_filter == GranuleFilter.RSLC:
@@ -376,146 +452,203 @@ class FixDatacubes:
                     f"Must be one of {GranuleFilter.ALL}."
                 )
 
-            # Keep the internal name generic so the rest of the method is
-            # filter-agnostic.
-            rslc_mask = target_mask
-            num_rslc_layers = int(rslc_mask.sum())
+            num_target_layers = int(target_mask.sum())
             msgs.append(
-                f'Identified {num_rslc_layers} {granule_filter} layers in {cube_basename}'
+                f'Identified {num_target_layers} {granule_filter} layers in {cube_basename}'
             )
             logging.info(msgs[-1])
 
-            # Force-load M11, M12, and their factor variables into memory so
-            # that subsequent index assignments write to numpy arrays, not
-            # back to the Zarr store on disk.
-            # This is required: without .values the assignment silently no-ops
-            # (xarray defers writes to the backing store).
-            if num_rslc_layers:
-                m11_values = ds[Vars.m11].values        # shape: (time, y, x)
-                m12_values = ds[Vars.m12].values
-                factor_m11 = f'{Vars.m11}_{Vars.postfix.dr_to_vr_factor}'
-                factor_m12 = f'{Vars.m12}_{Vars.postfix.dr_to_vr_factor}'
-                _ = ds[factor_m11].values               # shape: (time,)
-                _ = ds[factor_m12].values
-            else:
-                m11_values = None
-                m12_values = None
+            # ------------------------------------------------------------------
+            # Build encoding once from the original cube's on-disk settings.
+            # This preserves the original chunking exactly and applies the new
+            # compression and dtype overrides for M11/M12/ascending.
+            # ------------------------------------------------------------------
+            encoding = FixDatacubes._build_encoding(ds)
 
-            # Pre-build the task list: granule URL + metadata needed by workers
-            granule_urls = ds['granule_url'].values.astype(str)
-            tasks = [
-                (
-                    i,
-                    granule_urls[i],
-                    cube_x,
-                    cube_y,
-                    bool(rslc_mask[i]),
-                    s3,
-                )
-                for i in range(num_layers)
-            ]
-
-            # ----------------------------------------------------------------
-            # Parallel fetch phase
-            # All S3 network I/O happens here. Workers return GranuleResult
-            # objects containing only plain numpy arrays — no shared state is
-            # mutated during this phase.
-            # ----------------------------------------------------------------
-            msgs.append(f'Fetching {num_layers} granules with {num_threads} threads...')
-            logging.info(msgs[-1])
-
-            with parallel_config(backend='threading', n_jobs=num_threads):
-                results: list[GranuleResult] = Parallel()(
-                    delayed(FixDatacubes.fetch_one_granule)(*task)
-                    for task in tasks
-                )
-
-            # ----------------------------------------------------------------
-            # Serial apply phase
-            # Write extracted data back into the shared in-memory dataset.
-            # This loop is O(num_layers) numpy scalar/slice assignments —
-            # fast enough that parallelizing it would add overhead, not remove it.
-            # ----------------------------------------------------------------
+            # ------------------------------------------------------------------
+            # Full-length 1-D arrays for ascending flags — cheap to hold in
+            # memory (ubyte, ~100 KB for 111k layers), accumulated across all
+            # chunks and written in a single pass at the end.
+            # ------------------------------------------------------------------
             ascending_img1 = np.full(num_layers, ascending_fill_value, dtype=np.ubyte)
             ascending_img2 = np.full(num_layers, ascending_fill_value, dtype=np.ubyte)
 
-            for result in results:
-                FixDatacubes.apply_result(
-                    ds,
-                    result,
-                    m11_values,
-                    m12_values,
-                    ascending_img1,
-                    ascending_img2,
+            # ------------------------------------------------------------------
+            # Chunked processing loop
+            # ------------------------------------------------------------------
+            chunk_size = FixDatacubes.TIME_CHUNK_SIZE
+            is_first_chunk = True
+
+            for chunk_start in range(0, num_layers, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, num_layers)
+                actual_chunk_size = chunk_end - chunk_start
+
+                msgs.append(
+                    f'Processing time chunk [{chunk_start}:{chunk_end}] '
+                    f'({actual_chunk_size} layers) of {num_layers} total'
                 )
+                logging.info(msgs[-1])
 
-            # ----------------------------------------------------------------
-            # Attach new ascending_img1 / ascending_img2 data variables
-            # ----------------------------------------------------------------
-            new_coords = ds[ImgPairInfo.satellite_img1].coords
-            new_dims = ds[ImgPairInfo.satellite_img1].dims
+                # Load M11/M12 and their factor arrays for this chunk only.
+                # shape: (actual_chunk_size, ny, nx) for 3-D vars
+                #        (actual_chunk_size,) for 1-D factor vars
+                if num_target_layers:
+                    m11_chunk  = ds[Vars.m11].isel(mid_date=slice(chunk_start, chunk_end)).values
+                    m12_chunk  = ds[Vars.m12].isel(mid_date=slice(chunk_start, chunk_end)).values
+                    factor_m11_chunk = ds[factor_m11].isel(mid_date=slice(chunk_start, chunk_end)).values
+                    factor_m12_chunk = ds[factor_m12].isel(mid_date=slice(chunk_start, chunk_end)).values
+                else:
+                    ny, nx = len(cube_y), len(cube_x)
+                    m11_chunk  = np.full((actual_chunk_size, ny, nx), utils.Missing.value, dtype=np.float32)
+                    m12_chunk  = np.full((actual_chunk_size, ny, nx), utils.Missing.value, dtype=np.float32)
+                    factor_m11_chunk = np.full(actual_chunk_size, utils.Missing.value, dtype=np.float32)
+                    factor_m12_chunk = np.full(actual_chunk_size, utils.Missing.value, dtype=np.float32)
 
-            ds[Vars.ascending_img1] = xr.DataArray(
-                data=ascending_img1, coords=new_coords, dims=new_dims
-            )
-            ds[Vars.ascending_img1].attrs = {
-                Vars.attrs.std_name: Vars.name[Vars.ascending_img1],
-                Vars.attrs.description: Vars.description[Vars.ascending_img1],
-                BinaryFlag.attrs.values: BinaryFlag.values,
-                BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img1],
-            }
+                # Build task list for this chunk
+                tasks = [
+                    (
+                        i,
+                        granule_urls_str[i],
+                        cube_x,
+                        cube_y,
+                        bool(target_mask[i]),
+                        s3,
+                    )
+                    for i in range(chunk_start, chunk_end)
+                ]
 
-            ds[Vars.ascending_img2] = xr.DataArray(
-                data=ascending_img2, coords=new_coords, dims=new_dims
-            )
-            ds[Vars.ascending_img2].attrs = {
-                Vars.attrs.std_name: Vars.name[Vars.ascending_img2],
-                Vars.attrs.description: Vars.description[Vars.ascending_img2],
-                BinaryFlag.attrs.values: BinaryFlag.values,
-                BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img2],
-            }
+                # --------------------------------------------------------------
+                # Parallel fetch phase for this chunk
+                # --------------------------------------------------------------
+                with parallel_config(backend='threading', n_jobs=num_threads):
+                    results: list[GranuleResult] = Parallel()(
+                        delayed(FixDatacubes.fetch_one_granule)(*task)
+                        for task in tasks
+                    )
 
-            # ----------------------------------------------------------------
-            # Apply chunking and compression settings
-            # Use encoding from the existing cube as the golden standard
-            # ----------------------------------------------------------------
-            chunking_1d = ds[ImgPairInfo.date_dt].encoding[utils.OutputFormat.chunks]
-            chunking_2d = (len(ds.y), len(ds.x))
-            chunking_3d = ds[Vars.chip_size_height].encoding[utils.OutputFormat.chunks]
-            compression_zarr = zarr.Blosc(
-                cname="lz4", clevel=1, shuffle=zarr.Blosc.BITSHUFFLE
-            )
+                # --------------------------------------------------------------
+                # Serial apply phase for this chunk
+                # --------------------------------------------------------------
+                for result in results:
+                    FixDatacubes.apply_result(
+                        result,
+                        chunk_start,
+                        m11_chunk,
+                        m12_chunk,
+                        factor_m11_chunk,
+                        factor_m12_chunk,
+                        ascending_img1,
+                        ascending_img2,
+                    )
 
-            for each_var in ds:
-                if utils.OutputFormat.chunks in ds[each_var].encoding:
-                    ds_chunking = ds[each_var].encoding[utils.OutputFormat.chunks]
-                    ndim = len(ds_chunking)
+                # --------------------------------------------------------------
+                # Write this chunk to the output Zarr store.
+                #
+                # First chunk: write the full dataset via xr.Dataset.to_zarr
+                # with all encoding settings.  We build a lightweight slice
+                # dataset from the original ds using isel — this avoids loading
+                # any large variable in full; xarray streams each variable
+                # from the original store while writing.  We then overwrite
+                # M11/M12/factors in that slice with the corrected chunk data.
+                #
+                # Subsequent chunks: write only the changed variables directly
+                # via zarr.open_group with region slicing, bypassing xarray
+                # entirely.  This avoids ever holding the full time-axis arrays
+                # in RAM.
+                # --------------------------------------------------------------
+                if is_first_chunk:
+                    # Slice the full dataset to this chunk along mid_date.
+                    # All non-time variables (x, y, mapping, …) are included
+                    # automatically; xarray streams them from the original store.
+                    chunk_ds = ds.isel(mid_date=slice(chunk_start, chunk_end))
 
-                    if ndim == 1:
-                        chunking = chunking_1d
-                    elif ndim == 2:
-                        chunking = chunking_2d
-                    elif ndim == 3:
-                        chunking = chunking_3d
-                    else:
-                        chunking = ds_chunking  # passthrough for unexpected dims
+                    # Attach ascending vars to the chunk dataset (they don't
+                    # exist yet in the original cube)
+                    new_coords = chunk_ds[ImgPairInfo.satellite_img1].coords
+                    new_dims   = chunk_ds[ImgPairInfo.satellite_img1].dims
 
-                    ds[each_var].encoding[utils.OutputFormat.chunks] = chunking
-                    ds[each_var].encoding[utils.OutputFormat.compressor] = compression_zarr
+                    chunk_ds[Vars.ascending_img1] = xr.DataArray(
+                        data=ascending_img1[chunk_start:chunk_end],
+                        coords=new_coords, dims=new_dims
+                    )
+                    chunk_ds[Vars.ascending_img1].attrs = {
+                        Vars.attrs.std_name: Vars.name[Vars.ascending_img1],
+                        Vars.attrs.description: Vars.description[Vars.ascending_img1],
+                        BinaryFlag.attrs.values: BinaryFlag.values,
+                        BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img1],
+                    }
+                    chunk_ds[Vars.ascending_img2] = xr.DataArray(
+                        data=ascending_img2[chunk_start:chunk_end],
+                        coords=new_coords, dims=new_dims
+                    )
+                    chunk_ds[Vars.ascending_img2].attrs = {
+                        Vars.attrs.std_name: Vars.name[Vars.ascending_img2],
+                        Vars.attrs.description: Vars.description[Vars.ascending_img2],
+                        BinaryFlag.attrs.values: BinaryFlag.values,
+                        BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.ascending_img2],
+                    }
 
-            # Change datatype for M11 and M12 to float32 in encoding
-            ds[Vars.m11].encoding[utils.OutputFormat.dtype] = np.float32
-            ds[Vars.m12].encoding[utils.OutputFormat.dtype] = np.float32
-            ds[Vars.m11].encoding[utils.Missing.name] = utils.Missing.value
-            ds[Vars.m12].encoding[utils.Missing.name] = utils.Missing.value
+                    # Overwrite M11/M12/factors in the chunk dataset with
+                    # corrected numpy arrays before writing to disk.
+                    # Wrap in xr.DataArray to preserve coordinates.
+                    chunk_ds[Vars.m11] = xr.DataArray(
+                        data=m11_chunk,
+                        coords=chunk_ds[Vars.m11].coords,
+                        dims=chunk_ds[Vars.m11].dims,
+                        attrs=chunk_ds[Vars.m11].attrs,
+                    )
+                    chunk_ds[Vars.m12] = xr.DataArray(
+                        data=m12_chunk,
+                        coords=chunk_ds[Vars.m12].coords,
+                        dims=chunk_ds[Vars.m12].dims,
+                        attrs=chunk_ds[Vars.m12].attrs,
+                    )
+                    chunk_ds[factor_m11] = xr.DataArray(
+                        data=factor_m11_chunk,
+                        coords=chunk_ds[factor_m11].coords,
+                        dims=chunk_ds[factor_m11].dims,
+                        attrs=chunk_ds[factor_m11].attrs,
+                    )
+                    chunk_ds[factor_m12] = xr.DataArray(
+                        data=factor_m12_chunk,
+                        coords=chunk_ds[factor_m12].coords,
+                        dims=chunk_ds[factor_m12].dims,
+                        attrs=chunk_ds[factor_m12].attrs,
+                    )
 
-            ds[Vars.ascending_img1].encoding[utils.OutputFormat.dtype] = np.ubyte
-            ds[Vars.ascending_img2].encoding[utils.OutputFormat.dtype] = np.ubyte
+                    msgs.append(f"Creating output Zarr store: {fixed_file}")
+                    logging.info(msgs[-1])
 
-            msgs.append(f"Saving datacube to {fixed_file}")
+                    chunk_ds.to_zarr(
+                        fixed_file,
+                        encoding=encoding,
+                        consolidated=False,  # consolidate once at the very end
+                        mode='w',
+                    )
+                    is_first_chunk = False
+
+                else:
+                    # All subsequent chunks: write via zarr directly to avoid
+                    # allocating full-length arrays.
+                    t_slice = slice(chunk_start, chunk_end)
+
+                    out_store = zarr.open_group(fixed_file, mode='r+')
+                    out_store[Vars.m11][t_slice, :, :]  = m11_chunk
+                    out_store[Vars.m12][t_slice, :, :]  = m12_chunk
+                    out_store[factor_m11][t_slice]       = factor_m11_chunk
+                    out_store[factor_m12][t_slice]       = factor_m12_chunk
+                    out_store[Vars.ascending_img1][t_slice] = ascending_img1[chunk_start:chunk_end]
+                    out_store[Vars.ascending_img2][t_slice] = ascending_img2[chunk_start:chunk_end]
+
+                # Free chunk arrays before loading the next chunk
+                del m11_chunk, m12_chunk, factor_m11_chunk, factor_m12_chunk, results
+
+            # ------------------------------------------------------------------
+            # Consolidate metadata once after all chunks are written
+            # ------------------------------------------------------------------
+            msgs.append(f"Consolidating metadata for {fixed_file}")
             logging.info(msgs[-1])
-
-            ds.to_zarr(fixed_file, consolidated=True)
+            zarr.consolidate_metadata(fixed_file)
 
         # --------------------------------------------------------------------
         # Upload fixed variables and metadata back to S3
