@@ -22,7 +22,6 @@ import re
 import s3fs
 import subprocess
 from tqdm import tqdm
-from tqdm_joblib import tqdm_joblib
 import xarray as xr
 from urllib.parse import urlparse
 
@@ -190,6 +189,10 @@ class ITSCube:
     # this is made optional, with the default behavior set to *not* reuse an
     # existing backup.
     USE_EXISTING_BACKUP = False
+
+    # Flag if existing datacube should be ignored for the run, to overwrite
+    # any existing cube with the
+    IGNORE_EXISTING_CUBE = False
 
     # Grid boundaries for the datacube based on its bounding polygon, to filter
     # each granule's spacial extents by
@@ -1035,7 +1038,8 @@ class ITSCube:
         num_granules (int):
             Number of first granules to examine. This is used for testing only.
         """
-        if ITSCube.exists(output_dir, output_bucket):
+        if ITSCube.IGNORE_EXISTING_CUBE is False and \
+                ITSCube.exists(output_dir, output_bucket):
             # Datacube exists, update
             self.update_parallel(
                 output_dir,
@@ -1484,6 +1488,42 @@ class ITSCube:
             dims=[utils.Coords.Y, utils.Coords.X]
         )
 
+    def get_data_var_float(
+        self,
+        ds: xr.Dataset,
+        var_name: str,
+        data_fill_value: int = utils.Missing.value
+    ):
+        """
+        Return xr.DataArray that corresponds to the data variable of floating
+        point datatype if it exists in the 'ds' dataset, or an empty
+        xr.DataArray if it is not present in the input dataset 'ds'.
+        Empty xr.DataArray assumes the same dimensions as input ds.v data
+        array.
+
+        Inputs:
+        ds (xarray.Dataset):    The dataset the variable belongs to.
+        var_name (str):         Name of the variable to extract.
+        data_dtype (str):       Datatype to use for the data variable. Default
+                                is 'short'.
+        data_fill_value (int):   Value to use for filling empty data array if
+                                variable is not present in the input dataset
+                                'ds'. Default is utils.Missing.value.
+        """
+        if var_name in ds:
+            return ds[var_name][0, :, :].drop_vars(utils.Coords.TIME)
+
+        # Create empty array as it is not provided in the granule,
+        # use the same coordinates as for any cube's data variables.
+        # ATTN: Can't use None as data to create xr.DataArray - won't be able
+        # to set dtype='short' in encoding for writing to the file.
+        return xr.DataArray(
+            data=np.full((len(self.grid_y), len(self.grid_x)),
+                            data_fill_value, dtype=np.dtype(np.float32)),
+            coords=[self.grid_y, self.grid_x],
+            dims=[utils.Coords.Y, utils.Coords.X]
+        )
+
     @staticmethod
     def get_data_var_attr(
         ds: xr.Dataset,
@@ -1924,8 +1964,9 @@ class ITSCube:
         attr_name = f'{var_name}{_name_sep}{Vars.postfix.dr_to_vr_factor}'
 
         attr_data = [
-            ITSCube.get_data_var_attr(ds, url, var_name, attr_name,
-                                        utils.Missing.byte)
+            ITSCube.get_data_var_attr(ds, url, var_name,
+                                        Vars.postfix.dr_to_vr_factor,
+                                        utils.Missing.byte)                                        utils.Missing.byte)
             for ds, url in zip(self.ds, self.urls)
         ]
 
@@ -2306,7 +2347,7 @@ class ITSCube:
         for each_var in [Vars.m11, Vars.m12]:
             self.layers[each_var] = xr.concat(
                 [
-                    self.get_data_var(ds, each_var) for ds in self.ds
+                    self.get_data_var_float(ds, each_var) for ds in self.ds
                 ],
                 mid_date_coord
             )
@@ -2991,7 +3032,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-t', '--threads',
         type=int,
-        default=32,
+        default=8,
         help='Number of threads to use for parallel processing [%(default)d].'
     )
     parser.add_argument(
@@ -3086,6 +3127,14 @@ if __name__ == '__main__':
         action='store_true',
         help='Define 5 points per side before re-projecting granule polygon '
             'to longitude/latitude coordinates'
+    )
+    parser.add_argument(
+        '--ignoreExistingCube',
+        action='store_true',
+        default=False,
+        help='Ignore existing cube for the run. This is to overwrite '
+                'any existing cube with the newly generated one without the '
+                'need to remove it manually [%(default)s].'
     )
     parser.add_argument(
         '--useExistingCubeBackup',
@@ -3186,6 +3235,7 @@ if __name__ == '__main__':
     ITSCube.START_DATE = args.searchAPIStartDate
     ITSCube.END_DATE = args.searchAPIStopDate
     ITSCube.NO_AWS_SIGNING = args.noAWSSigning
+    ITSCube.IGNORE_EXISTING_CUBE = args.ignoreExistingCube
 
     if args.useGranulesFile:
         # Check for this option first as another mutually exclusive option has a default value
