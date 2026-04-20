@@ -3030,7 +3030,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-t', '--threads',
         type=int,
-        default=32,
+        default=8,
         help='Number of threads to use for parallel processing [%(default)d].'
     )
     parser.add_argument(
