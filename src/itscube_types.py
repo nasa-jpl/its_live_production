@@ -265,6 +265,8 @@ class VarsInfo:
     # Map of variables with integer data type
     intType = {
         interp_mask: np.ubyte,
+        ascending_img1: np.uint8,
+        ascending_img2: np.uint8,
         chip_size_height: np.uint16,
         chip_size_width: np.uint16,
         flag_stable_shift: np.uint8,
@@ -276,17 +278,13 @@ class VarsInfo:
         v_error: np.int16,
         va: np.int16,
         vr: np.int16,
-
-        # ATTN: Put back M11/M12 as int while updating cubes with new granules
-        # Should reverse to float dtype when all cubes are updated with new
-        # granules and M11/M12 are restored as float in the datacubes.
-        m11: np.int16,
-        m12: np.int16
     }
 
     # Missing value for data variables of integer data type
     intMissingValue = {
         interp_mask: utils.Missing.byte,
+        ascending_img1: utils.Missing.u8value,
+        ascending_img2: utils.Missing.u8value,
         chip_size_height: utils.Missing.byte,
         chip_size_width: utils.Missing.byte,
         v: utils.Missing.value,
@@ -295,12 +293,6 @@ class VarsInfo:
         v_error: utils.Missing.value,
         va: utils.Missing.value,
         vr: utils.Missing.value,
-
-        # ATTN: Put back M11/M12 as int while updating cubes with new granules
-        # Should reverse to float dtype when all cubes are updated with new
-        # granules and M11/M12 are restored as float in the datacubes.
-        m11: utils.Missing.value,
-        m12: utils.Missing.value
     }
 
 Vars = VarsInfo()
@@ -331,8 +323,12 @@ class ImgPairInfoVars:
     roi_valid_percentage: str  = 'roi_valid_percentage'
 
     # New format defines these attributes, make them datacube attributes
-    time_standard_img1 = 'time_standard_img1'
-    time_standard_img2 = 'time_standard_img2'
+    time_standard_img1: str = 'time_standard_img1'
+    time_standard_img2: str = 'time_standard_img2'
+
+    flight_direction_img1: str = 'flight_direction_img1'
+    flight_direction_img2: str = 'flight_direction_img2'
+    ascending: str = 'ascending'
 
     # Were in the old DataVars.ImgPairInfo format to support range-range
     # granules, keep them for now...
