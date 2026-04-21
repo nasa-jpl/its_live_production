@@ -3242,7 +3242,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--useGranulesFile',
         type=str,
-        default='s3://its-live-data/test-space/velocity_image_pair/nisar/granulesApril01.2026.json',
+        default=None,
         help='Json file that stores a list of ITS_LIVE image velocity granules '
             'to build datacube from [%(default)s].'
     )
