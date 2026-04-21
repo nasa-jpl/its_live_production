@@ -1656,9 +1656,6 @@ class ITSCube:
             # print(f"Return value for {var_name}.{attr_name}: {value}")
             return value
 
-        else:
-            logging.info(f'No attribute {attr_name} found for variable {var_name} in {ds_url}')
-
         if missing_value is None:
             # If missing_value is not provided, attribute is expected to exist always
             raise RuntimeError(
