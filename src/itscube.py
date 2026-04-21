@@ -191,7 +191,7 @@ class ITSCube:
     USE_EXISTING_BACKUP = False
 
     # Flag if existing datacube should be ignored for the run, to overwrite
-    # any existing cube with the
+    # any existing cube with the same name.
     IGNORE_EXISTING_CUBE = False
 
     # Grid boundaries for the datacube based on its bounding polygon, to filter
@@ -1608,6 +1608,66 @@ class ITSCube:
         return missing_value
 
     @staticmethod
+    def get_data_var_binary_attr(
+        ds: xr.Dataset,
+        ds_url: str,
+        var_name: str,
+        attr_name: str,
+        token: str,
+        data_dtype=np.uint8,
+        missing_value=None
+    ):
+        """
+        Return attribute for the data variable in data set if it exists,
+        or missing_value if it is not present.
+        If "missing_value" is set to None, than specified attribute is expected
+        to exist for the data variable "var_name" and exception is raised if
+        it does not.
+
+        Inputs:
+        ds (xarray.Dataset): The dataset the variable belongs to.
+        ds_url (str): URL of the granule that corresponds to the input "ds"
+                        dataset (used for error reporting only).
+        var_name (str): Name of the variable to extract attribute for.
+        attr_name (str): Name of the attribute to extract value for.
+        token (str): Token to use for the attribute value to convert it to
+                        binary value. If token is present in the attribute
+                        value, then the attribute value is set to 1,
+                        otherwise 0.
+        missing_value: Value to use if attribute is missing for the variable.
+                        Default is None, which will result in raising an
+                        exception if attribute is missing for the variable.
+        data_dtype: Datatype to use for the attribute value. Default is
+                    np.uint8.
+        """
+        if var_name in ds and attr_name in ds[var_name].attrs:
+            # NISAR workaround for some attributes being stored as arrays
+            # instead of a single value: take the first element of the array
+            # if it has only one element.``
+            value = ds[var_name].attrs[attr_name]
+
+            if np.ndim(value) != 0:
+                # Not a scalar (int, float, or 0-d numpy array)
+                # list, tuple, or numpy array.
+                value = np.asarray(value).flat[0]
+
+            value = data_dtype(value == token)
+
+            # print(f"Return value for {var_name}.{attr_name}: {value}")
+            return value
+
+        else:
+            logging.info(f'No attribute {attr_name} found for variable {var_name} in {ds_url}')
+
+        if missing_value is None:
+            # If missing_value is not provided, attribute is expected to exist always
+            raise RuntimeError(
+                f"{attr_name} is expected within {var_name} for {ds_url}"
+            )
+
+        return missing_value
+
+    @staticmethod
     def preprocess_dataset(ds: xr.Dataset, ds_url: str):
         """
         Pre-process ITS_LIVE granule dataset in preparation to be added to
@@ -1966,7 +2026,7 @@ class ITSCube:
         attr_data = [
             ITSCube.get_data_var_attr(ds, url, var_name,
                                         Vars.postfix.dr_to_vr_factor,
-                                        utils.Missing.byte)                                        utils.Missing.byte)
+                                        utils.Missing.byte)
             for ds, url in zip(self.ds, self.urls)
         ]
 
@@ -2473,6 +2533,32 @@ class ITSCube:
                 # Units attribute exists for the variable
                 self.layers[each].attrs[utils.Units.name] = ImgPairInfo.allUnits[each]
 
+        for (each, new_each) in zip(
+            [ImgPairInfo.flight_direction_img1, ImgPairInfo.flight_direction_img2],
+            [Vars.ascending_img1, Vars.ascending_img2]
+        ):
+            # Add new variables that correspond to flight direction attributes
+            # of 'img_pair_info'
+            self.layers[new_each] = xr.DataArray(
+                data=[ITSCube.get_data_var_binary_attr(
+                    ds,
+                    url,
+                    ImgPairInfo.name,
+                    each,
+                    ImgPairInfo.ascending,
+                    data_dtype=np.uint8,
+                    missing_value=utils.Missing.u8value
+                ) for ds, url in zip(self.ds, self.urls)],
+                coords=[mid_date_coord],
+                dims=[utils.Coords.MID_DATE],
+                attrs={
+                    Vars.attrs.std_name: Vars.name[new_each],
+                    Vars.attrs.description: Vars.description[new_each],
+                    BinaryFlag.attrs.values: BinaryFlag.values,
+                    BinaryFlag.attrs.meanings: BinaryFlag.meanings[new_each]
+                }
+            )
+
         # Add new variable that corresponds to autoRIFT_software_version
         self.layers[Vars.autorift_software_version] = xr.DataArray(
             data=[ds.attrs[Vars.autorift_software_version] for ds in self.ds],
@@ -2557,7 +2643,9 @@ class ITSCube:
                 Vars.chip_size_width,
                 Vars.flag_stable_shift,
                 Vars.stable_count_slow,
-                Vars.stable_count_mask
+                Vars.stable_count_mask,
+                Vars.ascending_img1,
+                Vars.ascending_img2
             ]:
                 encoding_settings[each] = {
                     utils.OutputFormat.dtype: Vars.intType[each]
@@ -2757,7 +2845,9 @@ class ITSCube:
                 ImgPairInfo.sensor_img2,
                 ImgPairInfo.date_center,
                 ImgPairInfo.date_dt,
-                utils.Coords.MID_DATE
+                utils.Coords.MID_DATE,
+                Vars.ascending_img1,
+                Vars.ascending_img2
             ])
 
             for each in _vars:
