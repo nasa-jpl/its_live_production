@@ -1034,21 +1034,18 @@ class ITSCube:
         num_granules (int):
             Number of first granules to examine. This is used for testing only.
         """
-        # NISAR specific - disable check is cube already exists in the s3 -
-        # some cubes got corrupted by previous processing, so just replace them
-        # with new cubes
-        # if ITSCube.exists(output_dir, output_bucket):
-        #     # Datacube exists, update
-        #     self.update_parallel(
-        #         output_dir,
-        #         output_bucket,
-        #         backup_bucket,
-        #         num_granules
-        #     )
+        if ITSCube.exists(output_dir, output_bucket):
+            # Datacube exists, update
+            self.update_parallel(
+                output_dir,
+                output_bucket,
+                backup_bucket,
+                num_granules
+            )
 
-        # else:
-        # Create new datacube
-        self.create_parallel(output_dir, output_bucket, num_granules)
+        else:
+            # Create new datacube
+            self.create_parallel(output_dir, output_bucket, num_granules)
 
     def update_parallel(
         self,
