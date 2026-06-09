@@ -17,7 +17,9 @@ from shapely import geometry
 
 from grid import Bounds
 import itslive_utils
-from itscube_types import BatchVars, CubeJson, FilenamePrefix
+from itscube_types import BatchVars
+import utils
+from itslive_mosaics_types import GeoJsonVars
 
 
 class DataCubeBatch:
@@ -70,7 +72,7 @@ class DataCubeBatch:
             num_jobs = 0
             logging.info(f'Total number of datacubes: {len(cubes["features"])}')
 
-            for each_cube in cubes[CubeJson.FEATURES]:
+            for each_cube in cubes[GeoJsonVars.features]:
                 if num_cubes is not None and num_jobs == num_cubes:
                     # Number of datacubes to generate is provided,
                     # stop if they have been generated
@@ -113,9 +115,9 @@ class DataCubeBatch:
                 # }
 
                 # Start the Batch job for each cube with ROI != 0
-                properties = each_cube[CubeJson.PROPERTIES]
+                properties = each_cube[GeoJsonVars.properties]
 
-                roi = properties[CubeJson.ROI_PERCENT_COVERAGE]
+                roi = properties[GeoJsonVars.roi_percent_coverage]
                 if roi != 0.0:
                     # Submit AWS Batch to generate the cube
                     # Format filename for the cube
@@ -123,13 +125,13 @@ class DataCubeBatch:
                     epsg_code = None
 
                     # Support new "epsg" property or old "data_epsg" property
-                    if CubeJson.EPSG in properties:
-                        epsg_code = str(properties[CubeJson.EPSG])
-                        epsg = CubeJson.EPSG_PREFIX + epsg_code
+                    if GeoJsonVars.epsg in properties:
+                        epsg_code = str(properties[GeoJsonVars.epsg])
+                        epsg = GeoJsonVars.epsg_prefix + epsg_code
 
-                    elif CubeJson.DATA_EPSG in properties:
-                        epsg = properties[CubeJson.DATA_EPSG].replace(CubeJson.EPSG_SEPARATOR, '')
-                        epsg_code = epsg.replace(CubeJson.EPSG_PREFIX, '')
+                    elif GeoJsonVars.data_epsg in properties:
+                        epsg = properties[GeoJsonVars.data_epsg].replace(GeoJsonVars.epsg_separator, '')
+                        epsg_code = epsg.replace(GeoJsonVars.epsg_prefix, '')
 
                     # Include only specific EPSG code(s) if specified
                     if len(BatchVars.EPSG_TO_GENERATE) and \
@@ -141,7 +143,7 @@ class DataCubeBatch:
                             epsg_code in BatchVars.EPSG_TO_EXCLUDE:
                         continue
 
-                    coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
+                    coords = properties[GeoJsonVars.geometry_epsg][GeoJsonVars.coordinates][0]
                     x_bounds = Bounds([each[0] for each in coords])
                     y_bounds = Bounds([each[1] for each in coords])
 
@@ -185,7 +187,10 @@ class DataCubeBatch:
                         logging.info(f"Skipping non-{BatchVars.PATH_TOKEN}")
                         continue
 
-                    cube_filename = f"{FilenamePrefix.Datacube}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
+                    # cube_filename = f"{FilePrefix.datacube}_{epsg}_G{self.grid_size_str}_X{mid_x}_Y{mid_y}.zarr"
+                    cube_filename = utils.File.datacube_filename_zarr(
+                        epsg, int(self.grid_size_str), mid_x, mid_y
+                    )
                     logging.info(f'Cube name: {cube_filename}')
 
                     # Hack to run specific jobs
@@ -201,6 +206,8 @@ class DataCubeBatch:
                     # Work around to make sure there are no partially copies cubes from previously
                     # failed runs
                     # TODO: make a command-line option?
+                    # Need to ignore existing NISAR cubes since they are corrupt
+                    # from previous run
                     if self.s3.exists(os.path.join(s3_bucket, bucket_dir, cube_filename)):
                         logging.info(
                             f"Datacube {os.path.join(s3_bucket, bucket_dir, cube_filename)}"
@@ -556,7 +563,7 @@ def parse_args():
             shape_file = json.load(fhandle)
 
             logging.info(f'Reading region polygon the datacube\'s central point should fall into: {args.processCubesWithinPolygon}')
-            shapefile_coords = shape_file[CubeJson.FEATURES][0]['geometry']['coordinates']
+            shapefile_coords = shape_file[GeoJsonVars.features][0]['geometry']['coordinates']
             logging.info(f'Got polygon coordinates: {shapefile_coords}')
             line = geometry.LineString(shapefile_coords[0][0])
             BatchVars.POLYGON_SHAPE = geometry.Polygon(line)

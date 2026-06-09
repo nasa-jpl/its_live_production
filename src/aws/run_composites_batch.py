@@ -26,11 +26,11 @@ import sys
 import s3fs
 
 from grid import Bounds
-from itscube_types import BatchVars, \
-    CubeJson, \
-    datacube_filename_zarr, \
-    composite_filename_zarr
+from itscube_types import BatchVars
 import itslive_utils
+import utils
+from itslive_mosaics_types import GeoJsonVars
+
 
 # Define AWS resources for different number of layers in the datacube and for
 # composites creation with slow_error enabled/disabled.
@@ -179,7 +179,7 @@ class DataCubeCompositeBatch:
             ondemand_queues = set()
 
             logging.info(f'Total number of datacubes: {len(cubes["features"])}')
-            for each_cube in cubes[CubeJson.FEATURES]:
+            for each_cube in cubes[GeoJsonVars.features]:
                 if num_cubes is not None and num_jobs == num_cubes:
                     # Number of datacubes to generate is provided,
                     # stop if they have been generated
@@ -225,15 +225,15 @@ class DataCubeCompositeBatch:
                 # }
 
                 # Start the Batch job for each cube with ROI != 0
-                properties = each_cube[CubeJson.PROPERTIES]
+                properties = each_cube[GeoJsonVars.properties]
 
-                roi = properties[CubeJson.ROI_PERCENT_COVERAGE]
+                roi = properties[GeoJsonVars.roi_percent_coverage]
                 if roi != 0.0:
                     # Submit AWS Batch to generate the cube composite
                     # Convert int EPSG code to string
-                    epsg_code = str(properties[CubeJson.EPSG])
+                    epsg_code = str(properties[GeoJsonVars.epsg])
                     # Format filename for the cube
-                    epsg = CubeJson.EPSG_PREFIX + epsg_code
+                    epsg = GeoJsonVars.epsg_prefix + epsg_code
 
                     # Include only specific EPSG code(s) if specified
                     if len(BatchVars.EPSG_TO_GENERATE) and \
@@ -245,7 +245,7 @@ class DataCubeCompositeBatch:
                             epsg_code in BatchVars.EPSG_TO_EXCLUDE:
                         continue
 
-                    coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
+                    coords = properties[GeoJsonVars.geometry_epsg][GeoJsonVars.coordinates][0]
                     x_bounds = Bounds([each[0] for each in coords])
                     y_bounds = Bounds([each[1] for each in coords])
 
@@ -294,7 +294,7 @@ class DataCubeCompositeBatch:
                         logging.info(f"Skipping non-{BatchVars.PATH_TOKEN}")
                         continue
 
-                    cube_filename = datacube_filename_zarr(
+                    cube_filename = utils.File.datacube_filename_zarr(
                         epsg,
                         self.grid_size,
                         mid_x, mid_y
@@ -330,7 +330,7 @@ class DataCubeCompositeBatch:
                     # Format cube composites filename:
                     # s3://its-live-data/composites/annual/v02/N60W130/ITS_LIVE_velocity_120m_X-3250000_Y250000.zarr
                     # composite_filename =f"{FilenamePrefix.Composites}_{int(self.grid_size_str):03d}m_X{mid_x}_Y{mid_y}.zarr"
-                    composite_filename = composite_filename_zarr(
+                    composite_filename = utils.File.composite_filename_zarr(
                         epsg_code,
                         self.grid_size,
                         mid_x, mid_y
@@ -373,7 +373,7 @@ class DataCubeCompositeBatch:
                     logging.info(f'Cube params: {cube_params}')
 
                     # Record how many layers are in the datacube to process
-                    num_layers = properties[CubeJson.GRANULE_COUNT]
+                    num_layers = properties[GeoJsonVars.granule_count]
                     aws_resources = DataCubeCompositeBatch.AWS_RESOURCES(num_layers)
 
                     queue = aws_resources['jobQueue']
@@ -451,19 +451,22 @@ class DataCubeCompositeBatch:
                 else:
                     # Report the cube as being skipped due to the ROI==0 if
                     # it's one of the requested datacubes
-                    epsg = properties[CubeJson.DATA_EPSG].replace(
-                        CubeJson.EPSG_SEPARATOR, ''
+                    epsg = properties[GeoJsonVars.data_epsg].replace(
+                        GeoJsonVars.epsg_separator, ''
                     )
-                    coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
+                    coords = properties[GeoJsonVars.geometry_epsg][GeoJsonVars.coordinates][0]
                     x_bounds = Bounds([each[0] for each in coords])
                     y_bounds = Bounds([each[1] for each in coords])
 
                     mid_x = int((x_bounds.min + x_bounds.max)/2)
                     mid_y = int((y_bounds.min + y_bounds.max)/2)
 
-                    cube_filename = datacube_filename_zarr(epsg, self.grid_size, mid_x, mid_y)
+                    cube_filename = utils.File.datacube_filename_zarr(
+                        epsg, self.grid_size, mid_x, mid_y
+                    )
 
-                    if len(BatchVars.CUBES_TO_GENERATE) and cube_filename in BatchVars.CUBES_TO_GENERATE:
+                    if len(BatchVars.CUBES_TO_GENERATE) and \
+                            cube_filename in BatchVars.CUBES_TO_GENERATE:
                         logging.info(f'ROI=0 is detected for {cube_filename}')
 
             logging.info(
@@ -748,7 +751,7 @@ def parse_args():
                 f"Reading region polygon the datacube's central point "
                 f"should fall into: {args.processCubesWithinPolygon}"
             )
-            shapefile_coords = shape_file[CubeJson.FEATURES][0]['geometry']['coordinates']
+            shapefile_coords = shape_file[GeoJsonVars.features][0]['geometry']['coordinates']
             logging.info(f'Got polygon coordinates: {shapefile_coords}')
 
             line = geometry.LineString(shapefile_coords[0][0])

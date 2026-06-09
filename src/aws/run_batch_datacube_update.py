@@ -14,7 +14,8 @@ import s3fs
 import sys
 from shapely import geometry
 
-from itscube_types import BatchVars, CubeJson
+from itscube_types import BatchVars
+from itslive_mosaics_types import GeoJsonVars
 
 
 class DataCubeBatch:
@@ -76,7 +77,7 @@ class DataCubeBatch:
             # Number of skipped cubes
             num_skipped = 0
 
-            for current_cube_index, each_cube in enumerate(cubes[CubeJson.FEATURES][cube_start_index:]):
+            for current_cube_index, each_cube in enumerate(cubes[GeoJsonVars.features][cube_start_index:]):
                 if num_cubes is not None and len(jobs_files) == num_cubes:
                     # Number of datacubes to iterate through is provided,
                     # stop if they have been iterated through
@@ -119,14 +120,14 @@ class DataCubeBatch:
                 # }
 
                 # Start the Batch job for each cube with ROI != 0
-                properties = each_cube[CubeJson.PROPERTIES]
+                properties = each_cube[GeoJsonVars.properties]
 
-                roi = properties[CubeJson.ROI_PERCENT_COVERAGE]
+                roi = properties[GeoJsonVars.roi_percent_coverage]
                 if roi != 0.0:
                     # Submit AWS Batch to generate the cube
                     # Format filename for the cube
                     # Extract int EPSG code
-                    epsg_code = str(properties[CubeJson.EPSG])
+                    epsg_code = str(properties[GeoJsonVars.epsg])
 
                     # Include only specific EPSG code(s) if specified
                     if len(BatchVars.EPSG_TO_GENERATE) and \
@@ -138,7 +139,7 @@ class DataCubeBatch:
                             epsg_code in BatchVars.EPSG_TO_EXCLUDE:
                         continue
 
-                    http_cube_filename = PurePath(properties[CubeJson.URL])
+                    http_cube_filename = PurePath(properties[GeoJsonVars.url])
                     cube_filename = http_cube_filename.name
                     logging.info(f'Cube name: {cube_filename}')
 
@@ -189,7 +190,7 @@ class DataCubeBatch:
 
                     # Read into json list and then dump into string to strip
                     # all identation characters
-                    coords = properties[CubeJson.GEOMETRY_EPSG][CubeJson.COORDINATES][0]
+                    coords = properties[GeoJsonVars.geometry_epsg][GeoJsonVars.coordinates][0]
 
                     backup_dir = bucket_dir.replace(
                         bucket_dir_path,
@@ -583,7 +584,7 @@ def parse_args():
             shape_file = json.load(fhandle)
 
             logging.info(f'Reading region polygon the datacube\'s central point should fall into: {args.processCubesWithinPolygon}')
-            shapefile_coords = shape_file[CubeJson.FEATURES][0]['geometry']['coordinates']
+            shapefile_coords = shape_file[GeoJsonVars.features][0]['geometry']['coordinates']
             logging.info(f'Got polygon coordinates: {shapefile_coords}')
             line = geometry.LineString(shapefile_coords[0][0])
             BatchVars.POLYGON_SHAPE = geometry.Polygon(line)
