@@ -278,14 +278,6 @@ class VarsInfo:
         v_error: np.int16,
         va: np.int16,
         vr: np.int16,
-
-        # ATTN: Put back M11/M12 as int while updating existing cubes with
-        # new granules
-        # Should reverse to float dtype when all cubes are updated with new
-        # granules and M11/M12 are restored as float in the datacubes.
-        # Newly generated NISAR cubes whould have correct float M11 and M12
-        # m11: np.int16,
-        # m12: np.int16
     }
 
     # Missing value for data variables of integer data type
@@ -301,13 +293,6 @@ class VarsInfo:
         v_error: utils.Missing.value,
         va: utils.Missing.value,
         vr: utils.Missing.value,
-
-        # ATTN: Put back M11/M12 as int while updating cubes with new granules
-        # Should reverse to float dtype when all cubes are updated with new
-        # granules and M11/M12 are restored as float in the datacubes.
-        # Newly generated NISAR cubes whould have correct float M11 and M12
-        # m11: utils.Missing.value,
-        # m12: utils.Missing.value
     }
 
 Vars = VarsInfo()
