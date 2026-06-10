@@ -39,7 +39,7 @@ import zarr
 
 from itslive_composite import SensorExcludeFilter, MissionSensor, Output
 from itscube import ITSCube
-from itscube_types import DataVars, Coords, BinaryFlag, CubeOutput
+from itscube_types import DataVars, Coords, BinaryFlag, CubeOutput, Vars
 from sensor_id import SENSORS, all_sensors_description
 
 NC_ENGINE = 'h5netcdf'
@@ -297,7 +297,7 @@ class FixDatacubes:
                 new_var_name = FixDatacubes.NEW_VAR_NAMES[each_var]
                 ds[new_var_name] = xr.DataArray(data=unique_id, coords=ds[each_var].coords, dims=ds[each_var].dims)
                 ds[new_var_name].attrs = {
-                    DataVars.STD_NAME: DataVars.STANDARD_NAME[new_var_name],
+                    DataVars.STD_NAME: Vars.name[new_var_name],
                     DataVars.DESCRIPTION_ATTR: all_sensors_description()
                 }
 
@@ -381,7 +381,7 @@ class FixDatacubes:
             # Add new variables to the datacube - just use existing 1-d data variable coords and dims
             ds[DataVars.ASCENDING_IMG1] = xr.DataArray(data=ascending_img1, coords=ds[DataVars.ImgPairInfo.SATELLITE_IMG1].coords, dims=ds[DataVars.ImgPairInfo.SATELLITE_IMG1].dims)
             ds[DataVars.ASCENDING_IMG1].attrs = {
-                DataVars.STD_NAME: DataVars.STANDARD_NAME[DataVars.ASCENDING_IMG1],
+                DataVars.STD_NAME: Vars.name[DataVars.ASCENDING_IMG1],
                 DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.ASCENDING_IMG1],
                 BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
                 BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[DataVars.ASCENDING_IMG1]
@@ -389,7 +389,7 @@ class FixDatacubes:
 
             ds[DataVars.ASCENDING_IMG2] = xr.DataArray(data=ascending_img2, coords=ds[DataVars.ImgPairInfo.SATELLITE_IMG1].coords, dims=ds[DataVars.ImgPairInfo.SATELLITE_IMG1].dims)
             ds[DataVars.ASCENDING_IMG2].attrs = {
-                DataVars.STD_NAME: DataVars.STANDARD_NAME[DataVars.ASCENDING_IMG2],
+                DataVars.STD_NAME: Vars.name[DataVars.ASCENDING_IMG2],
                 DataVars.DESCRIPTION_ATTR: DataVars.DESCRIPTION[DataVars.ASCENDING_IMG2],
                 BinaryFlag.VALUES_ATTR: BinaryFlag.VALUES,
                 BinaryFlag.MEANINGS_ATTR: BinaryFlag.MEANINGS[DataVars.ASCENDING_IMG2]

@@ -460,8 +460,8 @@ def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool 
     """
     _quiet_flag = "--quiet"
 
-    # if is_quiet and _quiet_flag not in command_line:
-    #     command_line.append(_quiet_flag)
+    if is_quiet and _quiet_flag not in command_line:
+        command_line.append(_quiet_flag)
 
     logging.info(f'aws s3 command: {" ".join(command_line)}')
 

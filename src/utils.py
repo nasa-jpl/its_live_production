@@ -9,6 +9,8 @@ HTTP_PREFIX = 'https://'
 PATH_URL = ".s3.amazonaws.com"
 NC_ENGINE = 'h5netcdf'
 
+NC_ENGINE = 'h5netcdf'
+
 
 @dataclass(frozen=True)
 class CoordsInfo:
