@@ -3102,7 +3102,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-e', '--encodingTimeChunk',
         type=int,
-        default=500,
+        default=20000,
         help='Encoding time chunk size to use when storing Zarr cube [%(default)d].'
     )
     parser.add_argument(
