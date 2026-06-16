@@ -28,17 +28,17 @@ from urllib.parse import urlparse
 # Local modules
 import itslive_utils
 from grid import Bounds, Grid
-from itscube_types import \
-    CubeFormat, \
-    ImgPairInfo, \
-    Mapping, \
-    Vars, \
+from itscube_types import (
+    CubeFormat,
+    ImgPairInfo,
+    Mapping,
+    Vars,
     SkippedGranules
+)
 from itslive_binary_type import BinaryFlag
 import aws_utils
 import utils
 import shapefile
-# import zarr_to_netcdf
 
 # Set up logging
 logging.basicConfig(
@@ -209,8 +209,9 @@ class ITSCube:
         """
         Initialize object.
 
-        polygon (tuple):    Polygon for the datacube tile.
-        projection (str):   Projection code for the polygon coordinates.
+        Inputs:
+        polygon (tuple): Polygon for the datacube tile.
+        projection (str): Projection code for the polygon coordinates.
         """
         self.logger = logging.getLogger("datacube")
         self.logger.info(f"Polygon: {polygon}")
@@ -369,6 +370,7 @@ class ITSCube:
         polygon request. Or instead for the testing purposes use a list of
         provided granules through input JSON file.
 
+        Inputs:
         num_granules (int): Number of first granules to examine.
             (ATTN: This is for testing only as a temporary solution to a very
             long time to open remote granules. Should not be used when
@@ -436,6 +438,9 @@ class ITSCube:
 
         urls, self.skipped_granules[SkippedGranules.duplicate] = \
             ITSCube.skip_duplicate_l89_granules(found_urls)
+
+        # Sort URLs by mid_date extracted from filename for chronological order
+        urls = sorted(urls, key=ITSCube.extract_mid_date_from_url)
 
         # DEBUG: pick only S1 granules to test
         # sentinel_granules = [each for each in urls if
@@ -768,11 +773,111 @@ class ITSCube:
         return granules, cube_layers_to_delete
 
     @staticmethod
+    def extract_mid_date_from_url(url: str):
+        """
+        Extract mid_date from granule filename by parsing acquisition dates.
+        This method is used to sort granules in chronological order by
+        acquisition date by avoiding reading the granule files to get its time
+        dimension value.
+
+        Supports multiple sensor filename formats:
+        - Landsat: acquisition date at token[3] (format: YYYYMMDD)
+        - NISAR: acquisition date+time at token[11] (format: YYYYMMDDTHHMMSS)
+        - Sentinel-1: acquisition date+time at token[5] (format: YYYYMMDDTHHMMSS)
+        - Sentinel-2: acquisition date+time at token[2] (format: YYYYMMDDTHHMMSS)
+
+        Mid_date is calculated as the average of the two acquisition dates.
+
+        Inputs:
+        url (str): URL for the granule.
+
+        Returns:
+        Datetime object for sorting purposes.
+        """
+        from datetime import datetime, timedelta
+
+        # Extract filename from URL
+        filename = os.path.basename(url)
+
+        # Split into two images
+        images = filename.split(ITSCube.SPLIT_IMAGES_TOKEN)
+        if len(images) < 2:
+            raise RuntimeError(
+                f'Filename does not contain expected split token: '
+                f'{ITSCube.SPLIT_IMAGES_TOKEN} in {filename}'
+            )
+
+        # Parse first image tokens
+        tokens_1 = images[0].split(ITSCube.IMAGE_TOKEN)
+        # Parse second image tokens
+        tokens_2 = images[1].split(ITSCube.IMAGE_TOKEN)
+
+        # Detect sensor type and extract acquisition dates accordingly
+        sensor_prefix = tokens_1[0][:5] if len(tokens_1[0]) >= 5 else tokens_1[0]
+
+        if sensor_prefix == 'NISAR':
+            # NISAR: acquisition date+time at token[11]
+            # Format: YYYYMMDDTHHMMSS (e.g., 20251120T130632)
+            date_token_idx = 11
+            date_format = "%Y%m%dT%H%M%S"
+
+        elif sensor_prefix.startswith('S1'):
+            # Sentinel-1: acquisition date+time at token[5]
+            # Format: YYYYMMDDTHHMMSS (e.g., 20200221T095209)
+            date_token_idx = 5
+            date_format = "%Y%m%dT%H%M%S"
+
+        elif sensor_prefix.startswith('S2'):
+            # Sentinel-2: acquisition date+time at token[2]
+            # Format: YYYYMMDDTHHMMSS (e.g., 20181008T190459)
+            date_token_idx = 2
+            date_format = "%Y%m%dT%H%M%S"
+
+        elif sensor_prefix.startswith('L'):
+            # Landsat (LC08, LC09, LE07, LT05, etc.): acquisition date at token[3]
+            # Format: YYYYMMDD
+            date_token_idx = 3
+            date_format = ITSCube.DATE_FORMAT
+
+        else:
+            # Unsupported sensor format
+            raise ValueError(
+                f"Unsupported sensor filename format: {sensor_prefix} in {filename}"
+            )
+
+        # Parse acquisition dates using the determined token index and format
+        try:
+            date_1 = datetime.strptime(tokens_1[date_token_idx], date_format)
+            date_2 = datetime.strptime(tokens_2[date_token_idx], date_format)
+        except IndexError:
+            raise RuntimeError(
+                f'Missing expected token at index {date_token_idx} for sensor '
+                f'{sensor_prefix} in filename: {filename}'
+            )
+        except ValueError as e:
+            raise RuntimeError(
+                f'Invalid date format at token {date_token_idx} for sensor '
+                f'{sensor_prefix} in filename {filename}: {e}'
+            )
+
+        # Calculate mid_date as average
+        mid_date = date_1 + (date_2 - date_1) / 2
+        return mid_date
+
+    @staticmethod
     def get_tokens_from_filename(filename):
         """
         Extract processing dates for two images from the filename and
         construct unique identifier for the image pair by removing processing
         dates, percent valid pixels fields and file extension.
+
+        Inputs:
+        filename (str): Granule filename to parse.
+
+        Returns:
+        url_proc_date_1 (datetime): Processing date for first image.
+        url_proc_date_2 (datetime): Processing date for second image.
+        id (str): Unique identifier for the image pair.
         """
         files = os.path.basename(filename).split(ITSCube.SPLIT_IMAGES_TOKEN)
 
@@ -1329,6 +1434,13 @@ class ITSCube:
                     each_file in found_urls[start:start + num_tasks]
                 )
 
+                # Sort results by mid_date (index 2) for chronological order
+                # Use datetime.min for None mid_dates (will be filtered anyway)
+                results = sorted(
+                    results,
+                    key=lambda x: x[2] if x[2] is not None else np.datetime64(datetime.min)
+                )
+
                 for each_ds in results:
                     self.add_layer(*each_ds)
 
@@ -1404,6 +1516,13 @@ class ITSCube:
                 results = Parallel()(
                     delayed(ITSCube.read_s3_dataset)(each_file, s3) for
                     each_file in found_urls[start:start + num_tasks]
+                )
+
+                # Sort results by mid_date (index 2) for chronological order
+                # Use datetime.min for None mid_dates (will be filtered anyway)
+                results = sorted(
+                    results,
+                    key=lambda x: x[2] if x[2] is not None else np.datetime64(datetime.min)
                 )
 
                 for each_ds in results:
@@ -2911,9 +3030,6 @@ class ITSCube:
         # Free up memory
         self.clear_vars()
 
-        # No need to sort data by date as we will be appending layers to
-        # the datacubes
-
         # Return a flag if any layers were written to the store
         return wrote_layers
 
@@ -2965,15 +3081,13 @@ class ITSCube:
     ):
         """
         Read Dataset from the S3 bucket and pre-process it for the cube layer.
-        Return re-tried exceptions messages, if any, and cube layer
-        information.
 
         Inputs:
-        each_url (str):         Granule S3 URL.
-        s3 (s3fs.S3FileSystem): S3FileSystem object to access the granule
-                                from.
-        total_retries (int):    Number of retries in a case of exception.
-        num_seconds (int):      Number of seconds to sleep between retries.
+        each_url (str): Granule S3 URL.
+        s3 (s3fs.S3FileSystem): S3FileSystem object to access the granule.
+
+        Returns:
+        Tuple from preprocess_dataset(): (empty, ds_projection, mid_date, ds_url, mask_data, msgs).
         """
         s3_path = each_url.replace(utils.HTTP_PREFIX, utils.S3_PREFIX)
         s3_path = s3_path.replace(utils.PATH_URL, '')
