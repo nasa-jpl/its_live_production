@@ -138,6 +138,7 @@ class TestDatacubeGeneration:
         # Open the datacube using xarray
         ds = xr.open_dataset(
             str(datacube_path),
+            decode_timedelta=False,
             engine='zarr',
             consolidated=True
         )
@@ -211,7 +212,7 @@ class TestDatacubeGeneration:
             )
 
         print(f"✓ Datacube structure verified:")
-        print(f"  - Dimensions: {dict(ds.dims)}")
+        print(f"  - Dimensions: {ds.sizes}")
         print(f"  - Number of time layers: {num_layers}")
         print(f"  - Data variables: {list(ds.data_vars.keys())}")
 
