@@ -6,11 +6,16 @@ import numpy as np
 
 S3_PREFIX = 's3://'
 HTTP_PREFIX = 'https://'
+
+# Token within granule's HTTP URL that needs to be replaced to get file
+# location within S3 bucket using S3 URL:
+# from 'https://its-live-data.s3.amazonaws.com/file.nc'
+# to
+# 's3://its-live-data/file.nc'
 PATH_URL = ".s3.amazonaws.com"
-NC_ENGINE = 'h5netcdf'
 
+# Engine to read xarray data into from NetCDF filecompression
 NC_ENGINE = 'h5netcdf'
-
 
 @dataclass(frozen=True)
 class CoordsInfo:

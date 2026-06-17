@@ -85,33 +85,14 @@ class ITSCube:
     # used when creating S3FileSystem instance.
     MAX_AWS_CONNECTIONS = 32
 
-    # Number of chunks to backup in parallel if updating
-    # the datacube in S3 bucket
+    # Number of chunks to backup in parallel if updating existing datacube
+    # in aws S3 bucket
     NUM_CHUNKS_TO_BACKUP = 1000
 
     # String representation of longitude/latitude projection
     LON_LAT_PROJECTION = 'EPSG:4326'
 
-    S3_PREFIX = 's3://'
-    HTTP_PREFIX = 'https://'
-
     NO_AWS_SIGNING = False
-
-    # Token within granule's HTTP URL that needs to be replaced to get file
-    # location within S3 bucket using S3 URL:
-    # from 'https://its-live-data.s3.amazonaws.com/file.nc'
-    # to
-    # 's3://its-live-data/file.nc'
-    PATH_URL = utils.PATH_URL
-
-    # By default, it's set to the same value as in utils, but utils.PATH_URL
-    # can be set to a different value for some datacubes, so keep its own
-    # path URL for the shape files with ice masks to avoid confusion when
-    # utils.PATH_URL is set to a different value for some datacubes.
-    SHAPE_PATH_URL = utils.PATH_URL
-
-    # STAC catalog S3 URL for the ITS_LIVE granules
-    STAC_CATALOG = "s3://its-live-data/test-space/stac"
 
     # Start and end dates for the catalog search
     START_DATE = '1982-01-01'
@@ -125,9 +106,6 @@ class ITSCube:
 
     # Local path to the skipped granules info
     SKIPPED_GRANULES_FILE = ''
-
-    # Engine to read xarray data into from NetCDF filecompression
-    NC_ENGINE = 'h5netcdf'
 
     # Date format as it appears in granules filenames:
     # (LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc)
@@ -439,7 +417,8 @@ class ITSCube:
         urls, self.skipped_granules[SkippedGranules.duplicate] = \
             ITSCube.skip_duplicate_l89_granules(found_urls)
 
-        # Sort URLs by mid_date extracted from filename for chronological order
+        # Sort URLs by mid_date extracted from the filename in chronological
+        # order
         urls = sorted(urls, key=ITSCube.extract_mid_date_from_url)
 
         # DEBUG: pick only S1 granules to test
@@ -484,10 +463,11 @@ class ITSCube:
             return found_urls, skipped_double_granules
 
         else:
-            # Include non-Landsat89 granules into unique granules to return
-            # as they don't need to be searched for duplicates
+            # Leave non-Landsat89 granules to return as they don't need to
+            # be searched for duplicates
             granules = list(set(found_urls).difference(landsat89_granules))
-            logging.info(f'Number of non-Landsat89 granules: {len(granules)}')
+            logging.info(f'Number of non-Landsat89 granules={len(granules)}'
+                         f', Landsat89 granules={len(landsat89_granules)}')
 
         for each_url in tqdm(
             landsat89_granules, ascii=True,
@@ -586,24 +566,29 @@ class ITSCube:
         skipped_granules: dict
     ):
         """
-        * Exclude granules that are already added to the datacube, also
-        all skipped granules in existing datacube (empty data, wrong
-        projection, duplicate middle date) from found granules.
+        Exclude granules that are already added to the datacube, also
+        exclude all skipped granules in existing datacube that are recorded
+        in a separate json file (empty data, wrong projection, duplicate
+        middle date) from found granules.
 
-        * Identify if any of the skipped double mid_date granules from
-        "found_urls" are already existing layers in the datacube. Need to
-        mark such layers to be deleted from the datacube - this is disabled
-        for now as current v2 cubes have layers with duplicate "mid_date".
+        It used to identify if (based on the "mid_date"):
+        - current cube layers and remaining "found_urls" have duplicates
+        - any of the skipped duplicate granules from "found_urls" that are
+            already existing layers in the datacube
+        and would mark such layers to be deleted from the datacube.
+        We decided to skip this step as deletion of the existing cubes layers
+        could affect multiple chunks - this becomes too complicated if we are
+        updating existing datacube and bringing only the latest chunks from
+        the aws s3 bucket for the update.
 
-        * Identify if current cube layers and remaining found_urls have
-        duplicate mid_date - register these for deletion from the datacube
-        if they appear as datacube layers.
+        Inputs:
+        found_urls (list): List of granules to update datacube with.
+        cube_ds (xarray.Dataset): Existing datacube to update.
+        skipped_granules (dict): Dictionary of already excluded granules from
+                                the datacube.
 
-        Return:
-            found_urls (list): List of granules to update datacube with.
-            cube_ds (xarray.Dataset): Existing datacube to update.
-            skipped_granules (dict): Dictionary of already excluded datacube
-                                    layers.
+        Returns:
+
         """
         self.logger.info("Excluding known to datacube granules...")
         self.logger.info(
@@ -620,56 +605,30 @@ class ITSCube:
         # New granules to be added to the datacube
         granules = set(found_urls).difference(cube_granules)
 
+        # Exclude already excluded granules from the list of new granules
+
         # Check if any of the existing cube layers are not in found_urls
         # (this can happen if the cube is updated with different start/end dates),
-        # just report it
-        cube_in_found_urls = set(cube_granules).difference(found_urls)
-        self.logger.info(
-            f"Cube granules not in found_urls: ({len(cube_in_found_urls)})"
-        )
-
-        # Log an example of the cube layer that is not present in found_urls
-        if len(cube_in_found_urls):
+        # just report it in case catalog is missing some old granules from
+        # the previous run.
+        # TODO: might want to disable if we start quering only for the newest
+        # granules in the catalog added since the last datacube update
+        urls_not_in_found_urls = set(cube_granules).difference(found_urls)
+        if len(urls_not_in_found_urls):
             self.logger.info(
-                f"Cube layer not present in found_urls: {list(cube_in_found_urls)[0]}"
+                f"Cube granules not present in found_urls: "
+                f"({len(urls_not_in_found_urls)})"
             )
 
-        # Check if any of the cube granules not reported in the new found_urls
-        # are due to the skipped granules in the datacube because of
-        # duplicate mid_date.
-        cube_in_skipped_found_urls = set(cube_in_found_urls).difference(
-            self.skipped_granules[SkippedGranules.duplicate]
-        )
-        self.logger.info(
-            f"Cube granules not in found_urls and not skipped due to "
-            f"double mid_date: ({len(cube_in_skipped_found_urls)})"
-        )
-
-        # Log an example of the cube layer that is not present in found_urls
-        # and not skipped due to double mid_date
-        if len(cube_in_skipped_found_urls):
+            # Log an example of the cube layer that is not present in found_urls
             self.logger.info(
-                f"Example of the cube layer not present in found_urls: "
-                f"{list(cube_in_skipped_found_urls)[0]}"
+                f"Cube layer not present in found_urls: {list(urls_not_in_found_urls)[0]}"
             )
 
-        self.logger.info(
-            f"Exclude known cube granules ({len(cube_granules)}): "
-            f"{len(granules)} granules remain"
-        )
-
-        # Remove known empty granules from found_urls
-        self.skipped_granules[SkippedGranules.empty] = \
+        # Already excluded granules - per corresponding cube's json file
+        excluded_cube_urls = \
+            skipped_granules[SkippedGranules.duplicate] + \
             skipped_granules[SkippedGranules.empty]
-
-        granules = granules.difference(
-            self.skipped_granules[SkippedGranules.empty]
-        )
-        self.logger.info(
-            f"Exclude known empty data granules "
-            f"({len(self.skipped_granules[SkippedGranules.empty])}): "
-            f"{len(granules)} granules remain"
-        )
 
         # Remove known wrong projection granules (per projection) from
         # found_urls.
@@ -677,100 +636,40 @@ class ITSCube:
         # sure read back in values for the keys are of int type
         for each_key, each_value in skipped_granules[
                 SkippedGranules.projection].items():
+            # Set skipped granules for the cube object
             self.skipped_granules[SkippedGranules.projection][
                 int(each_key)
             ] = each_value
 
-        known_granules = []
-        for each in self.skipped_granules[SkippedGranules.projection].values():
-            known_granules.extend(each)
+            # Mark urls to be excluded from new granules
+            excluded_cube_urls.extend(each_value)
 
-        granules = granules.difference(known_granules)
-        self.logger.info(
-            f"Exclude known wrong projection granules "
-            f"({len(known_granules)}): {len(granules)} granules remain"
-        )
-
-        # Identify if there are any cube granules that now need to be skipped
-        # due to double middle date in "new" found_urls granules
-        # (self.skipped_granules[SkippedGranules.duplicate] is set by self.request_granules())
-        cube_layers_to_delete = list(
-            set(self.skipped_granules[SkippedGranules.duplicate])
-                .intersection(cube_granules))
-        self.logger.info(
-            f"{len(cube_layers_to_delete)} existing datacube layers to "
-            f"delete due to duplicate mid_date: {cube_layers_to_delete}"
-        )
-
-        # Remove known duplicate middle date granules from found_urls:
-        # if cube's skipped granules don't appear in found_urls.skipped_granules
-        # for whatever reason (different start/end dates are used for cube update)
-        # self.skipped_granules[SkippedGranules.duplicate] is populated by self.request_granules()
-        # with skipped granules due to double date in "found_urls"
-        cube_skipped_double_granules = skipped_granules[SkippedGranules.duplicate]
-        granules = granules.difference(cube_skipped_double_granules)
-        self.logger.info(
-            f"Removed known cube's duplicate middle date granules "
-            f"({len(cube_skipped_double_granules)}): {len(granules)} "
-            f"granules remain"
-        )
-
-        # Check if there are any granules between existing cube layers and found_urls
-        # that have duplicate middle date
-        cube_and_found_urls = cube_granules + list(granules)
-
-        _, skipped_landsat_granules = ITSCube.skip_duplicate_l89_granules(
-            cube_and_found_urls
-        )
-
-        # Check if any of the skipped granules are in the cube
-        cube_layers_to_delete.extend(
-            list(set(cube_granules).intersection(skipped_landsat_granules))
-        )
-        self.logger.info(
-            f"After (cube_granules+found_urls): total of "
-            f"{len(cube_layers_to_delete)} "
-            f"existing datacube layers to delete due to duplicate mid_date: "
-            f"{cube_layers_to_delete}"
-        )
-
-        # Make sure there is only unique granules in the list
-        cube_layers_to_delete_set = set(cube_layers_to_delete)
-        cube_layers_to_delete = list(cube_layers_to_delete_set)
-        self.logger.info(
-            f"After (cube_granules+found_urls): total of "
-            f"{len(cube_layers_to_delete)} unique existing datacube layers "
-            f"to delete due to duplicate mid_date: {cube_layers_to_delete}"
-        )
-
-        # ATTN: Disable deletion of any existing cube layers since current
-        # v2 cubes have layers with duplicate "mid_date":
-        # something to resolve in the future
-        if len(cube_layers_to_delete) != 0:
+        if len(excluded_cube_urls):
+            granules = granules.difference(excluded_cube_urls)
             self.logger.info(
-                "WARNING: Ignoring datacube layers to delete due to "
-                "duplicate mid_date (for now)..."
+                f'Excluded already skipped {len(excluded_cube_urls)} granules,'
+                f' ({len(granules)} remain)'
             )
-            cube_layers_to_delete = []
 
-        # Merge two lists of skipped granules (for existing cube, new list
-        # of granules from search API, and duplicate granules b/w cube and
-        # new granules)
-        cube_skipped_double_granules.extend(
-            self.skipped_granules[SkippedGranules.duplicate]
-        )
-        cube_skipped_double_granules.extend(skipped_landsat_granules)
+        # Set skipped granules for the cube object
+        self.skipped_granules[SkippedGranules.empty] = \
+            skipped_granules[SkippedGranules.empty]
+
+        # self.request_granules(), which is called before this method, already
+        # populates self.skipped_granules[SkippedGranules.duplicate], so need
+        # to append the new duplicates to the existing list
+        self.skipped_granules[SkippedGranules.duplicate] += \
+            skipped_granules[SkippedGranules.duplicate]
+
+        # Make sure it's a list of unique values
         self.skipped_granules[SkippedGranules.duplicate] = list(
-            set(cube_skipped_double_granules)
+            set(self.skipped_granules[SkippedGranules.duplicate])
         )
 
-        # Skim down found_urls by newly skipped granules
-        granules = list(granules.difference(
-            self.skipped_granules[SkippedGranules.duplicate]
-        ))
+        granules = list(granules)
         self.logger.info(f"Leaving {len(granules)} granules...")
 
-        return granules, cube_layers_to_delete
+        return granules
 
     @staticmethod
     def extract_mid_date_from_url(url: str):
@@ -1253,17 +1152,13 @@ class ITSCube:
 
         # Remove already processed granules (granules that are already in
         # the datacube and granules that are skipped due to empty data,
-        # wrong projection, duplicate mid_date) from the list of found
+        # wrong projection, duplicate mid_date) from the list of new
         # granules for the datacube update.
-        # ATTN: cube_layers_to_delete is set to empty list for now as cubes
-        # have uplicate mid_date layers which need to be resolved in the
-        # future (there are granules with identical middate in the datacube)
-        found_urls, cube_layers_to_delete = self.exclude_processed_granules(
+        found_urls = self.exclude_processed_granules(
             found_urls,
             cube_ds,
             skipped_granules
         )
-        num_cube_layers = len(cube_ds.mid_date.values)
 
         if len(found_urls) == 0:
             self.logger.info("No granules to update with, exiting.")
@@ -1341,73 +1236,7 @@ class ITSCube:
                 'to avoid data overwrite.'
             )
 
-        # Delete identified layers of the cube if any
         is_first_write = False
-
-        # For now this is disabled by setting cube_layers_to_delete to
-        # an empty list
-        if len(cube_layers_to_delete):
-            # For now we need to disable support for deletion of existing
-            # layers.
-            # The reason is that current datacubes have duplicate "mid_date"
-            # layers which need to be resolved in the future if we need to
-            # support deletion of existing layers.
-            raise RuntimeError(
-                'Deletion of existing datacube layers is not supported, exiting...'
-            )
-
-            self.logger.info(
-                f"Deleting {len(cube_layers_to_delete)} layers from "
-                f"total {num_cube_layers} layers of {output_dir}"
-            )
-
-            if len(cube_layers_to_delete) == num_cube_layers:
-                # If all layers need to be deleted, just delete the cube and
-                # start from the scratch
-                is_first_write = True
-                self.logger.info(f"Deleting existing {output_dir}")
-                shutil.rmtree(output_dir)
-
-            else:
-                # Delete identified layers
-                ds_from_zarr = xr.open_zarr(
-                    output_dir,
-                    decode_timedelta=False,
-                    consolidated=True
-                )
-
-                # Identify layer indices that correspond to granule urls
-                layers_bool_flag = ds_from_zarr[Vars.url].isin(cube_layers_to_delete)
-
-                # Drop the layers
-                # layers_mid_dates = ds_from_zarr[DataVars.MID_DATE].values[layers_bool_flag.values]
-                dropped_ds = ds_from_zarr.drop_isel(mid_date=layers_bool_flag.values)
-
-                tmp_output_dir = f"{output_dir}.original"
-                self.logger.info(f"Moving original {output_dir} to {tmp_output_dir}")
-                os.renames(output_dir, tmp_output_dir)
-
-                # Write updated datacube to original store location,
-                # but at first re-chunk xr.Dataset to avoid errors
-                dropped_ds = dropped_ds.chunk(
-                    {utils.Coords.MID_DATE: ITSCube.NUM_GRANULES_TO_WRITE}
-                )
-
-                self.logger.info(f"Saving updated {output_dir}")
-                # Should use already existing encoding attributes for the cube
-                dropped_ds.to_zarr(
-                    output_dir,
-                    # encoding=zarr_to_netcdf.ENCODING_ZARR,
-                    consolidated=True
-                )
-
-                self.logger.info(f"Removing original {tmp_output_dir}")
-                shutil.rmtree(tmp_output_dir)
-
-                ds_from_zarr = None
-                dropped_ds = None
-                gc.collect()
-
         start = 0
         num_to_process = len(found_urls)
 
@@ -3094,7 +2923,7 @@ class ITSCube:
 
         with s3.open(s3_path, mode='rb') as fhandle:
             with xr.open_dataset(
-                fhandle, engine=ITSCube.NC_ENGINE
+                fhandle, engine=utils.NC_ENGINE
             ) as ds:
                 return ITSCube.preprocess_dataset(ds, each_url)
 
@@ -3260,13 +3089,6 @@ if __name__ == '__main__':
         default=500,
         help='Number of Zarr chunks to backup in parallel when updating '
             'existing datacube residing in s3 bucket [%(default)d].'
-    )
-    parser.add_argument(
-        '-stacCatalog',
-        type=str,
-        default='s3://its-live-data/test-space/stac/geoparquet/h3r2',
-        help='ITS_LIVE granule STAC catalog to request granules from '
-            '[%(default)s].'
     )
     parser.add_argument(
         '-o', '--outputStore',
@@ -3438,7 +3260,6 @@ if __name__ == '__main__':
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
     utils.PATH_URL = args.pathURLToken
-    ITSCube.STAC_CATALOG = args.stacCatalog
     ITSCube.START_DATE = args.searchAPIStartDate
     ITSCube.END_DATE = args.searchAPIStopDate
     ITSCube.NO_AWS_SIGNING = args.noAWSSigning
@@ -3447,11 +3268,12 @@ if __name__ == '__main__':
     ITSCube.TIME_CHUNK_VALUE_1D = args.encodingTimeChunk * 10
 
     if args.useGranulesFile:
-        # Check for this option first as another mutually exclusive option has a default value
-        if ITSCube.S3_PREFIX in args.useGranulesFile:
+        # Check for this option first as another mutually exclusive option
+        # has a default value
+        if utils.S3_PREFIX in args.useGranulesFile:
             # File is in s3 bucket
             s3 = s3fs.S3FileSystem(anon=True)
-            granules_file = args.useGranulesFile.replace(ITSCube.S3_PREFIX, '')
+            granules_file = args.useGranulesFile.replace(utils.S3_PREFIX, '')
 
             with s3.open(granules_file, 'r') as ins3file:
                 ITSCube.USE_GRANULES = json.load(ins3file)
