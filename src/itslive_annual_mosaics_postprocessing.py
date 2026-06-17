@@ -30,7 +30,6 @@ import xarray as xr
 # Local imports
 from grid import Bounds, Grid
 
-from itscube import ITSCube
 from itscube_types import BatchVars
 from itslive_mosaics_types import CompositeVars
 from itslive_annual_mosaics import ITSLiveAnnualMosaics, MosaicsOutputFormat
@@ -80,7 +79,7 @@ class ITSLiveAnnualMosaicsPostProcess:
         logging.info(f'Found {len(self.mosaics_files)} mosaics files: {json.dumps(self.mosaics_files, indent=3)}')
 
         # Read shapefile
-        self.mask = ITSCube.read_shapefile(shape_file)
+        self.mask = shapefile.read_file(shape_file)
 
         if len(self.mask.geometry) == 0:
             raise RuntimeError(f'No geometry Polygons are provided in {shape_file} shapefile: {self.mask}')
@@ -100,7 +99,7 @@ class ITSLiveAnnualMosaicsPostProcess:
 
         # Load any mosaics file in and extract X/Y coordinates and EPSG code
         with self.s3.open(self.mosaics_files[0], mode='rb') as s3_file_obj:
-            with xr.open_dataset(s3_file_obj, engine=ITSCube.NC_ENGINE) as ds:
+            with xr.open_dataset(s3_file_obj, engine=utils.NC_ENGINE) as ds:
                 # Mosaic's EPSG
                 self.epsg = int(ds.mapping.attrs[ITSLiveAnnualMosaicsPostProcess.SPATIAL_EPSG_ATTR])
 
@@ -330,7 +329,7 @@ class ITSLiveAnnualMosaicsPostProcess:
         # Mask out all variables data based on created mask
         for each_file in self.mosaics_files:
             with self.s3.open(each_file, mode='rb') as s3_file_obj:
-                with xr.open_dataset(s3_file_obj, engine=ITSCube.NC_ENGINE, decode_timedelta=False) as ds:
+                with xr.open_dataset(s3_file_obj, engine=utils.NC_ENGINE, decode_timedelta=False) as ds:
                     logging.info(f'Masking values for {each_file}...')
                     basename_file = os.path.basename(each_file)
 
