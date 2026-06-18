@@ -74,10 +74,10 @@ class SensorExcludeFilter:
 
       Inputs:
       =======
-      acq_start_time:   Acquisition datetime (as decimal year) for the
+      acquisition_start_time: Acquisition datetime (as decimal year) for the
                         first image of each granule in spatial point's
                         timeseries.
-      acq_stop_time:    Acquisition datetime (as decimal year) for the
+      acquisition_stop_time: Acquisition datetime (as decimal year) for the
                         second image of each granule in spatial point's
                         timeseries.
       sensors_ids:      Sensor groups IDs for the spatial point's timeseries

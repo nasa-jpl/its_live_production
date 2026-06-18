@@ -967,7 +967,7 @@ class ITSCube:
                 consolidated=True
             )
             logging.info(
-                f'Dimensions for existing {cube_path}: {ds_from_zarr.dims}'
+                f'Dimensions for existing {cube_path}: {ds_from_zarr.sizes}'
             )
 
             if read_skipped_granules:
@@ -1096,7 +1096,7 @@ class ITSCube:
             )
 
         # Update with number of layers in existing datacube
-        self.current_cube_layers = cube_ds.dims[utils.Coords.MID_DATE]
+        self.current_cube_layers = cube_ds.sizes[utils.Coords.MID_DATE]
 
         self.date_updated = self.date_created
         self.date_created = cube_ds.attrs[CubeFormat.date_created]
@@ -1399,7 +1399,7 @@ class ITSCube:
         """
         if var_name in ds:
             _dims = [
-                d for d in ds[var_name].dims
+                d for d in ds[var_name].sizes
                 if d != utils.Coords.TIME
             ]
 
@@ -1658,7 +1658,7 @@ class ITSCube:
         # Nisar workaround:
         # *_P000.nc don't have time dimension, skip those granules as we
         # won't be able to assign unique mid_date to them
-        if utils.Coords.TIME not in ds.dims:
+        if utils.Coords.TIME not in ds.sizes:
             msgs.append(
                 f'{ds_url=} does not have "time" dimension, skipping...'
             )

@@ -3492,10 +3492,11 @@ if __name__ == '__main__':
         help="Intercept date used for weighted linear fit [%(default)s]."
     )
     parser.add_argument(
-        '--disableErrorSlowUse',
-        action='store_false',
-        help="Disable use of valid v[xy]_error_slow instead of v[xy]_error "
-            "values [False]."
+        '--useErrorSlow',
+        action='store_true',
+        # default=False,
+        help="Enable use of valid v[xy]_error_slow instead of v[xy]_error "
+            "values [False] (should be used for Greenland and Antarctica only) [%(default)s]"
     )
 
     args = parser.parse_args()
@@ -3531,7 +3532,7 @@ if __name__ == '__main__':
 
     # Set static data for computation
     ITSLiveComposite.NUM_TO_PROCESS = args.chunkSize
-    ITSLiveComposite.USE_ERROR_SLOW = args.disableErrorSlowUse
+    ITSLiveComposite.USE_ERROR_SLOW = args.useErrorSlow
     logging.info(f'Use error_slow: {ITSLiveComposite.USE_ERROR_SLOW}')
 
     if ITSLiveComposite.USE_ERROR_SLOW:
@@ -3569,8 +3570,8 @@ if __name__ == '__main__':
                                                     utils.PATH_URL).geturl()
         logging.info(f'Composite URL: {ITSLiveComposite.URL}')
 
-    mosaics = ITSLiveComposite(args.inputCube, args.inputBucket)
-    mosaics.create(args.outputStore)
+    composites = ITSLiveComposite(args.inputCube, args.inputBucket)
+    composites.create(args.outputStore)
 
     if os.path.exists(args.outputStore):
         output_size = subprocess.run(
