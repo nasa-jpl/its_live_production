@@ -17,7 +17,6 @@ expected_extensions = [
 all_extensions = expected_extensions + [ '.nc' ]
 
 
-
 # Extract base key by removing known extensions
 def get_base_key(key):
     for ext in all_extensions:
