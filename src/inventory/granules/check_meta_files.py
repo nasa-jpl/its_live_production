@@ -125,10 +125,8 @@ def get_date_updated_from_nc(bucket, nc_key):
 
 def check_meta_files_for_nc(bucket, nc_key):
     """
-    Check existence of meta files for a given .nc file and extract
-    date_updated attribute.
-    Returns dict with nc_key, date_updated, and existence status
-    for each meta file.
+    Check existence of meta files for a given .nc file.
+    Returns dict with nc_key and existence status for each meta file.
 
     Creates its own S3 client for thread safety.
     """
@@ -140,8 +138,9 @@ def check_meta_files_for_nc(bucket, nc_key):
 
     result = {'nc_key': nc_key}
 
-    # Extract date_updated from .nc file
-    result['date_updated'] = get_date_updated_from_nc(bucket, nc_key)
+    # TODO: Extract date_updated from .nc file (disabled for performance)
+    # result['date_updated'] = get_date_updated_from_nc(bucket, nc_key)
+    result['date_updated'] = None
 
     for ext in META_EXTENSIONS:
         meta_key = base_key + ext
@@ -206,13 +205,14 @@ def main():
     results_df = pd.DataFrame(results)
 
     # Convert date_updated to datetime for comparison
+    # (Currently disabled - all dates are None)
     logger.info('Processing date_updated and cutoff comparison')
     results_df['date_updated_dt'] = pd.to_datetime(
         results_df['date_updated'], errors='coerce'
     )
     cutoff_date = pd.Timestamp(args.cutoff_date)
 
-    # Add pre-cutoff indicator
+    # Add pre-cutoff indicator (will be None/False since date extraction disabled)
     results_df['is_pre_cutoff'] = (
         results_df['date_updated_dt'] < cutoff_date
     )
