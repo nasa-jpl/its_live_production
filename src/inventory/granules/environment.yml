@@ -1,0 +1,14 @@
+name: s3-inventory
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - boto3
+  - pandas
+  - tqdm
+  - pyarrow  # Required for parquet file handling
+  - joblib  # Required for parallel processing
+  - xarray  # Required for reading netCDF files
+  - h5netcdf  # netCDF engine for xarray
+  - s3fs  # Required for reading from S3
