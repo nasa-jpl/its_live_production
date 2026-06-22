@@ -161,6 +161,12 @@ def main():
     )
     logger = logging.getLogger(__name__)
 
+    # Suppress verbose s3fs/fsspec logging
+    logging.getLogger('s3fs').setLevel(logging.WARNING)
+    logging.getLogger('fsspec').setLevel(logging.WARNING)
+    logging.getLogger('botocore').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+
     args = parse_args()
 
     # Read the incomplete parquet file
