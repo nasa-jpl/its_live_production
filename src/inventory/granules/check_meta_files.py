@@ -22,10 +22,9 @@ import logging
 import pandas as pd
 import boto3
 from botocore.exceptions import ClientError
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from joblib import Parallel, delayed
 from tqdm import tqdm
 import xarray as xr
-import s3fs
 
 
 # Meta file extensions to check
@@ -124,13 +123,18 @@ def get_date_updated_from_nc(bucket, nc_key):
         return None
 
 
-def check_meta_files_for_nc(s3_client, bucket, nc_key):
+def check_meta_files_for_nc(bucket, nc_key):
     """
     Check existence of meta files for a given .nc file and extract
     date_updated attribute.
     Returns dict with nc_key, date_updated, and existence status
     for each meta file.
+
+    Creates its own S3 client for thread safety.
     """
+    # Create S3 client for this thread
+    s3_client = boto3.client('s3')
+
     # Remove .nc extension to get base key
     base_key = nc_key[:-3]
 
@@ -182,47 +186,14 @@ def main():
     nc_keys = df['nc_key'].tolist()
     logger.info(f'Checking meta files for {len(nc_keys)} .nc files')
 
-    # Initialize boto3 session with default credentials
-    logger.info('Initializing AWS session with default credentials')
-    session = boto3.Session()
-
-    # Initialize s3fs client for reading netCDF files
-    s3fs_client = s3fs.S3FileSystem(anon=False)
-
-    # Process files in parallel
-    results = []
+    # Process files in parallel using joblib
     logger.info(
         f'Starting parallel processing with {args.workers} workers'
     )
-
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        # Create S3 client per thread (boto3 clients are not thread-safe)
-        futures = {}
-        for nc_key in nc_keys:
-            # Create client inside thread
-            future = executor.submit(
-                check_meta_files_for_nc,
-                session.client('s3'),
-                s3fs_client,
-                args.bucket,
-                nc_key
-            )
-            futures[future] = nc_key
-
-        # Process results with progress bar
-        with tqdm(
-            total=len(futures), desc='Checking S3 files'
-        ) as pbar:
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as e:
-                    nc_key = futures[future]
-                    logger.error(
-                        f'Error processing {nc_key}: {e}'
-                    )
-                pbar.update(1)
+    results = Parallel(n_jobs=args.workers, backend='threading')(
+        delayed(check_meta_files_for_nc)(args.bucket, nc_key)
+        for nc_key in tqdm(nc_keys, desc='Checking S3 files')
+    )
 
     # Convert results to DataFrame
     logger.info('Creating results DataFrame')
