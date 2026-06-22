@@ -11,4 +11,4 @@ dependencies:
   - joblib  # Required for parallel processing
   - xarray  # Required for reading netCDF files
   - h5netcdf  # netCDF engine for xarray
-  - s3fs  # Required for reading from S3
+  - s3fs>=2023.1.0  # Required for reading from S3, version bound for performance
