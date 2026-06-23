@@ -2,11 +2,16 @@
 Move .nc files and their associated meta files (.nc.premet, .nc.spatial,
 .stac.json) from the incomplete parquet report to a new S3 location.
 
-Based on check_meta_files.py but performs moves instead of just checking.
+This tool moves .nc files and their associated meta files from an incomplete
+parquet report to a new S3 location. The report identified original NetCDF files
+that are missing their png associated files. The reason is that some of the
+old S1 granules were cropped and thus had newer modification date than their
+png associated files which were not modified.
 """
 
 import argparse
 import logging
+import threading
 import pandas as pd
 import boto3
 from botocore.exceptions import ClientError
@@ -118,19 +123,47 @@ _SESSION = boto3.session.Session(
     region_name='us-west-2',
 )
 
-def file_exists_in_s3(bucket, key):
+# Thread-local storage for S3 clients
+_thread_local = threading.local()
+
+
+def get_s3_client():
     """
-    Check if a file exists in S3.
-    Returns True if exists, False otherwise.
+    Get or create a thread-local S3 client with connection pooling.
+    Each thread reuses its client across multiple calls.
     """
-    s3_client = _SESSION.client('s3')
-    try:
-        s3_client.head_object(Bucket=bucket, Key=key)
-        return True
-    except ClientError as e:
-        if e.response['Error']['Code'] == '404':
-            return False
-        raise
+    if not hasattr(_thread_local, 's3_client'):
+        _thread_local.s3_client = _SESSION.client(
+            's3',
+            config=boto3.session.Config(
+                max_pool_connections=50  # Allow more concurrent connections per client
+            )
+        )
+    return _thread_local.s3_client
+
+
+def get_existing_destination_keys(bucket, prefix, logger=None):
+    """
+    Pre-fetch all existing destination keys using list_objects_v2.
+    This is much faster than individual head_object calls.
+    Returns a set of all keys under the prefix.
+    """
+    s3_client = get_s3_client()
+    existing_keys = set()
+    paginator = s3_client.get_paginator('list_objects_v2')
+
+    page_count = 0
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        if 'Contents' in page:
+            existing_keys.update(obj['Key'] for obj in page['Contents'])
+            page_count += 1
+            if logger and page_count % 100 == 0:
+                logger.info(f'  Scanned {page_count} pages, {len(existing_keys)} keys so far')
+
+    if logger:
+        logger.info(f'  Total pages scanned: {page_count}')
+
+    return existing_keys
 
 
 def move_file(
@@ -138,7 +171,7 @@ def move_file(
     copy_only=False, dry_run=False
 ):
     """
-    Move or copy a single file in S3.
+    Move or copy a single file in S3 using thread-local client.
     Returns dict with success status and details.
     """
     if dry_run:
@@ -151,8 +184,8 @@ def move_file(
             'dry_run': True
         }
 
-    # Create S3 client for this thread
-    s3_client = _SESSION.client('s3')
+    # Reuse thread-local S3 client
+    s3_client = get_s3_client()
 
     try:
         # Copy the file
@@ -187,10 +220,15 @@ def move_file(
 
 def process_nc_and_meta_files(
     source_bucket, nc_key, dest_bucket, dest_prefix, split_on, existing_keys,
-    copy_only=False, dry_run=False
+    existing_dest_keys, copy_only=False, dry_run=False
 ):
     """
     Move .nc file and all its associated meta files.
+
+    Args:
+        existing_keys: Set of source keys that exist
+        existing_dest_keys: Set of destination keys that already exist (pre-fetched)
+
     Returns dict with overall status and individual file results.
     """
     # Split on specified string to get relative path
@@ -225,12 +263,12 @@ def process_nc_and_meta_files(
             dest_key = f'{dest_prefix_clean}/{base_relative_path}{ext}'
             files_to_move.append((source_key, dest_key))
 
-    # Check which files already exist at destination and filter them out
+    # Check which files already exist at destination using fast set lookup
     files_to_actually_move = []
     files_skipped = 0
 
     for source_key, dest_key in files_to_move:
-        if not dry_run and file_exists_in_s3(dest_bucket, dest_key):
+        if not dry_run and dest_key in existing_dest_keys:  # O(1) set lookup!
             files_skipped += 1
         else:
             files_to_actually_move.append((source_key, dest_key))
@@ -351,8 +389,17 @@ def main():
     if args.dry_run:
         logger.info('\n*** DRY RUN MODE - No files will be modified ***\n')
 
+    # Pre-fetch existing destination keys ONCE (major optimization)
+    logger.info(f'\nPre-fetching existing keys at destination: {args.destination_prefix}')
+    existing_dest_keys = get_existing_destination_keys(
+        dest_bucket,
+        args.destination_prefix,
+        logger
+    )
+    logger.info(f'Found {len(existing_dest_keys)} existing files at destination\n')
+
     action = 'Copying' if args.copy_only else 'Moving'
-    logger.info(f'\n{action} files...\n')
+    logger.info(f'{action} files...\n')
 
     # Process files in parallel using joblib
     results = Parallel(n_jobs=args.workers, backend='threading')(
@@ -363,6 +410,7 @@ def main():
             args.destination_prefix,
             args.split_on,
             existing_keys,
+            existing_dest_keys,  # Pass pre-fetched destination keys
             copy_only=args.copy_only,
             dry_run=args.dry_run
         )
