@@ -118,6 +118,21 @@ _SESSION = boto3.session.Session(
     region_name='us-west-2',
 )
 
+def file_exists_in_s3(bucket, key):
+    """
+    Check if a file exists in S3.
+    Returns True if exists, False otherwise.
+    """
+    s3_client = _SESSION.client('s3')
+    try:
+        s3_client.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            return False
+        raise
+
+
 def move_file(
     source_bucket, source_key, dest_bucket, dest_key,
     copy_only=False, dry_run=False
@@ -210,9 +225,30 @@ def process_nc_and_meta_files(
             dest_key = f'{dest_prefix_clean}/{base_relative_path}{ext}'
             files_to_move.append((source_key, dest_key))
 
-    # Move all files
-    results = []
+    # Check which files already exist at destination and filter them out
+    files_to_actually_move = []
+    files_skipped = 0
+
     for source_key, dest_key in files_to_move:
+        if not dry_run and file_exists_in_s3(dest_bucket, dest_key):
+            files_skipped += 1
+        else:
+            files_to_actually_move.append((source_key, dest_key))
+
+    # If all files already exist, return early
+    if files_skipped == len(files_to_move):
+        return {
+            'success': True,
+            'nc_key': nc_key,
+            'files_moved': 0,
+            'files_skipped': files_skipped,
+            'total_files': len(files_to_move),
+            'all_skipped': True
+        }
+
+    # Move only files that don't already exist
+    results = []
+    for source_key, dest_key in files_to_actually_move:
         result = move_file(
             source_bucket, source_key, dest_bucket, dest_key,
             copy_only=copy_only, dry_run=dry_run
@@ -227,7 +263,9 @@ def process_nc_and_meta_files(
         'success': all_success,
         'nc_key': nc_key,
         'files_moved': files_moved,
+        'files_skipped': files_skipped,
         'total_files': len(files_to_move),
+        'all_skipped': False,
         'file_results': results
     }
 
@@ -268,7 +306,7 @@ def main():
     )
     df = df[is_target_mission]
     logger.info(f'Rows after filtering: {len(df)}')
-    existing_keys = df['key'].astype(str).tolist()
+    existing_keys = set(df['key'].astype(str))
 
     # Read the incomplete parquet file
     logger.info(f'Reading incomplete file: {args.incomplete_file}')
@@ -342,7 +380,9 @@ def main():
     # Analyze results
     success_count = sum(1 for r in results if r['success'])
     failure_count = sum(1 for r in results if not r['success'])
+    all_skipped_count = sum(1 for r in results if r.get('all_skipped', False))
     total_files_moved = sum(r['files_moved'] for r in results)
+    total_files_skipped = sum(r.get('files_skipped', 0) for r in results)
 
     # Print failures
     failures = [r for r in results if not r['success']]
@@ -360,8 +400,10 @@ def main():
     logger.info('\n=== Summary ===')
     logger.info(f'Total .nc file groups: {len(results)}')
     logger.info(f'Successful groups: {success_count}')
+    logger.info(f'Groups with all files skipped: {all_skipped_count}')
     logger.info(f'Failed groups: {failure_count}')
     logger.info(f'Total individual files moved: {total_files_moved}')
+    logger.info(f'Total individual files skipped: {total_files_skipped}')
     logger.info(
         f'Expected total files: '
         f'{len(nc_keys) * (1 + len(META_EXTENSIONS))}'
