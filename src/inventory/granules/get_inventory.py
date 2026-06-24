@@ -16,6 +16,15 @@ def parse_args():
         )
     )
     parser.add_argument(
+        '--manifest-date',
+        type=str,
+        default='2026-06-10T01-00Z',
+        help=(
+            'Manifest date in YYYY-MM-DDTHH-MMZ format. '
+            'Default: 2026-06-10T01-00Z'
+        )
+    )
+    parser.add_argument(
         '--mission',
         type=str,
         default=None,
@@ -43,20 +52,20 @@ _SESSION = boto3.session.Session(
     region_name='us-west-2',
 )
 
-MANIFEST_DATE = '2026-06-10T01-00Z'
-MANIFEST_INFO = {
-    'Bucket': 'pds-buckets-its-live-logbucket-70tr3aw5f2op',
-    'Key': (
-        f'inventory/velocity_image_pair/its-live-data/'
-        f'VelocityGranuleInventory/{MANIFEST_DATE}/manifest.json'
-    ),
-}
-
 
 def main():
     args = parse_args()
 
-    output_file = f'velocity_manifest_{MANIFEST_DATE}.parquet'
+    manifest_date = args.manifest_date
+    manifest_info = {
+        'Bucket': 'pds-buckets-its-live-logbucket-70tr3aw5f2op',
+        'Key': (
+            f'inventory/velocity_image_pair/its-live-data/'
+            f'VelocityGranuleInventory/{manifest_date}/manifest.json'
+        ),
+    }
+
+    output_file = f'velocity_manifest_{manifest_date}.parquet'
 
     # Check if consolidated parquet file exists from previous run
     if Path(output_file).exists():
@@ -67,7 +76,7 @@ def main():
         print(f'Downloading and processing inventory files...')
         s3_client = _SESSION.client('s3')
 
-        response = s3_client.get_object(**MANIFEST_INFO)
+        response = s3_client.get_object(**manifest_info)
         manifest = json.loads(response['Body'].read().decode('utf-8'))
 
         to_concat = []
@@ -76,7 +85,7 @@ def main():
                 manifest_part = f'{tmpdir}/{Path(ff["key"]).name}'
 
                 s3_client.download_file(
-                    Bucket=MANIFEST_INFO['Bucket'],
+                    Bucket=manifest_info['Bucket'],
                     Key=ff['key'],
                     Filename=manifest_part,
                 )
@@ -131,7 +140,7 @@ def main():
 
         # Save granules to remove to a separate Parquet file
         before_cutoff_file = (
-            f'velocity_manifest_{MANIFEST_DATE}_{args.mission}_'
+            f'velocity_manifest_{manifest_date}_{args.mission}_'
             f'before_cutoff_{cutoff_date.date()}.parquet'
         )
         before_cutoff_df.to_parquet(before_cutoff_file)
