@@ -62,7 +62,7 @@ def parse_args():
     parser.add_argument(
         '--replace-prefix',
         type=str,
-        default='velocity_image_pair/landsatOLI/',
+        default='velocity_image_pair/sentinel1/',
         help=(
             'Replacement prefix for exclude manifest keys. '
             'Only used when --exclude_manifest is provided [%(default)s]'
@@ -71,7 +71,7 @@ def parse_args():
     parser.add_argument(
         '--cutoff-date',
         type=str,
-        default='2025-11-01',
+        default='',
         help=(
             'Cutoff date in YYYY-MM-DD format. '
             'Files before this date will be excluded. '
@@ -81,14 +81,14 @@ def parse_args():
     parser.add_argument(
         '--output',
         type=str,
-        required=True,
+        default='completeness_report.parquet',
         help=('Output file to save completeness report to.')
     )
 
     args = parser.parse_args()
 
     # Validate: cutoff-date requires mission
-    if not args.mission and args.cutoff_date != '2025-11-01':
+    if not args.mission and args.cutoff_date:
         parser.error('--cutoff-date can only be used with --mission')
 
     return args
