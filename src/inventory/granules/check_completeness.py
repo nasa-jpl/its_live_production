@@ -37,11 +37,36 @@ def parse_args():
         type=str,
         help='Path to the velocity manifest parquet file',
     )
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         '--mission',
         type=str,
-        default='sentinel1',
+        default='',
         help='Mission to filter out that fall before the cutoff-date [%(default)s]',
+    )
+    group.add_argument(
+        '--exclude_manifest',
+        type=str,
+        default='',
+        help='Manifest file containing granules to exclude.'
+    )
+    parser.add_argument(
+        '--exclude-prefix',
+        type=str,
+        default='test-space/velocity_image_pair/sentinel1/pre11012025/manifest-2026-06-10/',
+        help=(
+            'Prefix in exclude manifest keys to replace. '
+            'Only used when --exclude_manifest is provided [%(default)s]'
+        ),
+    )
+    parser.add_argument(
+        '--replace-prefix',
+        type=str,
+        default='velocity_image_pair/landsatOLI/',
+        help=(
+            'Replacement prefix for exclude manifest keys. '
+            'Only used when --exclude_manifest is provided [%(default)s]'
+        ),
     )
     parser.add_argument(
         '--cutoff-date',
@@ -49,7 +74,8 @@ def parse_args():
         default='2025-11-01',
         help=(
             'Cutoff date in YYYY-MM-DD format. '
-            'Files before this date will be excluded [%(default)s]'
+            'Files before this date will be excluded. '
+            'Only used when --mission is provided [%(default)s]'
         ),
     )
     parser.add_argument(
@@ -58,7 +84,14 @@ def parse_args():
         required=True,
         help=('Output file to save completeness report to.')
     )
-    return parser.parse_args()
+
+    args = parser.parse_args()
+
+    # Validate: cutoff-date requires mission
+    if not args.mission and args.cutoff_date != '2025-11-01':
+        parser.error('--cutoff-date can only be used with --mission')
+
+    return args
 
 
 def main():
@@ -84,27 +117,63 @@ def main():
     # Use categorical dtype for mission to reduce memory usage
     df['mission'] = df['mission'].astype('category')
 
-    # Convert last_modified_date to datetime
-    df['last_modified_date'] = pd.to_datetime(df['last_modified_date'])
-    cutoff_date = pd.Timestamp(args.cutoff_date, tz='UTC')
+    if len(args.mission) > 0:
+        # Exclude specified mission's files before the cutoff date
+        df = df[df['mission'] == args.mission]
+        # Convert last_modified_date to datetime
+        df['last_modified_date'] = pd.to_datetime(df['last_modified_date'])
+        cutoff_date = pd.Timestamp(args.cutoff_date, tz='UTC')
 
-    # Exclude only the specified mission's pre-cutoff files
-    # Keep: 1) all other missions (any date)
-    #       2) specified mission post-cutoff files
-    logger.info(
-        f'Excluding {args.mission} files before {cutoff_date}, '
-        f'keeping all other missions and {args.mission} post-cutoff'
-    )
-    is_target_mission = df['mission'] == args.mission
-    is_before_cutoff = df['last_modified_date'] < cutoff_date
-    exclude_mask = is_target_mission & is_before_cutoff
+        # Exclude only the specified mission's pre-cutoff files
+        # Keep: 1) all other missions (any date)
+        #       2) specified mission post-cutoff files
+        logger.info(
+            f'Excluding {args.mission} files before {cutoff_date}, '
+            f'keeping all other missions and {args.mission} post-cutoff'
+        )
+        is_target_mission = df['mission'] == args.mission
+        is_before_cutoff = df['last_modified_date'] < cutoff_date
+        exclude_mask = is_target_mission & is_before_cutoff
 
-    logger.info(
-        f'Excluding {exclude_mask.sum()} {args.mission} '
-        f'files before cutoff'
-    )
-    df = df[~exclude_mask]
-    logger.info(f'Rows after filtering: {len(df)}')
+        logger.info(
+            f'Excluding {exclude_mask.sum()} {args.mission} '
+            f'files before cutoff'
+        )
+        df = df[~exclude_mask]
+        logger.info(f'Rows after filtering: {len(df)}')
+
+    if len(args.exclude_manifest) > 0:
+        # Exclude granules listed in the exclude manifest
+        logger.info(f'Reading exclude manifest: {args.exclude_manifest}')
+        exclude_df = pd.read_parquet(
+            args.exclude_manifest,
+            columns=['key']
+        )
+        logger.info(f'Exclude manifest contains {len(exclude_df)} keys')
+
+        # Replace prefix in exclude keys to match manifest keys
+        if args.exclude_prefix and args.replace_prefix:
+            logger.info(
+                f'Transforming exclude keys: replacing '
+                f'"{args.exclude_prefix}" with "{args.replace_prefix}"'
+            )
+            exclude_df['key'] = exclude_df['key'].str.replace(
+                args.exclude_prefix,
+                args.replace_prefix,
+                regex=False
+            )
+
+        # Create set of keys to exclude for O(1) lookup
+        exclude_keys = set(exclude_df['key'].values)
+        logger.info(f'Excluding {len(exclude_keys)} unique keys from manifest')
+
+        # Filter out excluded keys
+        before_count = len(df)
+        df = df[~df['key'].isin(exclude_keys)]
+        excluded_count = before_count - len(df)
+
+        logger.info(f'Excluded {excluded_count} keys from manifest')
+        logger.info(f'Rows after exclusion: {len(df)}')
 
     # Identify all .nc files in remaining data
     nc_files = df[df['key'].str.endswith('.nc')].copy()
