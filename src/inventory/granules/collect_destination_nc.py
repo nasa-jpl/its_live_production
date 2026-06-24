@@ -13,16 +13,6 @@ import boto3
 from tqdm import tqdm
 
 
-# Meta file extensions to check (in addition to .nc file)
-META_EXTENSIONS = [
-    '.nc.premet',
-    '.nc.spatial',
-    '.stac.json',
-    '_thumb.png',
-    '.png',
-]
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
@@ -143,7 +133,6 @@ def main():
     logger.info(f'\nSaving all keys to: {args.output}')
     df.to_parquet(args.output, index=False)
 
-    # Parse metadata from keys
     # Filter for .nc files
     nc_files = df[df['key'].str.endswith('.nc')].copy()
     logger.info(f'Found {len(nc_files)} .nc files')
