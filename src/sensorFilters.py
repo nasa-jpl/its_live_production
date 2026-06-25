@@ -146,16 +146,41 @@ class SensorExcludeFilter:
          )
 
    @staticmethod
-   def map_sensor_to_group(all_sensors: list):
+   def map_sensor_to_group(all_sensors: list, all_missions: list):
       """
       Map each of the granule's first sensor to the mission group it belongs to.
 
+      Uses composite (mission, sensor) key for unique identification to handle
+      cases where multiple missions use the same sensor IDs (e.g., Sentinel '1'/'2'
+      vs NISAR '1'/'2').
+
       Inputs:
       =======
-      all_sensors: Sensor for the first image in all granules of the cube.
+      all_sensors: Sensor ID for the first image in all granules of the cube
+                   (from satellite_img1 field).
+      all_missions: Mission ID (single letter) for the first image in all granules
+                    (from mission_img1 field). 'L'=Landsat, 'S'=Sentinel, 'N'=NISAR.
+
+      Returns:
+      ========
+      Array of mission group IDs corresponding to each granule.
+
+      Raises:
+      =======
+      ValueError: If all_sensors and all_missions have different lengths.
       """
-      # Map each sensor to its mission group ID
-      return np.array([sensors.GROUPS[x] for x in all_sensors])
+      # Validate that both lists have the same length
+      if len(all_sensors) != len(all_missions):
+         raise ValueError(
+            f'all_sensors and all_missions must have the same length. '
+            f'Got {len(all_sensors)} sensors and {len(all_missions)} missions.'
+         )
+
+      # Map each (mission, sensor) pair to its mission group ID
+      return np.array([
+         sensors.GROUPS[(mission, sensor)]
+         for mission, sensor in zip(all_missions, all_sensors)
+      ])
 
    @staticmethod
    def identify_sensor_groups(sensors_ids: list):
@@ -416,8 +441,12 @@ class StableShiftFilter:
       ds: xarray.Dataset containing the datacube.
       """
       cube_sensors = ds[ImgPairInfo.satellite_img1].values
+      cube_missions = ds[ImgPairInfo.mission_img1].values
 
-      sensor_list = SensorExcludeFilter.map_sensor_to_group(cube_sensors)
+      sensor_list = SensorExcludeFilter.map_sensor_to_group(
+         cube_sensors,
+         cube_missions
+      )
       logging.info(f'Total number of sensors in the cube: {sensor_list.size}')
 
       # Mask of granules that need their vx and vy readjusted by
@@ -674,6 +703,9 @@ def get_cube_data(cube_ds: xr.Dataset, stable_shift_filter: StableShiftFilter):
    sensors_ids = SensorExcludeFilter.map_sensor_to_group(
       stable_shift_filter.exclude(
          cube_ds[ImgPairInfo.satellite_img1].values
+      ),
+      stable_shift_filter.exclude(
+         cube_ds[ImgPairInfo.mission_img1].values
       )
    )
    # Identify sensors groups (L89, S1, S2, etc.) within datacube.

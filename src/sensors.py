@@ -21,25 +21,31 @@ class SensorGroup:
    # and processing (faster to compare int values than strings).
    id: int
 
+   # Mission identifier (single letter as in datacube mission_img1 field)
+   # 'L' for Landsat, 'S' for Sentinel, 'N' for NISAR
+   mission: str
+
 
 # If datacube contains only numeric sensor values (Landsat8 or Landsat9),
 # sensor values are of type float, otherwise sensor values are of string
 # type. Need to support both.
 LANDSAT45 = SensorGroup(['4.', '5.', '4.0', '5.0', 4.0, 5.0, '4', '5'],
-                        'L4_L5', 4)
+                        'L4_L5', 4, 'L')
 
-LANDSAT7 = SensorGroup(['7.', '7.0', 7.0, '7'], 'L7', 7)
+LANDSAT7 = SensorGroup(['7.', '7.0', 7.0, '7'], 'L7', 7, 'L')
 
 LANDSAT89 = SensorGroup(['8.', '9.', '8.0', '9.0', 8.0, 9.0, '8', '9'],
-                        'L8_L9', 8)
+                        'L8_L9', 8, 'L')
 
 # ATTN: '1' and '2' are added as a workaround for the stripped
 # satellite_img[12] values when Zarr writes first chunk of the datacube
 # with less than 2 characters per sensor values
-SENTINEL1 = SensorGroup(['1A', '1B', '1C', '1D', '1'], 'S1', 11)
-SENTINEL2 = SensorGroup(['2A', '2B', '2C', '2D', '2'], 'S2', 21)
+SENTINEL1 = SensorGroup(['1A', '1B', '1C', '1D', '1'], 'S1', 11, 'S')
+SENTINEL2 = SensorGroup(['2A', '2B', '2C', '2D', '2'], 'S2', 21, 'S')
 
-NISAR = SensorGroup(['A'], 'NISAR', 31)
+# NISAR uses sensor IDs '1' and '2' which overlap with Sentinel '1' and '2'
+# Composite (mission, sensor) keys resolve this conflict
+NISAR = SensorGroup(['1', '2', 1, 2, 1.0, 2.0], 'NISAR', 31, 'N')
 
 # TODO: update with new missions groups as they become available
 # to be included into datacubes
@@ -55,39 +61,34 @@ ALL_GROUPS = {
 
 def _groups():
    """
-   Return mapping of sensor to its corresponding sensor group ID.
+   Return mapping of (mission, sensor) tuple to corresponding sensor group ID.
 
-   This method builds mapping of the individual sensor to the group ID
-   it belongs to:
+   This method builds mapping using composite keys to handle cases where
+   multiple missions use the same sensor IDs. Mission IDs are single letters
+   as stored in datacube mission_img1 field.
+
+   Returns dictionary with (mission_id, sensor_id) tuple keys:
       {
-         '4.':  4,
-         '5.':  4,
-         4.0:   4,
-         5.0:   4,
-         '4.0': 4,
-         '5.0': 4,
-         '7.':  7,
-         '7.0': 7,
-         7.0:   7,
-         '8.':  8,
-         '9.':  8,
-         8.0:   8,
-         9.0:   8,
-         '8.0': 8,
-         '9.0': 8,
-         '1':   11,
-         '1A':  11,
-         '1B':  11,
-         '2':   21,
-         '2A':  21,
-         '2B':  21
+         ('L', '4.'):  4,   ('L', '4.0'): 4,   ('L', '4'): 4,   ('L', 4.0): 4,
+         ('L', '5.'):  4,   ('L', '5.0'): 4,   ('L', '5'): 4,   ('L', 5.0): 4,
+         ('L', '7.'):  7,   ('L', '7.0'): 7,   ('L', '7'): 7,   ('L', 7.0): 7,
+         ('L', '8.'):  8,   ('L', '8.0'): 8,   ('L', '8'): 8,   ('L', 8.0): 8,
+         ('L', '9.'):  8,   ('L', '9.0'): 8,   ('L', '9'): 8,   ('L', 9.0): 8,
+         ('S', '1A'): 11,   ('S', '1B'): 11,   ('S', '1C'): 11, ('S', '1'): 11,
+         ('S', '2A'): 21,   ('S', '2B'): 21,   ('S', '2C'): 21, ('S', '2'): 21,
+         ('N', '1'):  31,   ('N', '2'):  31,
+         ...
       }
+
+   Note: Composite keys resolve sensor ID conflicts between missions:
+   - ('S', '1') → 11 (Sentinel-1) vs ('N', '1') → 31 (NISAR)
+   - ('S', '2') → 21 (Sentinel-2) vs ('N', '2') → 31 (NISAR)
    """
    all_sensors = {}
 
    for each_group in ALL_GROUPS.values():
       for each_sensor in each_group.sensors:
-         all_sensors[each_sensor] = each_group.id
+         all_sensors[(each_group.mission, each_sensor)] = each_group.id
 
    return all_sensors
 
@@ -104,7 +105,8 @@ def _groups_labels():
          7: 'L7',
          8: 'L8_L9',
          11: 'S1',
-         21: 'S2'
+         21: 'S2',
+         31: 'NISAR'  # TODO: run by Alex to confirm the label
       }
    """
    all_ids = {}
@@ -114,7 +116,7 @@ def _groups_labels():
    return all_ids
 
 
-# Mapping of all sensors to the corresponding mission group
+# Mapping using (mission, sensor) composite keys for unique identification
 GROUPS = _groups()
 
 # Mapping of mission group to the corresponding string label

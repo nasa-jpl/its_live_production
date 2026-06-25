@@ -1882,6 +1882,9 @@ class ITSLiveComposite:
         self.sensors = sensorFilters.SensorExcludeFilter.map_sensor_to_group(
             self.stable_shift_filter.exclude(
                 cube_ds[ImgPairInfo.satellite_img1].values
+            ),
+            self.stable_shift_filter.exclude(
+                cube_ds[ImgPairInfo.mission_img1].values
             )
         )
         # Identify sensors groups (L89, S1, S2, etc.) within datacube.
