@@ -20,7 +20,7 @@ from shapely.ops import split
 from tqdm import tqdm
 
 
-from grid import Bounds
+from grid import Bounds, Grid
 
 # GDAL settings
 gdal.SetConfigOption('CPL_VSIL_CURL_ALLOWED_EXTENSIONS', 'tif')
@@ -260,8 +260,13 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
             # Round up max and round down min values of bounds
             new_x = x_bounds.extend_to_grid(grid_size)
             new_y = y_bounds.extend_to_grid(grid_size)
-
             logging.info(f"EPGS region expanded to {grid_size}m: x: {new_x} y: {new_y}")
+
+            # Use same logic as ITSCube.__init__() to ensure grid alignment
+            # Use Grid.bounding_box() to get grid edges with proper alignment
+            # This ensures the same grid origin as used in itscube.py
+            # grid_x_bounds, grid_y_bounds = Grid.bounding_box(x_bounds, y_bounds, grid_size)
+            # logging.info(f"Grid-aligned bounds: x: {grid_x_bounds} y: {grid_y_bounds}")
 
             # Define grid for the data cubes
             if epsg_code == 'EPSG:3031':
@@ -275,8 +280,15 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
                 logging.info(f"3031 bounds extended: {each_polygon}")
 
             # Create x/y ranges for each of the datacubes
+            # Use the grid-aligned bounds to ensure datacubes align with ITS_LIVE grid
+            # Use np.arange() to handle float values with the 7.5m offset
+            # x_range = np.arange(grid_x_bounds.min, grid_x_bounds.max, grid_size)
+            # y_range = np.arange(grid_y_bounds.min, grid_y_bounds.max, grid_size)
+
             for each_x in tqdm(range(new_x.min, new_x.max, grid_size), ascii=True, desc="Processing X axis..."):
                 for each_y in tqdm(range(new_y.min, new_y.max, grid_size), ascii=True, desc="Processing Y axis..."):
+            # for each_x in tqdm(x_range, ascii=True, desc="Processing X axis..."):
+            #     for each_y in tqdm(y_range, ascii=True, desc="Processing Y axis..."):
                     # Use chunk-aligned boundaries
                     aligned_bounds, aligned_padding, x_values, y_values = get_alignment_info(
                         each_x, each_y, each_x + grid_size, each_y + grid_size
