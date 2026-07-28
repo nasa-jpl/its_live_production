@@ -79,7 +79,8 @@ class Grid:
         # print("bounding_box: x_in: ", x)
         # print("bounding_box: y_in: ", y)
         #
-        return Bounds(min_value=x0_min, max_value=x0_max), Bounds(min_value=y0_min, max_value=y0_max)
+        return Bounds(min_value=x0_min, max_value=x0_max), \
+                Bounds(min_value=y0_min, max_value=y0_max)
 
     @staticmethod
     def create(x: Bounds, y: Bounds, grid_spacing):
