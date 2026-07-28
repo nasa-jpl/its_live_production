@@ -1,0 +1,379 @@
+"""
+Build a virtual ITS_LIVE datacube restricted to a bounding box that is
+*smaller* than the granules' combined extent.
+
+This is the mirror image of `pad_manifestarray` in virtual_itslive_cube.py:
+instead of placing a granule's ManifestArray into a larger grid (nodata
+elsewhere), we slice it down to only the chunks that cover the target bbox.
+Only chunk references are dropped/kept -- no pixel data is read.
+
+After cropping, each granule is handed to the existing `build_virtual_cube`,
+which mosaics the (possibly still slightly different, chunk-boundary-driven)
+cropped grids onto a shared grid and stacks them on time. This reuses all of
+the existing padding / combine_by_coords / img_pair_info-handling logic
+unchanged.
+"""
+import logging
+import numpy as np
+import xarray as xr
+
+from virtualizarr.manifests import ManifestArray
+from virtualizarr.manifests.utils import copy_and_replace_metadata
+
+from virtual_itslive_cube import build_virtual_cube
+
+# Set up logging
+logging.basicConfig(
+   level=logging.INFO,
+   format='%(asctime)s - %(levelname)s - %(message)s',
+   datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+PIXEL_SIZE = 120
+PIXEL_SIZE_HALF = PIXEL_SIZE / 2
+
+
+def crop_manifestarray(marr, starts, stops):
+   """Chunk-aligned crop: return a new ManifestArray referencing only the
+   chunks needed to cover element range [starts[i], stops[i]) on each axis.
+
+   Parameters
+   ----------
+   marr : ManifestArray
+      The array to crop. Only its chunk references are read/moved.
+   starts, stops : sequence of int
+      Per-axis element bounds of the region to keep, `stops` exclusive.
+      Both must be multiples of that axis' chunk size, except `stops[i]`
+      may equal the axis length to reach the array's edge (where the last
+      chunk is legitimately partial).
+   """
+   shape, chunks = marr.shape, marr.chunks
+   starts = tuple(int(s) for s in starts)
+   stops = tuple(int(s) for s in stops)
+
+   if len(starts) != len(shape) or len(stops) != len(shape):
+      raise ValueError(
+         f"starts/stops ndim ({len(starts)}/{len(stops)}) != array ndim {len(shape)}"
+      )
+
+   for ax, (start, stop, chunk, n) in enumerate(zip(starts, stops, chunks, shape)):
+      if not (0 <= start < stop <= n):
+         raise ValueError(f"axis {ax}: invalid range [{start}, {stop}] for size {n}")
+
+      if start % chunk != 0:
+         raise ValueError(f"axis {ax}: {start=} not a multiple of {chunk=} size")
+
+      if stop % chunk != 0 and stop != n:
+         raise ValueError(
+               f"axis {ax}: {stop=} is not a multiple of {chunk=} and does not "
+               f"reach the array edge ({stop=} != {n}); cannot crop on a chunk boundary"
+         )
+
+   # element bounds -> chunk-grid index bounds (ceil-div for the stop side,
+   # so a partial trailing chunk that starts before `stop` is still included)
+   chunk_starts = [start // chunk for start, chunk in zip(starts, chunks)]
+   chunk_stops = [-(-stop // chunk) for stop, chunk in zip(stops, chunks)]
+
+   region = tuple(slice(cs, ce) for cs, ce in zip(chunk_starts, chunk_stops))
+
+   manifest = marr.manifest
+   new_paths = manifest._paths[region]
+   new_offsets = manifest._offsets[region]
+   new_lengths = manifest._lengths[region]
+
+   from virtualizarr.manifests import ChunkManifest
+
+   new_manifest = ChunkManifest.from_arrays(
+      paths=new_paths,
+      offsets=new_offsets,
+      lengths=new_lengths,
+      validate_paths=False,  # references already validated in the source manifest
+      inlined=manifest._inlined or None,
+   )
+
+   new_shape = [b - a for a, b in zip(starts, stops)]
+   new_metadata = copy_and_replace_metadata(marr.metadata, new_shape=list(new_shape))
+
+   return ManifestArray(metadata=new_metadata, chunkmanifest=new_manifest)
+
+
+def bbox_to_chunk_aligned_indices(coord, step, chunk_size, bbox_lo, bbox_hi):
+   """Map a target coordinate range [bbox_lo, bbox_hi] onto chunk-grid-aligned
+   element indices [start, stop) into `coord`.
+
+   `coord` is a real, regularly-spaced 1-D coordinate vector with spacing
+   `step` (may be negative -- e.g. a descending y-axis). Returns None if
+   `[bbox_lo, bbox_hi]` doesn't overlap `coord` at all.
+   """
+   n = len(coord)
+   p0 = (bbox_lo - coord[0]) / step
+   p1 = (bbox_hi - coord[0]) / step
+   lo_idx, hi_idx = (p0, p1) if step > 0 else (p1, p0)
+
+   raw_start = int(np.floor(lo_idx))
+   raw_stop = int(np.ceil(hi_idx)) + 1  # +1: hi_idx is a pixel *center*
+   raw_start = max(raw_start, 0)
+   raw_stop = min(raw_stop, n)
+   if raw_start >= raw_stop:
+      return None
+
+   start = (raw_start // chunk_size) * chunk_size
+   stop = min(n, int(np.ceil(raw_stop / chunk_size)) * chunk_size)
+   return start, stop
+
+
+def crop_virtual_dataset_to_bbox(vds, bbox):
+   """Crop one virtual dataset (real x/y coords, virtual ManifestArray data
+   vars) to the chunk-grid-aligned window covering `bbox`.
+
+   Parameters
+   ----------
+   vds : xr.Dataset
+      A single granule's virtual dataset, as returned by
+      `open_virtual_dataset` (x/y/time loaded, data vars virtual).
+   bbox : (xmin, xmax, ymin, ymax)
+      Target region in the dataset's native x/y units. These are adjusted
+      for the cell centers based on the datacube bounding polygon which is
+      for the cell corners.
+
+   Returns
+   -------
+   xr.Dataset or None
+      The cropped dataset, or None if this granule doesn't overlap `bbox`
+      at all (caller should drop it from the cube).
+   """
+   xmin, xmax, ymin, ymax = bbox
+   x = vds["x"].values
+   y = vds["y"].values
+   dx = float(x[1] - x[0])
+   dy = float(y[1] - y[0])
+
+   # pull x/y chunk size off the first virtual data var that has those dims
+   x_chunk = y_chunk = None
+   for var in vds.data_vars.values():
+      data = var.data
+      if isinstance(data, ManifestArray):
+         dims = var.dims
+         if x_chunk is None and "x" in dims:
+            x_chunk = data.chunks[dims.index("x")]
+         if y_chunk is None and "y" in dims:
+            y_chunk = data.chunks[dims.index("y")]
+
+      if x_chunk is not None and y_chunk is not None:
+         break
+
+   if x_chunk is None or y_chunk is None:
+      raise ValueError("could not determine x/y chunk size from this dataset's data vars")
+
+   x_range = bbox_to_chunk_aligned_indices(x, dx, x_chunk, xmin, xmax)
+   y_range = bbox_to_chunk_aligned_indices(y, dy, y_chunk, ymin, ymax)
+
+   logging.info(f'{x_chunk=} {y_chunk=}')
+
+   if x_range is None or y_range is None:
+      return None  # granule doesn't intersect the requested bbox
+
+   logging.info(f'Updating to {x_range=}')
+   logging.info(f'Updating to {y_range=}')
+
+   x_start, x_stop = x_range
+   y_start, y_stop = y_range
+   start_by_dim = {"x": x_start, "y": y_start}
+   stop_by_dim = {"x": x_stop, "y": y_stop}
+
+   new_vars = {}
+   for name, var in vds.data_vars.items():
+      data = var.data
+
+      if isinstance(data, ManifestArray):
+         starts = [start_by_dim.get(str(d), 0) for d in var.dims]
+         stops = [stop_by_dim.get(str(d), s) for d, s in zip(var.dims, data.shape)]
+         data = crop_manifestarray(data, starts, stops)
+
+      new_vars[name] = xr.Variable(var.dims, data, attrs=var.attrs, encoding=var.encoding)
+
+   new_coords = {
+      "x": ("x", x[x_start:x_stop]),
+      "y": ("y", y[y_start:y_stop]),
+      "time": vds["time"],
+   }
+   return xr.Dataset(new_vars, coords=new_coords, attrs=vds.attrs)
+
+
+def _assert_identical_grids(cropped, bbox):
+   """Verify every cropped granule landed on exactly the same x/y grid.
+
+   Granules are guaranteed to share a common chunk grid (same posting,
+   same chunk boundaries), so chunk-aligned cropping to the same `bbox`
+   should produce *identical* x/y coordinate arrays across granules -- not
+   merely overlapping ones needing a pad-to-common-grid step. If that's
+   ever violated (e.g. an unexpectedly offset granule), fail loudly here
+   rather than silently letting `pad_manifestarray` paper over it.
+   """
+   ref_vds = cropped[0]
+   ref_x = ref_vds["x"].values
+   ref_y = ref_vds["y"].values
+   for vds in cropped[1:]:
+      x = vds["x"].values
+      y = vds["y"].values
+      if x.shape != ref_x.shape or not np.array_equal(x, ref_x):
+         raise ValueError(
+               f"cropped granules disagree on the x grid for bbox {bbox}: "
+               f"expected {ref_x.shape} spanning [{ref_x[0]}, {ref_x[-1]}], "
+               f"got {x.shape} spanning [{x[0]}, {x[-1]}]. This should not "
+               f"happen if all granules share a common chunk grid -- check "
+               f"that assumption for this granule."
+         )
+      if y.shape != ref_y.shape or not np.array_equal(y, ref_y):
+         raise ValueError(
+               f"cropped granules disagree on the y grid for bbox {bbox}: "
+               f"expected {ref_y.shape} spanning [{ref_y[0]}, {ref_y[-1]}], "
+               f"got {y.shape} spanning [{y[0]}, {y[-1]}]. This should not "
+               f"happen if all granules share a common chunk grid -- check "
+               f"that assumption for this granule."
+         )
+
+
+def build_virtual_cube_subset(vds_list, bbox):
+   """Build a virtual datacube restricted to `bbox`, smaller than the
+   granules' combined extent.
+
+   Each granule's ManifestArrays are first cropped (chunk-aligned) to the
+   window overlapping `bbox`; granules with no overlap are dropped entirely.
+   Since granules are guaranteed to share a common chunk grid, the cropped
+   granules are then checked to have landed on an identical x/y grid (a
+   hard failure if not) before being mosaicked via `build_virtual_cube`
+   -- which stacks them on time and reuses its existing dtype/attr/
+   img_pair_info handling.
+
+   Parameters
+   ----------
+   vds_list : list of xr.Dataset
+      Virtual datasets for each granule (as passed to `build_virtual_cube`).
+   bbox : (xmin, xmax, ymin, ymax)
+      Target region in the granules' shared x/y units.
+   """
+   cropped = []
+   for vds in vds_list:
+      c = crop_virtual_dataset_to_bbox(vds, bbox)
+      if c is not None:
+         cropped.append(c)
+
+   if not cropped:
+      raise ValueError(f"no granule overlaps bbox {bbox}")
+
+   _assert_identical_grids(cropped, bbox)
+
+   return build_virtual_cube(cropped)
+
+
+if __name__ == "__main__":
+   import os
+   import shutil
+
+   import obstore
+   import virtualizarr as vz
+   from virtualizarr.parsers import HDFParser
+   from obspec_utils.registry import ObjectStoreRegistry
+   import icechunk as ic
+
+   from virtual_itslive_cube import _drop_nonfinite_attrs
+
+   bucket = "s3://its-live-data"
+   # key = "test-space/virtual-cubes"
+   key = 'velocity_image_pair/landsatOLI/v02/S80W170'
+
+   granules = [
+      "LC08_L1GT_020121_20231013_20231102_02_T2_X_LC09_L1GT_020121_20231106_20231106_02_T2_G0120V02_P084.nc",
+      "LC08_L1GT_020120_20201121_20210315_02_T2_X_LC08_L1GT_020120_20210124_20210305_02_T2_G0120V02_P051.nc",
+   ]
+
+   store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
+   registry = ObjectStoreRegistry({bucket: store})
+   parser = HDFParser(drop_variables=["mapping"])
+
+   vds_list = []
+   for granule in granules:
+      vds_list.append(
+         vz.open_virtual_dataset(
+               url=os.path.join(bucket, key, granule),
+               parser=parser,
+               registry=registry,
+               loadable_variables=["time", "y", "x"],
+               decode_times=True,
+         )
+      )
+
+   # Look up a cube that overlapps both granules in latest catalog:
+   # 1. Run tools/tests/verify_chunk_alignment_granules_datacubes.py
+   #     - identifies overlapping datacubes per catalog
+   # ITS_LIVE_velocity_EPSG3031_61440m_X-61447_Y-983032:
+   # "properties": {
+   #       "fill-opacity": 0.0,
+   #       "fill": "red",
+   #       "cube_id": "ITS_LIVE_velocity_EPSG3031_61440m_X-61447_Y-983032",
+   #       "roi_percent_coverage": 100.0,
+   #       "epsg": 3031,
+   #       "geometry_epsg": {
+   #          "type": "Polygon",
+   #          "coordinates": [
+   #             [
+   #                   [
+   #                      -61447.5,
+   #                      -983032.5
+   #                   ],
+   #                   [
+   #                      -7.5,
+   #                      -983032.5
+   #                   ],
+   #                   [
+   #                      -7.5,
+   #                      -921592.5
+   #                   ],
+   #                   [
+   #                      -61447.5,
+   #                      -921592.5
+   #                   ],
+   #                   [
+   #                      -61447.5,
+   #                      -983032.5
+   #                   ]
+   #             ]
+   #          ]
+   #       }
+   # }
+
+   # Adjust cube cell edge coordinates for the cells centers:
+   # bbox = (xmin, xmax, ymin, ymax)
+   bbox = (
+      -61447.5 + PIXEL_SIZE_HALF, -7.5 - PIXEL_SIZE_HALF,
+      -983032.5 + PIXEL_SIZE_HALF, -921592.5 - PIXEL_SIZE_HALF)
+
+   cube = build_virtual_cube_subset(vds_list, bbox)
+   print(f"\n{cube}")
+
+   url_prefix = "s3://its-live-data/"
+   store_path = "its_live_cube_subset.icechunk"
+   shutil.rmtree(store_path, ignore_errors=True)
+
+   config = ic.RepositoryConfig.default()
+   config.set_virtual_chunk_container(
+      ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
+   )
+   repo = ic.Repository.create(
+      storage=ic.local_filesystem_storage(store_path),
+      config=config,
+      authorize_virtual_chunk_access=ic.containers_credentials(
+         {url_prefix: ic.s3_credentials(anonymous=True)}
+      ),
+   )
+
+   session = repo.writable_session("main")
+   cube_clean = _drop_nonfinite_attrs(cube)
+   cube_clean.vz.to_icechunk(session.store)
+   snapshot_id = session.commit("its_live virtual cube subset: cropped to bbox")
+   print("committed snapshot", snapshot_id)
+
+   cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
+   print(f"{cube_roundtrip=}")
+
