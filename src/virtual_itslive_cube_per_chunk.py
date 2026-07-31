@@ -1,6 +1,8 @@
 """
 Build a virtual ITS_LIVE datacube restricted to a bounding box that is
-*smaller* than the granules' combined extent.
+*smaller* than the granules' combined extent. Such virtual datacube corresponds
+to a single chunk of 522x512 pixels which are co-aligned with all ITS_LIVE
+granules.
 
 This is the mirror image of `pad_manifestarray` in virtual_itslive_cube.py:
 instead of placing a granule's ManifestArray into a larger grid (nodata
@@ -8,10 +10,9 @@ elsewhere), we slice it down to only the chunks that cover the target bbox.
 Only chunk references are dropped/kept -- no pixel data is read.
 
 After cropping, each granule is handed to the existing `build_virtual_cube`,
-which mosaics the (possibly still slightly different, chunk-boundary-driven)
-cropped grids onto a shared grid and stacks them on time. This reuses all of
-the existing padding / combine_by_coords / img_pair_info-handling logic
-unchanged.
+which mosaics the chunk-aligned cropped grids onto a shared grid and stacks
+them on time. This reuses all of ehe existing padding / combine_by_coords /
+img_pair_info-handling logic unchanged.
 """
 import logging
 import numpy as np
@@ -165,16 +166,22 @@ def crop_virtual_dataset_to_bbox(vds, bbox):
    if x_chunk is None or y_chunk is None:
       raise ValueError("could not determine x/y chunk size from this dataset's data vars")
 
+   logging.debug(f'Granule x: {x[0]=} {x[-1]}')
+   logging.debug(f'Granule y: {y[0]=} {y[-1]}')
+   logging.debug(f'Cube polygon: {xmin=} {xmax=} {ymin=} {ymax=}')
+
    x_range = bbox_to_chunk_aligned_indices(x, dx, x_chunk, xmin, xmax)
    y_range = bbox_to_chunk_aligned_indices(y, dy, y_chunk, ymin, ymax)
 
-   logging.info(f'{x_chunk=} {y_chunk=}')
+   logging.debug(f'{x_range=}')
+   logging.debug(f'{y_range=}')
 
    if x_range is None or y_range is None:
+      logging.info(f'Granule does not overlap the polygon')
       return None  # granule doesn't intersect the requested bbox
 
-   logging.info(f'Updating to {x_range=}')
-   logging.info(f'Updating to {y_range=}')
+   logging.debug(f'Updating to {x_range=}')
+   logging.debug(f'Updating to {y_range=}')
 
    x_start, x_stop = x_range
    y_start, y_stop = y_range
@@ -197,6 +204,7 @@ def crop_virtual_dataset_to_bbox(vds, bbox):
       "y": ("y", y[y_start:y_stop]),
       "time": vds["time"],
    }
+
    return xr.Dataset(new_vars, coords=new_coords, attrs=vds.attrs)
 
 
@@ -253,6 +261,7 @@ def build_virtual_cube_subset(vds_list, bbox):
    bbox : (xmin, xmax, ymin, ymax)
       Target region in the granules' shared x/y units.
    """
+   logging.info(f'Building cube out of {len(vds_list)} granules')
    cropped = []
    for vds in vds_list:
       c = crop_virtual_dataset_to_bbox(vds, bbox)
@@ -261,6 +270,12 @@ def build_virtual_cube_subset(vds_list, bbox):
 
    if not cropped:
       raise ValueError(f"no granule overlaps bbox {bbox}")
+
+   logging.info(f'Got {len(cropped)} cropped granules')
+
+   for i, vds in enumerate(cropped):
+      t = vds["time"]
+      logging.info(f"Granule {i}: {t.values=} {t.dtype=} {t.dims=} {t.shape=}")
 
    _assert_identical_grids(cropped, bbox)
 
@@ -280,12 +295,29 @@ if __name__ == "__main__":
    from virtual_itslive_cube import _drop_nonfinite_attrs
 
    bucket = "s3://its-live-data"
-   # key = "test-space/virtual-cubes"
-   key = 'velocity_image_pair/landsatOLI/v02/S80W170'
 
+   # Original granules for testing
+   # granules = [
+   #    "velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_020121_20231013_20231102_02_T2_X_LC09_L1GT_020121_20231106_20231106_02_T2_G0120V02_P084.nc",
+   #    "velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_020120_20201121_20210315_02_T2_X_LC08_L1GT_020120_20210124_20210305_02_T2_G0120V02_P051.nc",
+   # ]
+
+   # Now test with S1, Landsat and S2 granules - these all have Nan data
+   # for the cube overlap
+   # granules = [
+   #    "velocity_image_pair/landsatOLI/v02/S70W090/LC08_L1GT_002112_20140208_20201016_02_T2_X_LC08_L1GT_002112_20140312_20200911_02_T2_G0120V02_P062.nc",
+   #    "velocity_image_pair/sentinel1/v02/S70W100/S1A_IW_SLC__1SSH_20251223T043633_20251223T043654_062437_07D279_7E42_X_S1A_IW_SLC__1SSH_20260104T043632_20260104T043653_062612_07D939_651F_G0120V02_P030.nc",
+   #    "velocity_image_pair/sentinel2/v02/S70W100/S2B_MSIL1C_20181208T151259_N0207_R139_T13CET_20181208T180302_X_S2B_MSIL1C_20190206T151259_N0207_R139_T13CET_20190206T180306_G0120V02_P055.nc"
+   # ]
+
+   # Using dev_notebooks/issues/virtualizarr/cube_with_s1_granules.ipynb
+   # identified S1, S2, Landsat granules that actually have data in the
+   # cube polygon
    granules = [
-      "LC08_L1GT_020121_20231013_20231102_02_T2_X_LC09_L1GT_020121_20231106_20231106_02_T2_G0120V02_P084.nc",
-      "LC08_L1GT_020120_20201121_20210315_02_T2_X_LC08_L1GT_020120_20210124_20210305_02_T2_G0120V02_P051.nc",
+      "velocity_image_pair/sentinel2/v02/S70W100/S2B_MSIL1C_20210215T151259_N0209_R139_T13CET_20210215T181843_X_S2B_MSIL1C_20220121T151259_N0301_R139_T13CET_20220121T181438_G0120V02_P029.nc",
+      "velocity_image_pair/sentinel1/v02/S70W100/S1A_IW_SLC__1SSH_20251125T050857_20251125T050919_062029_07C28A_EB80_X_S1A_IW_SLC__1SSH_20251207T050856_20251207T050917_062204_07C968_3C90_G0120V02_P029.nc",
+      "velocity_image_pair/sentinel1/v02/S70W100/S1C_IW_SLC__1SSH_20251201T050755_20251201T050816_005253_00A6DB_DFED_X_S1A_IW_SLC__1SSH_20251207T050856_20251207T050917_062204_07C968_3C90_G0120V02_P034.nc",
+      "velocity_image_pair/landsatOLI/v02/S70W100/LE07_L1GT_002113_20121024_20200908_02_T2_X_LE07_L1GT_001113_20121118_20200908_02_T2_G0120V02_P024.nc"
    ]
 
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
@@ -294,9 +326,11 @@ if __name__ == "__main__":
 
    vds_list = []
    for granule in granules:
+      logging.info(f'Reading {granule=}')
       vds_list.append(
          vz.open_virtual_dataset(
-               url=os.path.join(bucket, key, granule),
+               # url=os.path.join(bucket, key, granule),
+               url=os.path.join(bucket, granule),
                parser=parser,
                registry=registry,
                loadable_variables=["time", "y", "x"],
@@ -304,56 +338,32 @@ if __name__ == "__main__":
          )
       )
 
+      logging.info(f'===> time={vds_list[-1].time.values[0]}')
+
+   logging.info(f'Parsed {len(vds_list)} datasets')
+
    # Look up a cube that overlapps both granules in latest catalog:
    # 1. Run tools/tests/verify_chunk_alignment_granules_datacubes.py
-   #     - identifies overlapping datacubes per catalog
-   # ITS_LIVE_velocity_EPSG3031_61440m_X-61447_Y-983032:
-   # "properties": {
-   #       "fill-opacity": 0.0,
-   #       "fill": "red",
-   #       "cube_id": "ITS_LIVE_velocity_EPSG3031_61440m_X-61447_Y-983032",
-   #       "roi_percent_coverage": 100.0,
-   #       "epsg": 3031,
-   #       "geometry_epsg": {
-   #          "type": "Polygon",
-   #          "coordinates": [
-   #             [
-   #                   [
-   #                      -61447.5,
-   #                      -983032.5
-   #                   ],
-   #                   [
-   #                      -7.5,
-   #                      -983032.5
-   #                   ],
-   #                   [
-   #                      -7.5,
-   #                      -921592.5
-   #                   ],
-   #                   [
-   #                      -61447.5,
-   #                      -921592.5
-   #                   ],
-   #                   [
-   #                      -61447.5,
-   #                      -983032.5
-   #                   ]
-   #             ]
-   #          ]
-   #       }
-   # }
+   #     - identifies overlapping datacubes per catalog, pick UTM polygon
+   #       coordinates
 
-   # Adjust cube cell edge coordinates for the cells centers:
+   # 2. Adjust cube cell edge coordinates for the cells centers:
    # bbox = (xmin, xmax, ymin, ymax)
+   # bbox for original 2 Landsat granules
+   # bbox = (
+   #    -61447.5 + PIXEL_SIZE_HALF, -7.5 - PIXEL_SIZE_HALF,
+   #    -983032.5 + PIXEL_SIZE_HALF, -921592.5 - PIXEL_SIZE_HALF)
+
+   # bbox for test case with S1, S2, Landsat granules
    bbox = (
-      -61447.5 + PIXEL_SIZE_HALF, -7.5 - PIXEL_SIZE_HALF,
-      -983032.5 + PIXEL_SIZE_HALF, -921592.5 - PIXEL_SIZE_HALF)
+      -1658887.5 + PIXEL_SIZE_HALF, -1597447.5 - PIXEL_SIZE_HALF,
+      -430072.5 + PIXEL_SIZE_HALF, -368632.5 - PIXEL_SIZE_HALF)
 
    cube = build_virtual_cube_subset(vds_list, bbox)
    print(f"\n{cube}")
 
    url_prefix = "s3://its-live-data/"
-   store_path = "its_live_cube_subset.icechunk"
+   store_path = "its_live_cube_subset_m11_m12_s1_s2_landsat.icechunk"
    shutil.rmtree(store_path, ignore_errors=True)
 
    config = ic.RepositoryConfig.default()
@@ -372,8 +382,13 @@ if __name__ == "__main__":
    cube_clean = _drop_nonfinite_attrs(cube)
    cube_clean.vz.to_icechunk(session.store)
    snapshot_id = session.commit("its_live virtual cube subset: cropped to bbox")
-   print("committed snapshot", snapshot_id)
+   logging.info(f"icechunk committed snapshot: {snapshot_id=}")
 
    cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
-   print(f"{cube_roundtrip=}")
+   logging.info(f"{cube_roundtrip=}")
 
+   logging.info(f'{cube_roundtrip.mission_img1.values=}')
+   logging.info(f'{cube_roundtrip.mission_img2.values=}')
+   logging.info(f'{cube_roundtrip.satellite_img1.values=}')
+   logging.info(f'{cube_roundtrip.satellite_img2.values=}')
+   logging.info(f'{cube_roundtrip.time.values=}')

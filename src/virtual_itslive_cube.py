@@ -7,9 +7,11 @@ from obspec_utils.registry import ObjectStoreRegistry
 import xarray as xr
 import zarr
 import numpy as np
+import logging
 from virtualizarr.manifests import ChunkManifest, ManifestArray
 from virtualizarr.manifests.manifest import MISSING_CHUNK_PATH
 from virtualizarr.manifests.utils import copy_and_replace_metadata
+from zarr.core.metadata.v3 import ArrayV3Metadata
 
 # Icechunk repo related
 import shutil
@@ -69,17 +71,23 @@ def pad_manifestarray(marr, new_shape, offsets=None):
    new_lengths[region] = marr.manifest._lengths
 
    new_manifest = ChunkManifest.from_arrays(
-      paths=new_paths, offsets=new_offsets, lengths=new_lengths,
+      paths=new_paths,
+      offsets=new_offsets,
+      lengths=new_lengths,
       validate_paths=False,  # existing paths already valid, new ones are sentinel
       inlined=marr.manifest._inlined or None,
    )
    # copy_and_replace_metadata should preserve dtype, but let's verify
-   new_metadata = copy_and_replace_metadata(marr.metadata, new_shape=list(new_shape))
+   new_metadata = copy_and_replace_metadata(
+      marr.metadata, new_shape=list(new_shape)
+   )
 
-   # Ensure dtype is preserved (copy_and_replace_metadata should do this, but be explicit)
+   # Ensure dtype is preserved (copy_and_replace_metadata should do this,
+   # but be explicit)
    if hasattr(marr.metadata, 'dtype') and hasattr(new_metadata, 'dtype'):
       if new_metadata.dtype != marr.metadata.dtype:
-         print(f"Warning: pad_manifestarray dtype changed from {marr.metadata.dtype} to {new_metadata.dtype}")
+         logging.info(
+            f"Warning: pad_manifestarray dtype changed from {marr.metadata.dtype} to {new_metadata.dtype}")
 
    return ManifestArray(metadata=new_metadata, chunkmanifest=new_manifest)
 
@@ -122,6 +130,56 @@ def extend_coords(vds_list):
    return x_union, y_union, offsets
 
 
+def copy_and_replace_metadata_dtype(old_metadata, new_shape, new_dtype, new_fill_value, codecs):
+   """Like virtualizarr's `copy_and_replace_metadata`, but also overrides
+   dtype, fill_value, and codec configuration.
+
+   `copy_and_replace_metadata` has no `new_dtype` param -- it always inherits
+   `data_type` (and codecs) from `old_metadata` -- so changing dtype has to go
+   through zarr's `ArrayV3Metadata` dict round-trip directly.
+
+   Parameters
+   ----------
+   codecs : sequence of codec dicts
+      Used verbatim as the new metadata's codecs. Always required: the
+      physical on-disk itemsize doesn't necessarily match `new_dtype`'s
+      itemsize (e.g. packed/scaled storage), so there's no dtype-derived
+      fallback to guess from -- the caller must supply a codec spec known
+      to be correct (see `_HARDCODED_M_VAR_PLACEHOLDER_CODECS`).
+   """
+   metadata_dict = old_metadata.to_dict().copy()
+   metadata_dict["shape"] = tuple(int(s) for s in new_shape)
+   metadata_dict["data_type"] = new_dtype        # e.g. "float32"
+   metadata_dict["fill_value"] = new_fill_value  # e.g. float("nan")
+   metadata_dict["codecs"] = codecs
+
+   return ArrayV3Metadata.from_dict(metadata_dict)
+
+
+# Hard-coded codecs for synthesized M11/M12 placeholders (used only for
+# granules missing real M11/M12; granules that already have real data are
+# left untouched and never go through this path). Captured directly from a
+# granule confirmed to have REAL M11/M12 data, so it's the exact,
+# known-correct codec structure for this variable -- not an approximation
+# derived from an unrelated variable like `vx` (which is packed int16 and
+# would need patching).
+#
+# IMPORTANT: this is the dict form zarr's ArrayV3Metadata.from_dict()
+# expects (i.e. what `.metadata.to_dict()["codecs"]` produces), not the
+# parsed codec objects you see printed in logs (e.g. `Shuffle(...)` reprs).
+# If it ever needs to be re-captured (e.g. a schema change), run this on a
+# granule where M11 is real, not synthesized:
+#
+#   print(vds["M11"].data.metadata.to_dict()["codecs"])
+#
+# and paste the result below verbatim.
+_HARDCODED_M_VAR_PLACEHOLDER_CODECS = (
+   {'name': 'bytes', 'configuration': {'endian': 'little'}},
+   {'name': 'numcodecs.shuffle', 'configuration': {'elementsize': 4}},
+   {'name': 'numcodecs.zlib', 'configuration': {'level': 2}},
+)
+
+
 def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
    """Add M11 and M12 data variables as ManifestArrays with missing chunks if not
    present in the granule.
@@ -141,6 +199,11 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
       Union x coordinates for the datacube
    y_union : np.ndarray
       Union y coordinates for the datacube
+   reference_codecs : dict
+      Mapping {"M11": codecs, "M12": codecs}, resolved once per cube by
+      `_resolve_placeholder_codecs` (see `_HARDCODED_M_VAR_PLACEHOLDER_CODECS`).
+      Used verbatim for any placeholder synthesized here. Real M11/M12 data
+      (when present in `vds`) is untouched and never reaches this codepath.
    """
    # M11 and M12 metadata based on itscube.py and itscube_types.py
    m_vars_info = {
@@ -160,30 +223,48 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
       }
    }
 
-   for m_var_name, m_var_attrs in m_vars_info.items():
-      if m_var_name not in vds.data_vars:
-         # Create ManifestArray with missing chunks for optical granules
-         # Use chunk size matching other 2D variables in the granule (typically 512x512 or similar)
-         # Default to 512 if we can't determine from existing variables
-         chunk_y = chunk_x = 512
+   if 'M11' in vds.data_vars:
+      # Variable is already in the dataset, nothing to do
+      return
 
-         # Try to get chunk size from an existing 2D ManifestArray variable
+   for m_var_name, m_var_attrs in m_vars_info.items():
+         # Create ManifestArray with missing chunks for optical granules
+         # Use an existing 3D ManifestArray variable (time, y, x) as a template
+         # Granules have 3D variables with single-valued time dimension
+         template_var = None
          for var in vds.data_vars.values():
-            if isinstance(var.data, ManifestArray) and len(var.dims) == 2:
+            if isinstance(var.data, ManifestArray) and len(var.dims) == 3:
                dims = var.dims
-               if 'y' in dims and 'x' in dims:
-                  y_idx = dims.index('y')
-                  x_idx = dims.index('x')
-                  chunk_y = var.data.chunks[y_idx]
-                  chunk_x = var.data.chunks[x_idx]
+               if 'time' in dims and 'y' in dims and 'x' in dims:
+                  template_var = var
                   break
 
-         shape = (len(y_union), len(x_union))
-         chunks = (chunk_y, chunk_x)
+         if template_var is None:
+            # No suitable ManifestArray found, skip M11/M12 for this granule
+            logging.info(f"Warning: No 3D ManifestArray template found for {m_var_name}, skipping")
+            continue
 
-         # Create chunk grid filled with MISSING_CHUNK_PATH
-         from virtualizarr.manifests.manifest import MISSING_CHUNK_PATH
-         chunk_grid_shape = (-(-shape[0] // chunks[0]), -(-shape[1] // chunks[1]))
+         # Get shape and chunks from template - create 3D (time, y, x) just like other variables
+         # This ensures M11/M12 can be concatenated along time dimension later
+         time_idx = template_var.dims.index('time')
+         y_idx = template_var.dims.index('y')
+         x_idx = template_var.dims.index('x')
+
+         # Create 3D shape with time=1 (single time slice)
+         shape = (1, len(y_union), len(x_union))
+
+         # Get chunk sizes from template (time, y, x)
+         chunk_time = template_var.data.chunks[time_idx]
+         chunk_y = template_var.data.chunks[y_idx]
+         chunk_x = template_var.data.chunks[x_idx]
+         chunks = (chunk_time, chunk_y, chunk_x)
+
+         # Create 3D chunk grid filled with MISSING_CHUNK_PATH (all missing chunks)
+         chunk_grid_shape = (
+            -(-shape[0] // chunks[0]),  # time chunks
+            -(-shape[1] // chunks[1]),  # y chunks
+            -(-shape[2] // chunks[2])   # x chunks
+         )
 
          paths = np.full(chunk_grid_shape, MISSING_CHUNK_PATH, dtype=np.dtypes.StringDType())
          offsets = np.zeros(chunk_grid_shape, dtype="uint64")
@@ -196,36 +277,53 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
             validate_paths=False
          )
 
-         # Create array metadata with proper fill value for float32
-         fill_value = np.float32(np.nan)
+         # Create metadata by copying from template and updating shape and dtype.
+         # M11/M12 must be float32 to match radar granules, regardless of
+         # whichever dtype `template_var` happens to have (it's only used here
+         # for its 3D (time, y, x) shape/chunking) -- so force the dtype.
+         #
+         # NOTE: only set via the zarr-level `fill_value` (new_fill_value
+         # below), NOT also as an xr.Variable `encoding={'_FillValue': ...}`.
+         # virtualizarr's to_icechunk writer writes whatever's in `encoding`
+         # verbatim into the zarr array's raw attributes, bypassing xarray's
+         # own FillValueCoder.encode() step (which base64-encodes floats) --
+         # so a raw float lands in `attributes["_FillValue"]`. On read,
+         # xr.open_zarr's FillValueCoder.decode() then chokes on that raw
+         # float, expecting the base64-encoded string its own writer would
+         # have produced (TypeError: "expected str or bytes ... got float").
+         # The zarr-level fill_value alone is sufficient: xarray's zarr
+         # backend reads `_FillValue` directly from `zarr_array.fill_value`
+         # (no decode step) when `use_zarr_fill_value_as_mask=True`, or
+         # exposes it as `encoding["fill_value"]` otherwise -- either way,
+         # no FillValueCoder round-trip is involved when no separate
+         # `_FillValue` attribute is present.
+         fill_value = np.float32(-32767.0)
 
-         # Create Zarr array metadata for float32 with fill value
-         from zarr.core.metadata import ArrayV3Metadata
-         from zarr.core.chunk_grids import RegularChunkGrid
-         from zarr.core.common import ChunkCoords
-
-         metadata = ArrayV3Metadata(
-            shape=shape,
-            data_type=np.dtype('float32'),
-            chunk_grid=RegularChunkGrid(chunk_shape=ChunkCoords(chunks)),
-            chunk_key_encoding={'name': 'default', 'separator': '/'},
-            fill_value=fill_value,
-            codecs=[]
+         new_metadata = copy_and_replace_metadata_dtype(
+            template_var.data.metadata,
+            new_shape=list(shape),
+            new_dtype="float32",
+            new_fill_value=float(fill_value),
+            codecs=_HARDCODED_M_VAR_PLACEHOLDER_CODECS,
          )
 
-         manifest_array = ManifestArray(metadata=metadata, chunkmanifest=manifest)
+         manifest_array = ManifestArray(metadata=new_metadata, chunkmanifest=manifest)
 
          new_vars[m_var_name] = xr.Variable(
-            dims=('y', 'x'),
+            dims=('time', 'y', 'x'),
             data=manifest_array,
             attrs={
                'standard_name': m_var_attrs['standard_name'],
                'description': m_var_attrs['description'],
                'units': m_var_attrs['units'],
-               '_FillValue': fill_value
-            }
+            },
+            # _FillValue belongs in encoding, not attrs, per xarray's CF
+            # convention -- attrs is inert metadata, encoding is what
+            # actually participates in xarray's encode/decode machinery.
+            # encoding={'_FillValue': fill_value},
+
          )
-         print(f"Added {m_var_name} as ManifestArray with missing chunks (not present in granule)")
+         logging.info(f"Added {m_var_name} as 3D ManifestArray (time, y, x) with missing chunks (not present in granule)")
 
 
 def build_virtual_cube(vds_list):
@@ -243,10 +341,17 @@ def build_virtual_cube(vds_list):
    x_union, y_union, offsets = extend_coords(vds_list)
    sizes = {"x": len(x_union), "y": len(y_union)}
 
+   # Collect only a subset of data variables in the virtual datacube
+   _vars = ['img_pair_info', 'v', 'M11', 'M12', 'vx', 'vy']
+
    placed = []
    for vds, off in zip(vds_list, offsets):
       new_vars = {}
       for name, var in vds.data_vars.items():
+         if name not in _vars:
+            # Skip data variable if it's not going to be in a virtual cube
+            continue
+
          # Skip img_pair_info - we'll extract mission_img1 from it instead
          if name == "img_pair_info":
             # Add "mission_img*" and "satellite_img*"" (img_pair_info attributes):
@@ -268,7 +373,7 @@ def build_virtual_cube(vds_list):
          # Extract vx attributes as scalar data variables (e.g., error_modeled)
          if name == 'vx':
             attr_value = vds["vx"].attrs.get("error_modeled", -32767)
-            print(f'Getting vx.error_modeled {attr_value}')
+            logging.info(f'Getting vx.error_modeled {attr_value}')
             new_vars["vx_error_modeled"] = xr.Variable(
                dims=(),
                data=np.array(attr_value),
@@ -282,14 +387,22 @@ def build_virtual_cube(vds_list):
                new_shape = [sizes.get(str(d), s) for d, s in zip(var.dims, data.shape)]
                var_offsets = [off.get(str(d), 0) for d in var.dims]
                data = pad_manifestarray(data, new_shape, var_offsets)
+
                # Verify dtype is preserved in ManifestArray
                if data.dtype != original_dtype:
-                  print(f"Warning: {name} dtype changed from {original_dtype} to {data.dtype} during padding")
-         # Create variable with original dtype preserved
-         new_vars[name] = xr.Variable(var.dims, data, attrs=var.attrs, encoding=var.encoding)
+                  raise RuntimeError(
+                     f"{name} dtype changed from {original_dtype} to "
+                     f"{data.dtype} during padding"
+                  )
 
-      # Add M11 and M12 if not present in granule (optical granules don't have these)
-      # _add_missing_m11_m12(new_vars, vds, x_union, y_union)
+         # Create variable with original dtype preserved
+         new_vars[name] = xr.Variable(
+            var.dims, data, attrs=var.attrs, encoding=var.encoding
+         )
+
+      # Add M11 and M12 if not present in granule
+      # (optical granules don't have these)
+      _add_missing_m11_m12(new_vars, vds, x_union, y_union)
 
       placed.append(xr.Dataset(
          new_vars,
@@ -297,25 +410,10 @@ def build_virtual_cube(vds_list):
          attrs=vds.attrs,
       ))
 
-   # Use compat="override" but log dtype changes
-   # Print dtype info before combining
-   print("\nDtypes before combine_by_coords:")
-   for var_name in placed[0].data_vars:
-      dtypes = [ds[var_name].dtype for ds in placed if var_name in ds.data_vars]
-      if len(set(str(d) for d in dtypes)) > 1:
-         print(f"  {var_name}: {dtypes} (MISMATCH)")
-      else:
-         print(f"  {var_name}: {dtypes[0]}")
-
    result = xr.combine_by_coords(
       placed, coords="minimal", compat="override", join="override",
-      combine_attrs="drop_conflicts",
+      combine_attrs="drop_conflicts", data_vars="all"
    )
-
-   # Check dtypes after combining
-   print("\nDtypes after combine_by_coords:")
-   for var_name in result.data_vars:
-      print(f"  {var_name}: {result[var_name].dtype}")
 
    return result
 
@@ -341,20 +439,15 @@ def _drop_nonfinite_attrs(ds):
 
 if __name__ == "__main__":
    bucket = "s3://its-live-data"
-   # key = "test-space/virtual-cubes"
-   # key = "test-space/virtual-cubes/fromJoe/fillValue"
    key = 'velocity_image_pair/landsatOLI/v02/S80W170'
 
    granules = [
-      # to confirm Joe's fix to cropped granule to change dtype of img_pair_info
-      # 'LC08_L1TP_009011_20200703_20200913_02_T1_X_LC08_L1TP_009011_20200820_20200905_02_T1_G0120V02_P078_cropped.nc'
       "LC08_L1GT_020121_20231013_20231102_02_T2_X_LC09_L1GT_020121_20231106_20231106_02_T2_G0120V02_P084.nc",
       "LC08_L1GT_020120_20201121_20210315_02_T2_X_LC08_L1GT_020120_20210124_20210305_02_T2_G0120V02_P051.nc"
    ]
 
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
    registry = ObjectStoreRegistry({bucket: store})
-   # parser = HDFParser(drop_variables=["mapping", "img_pair_info"])
    parser = HDFParser(drop_variables=["mapping"])
 
    vds = []
@@ -365,27 +458,21 @@ if __name__ == "__main__":
             url=os.path.join(bucket, key, granule),
             parser=parser,
             registry=registry,
-            loadable_variables=["time", "y", "x"],
+            loadable_variables=["time", "y", "x", "v"],
             decode_times=True,
          )
       )
+      v_min = np.nanmin(vds[-1]["v"].values)
+      v_max = np.nanmax(vds[-1]["v"].values)
+      logging.info(f'Values of {granule=} v before combine_by_coords: {v_min=} {v_max=}')
 
-   print(f"{vds}")
+
+   logging.info(f"{vds}")
 
 
    # mosaic both granules onto their common grid and stack along time
    cube = build_virtual_cube(vds)
-   print(f"\n{cube}")
-
-   # # Display img_pair_info attributes for each time step in the cube
-   # if "img_pair_info" in cube.data_vars:
-   #    print(f"\nimg_pair_info attributes in cube:")
-   #    for i, time_val in enumerate(cube.time.values):
-   #       print(f"\nTime step {i} ({time_val}):")
-   #       img_pair_info_at_time = cube["img_pair_info"].isel(time=i)
-   #       for attr_name, attr_value in img_pair_info_at_time.attrs.items():
-   #          print(f"  {attr_name}: {attr_value}")
-
+   logging.info(f"\n{cube}")
 
    # the referenced chunk data lives on this public, anonymous S3 bucket
    url_prefix = "s3://its-live-data/"
@@ -411,15 +498,15 @@ if __name__ == "__main__":
    session = repo.writable_session("main")
 
    # Print dtypes before writing to icechunk
-   print("\nDtypes before writing to icechunk:")
+   logging.info("\nDtypes before writing to icechunk:")
    for var_name in cube.data_vars:
       var = cube[var_name]
       dtype = var.dtype
       if isinstance(var.data, ManifestArray):
          manifest_dtype = var.data.dtype
-         print(f"  {var_name}: xr.Variable dtype={dtype}, ManifestArray dtype={manifest_dtype}")
+         logging.info(f"  {var_name}: xr.Variable dtype={dtype}, ManifestArray dtype={manifest_dtype}")
       else:
-         print(f"  {var_name}: dtype={dtype} (not ManifestArray)")
+         logging.info(f"  {var_name}: dtype={dtype} (not ManifestArray)")
 
    cube_clean = _drop_nonfinite_attrs(cube)
 
@@ -427,8 +514,8 @@ if __name__ == "__main__":
    cube_clean.vz.to_icechunk(session.store)
 
    snapshot_id = session.commit("its_live virtual cube: 2 granules mosaicked + stacked on time")
-   print("committed snapshot", snapshot_id)
+   logging.info("committed snapshot", snapshot_id)
 
    # reopen from the committed store
    cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
-   print(f'{cube_roundtrip=}')
+   logging.info(f'{cube_roundtrip=}')
