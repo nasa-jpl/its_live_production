@@ -14,6 +14,8 @@ which mosaics the chunk-aligned cropped grids onto a shared grid and stacks
 them on time. This reuses all of ehe existing padding / combine_by_coords /
 img_pair_info-handling logic unchanged.
 """
+from joblib import Parallel, delayed, parallel_config
+import gc
 import logging
 import numpy as np
 import xarray as xr
@@ -33,8 +35,13 @@ logging.basicConfig(
    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+# Grid pixel size in meters
 PIXEL_SIZE = 120
 PIXEL_SIZE_HALF = PIXEL_SIZE / 2
+
+# Number of threads for parallel processing
+MAX_AWS_CONNECTIONS = 8
+NUM_GRANULES_TO_READ = 100
 
 
 def crop_manifestarray(marr, starts, stops):
@@ -195,10 +202,10 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
    if x_range is None or y_range is None:
       # Granule doesn't intersect the bounding bbox
       logging.info(f'{vds.attrs["granule_url"]} does not overlap the polygon')
-      return None
+      return None, vds.attrs["granule_url"]
 
    # Check if overlapping region contain any valid data
-   with open_netcdf_from_s3(netcdf_store, vds.attrs['granule_url']) as granule_ds:
+   with open_netcdf_from_s3(netcdf_store, vds.attrs['granule_path']) as granule_ds:
       # Need to open the granule by loading "v" data - ManifestArray has only
       # chunk references, no actual data so can't mask arrays
       mask_lon = (granule_ds.x >= xmin) & (granule_ds.x <= xmax)
@@ -210,7 +217,7 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
       if np.isnan(mask_data).all():
          # Granule does not have any valid data within intersection
          logging.info(f'{vds.attrs["granule_url"]} does not have valid data within polygon')
-         return None
+         return None, vds.attrs["granule_url"]
 
    logging.debug(f'Updating to {x_range=}')
    logging.debug(f'Updating to {y_range=}')
@@ -237,7 +244,8 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
       "time": vds["time"],
    }
 
-   return xr.Dataset(new_vars, coords=new_coords, attrs=vds.attrs)
+   return xr.Dataset(new_vars, coords=new_coords, attrs=vds.attrs), \
+      vds.attrs["granule_url"]
 
 
 def _assert_identical_grids(cropped, bbox):
@@ -296,16 +304,55 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    logging.info(f'Building cube out of {len(vds_list)} granules')
    cropped = []
    skipped_granules = []
-   for vds in vds_list:
-      c = crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store)
-      if c is not None:
-         cropped.append(c)
 
-      else:
-         skipped_granules.append( vds.attrs["granule_url"])
+   start = 0
+   num_to_process = len(vds_list)
+
+   # Use processes ("loky") instead of threads ("threading") for parallel
+   # processing - each process is getting their own copy of the object instance
+   # (registry, object store, etc.) that are passed to each of the processes,
+   # Using loky (process-based) bypasses the threading-lock contention entirely,
+   # by construction, because there is no shared process for a lock to live in.
+   with parallel_config(
+      backend='loky',
+      n_jobs=MAX_AWS_CONNECTIONS
+   ):
+      while num_to_process > 0:
+         # How many tasks to process at a time
+         num_tasks = min(num_to_process, NUM_GRANULES_TO_READ)
+
+         # Run in parallel with joblib
+         log_msg = f"Building virtual cube: processing {num_tasks} tasks out of " \
+                     f"{num_to_process} remaining"
+         logging.info(log_msg)
+
+         # with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
+         results = Parallel()(
+            delayed(crop_virtual_dataset_to_bbox)(each_vds, bbox, netcdf_store) for
+            each_vds in vds_list[start:start + num_tasks]
+         )
+
+         for each_result in results:
+            cropped_ds, ds_url = each_result
+            if cropped_ds is not None:
+               cropped.append(cropped_ds)
+
+            else:
+               skipped_granules.append(ds_url)
+
+         num_to_process -= num_tasks
+         start += num_tasks
+
+   # for vds in vds_list:
+   #    c = crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store)
+   #    if c is not None:
+   #       cropped.append(c)
+
+   #    else:
+   #       skipped_granules.append(vds.attrs["granule_url"])
 
    if not cropped:
-      raise ValueError(f"no granule overlaps bbox {bbox}")
+      raise ValueError(f"Building virtual cube: no granules overlaps bbox {bbox}")
 
    logging.info(f'Got {len(cropped)} cropped granules')
 
@@ -317,6 +364,84 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
 
    logging.info(f'Number of skipped granules: {len(skipped_granules)}')
    return build_virtual_cube(cropped), skipped_granules
+
+
+def read_virtual_dataset(granule_url, parser, registry):
+   """Read granule into virtual dataset.
+
+   Parameters
+   ----------
+   granule_url: str
+      Granule url to open.
+   parser: virtualizarr.parsers.HDFParser
+      Parser to open granule url with.
+   """
+   v = vz.open_virtual_dataset(
+      url=granule_url,
+      parser=parser,
+      registry=registry,
+      loadable_variables=["time", "y", "x"],
+      decode_times=True,
+   )
+
+   # Remember the granule url
+   v.attrs["granule_url"] = granule_url
+   v.attrs["granule_path"] = granule_url.replace('s3://its-live-data/', '')
+
+   return v
+
+
+def load_granules(granules, bucket):
+   """Load granules into virtual datasets.
+
+   Parameters
+   ----------
+   granule_url: list(str)
+      Granules to load.
+   bucket: str
+      AWS S3 bucket that stores granules.
+
+   """
+   store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
+   registry = ObjectStoreRegistry({bucket: store})
+   parser = HDFParser(drop_variables=["mapping"])
+
+   vds_list = []
+   start = 0
+   num_to_process = len(granules)
+
+   # Use processes ("loky") instead of threads ("threading") for parallel
+   # processing - each process is getting their own copy of the object instance
+   # (registry, object store, etc.) that are passed to each of the processes,
+   # Using loky (process-based) bypasses the threading-lock contention entirely,
+   # by construction, because there is no shared process for a lock to live in.
+   with parallel_config(
+      # backend='threading',
+      backend='loky',
+      n_jobs=MAX_AWS_CONNECTIONS
+   ):
+      while num_to_process > 0:
+         # How many tasks to process at a time
+         num_tasks = min(num_to_process, NUM_GRANULES_TO_READ)
+
+         # Run in parallel with joblib
+         log_msg = f"Processing {num_tasks} tasks out of " \
+                     f"{num_to_process} remaining"
+         logging.info(log_msg)
+
+         # with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
+         results = Parallel()(
+            delayed(read_virtual_dataset)(each_file, parser, registry) for
+            each_file in granules[start:start + num_tasks]
+         )
+
+         for each_ds in results:
+            vds_list.append(each_ds)
+
+         num_to_process -= num_tasks
+         start += num_tasks
+
+   return vds_list
 
 
 if __name__ == "__main__":
@@ -344,7 +469,11 @@ if __name__ == "__main__":
          --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]' \
          --output-store output.icechunk
 
+      # Using 4 granules with valid data in cube's polygon
       python ./virtual_itslive_cube_per_chunk.py --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]' --granules-file virtual_input_4files.json --output-store its_live_cube_subset_m11_m12_s1_s2_landsat.icechunk
+
+      # Using 39 input granules with only 7 having valid data in cube's polygon:
+      python ./virtual_itslive_cube_per_chunk.py --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]' --granules-file virtual_input_39files.json --output-store its_live_cube_subset_m11_m12_s1_s2_landsat.icechunk
 
       # Using direct granule list
       python src/virtual_itslive_cube_per_chunk.py \
@@ -384,8 +513,15 @@ if __name__ == "__main__":
       default="s3://its-live-data",
       help="S3 bucket URL (default: s3://its-live-data)"
    )
+   parser.add_argument(
+      '-t', '--threads',
+      type=int,
+      default=8,
+      help='Number of threads to use for parallel processing [%(default)d].'
+   )
 
    args = parser.parse_args()
+   MAX_AWS_CONNECTIONS = args.threads
 
    # Load granules from either JSON file or command-line arguments
    if args.granules_file:
@@ -399,7 +535,9 @@ if __name__ == "__main__":
       granules = args.granules
 
    granules = [
-      each.replace('https://its-live-data.s3.amazonaws.com/', '') for each in granules
+      each.replace(
+         'https://its-live-data.s3.amazonaws.com/',
+         's3://its-live-data/') for each in granules
    ]
 
    logging.info(f"Processing {len(granules)} granules")
@@ -443,26 +581,8 @@ if __name__ == "__main__":
    #    "velocity_image_pair/landsatOLI/v02/S70W100/LE07_L1GT_002113_20121024_20200908_02_T2_X_LE07_L1GT_001113_20121118_20200908_02_T2_G0120V02_P024.nc"
    # ]
 
-   store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
-   registry = ObjectStoreRegistry({bucket: store})
-   parser = HDFParser(drop_variables=["mapping"])
 
-   vds_list = []
-   for granule in granules:
-      logging.info(f'Reading {granule=}')
-      v = vz.open_virtual_dataset(
-            url=os.path.join(bucket, granule),
-            parser=parser,
-            registry=registry,
-            loadable_variables=["time", "y", "x"],
-            decode_times=True,
-         )
-
-      v.attrs["granule_url"] = granule  # stash for later
-      vds_list.append(v)
-
-      logging.info(f'===> time={vds_list[-1].time.values[0]}')
-
+   vds_list = load_granules(granules, bucket)
    logging.info(f'Parsed {len(vds_list)} datasets')
 
    # Look up a cube that overlapps both granules in latest catalog:
