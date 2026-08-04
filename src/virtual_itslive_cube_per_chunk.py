@@ -17,6 +17,9 @@ img_pair_info-handling logic unchanged.
 import logging
 import numpy as np
 import xarray as xr
+from obstore.store import S3Store
+import os
+import io
 
 from virtualizarr.manifests import ManifestArray
 from virtualizarr.manifests.utils import copy_and_replace_metadata
@@ -98,6 +101,15 @@ def crop_manifestarray(marr, starts, stops):
    return ManifestArray(metadata=new_metadata, chunkmanifest=new_manifest)
 
 
+def open_netcdf_from_s3(store, key, engine='h5netcdf'):
+   if 'https://' in key:
+      key = key.replace('https://its-live-data.s3.amazonaws.com/', '')
+
+   result = obstore.get(store, key)
+   buf = io.BytesIO(result.bytes())
+   return xr.open_dataset(buf, engine=engine)
+
+
 def bbox_to_chunk_aligned_indices(coord, step, chunk_size, bbox_lo, bbox_hi):
    """Map a target coordinate range [bbox_lo, bbox_hi] onto chunk-grid-aligned
    element indices [start, stop) into `coord`.
@@ -120,10 +132,11 @@ def bbox_to_chunk_aligned_indices(coord, step, chunk_size, bbox_lo, bbox_hi):
 
    start = (raw_start // chunk_size) * chunk_size
    stop = min(n, int(np.ceil(raw_stop / chunk_size)) * chunk_size)
+
    return start, stop
 
 
-def crop_virtual_dataset_to_bbox(vds, bbox):
+def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
    """Crop one virtual dataset (real x/y coords, virtual ManifestArray data
    vars) to the chunk-grid-aligned window covering `bbox`.
 
@@ -136,6 +149,9 @@ def crop_virtual_dataset_to_bbox(vds, bbox):
       Target region in the dataset's native x/y units. These are adjusted
       for the cell centers based on the datacube bounding polygon which is
       for the cell corners.
+   netcdf_store: obstore.store.S3Store
+      Object store to access granule data from.
+
 
    Returns
    -------
@@ -177,8 +193,24 @@ def crop_virtual_dataset_to_bbox(vds, bbox):
    logging.debug(f'{y_range=}')
 
    if x_range is None or y_range is None:
-      logging.info(f'Granule does not overlap the polygon')
-      return None  # granule doesn't intersect the requested bbox
+      # Granule doesn't intersect the bounding bbox
+      logging.info(f'{vds.attrs["granule_url"]} does not overlap the polygon')
+      return None
+
+   # Check if overlapping region contain any valid data
+   with open_netcdf_from_s3(netcdf_store, vds.attrs['granule_url']) as granule_ds:
+      # Need to open the granule by loading "v" data - ManifestArray has only
+      # chunk references, no actual data so can't mask arrays
+      mask_lon = (granule_ds.x >= xmin) & (granule_ds.x <= xmax)
+      mask_lat = (granule_ds.y >= ymin) & (granule_ds.y <= ymax)
+      mask = (mask_lon & mask_lat)
+
+      mask_data = granule_ds.v.isel(x=slice(*x_range), y=slice(*y_range)).isel(time=0).load()
+
+      if np.isnan(mask_data).all():
+         # Granule does not have any valid data within intersection
+         logging.info(f'{vds.attrs["granule_url"]} does not have valid data within polygon')
+         return None
 
    logging.debug(f'Updating to {x_range=}')
    logging.debug(f'Updating to {y_range=}')
@@ -242,7 +274,7 @@ def _assert_identical_grids(cropped, bbox):
          )
 
 
-def build_virtual_cube_subset(vds_list, bbox):
+def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    """Build a virtual datacube restricted to `bbox`, smaller than the
    granules' combined extent.
 
@@ -263,10 +295,14 @@ def build_virtual_cube_subset(vds_list, bbox):
    """
    logging.info(f'Building cube out of {len(vds_list)} granules')
    cropped = []
+   skipped_granules = []
    for vds in vds_list:
-      c = crop_virtual_dataset_to_bbox(vds, bbox)
+      c = crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store)
       if c is not None:
          cropped.append(c)
+
+      else:
+         skipped_granules.append( vds.attrs["granule_url"])
 
    if not cropped:
       raise ValueError(f"no granule overlaps bbox {bbox}")
@@ -279,10 +315,13 @@ def build_virtual_cube_subset(vds_list, bbox):
 
    _assert_identical_grids(cropped, bbox)
 
-   return build_virtual_cube(cropped)
+   logging.info(f'Number of skipped granules: {len(skipped_granules)}')
+   return build_virtual_cube(cropped), skipped_granules
 
 
 if __name__ == "__main__":
+   import argparse
+   import json
    import os
    import shutil
 
@@ -294,7 +333,91 @@ if __name__ == "__main__":
 
    from virtual_itslive_cube import _drop_nonfinite_attrs
 
-   bucket = "s3://its-live-data"
+   parser = argparse.ArgumentParser(
+      description="""
+      Build a virtual ITS_LIVE datacube from granules, restricted to a bounding box.
+
+      Usage examples:
+      # Using JSON file for granules
+      python src/virtual_itslive_cube_per_chunk.py \
+         --granules-file granules.json \
+         --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]' \
+         --output-store output.icechunk
+
+      python ./virtual_itslive_cube_per_chunk.py --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]' --granules-file virtual_input_4files.json --output-store its_live_cube_subset_m11_m12_s1_s2_landsat.icechunk
+
+      # Using direct granule list
+      python src/virtual_itslive_cube_per_chunk.py \
+         --granules granule1.nc granule2.nc granule3.nc \
+         --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]'
+      """
+   )
+
+   # Create mutually exclusive group for granules input
+   granules_group = parser.add_mutually_exclusive_group(required=True)
+   granules_group.add_argument(
+      "--granules-file",
+      type=str,
+      help="Path to JSON file containing a list of granule paths"
+   )
+   granules_group.add_argument(
+      "--granules",
+      nargs="+",
+      help="List of granule paths (space-separated)"
+   )
+
+   parser.add_argument(
+      "--bbox",
+      type=str,
+      required=True,
+      help="Bounding box as JSON list string: '[xmin, xmax, ymin, ymax]'"
+   )
+   parser.add_argument(
+      "--output-store",
+      type=str,
+      default="its_live_cube_subset.icechunk",
+      help="Path to output icechunk store (default: its_live_cube_subset.icechunk)"
+   )
+   parser.add_argument(
+      "--bucket",
+      type=str,
+      default="s3://its-live-data",
+      help="S3 bucket URL (default: s3://its-live-data)"
+   )
+
+   args = parser.parse_args()
+
+   # Load granules from either JSON file or command-line arguments
+   if args.granules_file:
+      logging.info(f"Loading granules from {args.granules_file}")
+      with open(args.granules_file, 'r') as f:
+         granules = json.load(f)
+
+      if not isinstance(granules, list):
+         raise ValueError(f"JSON file must contain a list of granule paths")
+   else:
+      granules = args.granules
+
+   granules = [
+      each.replace('https://its-live-data.s3.amazonaws.com/', '') for each in granules
+   ]
+
+   logging.info(f"Processing {len(granules)} granules")
+
+   # Parse bounding box from JSON string
+   bbox_list = json.loads(args.bbox)
+
+   if not isinstance(bbox_list, list) or len(bbox_list) != 4:
+      raise ValueError(f"bbox must be a list with 4 values [xmin, xmax, ymin, ymax], got {bbox_list}")
+
+   # Adjust cube cell edge coordinates for the cell centers
+   # bbox_list is [xmin, xmax, ymin, ymax]
+   bbox_list[0] = bbox_list[0] + PIXEL_SIZE_HALF  # xmin
+   bbox_list[1] = bbox_list[1] - PIXEL_SIZE_HALF  # xmax
+   bbox_list[2] = bbox_list[2] + PIXEL_SIZE_HALF  # ymin
+   bbox_list[3] = bbox_list[3] - PIXEL_SIZE_HALF  # ymax
+
+   bucket = args.bucket
 
    # Original granules for testing
    # granules = [
@@ -313,12 +436,12 @@ if __name__ == "__main__":
    # Using dev_notebooks/issues/virtualizarr/cube_with_s1_granules.ipynb
    # identified S1, S2, Landsat granules that actually have data in the
    # cube polygon
-   granules = [
-      "velocity_image_pair/sentinel2/v02/S70W100/S2B_MSIL1C_20210215T151259_N0209_R139_T13CET_20210215T181843_X_S2B_MSIL1C_20220121T151259_N0301_R139_T13CET_20220121T181438_G0120V02_P029.nc",
-      "velocity_image_pair/sentinel1/v02/S70W100/S1A_IW_SLC__1SSH_20251125T050857_20251125T050919_062029_07C28A_EB80_X_S1A_IW_SLC__1SSH_20251207T050856_20251207T050917_062204_07C968_3C90_G0120V02_P029.nc",
-      "velocity_image_pair/sentinel1/v02/S70W100/S1C_IW_SLC__1SSH_20251201T050755_20251201T050816_005253_00A6DB_DFED_X_S1A_IW_SLC__1SSH_20251207T050856_20251207T050917_062204_07C968_3C90_G0120V02_P034.nc",
-      "velocity_image_pair/landsatOLI/v02/S70W100/LE07_L1GT_002113_20121024_20200908_02_T2_X_LE07_L1GT_001113_20121118_20200908_02_T2_G0120V02_P024.nc"
-   ]
+   # granules = [
+   #    "velocity_image_pair/sentinel2/v02/S70W100/S2B_MSIL1C_20210215T151259_N0209_R139_T13CET_20210215T181843_X_S2B_MSIL1C_20220121T151259_N0301_R139_T13CET_20220121T181438_G0120V02_P029.nc",
+   #    "velocity_image_pair/sentinel1/v02/S70W100/S1A_IW_SLC__1SSH_20251125T050857_20251125T050919_062029_07C28A_EB80_X_S1A_IW_SLC__1SSH_20251207T050856_20251207T050917_062204_07C968_3C90_G0120V02_P029.nc",
+   #    "velocity_image_pair/sentinel1/v02/S70W100/S1C_IW_SLC__1SSH_20251201T050755_20251201T050816_005253_00A6DB_DFED_X_S1A_IW_SLC__1SSH_20251207T050856_20251207T050917_062204_07C968_3C90_G0120V02_P034.nc",
+   #    "velocity_image_pair/landsatOLI/v02/S70W100/LE07_L1GT_002113_20121024_20200908_02_T2_X_LE07_L1GT_001113_20121118_20200908_02_T2_G0120V02_P024.nc"
+   # ]
 
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
    registry = ObjectStoreRegistry({bucket: store})
@@ -327,16 +450,16 @@ if __name__ == "__main__":
    vds_list = []
    for granule in granules:
       logging.info(f'Reading {granule=}')
-      vds_list.append(
-         vz.open_virtual_dataset(
-               # url=os.path.join(bucket, key, granule),
-               url=os.path.join(bucket, granule),
-               parser=parser,
-               registry=registry,
-               loadable_variables=["time", "y", "x"],
-               decode_times=True,
+      v = vz.open_virtual_dataset(
+            url=os.path.join(bucket, granule),
+            parser=parser,
+            registry=registry,
+            loadable_variables=["time", "y", "x"],
+            decode_times=True,
          )
-      )
+
+      v.attrs["granule_url"] = granule  # stash for later
+      vds_list.append(v)
 
       logging.info(f'===> time={vds_list[-1].time.values[0]}')
 
@@ -355,15 +478,28 @@ if __name__ == "__main__":
    #    -983032.5 + PIXEL_SIZE_HALF, -921592.5 - PIXEL_SIZE_HALF)
 
    # bbox for test case with S1, S2, Landsat granules
-   bbox = (
-      -1658887.5 + PIXEL_SIZE_HALF, -1597447.5 - PIXEL_SIZE_HALF,
-      -430072.5 + PIXEL_SIZE_HALF, -368632.5 - PIXEL_SIZE_HALF)
+   # bbox = (
+   #    -1658887.5 + PIXEL_SIZE_HALF, -1597447.5 - PIXEL_SIZE_HALF,
+   #    -430072.5 + PIXEL_SIZE_HALF, -368632.5 - PIXEL_SIZE_HALF)
 
-   cube = build_virtual_cube_subset(vds_list, bbox)
+   bbox = tuple(bbox_list)
+
+   # Store to load each of the granule's "v" values to check if granule has
+   # any valid "v" data in the cube polygon
+   netcdf_store = S3Store(
+      bucket="its-live-data",
+      region="us-west-2",
+      skip_signature=True,
+   )
+
+   cube, skipped_granules = build_virtual_cube_subset(vds_list, bbox, netcdf_store)
    print(f"\n{cube}")
 
+   format_skipped_granules = "\n".join(skipped_granules)
+   logging.info(f'Skipped granules: \n{format_skipped_granules}')
+
    url_prefix = "s3://its-live-data/"
-   store_path = "its_live_cube_subset_m11_m12_s1_s2_landsat.icechunk"
+   store_path = args.output_store
    shutil.rmtree(store_path, ignore_errors=True)
 
    config = ic.RepositoryConfig.default()

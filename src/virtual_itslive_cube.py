@@ -365,7 +365,7 @@ def build_virtual_cube(vds_list):
                attr_value = vds["img_pair_info"].attrs.get(attr_name, "")
                new_vars[attr_name] = xr.Variable(
                   dims=(),
-                  data=np.array(attr_value),
+                  data=np.array(attr_value, dtype=np.dtypes.StringDType()),
                   attrs={"description": attr_name}
                )
             continue  # Skip adding img_pair_info itself to the cube
@@ -399,6 +399,14 @@ def build_virtual_cube(vds_list):
          new_vars[name] = xr.Variable(
             var.dims, data, attrs=var.attrs, encoding=var.encoding
          )
+
+      # Add source granule url for the layer in the cube
+      new_vars["granule_url"] = xr.Variable(
+         dims=("time",),
+         data=np.array([vds.attrs.get("granule_url", "")],
+                        dtype=np.dtypes.StringDType()),
+         attrs={"description": "source granule URL for this time step"},
+      )
 
       # Add M11 and M12 if not present in granule
       # (optical granules don't have these)
