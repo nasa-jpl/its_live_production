@@ -17,6 +17,12 @@ from zarr.core.metadata.v3 import ArrayV3Metadata
 import shutil
 import icechunk as ic
 
+import utils
+from itscube_types import (
+   ImgPairInfo,
+   Vars
+)
+
 
 def pad_manifestarray(marr, new_shape, offsets=None):
    """Smart padding: place a ManifestArray into a larger `new_shape` at the
@@ -228,102 +234,103 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
       return
 
    for m_var_name, m_var_attrs in m_vars_info.items():
-         # Create ManifestArray with missing chunks for optical granules
-         # Use an existing 3D ManifestArray variable (time, y, x) as a template
-         # Granules have 3D variables with single-valued time dimension
-         template_var = None
-         for var in vds.data_vars.values():
-            if isinstance(var.data, ManifestArray) and len(var.dims) == 3:
-               dims = var.dims
-               if 'time' in dims and 'y' in dims and 'x' in dims:
-                  template_var = var
-                  break
+      # Create ManifestArray with missing chunks for optical granules
+      # Use an existing 3D ManifestArray variable (time, y, x) as a template
+      # Granules have 3D variables with single-valued time dimension
+      template_var = None
+      for var in vds.data_vars.values():
+         if isinstance(var.data, ManifestArray) and len(var.dims) == 3:
+            dims = var.dims
+            if 'time' in dims and 'y' in dims and 'x' in dims:
+               template_var = var
+               break
 
-         if template_var is None:
-            # No suitable ManifestArray found, skip M11/M12 for this granule
-            logging.info(f"Warning: No 3D ManifestArray template found for {m_var_name}, skipping")
-            continue
+      if template_var is None:
+         # No suitable ManifestArray found, skip M11/M12 for this granule
+         logging.info(f"Warning: No 3D ManifestArray template found for {m_var_name}, skipping")
+         continue
 
-         # Get shape and chunks from template - create 3D (time, y, x) just like other variables
-         # This ensures M11/M12 can be concatenated along time dimension later
-         time_idx = template_var.dims.index('time')
-         y_idx = template_var.dims.index('y')
-         x_idx = template_var.dims.index('x')
+      # Get shape and chunks from template - create 3D (time, y, x) just like other variables
+      # This ensures M11/M12 can be concatenated along time dimension later
+      time_idx = template_var.dims.index('time')
+      y_idx = template_var.dims.index('y')
+      x_idx = template_var.dims.index('x')
 
-         # Create 3D shape with time=1 (single time slice)
-         shape = (1, len(y_union), len(x_union))
+      # Create 3D shape with time=1 (single time slice)
+      shape = (1, len(y_union), len(x_union))
 
-         # Get chunk sizes from template (time, y, x)
-         chunk_time = template_var.data.chunks[time_idx]
-         chunk_y = template_var.data.chunks[y_idx]
-         chunk_x = template_var.data.chunks[x_idx]
-         chunks = (chunk_time, chunk_y, chunk_x)
+      # Get chunk sizes from template (time, y, x)
+      chunk_time = template_var.data.chunks[time_idx]
+      chunk_y = template_var.data.chunks[y_idx]
+      chunk_x = template_var.data.chunks[x_idx]
+      chunks = (chunk_time, chunk_y, chunk_x)
 
-         # Create 3D chunk grid filled with MISSING_CHUNK_PATH (all missing chunks)
-         chunk_grid_shape = (
-            -(-shape[0] // chunks[0]),  # time chunks
-            -(-shape[1] // chunks[1]),  # y chunks
-            -(-shape[2] // chunks[2])   # x chunks
-         )
+      # Create 3D chunk grid filled with MISSING_CHUNK_PATH (all missing chunks)
+      chunk_grid_shape = (
+         -(-shape[0] // chunks[0]),  # time chunks
+         -(-shape[1] // chunks[1]),  # y chunks
+         -(-shape[2] // chunks[2])   # x chunks
+      )
 
-         paths = np.full(chunk_grid_shape, MISSING_CHUNK_PATH, dtype=np.dtypes.StringDType())
-         offsets = np.zeros(chunk_grid_shape, dtype="uint64")
-         lengths = np.zeros(chunk_grid_shape, dtype="uint64")
+      paths = np.full(chunk_grid_shape, MISSING_CHUNK_PATH, dtype=np.dtypes.StringDType())
+      offsets = np.zeros(chunk_grid_shape, dtype="uint64")
+      lengths = np.zeros(chunk_grid_shape, dtype="uint64")
 
-         manifest = ChunkManifest.from_arrays(
-            paths=paths,
-            offsets=offsets,
-            lengths=lengths,
-            validate_paths=False
-         )
+      manifest = ChunkManifest.from_arrays(
+         paths=paths,
+         offsets=offsets,
+         lengths=lengths,
+         validate_paths=False
+      )
 
-         # Create metadata by copying from template and updating shape and dtype.
-         # M11/M12 must be float32 to match radar granules, regardless of
-         # whichever dtype `template_var` happens to have (it's only used here
-         # for its 3D (time, y, x) shape/chunking) -- so force the dtype.
-         #
-         # NOTE: only set via the zarr-level `fill_value` (new_fill_value
-         # below), NOT also as an xr.Variable `encoding={'_FillValue': ...}`.
-         # virtualizarr's to_icechunk writer writes whatever's in `encoding`
-         # verbatim into the zarr array's raw attributes, bypassing xarray's
-         # own FillValueCoder.encode() step (which base64-encodes floats) --
-         # so a raw float lands in `attributes["_FillValue"]`. On read,
-         # xr.open_zarr's FillValueCoder.decode() then chokes on that raw
-         # float, expecting the base64-encoded string its own writer would
-         # have produced (TypeError: "expected str or bytes ... got float").
-         # The zarr-level fill_value alone is sufficient: xarray's zarr
-         # backend reads `_FillValue` directly from `zarr_array.fill_value`
-         # (no decode step) when `use_zarr_fill_value_as_mask=True`, or
-         # exposes it as `encoding["fill_value"]` otherwise -- either way,
-         # no FillValueCoder round-trip is involved when no separate
-         # `_FillValue` attribute is present.
-         fill_value = np.float32(-32767.0)
+      # Create metadata by copying from template and updating shape and dtype.
+      # M11/M12 must be float32 to match radar granules, regardless of
+      # whichever dtype `template_var` happens to have (it's only used here
+      # for its 3D (time, y, x) shape/chunking) -- so force the dtype.
+      #
+      # NOTE: only set via the zarr-level `fill_value` (new_fill_value
+      # below), NOT also as an xr.Variable `encoding={'_FillValue': ...}`.
+      # virtualizarr's to_icechunk writer writes whatever's in `encoding`
+      # verbatim into the zarr array's raw attributes, bypassing xarray's
+      # own FillValueCoder.encode() step (which base64-encodes floats) --
+      # so a raw float lands in `attributes["_FillValue"]`. On read,
+      # xr.open_zarr's FillValueCoder.decode() then chokes on that raw
+      # float, expecting the base64-encoded string its own writer would
+      # have produced (TypeError: "expected str or bytes ... got float").
+      # The zarr-level fill_value alone is sufficient: xarray's zarr
+      # backend reads `_FillValue` directly from `zarr_array.fill_value`
+      # (no decode step) when `use_zarr_fill_value_as_mask=True`, or
+      # exposes it as `encoding["fill_value"]` otherwise -- either way,
+      # no FillValueCoder round-trip is involved when no separate
+      # `_FillValue` attribute is present.
+      fill_value = np.float32(-32767.0)
 
-         new_metadata = copy_and_replace_metadata_dtype(
-            template_var.data.metadata,
-            new_shape=list(shape),
-            new_dtype="float32",
-            new_fill_value=float(fill_value),
-            codecs=_HARDCODED_M_VAR_PLACEHOLDER_CODECS,
-         )
+      new_metadata = copy_and_replace_metadata_dtype(
+         template_var.data.metadata,
+         new_shape=list(shape),
+         new_dtype="float32",
+         new_fill_value=float(fill_value),
+         codecs=_HARDCODED_M_VAR_PLACEHOLDER_CODECS,
+      )
 
-         manifest_array = ManifestArray(metadata=new_metadata, chunkmanifest=manifest)
+      manifest_array = ManifestArray(metadata=new_metadata, chunkmanifest=manifest)
 
-         new_vars[m_var_name] = xr.Variable(
-            dims=('time', 'y', 'x'),
-            data=manifest_array,
-            attrs={
-               'standard_name': m_var_attrs['standard_name'],
-               'description': m_var_attrs['description'],
-               'units': m_var_attrs['units'],
-            },
-            # _FillValue belongs in encoding, not attrs, per xarray's CF
-            # convention -- attrs is inert metadata, encoding is what
-            # actually participates in xarray's encode/decode machinery.
-            # encoding={'_FillValue': fill_value},
+      new_vars[m_var_name] = xr.Variable(
+         dims=('time', 'y', 'x'),
+         data=manifest_array,
+         attrs={
+            'standard_name': m_var_attrs['standard_name'],
+            'description': m_var_attrs['description'],
+            'units': m_var_attrs['units'],
+         },
+         # _FillValue belongs in encoding, not attrs, per xarray's CF
+         # convention -- attrs is inert metadata, encoding is what
+         # actually participates in xarray's encode/decode machinery.
+         # encoding={'_FillValue': fill_value},
 
-         )
-         logging.info(f"Added {m_var_name} as 3D ManifestArray (time, y, x) with missing chunks (not present in granule)")
+      )
+
+      logging.info(f"Added {m_var_name} as 3D ManifestArray (time, y, x) with missing chunks (not present in granule)")
 
 
 def build_virtual_cube(vds_list):
@@ -353,21 +360,92 @@ def build_virtual_cube(vds_list):
             continue
 
          # Skip img_pair_info - we'll extract mission_img1 from it instead
-         if name == "img_pair_info":
+         if name == ImgPairInfo.name:
+            for attr in ImgPairInfo.all:
+               # Add new variables that correspond to selected attributes of
+               # 'img_pair_info'
+               attr_dtype = None
+               if attr in ImgPairInfo.allTypes:
+                  attr_dtype = ImgPairInfo.allTypes[attr]
+
+               attr_value = vds[name].attrs[attr]
+
+               # Flag if value should be converted to date type
+               if attr in ImgPairInfo.toDate:
+                  # Convert attribute value to datetime object
+                  attr_value = utils.parse_time(attr_value, name, attr,
+                                                vds.attrs[Vars.url])
+
+               elif attr_dtype and \
+                  not isinstance(attr_dtype, np.dtypes.StringDType):
+                  attr_value = attr_dtype(attr_value)
+
+               new_var_attrs = {
+                  Vars.attrs.std_name: ImgPairInfo.stdName[attr],
+                  Vars.attrs.description: ImgPairInfo.allDescriptions[attr]
+               }
+               if attr in ImgPairInfo.allUnits:
+                  # Units attribute exists for new variable
+                  new_var_attrs[utils.Units.name] = ImgPairInfo.allUnits[attr]
+
+               new_vars[attr] = xr.Variable(
+                  dims=(),
+                  data=np.array(attr_value, dtype=attr_dtype),
+                  attrs=new_var_attrs
+               )
+
+         # TODO:
+         # for (each, new_each) in zip(
+         #       [ImgPairInfo.flight_direction_img1, ImgPairInfo.flight_direction_img2],
+         #       [Vars.ascending_img1, Vars.ascending_img2]
+         # ):
+         #       # Add new variables that correspond to flight direction attributes
+         #       # of 'img_pair_info'
+         #       self.layers[new_each] = xr.DataArray(
+         #          data=[ITSCube.get_data_var_binary_attr(
+         #             ds,
+         #             url,
+         #             ImgPairInfo.name,
+         #             each,
+         #             ImgPairInfo.ascending,
+         #             data_dtype=np.uint8,
+         #             missing_value=utils.Missing.u8value
+         #          ) for ds, url in zip(self.ds, self.urls)],
+         #          coords=[mid_date_coord],
+         #          dims=[utils.Coords.MID_DATE],
+         #          attrs={
+         #             Vars.attrs.std_name: Vars.name[new_each],
+         #             Vars.attrs.description: Vars.description[new_each],
+         #             BinaryFlag.attrs.values: BinaryFlag.values,
+         #             BinaryFlag.attrs.meanings: BinaryFlag.meanings[new_each]
+         #          }
+         #       )
+
+         # Add new variable that corresponds to autoRIFT_software_version
+         # self.layers[Vars.autorift_software_version] = xr.DataArray(
+         #       data=[ds.attrs[Vars.autorift_software_version] for ds in self.ds],
+         #       coords=[mid_date_coord],
+         #       dims=[utils.Coords.MID_DATE],
+         #       attrs={
+         #          Vars.attrs.std_name: Vars.autorift_software_version,
+         #          Vars.attrs.description: Vars.description[Vars.autorift_software_version]
+         #       }
+         # )
+
             # Add "mission_img*" and "satellite_img*"" (img_pair_info attributes):
             # have to add all of the attributes that represent cube's data
             # variables. This is just to proof a concept that we can
             # introduce attributes as new variables in the virtual dataset.
-            for attr_name in [
-               "mission_img1", "mission_img2",
-               "satellite_img1", "satellite_img2"
-            ]:
-               attr_value = vds["img_pair_info"].attrs.get(attr_name, "")
-               new_vars[attr_name] = xr.Variable(
-                  dims=(),
-                  data=np.array(attr_value, dtype=np.dtypes.StringDType()),
-                  attrs={"description": attr_name}
-               )
+            # for attr_name in [
+            #    "mission_img1", "mission_img2",
+            #    "satellite_img1", "satellite_img2"
+            # ]:
+            #    attr_value = vds["img_pair_info"].attrs.get(attr_name, "")
+            #    new_vars[attr_name] = xr.Variable(
+            #       dims=(),
+            #       data=np.array(attr_value, dtype=np.dtypes.StringDType()),
+            #       attrs={"description": attr_name}
+            #    )
             continue  # Skip adding img_pair_info itself to the cube
 
          # Extract vx attributes as scalar data variables (e.g., error_modeled)
@@ -401,9 +479,9 @@ def build_virtual_cube(vds_list):
          )
 
       # Add source granule url for the layer in the cube
-      new_vars["granule_url"] = xr.Variable(
+      new_vars[Vars.url] = xr.Variable(
          dims=("time",),
-         data=np.array([vds.attrs.get("granule_url", "")],
+         data=np.array([vds.attrs[Vars.url]],
                         dtype=np.dtypes.StringDType()),
          attrs={"description": "source granule URL for this time step"},
       )

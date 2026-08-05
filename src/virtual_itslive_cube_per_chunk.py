@@ -531,7 +531,7 @@ def load_granules(granules, bucket):
    """
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
    registry = ObjectStoreRegistry({bucket: store})
-   parser = HDFParser(drop_variables=["mapping"])
+   parser = HDFParser(drop_variables=[Mapping.name])
 
    vds_list = []
    start = 0
@@ -804,38 +804,44 @@ if __name__ == "__main__":
       # Remove granule specific attributes
       del cube.attrs['motion_detection_method']
 
-   print(f"\n{cube}")
+      print(f"\n{cube}")
 
-   format_skipped_granules = "\n".join(skipped_granules)
-   logging.info(f'Skipped granules: \n{format_skipped_granules}')
+      format_skipped_granules = "\n".join(skipped_granules)
+      logging.info(f'Skipped granules: \n{format_skipped_granules}')
 
-   url_prefix = "s3://its-live-data/"
-   store_path = args.output_store
-   shutil.rmtree(store_path, ignore_errors=True)
+      url_prefix = "s3://its-live-data/"
+      store_path = args.output_store
+      shutil.rmtree(store_path, ignore_errors=True)
 
-   config = ic.RepositoryConfig.default()
-   config.set_virtual_chunk_container(
-      ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
-   )
-   repo = ic.Repository.create(
-      storage=ic.local_filesystem_storage(store_path),
-      config=config,
-      authorize_virtual_chunk_access=ic.containers_credentials(
-         {url_prefix: ic.s3_credentials(anonymous=True)}
-      ),
-   )
+      config = ic.RepositoryConfig.default()
+      config.set_virtual_chunk_container(
+         ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
+      )
+      repo = ic.Repository.create(
+         storage=ic.local_filesystem_storage(store_path),
+         config=config,
+         authorize_virtual_chunk_access=ic.containers_credentials(
+            {url_prefix: ic.s3_credentials(anonymous=True)}
+         ),
+      )
 
-   session = repo.writable_session("main")
-   cube_clean = _drop_nonfinite_attrs(cube)
-   cube_clean.vz.to_icechunk(session.store)
-   snapshot_id = session.commit("its_live virtual cube subset: create cube")
-   logging.info(f"icechunk committed snapshot: {snapshot_id=}")
+      session = repo.writable_session("main")
+      cube_clean = _drop_nonfinite_attrs(cube)
+      cube_clean.vz.to_icechunk(session.store)
+      snapshot_id = session.commit("its_live virtual cube subset: create cube")
+      logging.info(f"icechunk committed snapshot: {snapshot_id=}")
 
-   cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
-   logging.info(f"{cube_roundtrip=}")
+      cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
+      logging.info(f"{cube_roundtrip=}")
 
-   logging.info(f'{cube_roundtrip.mission_img1.values=}')
-   logging.info(f'{cube_roundtrip.mission_img2.values=}')
-   logging.info(f'{cube_roundtrip.satellite_img1.values=}')
-   logging.info(f'{cube_roundtrip.satellite_img2.values=}')
-   logging.info(f'{cube_roundtrip.time.values=}')
+      logging.info(f'{cube_roundtrip.mission_img1.values=}')
+      logging.info(f'{cube_roundtrip.mission_img2.values=}')
+      logging.info(f'{cube_roundtrip.satellite_img1.values=}')
+      logging.info(f'{cube_roundtrip.satellite_img2.values=}')
+      logging.info(f'{cube_roundtrip.time.values=}')
+
+   else:
+      logging.info('No cube was created')
+
+   logging.info('Done')
+

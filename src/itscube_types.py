@@ -369,12 +369,12 @@ class ImgPairInfoVars:
     allTypes = {
         date_dt: np.float32,
         roi_valid_percentage: np.float32,
-        mission_img1: str,
-        mission_img2: str,
-        satellite_img1: str,
-        satellite_img2: str,
-        sensor_img1: str,
-        sensor_img2: str
+        mission_img1: np.dtypes.StringDType(),
+        mission_img2: np.dtypes.StringDType(),
+        satellite_img1: np.dtypes.StringDType(),
+        satellite_img2: np.dtypes.StringDType(),
+        sensor_img1: np.dtypes.StringDType(),
+        sensor_img2: np.dtypes.StringDType()
     }
 
     # Units for the variables in datacube that correspond to attributes of

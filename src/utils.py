@@ -2,6 +2,8 @@
 Utility variables and functions for ITS_LIVE processing.
 """
 from dataclasses import dataclass
+from dateutil.parser import parse
+from datetime import datetime
 import numpy as np
 
 S3_PREFIX = 's3://'
@@ -273,9 +275,7 @@ class OutputFormatInfo:
    projection: str = 'projection'
    publisher_name: str = 'publisher_name'
 
-
 OutputFormat = OutputFormatInfo()
-
 
 
 def to_int_type(
@@ -308,3 +308,42 @@ def to_int_type(
    int_data = np.rint(data).astype(data_type)
 
    return int_data
+
+
+def parse_time(value: str, var_name: str = None, attr_name: str = None,
+               ds_url: str = None):
+   """Parse string value into datetime object.
+
+   Inputs:
+   =======
+   value: str
+      String representation of the datetime.
+   var_name: str
+      Name of the variable for which value is parsed (for error reporting
+      only). Default is None.
+   attr_name: str
+      Name of the variable attribute for which value is parsed (for error
+      reporting only). Default is None.
+   ds_url: str
+      URL of the file for which value is parsed (for error reporting only).
+      Default is None.
+   """
+   try:
+      tokens = value.split('T')
+      if len(tokens) == 3:
+         # Handle malformed datetime in Sentinel 2 granules:
+         # img_pair_info.acquisition_date_img1 = "20190215T205541T00:00:00"
+         value = tokens[0] + 'T' + tokens[1][0:2] + ':' \
+                  + tokens[1][2:4] + ':' + tokens[1][4:6]
+         value = datetime.strptime(value, '%Y%m%dT%H:%M:%S')
+
+      elif len(value) >= 8:
+         value = parse(value)
+
+      return value
+
+   except ValueError as exc:
+      raise RuntimeError(
+         f"Error converting {value} to date format '%Y%m%d': "
+         f"{exc} for {var_name}.{attr_name} in {ds_url}"
+      )
