@@ -1,32 +1,41 @@
 """
 Build a virtual ITS_LIVE datacube restricted to a bounding box that is
 *smaller* than the granules' combined extent. Such virtual datacube corresponds
-to a single chunk of 522x512 pixels which are co-aligned with all ITS_LIVE
-granules.
+to a single chunk of 512x512 pixels which are (chunk) co-aligned with all
+ITS_LIVE granules.
 
-This is the mirror image of `pad_manifestarray` in virtual_itslive_cube.py:
-instead of placing a granule's ManifestArray into a larger grid (nodata
-elsewhere), we slice it down to only the chunks that cover the target bbox.
-Only chunk references are dropped/kept -- no pixel data is read.
-
-After cropping, each granule is handed to the existing `build_virtual_cube`,
-which mosaics the chunk-aligned cropped grids onto a shared grid and stacks
-them on time. This reuses all of ehe existing padding / combine_by_coords /
-img_pair_info-handling logic unchanged.
+After cropping, each granule is handed to the existing
+virtual_itslive_cube.py:build_virtual_cube(), which mosaics the chunk-aligned
+cropped grids onto a shared grid and stacks them on time. This reuses all of
+the existing padding / combine_by_coords / img_pair_info-handling logic
+unchanged.
 """
+from dateutil.parser import parse
+from datetime import datetime
 from joblib import Parallel, delayed, parallel_config
 import gc
 import logging
 import numpy as np
 import xarray as xr
-from obstore.store import S3Store
 import os
 import io
+import json
+import shutil
+
+import obstore
+from obstore.store import S3Store
+import virtualizarr as vz
+from virtualizarr.parsers import HDFParser
+from obspec_utils.registry import ObjectStoreRegistry
+import icechunk as ic
+
+from virtual_itslive_cube import _drop_nonfinite_attrs
 
 from virtualizarr.manifests import ManifestArray
 from virtualizarr.manifests.utils import copy_and_replace_metadata
 
 from virtual_itslive_cube import build_virtual_cube
+import itslive_utils
 
 # Set up logging
 logging.basicConfig(
@@ -48,15 +57,37 @@ def crop_manifestarray(marr, starts, stops):
    """Chunk-aligned crop: return a new ManifestArray referencing only the
    chunks needed to cover element range [starts[i], stops[i]) on each axis.
 
+   This is the mirror image of `pad_manifestarray` in virtual_itslive_cube.py:
+   instead of placing a granule's ManifestArray into a larger grid (nodata
+   elsewhere), we slice it down to only the chunks that cover the target bbox.
+   Only chunk references are dropped/kept -- no pixel data is read.
+
    Parameters
    ----------
    marr : ManifestArray
-      The array to crop. Only its chunk references are read/moved.
-   starts, stops : sequence of int
-      Per-axis element bounds of the region to keep, `stops` exclusive.
-      Both must be multiples of that axis' chunk size, except `stops[i]`
-      may equal the axis length to reach the array's edge (where the last
-      chunk is legitimately partial).
+      The array to crop. Only its chunk references are read/moved; no pixel
+      data is accessed.
+   starts : sequence of int
+      Per-axis element indices where the crop region starts. Each value must
+      be a multiple of that axis' chunk size.
+   stops : sequence of int
+      Per-axis element indices where the crop region ends (exclusive). Each
+      value must be a multiple of that axis' chunk size, except it may equal
+      the axis length to reach the array's edge (where the last chunk is
+      legitimately partial).
+
+   Returns
+   -------
+   ManifestArray
+      A new ManifestArray with the same dtype and chunk structure as `marr`,
+      but containing only the chunk references needed to cover the specified
+      element ranges. The returned array's shape reflects the cropped region.
+
+   Raises
+   ------
+   ValueError
+      If starts/stops have wrong dimensionality, contain invalid ranges, or
+      are not aligned to chunk boundaries.
    """
    shape, chunks = marr.shape, marr.chunks
    starts = tuple(int(s) for s in starts)
@@ -109,6 +140,23 @@ def crop_manifestarray(marr, starts, stops):
 
 
 def open_netcdf_from_s3(store, key, engine='h5netcdf'):
+   """Open a NetCDF file from S3 as an xarray Dataset.
+
+   Parameters
+   ----------
+   store : obstore.store.S3Store
+      S3 object store instance for accessing files.
+   key : str
+      S3 key or HTTPS URL to the NetCDF file. HTTPS URLs are automatically
+      converted to S3 keys.
+   engine : str, optional
+      Xarray engine to use for opening the file (default: 'h5netcdf').
+
+   Returns
+   -------
+   xr.Dataset
+      The opened dataset with all data loaded into memory.
+   """
    if 'https://' in key:
       key = key.replace('https://its-live-data.s3.amazonaws.com/', '')
 
@@ -121,9 +169,26 @@ def bbox_to_chunk_aligned_indices(coord, step, chunk_size, bbox_lo, bbox_hi):
    """Map a target coordinate range [bbox_lo, bbox_hi] onto chunk-grid-aligned
    element indices [start, stop) into `coord`.
 
-   `coord` is a real, regularly-spaced 1-D coordinate vector with spacing
-   `step` (may be negative -- e.g. a descending y-axis). Returns None if
-   `[bbox_lo, bbox_hi]` doesn't overlap `coord` at all.
+   Parameters
+   ----------
+   coord : numpy.ndarray
+      A regularly-spaced 1-D coordinate vector (e.g., x or y coordinates).
+   step : float
+      Spacing between coordinate values. May be negative for descending axes
+      (e.g., y-axis).
+   chunk_size : int
+      Size of chunks along this dimension in elements.
+   bbox_lo : float
+      Lower bound of the target coordinate range.
+   bbox_hi : float
+      Upper bound of the target coordinate range.
+
+   Returns
+   -------
+   tuple of (int, int) or None
+      A tuple (start, stop) of chunk-aligned element indices into `coord`,
+      where `stop` is exclusive. Returns None if the bbox doesn't overlap
+      `coord` at all.
    """
    n = len(coord)
    p0 = (bbox_lo - coord[0]) / step
@@ -159,12 +224,14 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
    netcdf_store: obstore.store.S3Store
       Object store to access granule data from.
 
-
    Returns
    -------
-   xr.Dataset or None
-      The cropped dataset, or None if this granule doesn't overlap `bbox`
-      at all (caller should drop it from the cube).
+   tuple of (xr.Dataset or None, str)
+      A tuple containing:
+      - The cropped dataset with chunk-aligned spatial bounds, or None if
+        this granule doesn't overlap `bbox` or has no valid data in the
+        overlap region.
+      - The granule URL string from the dataset's attributes.
    """
    xmin, xmax, ymin, ymax = bbox
    x = vds["x"].values
@@ -257,6 +324,24 @@ def _assert_identical_grids(cropped, bbox):
    merely overlapping ones needing a pad-to-common-grid step. If that's
    ever violated (e.g. an unexpectedly offset granule), fail loudly here
    rather than silently letting `pad_manifestarray` paper over it.
+
+   Parameters
+   ----------
+   cropped : list of xr.Dataset
+      List of cropped virtual datasets. Must have at least one element.
+   bbox : tuple
+      The bounding box (xmin, xmax, ymin, ymax) used for cropping, included
+      in error messages for debugging.
+
+   Raises
+   ------
+   ValueError
+      If any cropped granule has different x or y coordinates than the first
+      granule in the list.
+
+   Returns
+   -------
+   None
    """
    ref_vds = cropped[0]
    ref_x = ref_vds["x"].values
@@ -298,8 +383,29 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    ----------
    vds_list : list of xr.Dataset
       Virtual datasets for each granule (as passed to `build_virtual_cube`).
-   bbox : (xmin, xmax, ymin, ymax)
-      Target region in the granules' shared x/y units.
+      Each dataset should have 'x', 'y', 'time' coordinates and virtual
+      ManifestArray data variables.
+   bbox : tuple of (float, float, float, float)
+      Target region in the granules' shared x/y units, specified as
+      (xmin, xmax, ymin, ymax).
+   netcdf_store : obstore.store.S3Store
+      S3 object store instance for accessing granule data to check for
+      valid data within the overlap region.
+
+   Returns
+   -------
+   tuple of (xr.Dataset, list of str)
+      A tuple containing:
+      - The virtual datacube with all cropped granules stacked along the
+        time dimension.
+      - List of URLs for granules that were skipped (no overlap or no valid
+        data in overlap region).
+
+   Raises
+   ------
+   ValueError
+      If no granules overlap the bbox, or if cropped granules don't share
+      identical x/y grids.
    """
    logging.info(f'Building cube out of {len(vds_list)} granules')
    cropped = []
@@ -333,26 +439,18 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
          )
 
          for each_result in results:
-            cropped_ds, ds_url = each_result
+            cropped_ds, cropped_url = each_result
             if cropped_ds is not None:
                cropped.append(cropped_ds)
 
             else:
-               skipped_granules.append(ds_url)
+               skipped_granules.append(cropped_url)
 
          num_to_process -= num_tasks
          start += num_tasks
 
-   # for vds in vds_list:
-   #    c = crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store)
-   #    if c is not None:
-   #       cropped.append(c)
-
-   #    else:
-   #       skipped_granules.append(vds.attrs["granule_url"])
-
    if not cropped:
-      raise ValueError(f"Building virtual cube: no granules overlaps bbox {bbox}")
+      raise ValueError(f"Building virtual cube: no granules overlap bbox {bbox}")
 
    logging.info(f'Got {len(cropped)} cropped granules')
 
@@ -371,10 +469,19 @@ def read_virtual_dataset(granule_url, parser, registry):
 
    Parameters
    ----------
-   granule_url: str
-      Granule url to open.
-   parser: virtualizarr.parsers.HDFParser
-      Parser to open granule url with.
+   granule_url : str
+      S3 URL to the granule file (e.g., 's3://its-live-data/path/to/granule.nc').
+   parser : virtualizarr.parsers.HDFParser
+      Parser instance for reading HDF/NetCDF files as virtual datasets.
+   registry : obspec_utils.registry.ObjectStoreRegistry
+      Registry mapping URL prefixes to object store instances for chunk access.
+
+   Returns
+   -------
+   xr.Dataset
+      Virtual dataset with 'time', 'y', 'x' coordinates loaded into memory
+      and data variables as ManifestArrays (chunk references only). The dataset
+      includes 'granule_url' and 'granule_path' in its attributes.
    """
    v = vz.open_virtual_dataset(
       url=granule_url,
@@ -392,15 +499,25 @@ def read_virtual_dataset(granule_url, parser, registry):
 
 
 def load_granules(granules, bucket):
-   """Load granules into virtual datasets.
+   """Load granules into virtual datasets using parallel processing.
+
+   Reads multiple granule files in parallel batches, converting each into
+   a virtual dataset with coordinate data loaded and data variables as
+   ManifestArrays (chunk references only, no pixel data loaded).
 
    Parameters
    ----------
-   granule_url: list(str)
-      Granules to load.
-   bucket: str
-      AWS S3 bucket that stores granules.
+   granules : list of str
+      List of S3 URLs or paths to granule files to load.
+   bucket : str
+      AWS S3 bucket URL (e.g., 's3://its-live-data') that stores the granules.
 
+   Returns
+   -------
+   list of xr.Dataset
+      List of virtual datasets, one per granule, with the same order as the
+      input granules list. Each dataset has 'time', 'y', 'x' coordinates loaded
+      and data variables as ManifestArrays.
    """
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
    registry = ObjectStoreRegistry({bucket: store})
@@ -416,7 +533,6 @@ def load_granules(granules, bucket):
    # Using loky (process-based) bypasses the threading-lock contention entirely,
    # by construction, because there is no shared process for a lock to live in.
    with parallel_config(
-      # backend='threading',
       backend='loky',
       n_jobs=MAX_AWS_CONNECTIONS
    ):
@@ -446,17 +562,6 @@ def load_granules(granules, bucket):
 
 if __name__ == "__main__":
    import argparse
-   import json
-   import os
-   import shutil
-
-   import obstore
-   import virtualizarr as vz
-   from virtualizarr.parsers import HDFParser
-   from obspec_utils.registry import ObjectStoreRegistry
-   import icechunk as ic
-
-   from virtual_itslive_cube import _drop_nonfinite_attrs
 
    parser = argparse.ArgumentParser(
       description="""
@@ -494,6 +599,12 @@ if __name__ == "__main__":
       nargs="+",
       help="List of granule paths (space-separated)"
    )
+   granules_group.add_argument(
+      "--useSearchAPI",
+      action='store_true',
+      default=False,
+      help="Use searchAPI to get list of granules for the bounding box"
+   )
 
    parser.add_argument(
       "--bbox",
@@ -519,8 +630,36 @@ if __name__ == "__main__":
       default=8,
       help='Number of threads to use for parallel processing [%(default)d].'
    )
+   parser.add_argument(
+      "--start-date",
+      type=lambda s: parse(s).strftime('%Y-%m-%d'),
+      default='1982-01-01',
+      help="Start date for searchAPI query (required with --useSearchAPI) [%(default)s]"
+   )
+   parser.add_argument(
+      "--end-date",
+      type=lambda s: parse(s).strftime('%Y-%m-%d'),
+      default=datetime.now().strftime('%Y-%m-%d'),
+      help="End date for searchAPI query (required with --useSearchAPI) [%(default)s]"
+   )
+   parser.add_argument(
+      '--projection',
+      type=str,
+      required=True,
+      help='UTM target projection for the virtual cube and granules it will be'
+         'constructed of.'
+   )
+
 
    args = parser.parse_args()
+
+   # Validate that startDate and endDate are provided when using searchAPI
+   if args.useSearchAPI:
+      if not args.startDate or not args.endDate or not args.projection:
+         parser.error(
+            "--useSearchAPI requires --startDate, --endDate, --projection  arguments"
+         )
+
    MAX_AWS_CONNECTIONS = args.threads
 
    # Load granules from either JSON file or command-line arguments
@@ -531,8 +670,24 @@ if __name__ == "__main__":
 
       if not isinstance(granules, list):
          raise ValueError(f"JSON file must contain a list of granule paths")
-   else:
+   elif args.granules:
       granules = args.granules
+
+   elif args.useSearchAPI:
+      # TODO:
+      roi = {
+         "type": "Polygon",
+         "coordinates": [self.polygon_coords]
+      }
+
+      granules = itslive_utils.serverless_search(
+         epsg_code=args.projection,
+         start_date=args.start_date,
+         end_date=args.end_date,
+         roi=roi
+      )
+
+
 
    granules = [
       each.replace(
@@ -548,39 +703,14 @@ if __name__ == "__main__":
    if not isinstance(bbox_list, list) or len(bbox_list) != 4:
       raise ValueError(f"bbox must be a list with 4 values [xmin, xmax, ymin, ymax], got {bbox_list}")
 
-   # Adjust cube cell edge coordinates for the cell centers
-   # bbox_list is [xmin, xmax, ymin, ymax]
+   # Adjust cube cell edge coordinates to the cell centers (like granules grids
+   # have it): bbox_list is [xmin, xmax, ymin, ymax]
    bbox_list[0] = bbox_list[0] + PIXEL_SIZE_HALF  # xmin
    bbox_list[1] = bbox_list[1] - PIXEL_SIZE_HALF  # xmax
    bbox_list[2] = bbox_list[2] + PIXEL_SIZE_HALF  # ymin
    bbox_list[3] = bbox_list[3] - PIXEL_SIZE_HALF  # ymax
 
    bucket = args.bucket
-
-   # Original granules for testing
-   # granules = [
-   #    "velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_020121_20231013_20231102_02_T2_X_LC09_L1GT_020121_20231106_20231106_02_T2_G0120V02_P084.nc",
-   #    "velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_020120_20201121_20210315_02_T2_X_LC08_L1GT_020120_20210124_20210305_02_T2_G0120V02_P051.nc",
-   # ]
-
-   # Now test with S1, Landsat and S2 granules - these all have Nan data
-   # for the cube overlap
-   # granules = [
-   #    "velocity_image_pair/landsatOLI/v02/S70W090/LC08_L1GT_002112_20140208_20201016_02_T2_X_LC08_L1GT_002112_20140312_20200911_02_T2_G0120V02_P062.nc",
-   #    "velocity_image_pair/sentinel1/v02/S70W100/S1A_IW_SLC__1SSH_20251223T043633_20251223T043654_062437_07D279_7E42_X_S1A_IW_SLC__1SSH_20260104T043632_20260104T043653_062612_07D939_651F_G0120V02_P030.nc",
-   #    "velocity_image_pair/sentinel2/v02/S70W100/S2B_MSIL1C_20181208T151259_N0207_R139_T13CET_20181208T180302_X_S2B_MSIL1C_20190206T151259_N0207_R139_T13CET_20190206T180306_G0120V02_P055.nc"
-   # ]
-
-   # Using dev_notebooks/issues/virtualizarr/cube_with_s1_granules.ipynb
-   # identified S1, S2, Landsat granules that actually have data in the
-   # cube polygon
-   # granules = [
-   #    "velocity_image_pair/sentinel2/v02/S70W100/S2B_MSIL1C_20210215T151259_N0209_R139_T13CET_20210215T181843_X_S2B_MSIL1C_20220121T151259_N0301_R139_T13CET_20220121T181438_G0120V02_P029.nc",
-   #    "velocity_image_pair/sentinel1/v02/S70W100/S1A_IW_SLC__1SSH_20251125T050857_20251125T050919_062029_07C28A_EB80_X_S1A_IW_SLC__1SSH_20251207T050856_20251207T050917_062204_07C968_3C90_G0120V02_P029.nc",
-   #    "velocity_image_pair/sentinel1/v02/S70W100/S1C_IW_SLC__1SSH_20251201T050755_20251201T050816_005253_00A6DB_DFED_X_S1A_IW_SLC__1SSH_20251207T050856_20251207T050917_062204_07C968_3C90_G0120V02_P034.nc",
-   #    "velocity_image_pair/landsatOLI/v02/S70W100/LE07_L1GT_002113_20121024_20200908_02_T2_X_LE07_L1GT_001113_20121118_20200908_02_T2_G0120V02_P024.nc"
-   # ]
-
 
    vds_list = load_granules(granules, bucket)
    logging.info(f'Parsed {len(vds_list)} datasets')
