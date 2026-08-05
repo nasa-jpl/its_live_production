@@ -1519,25 +1519,8 @@ class ITSCube:
                 value = np.asarray(value).flat[0]
 
             # print(f"Read value for {var_name}.{attr_name}: {value}")
-
             if to_date is True:
-                try:
-                    tokens = value.split('T')
-                    if len(tokens) == 3:
-                        # Handle malformed datetime in Sentinel 2 granules:
-                        # img_pair_info.acquisition_date_img1 = "20190215T205541T00:00:00"
-                        value = tokens[0] + 'T' + tokens[1][0:2] + ':' \
-                                + tokens[1][2:4] + ':' + tokens[1][4:6]
-                        value = datetime.strptime(value, '%Y%m%dT%H:%M:%S')
-
-                    elif len(value) >= 8:
-                        value = parse(value)
-
-                except ValueError as exc:
-                    raise RuntimeError(
-                        f"Error converting {value} to date format '%Y%m%d': "
-                        f"{exc} for {var_name}.{attr_name} in {ds_url}"
-                    )
+                value = utils.parse_time(value, var_name, attr_name, ds_url)
 
             else:
                 # Convert value to expected datatype
