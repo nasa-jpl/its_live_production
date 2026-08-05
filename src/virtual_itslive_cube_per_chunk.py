@@ -16,12 +16,12 @@ from joblib import Parallel, delayed, parallel_config
 import gc
 import logging
 import numpy as np
+import pyproj
 import xarray as xr
 import os
 import io
 import json
 import shutil
-
 import obstore
 from obstore.store import S3Store
 import virtualizarr as vz
@@ -36,7 +36,14 @@ from virtualizarr.manifests.utils import copy_and_replace_metadata
 
 from virtual_itslive_cube import build_virtual_cube
 import itslive_utils
-
+import utils
+from itscube_types import (
+   CubeFormat,
+   ImgPairInfo,
+   Mapping,
+   Vars,
+   SkippedGranules
+)
 # Set up logging
 logging.basicConfig(
    level=logging.INFO,
@@ -51,6 +58,9 @@ PIXEL_SIZE_HALF = PIXEL_SIZE / 2
 # Number of threads for parallel processing
 MAX_AWS_CONNECTIONS = 8
 NUM_GRANULES_TO_READ = 100
+
+# String representation of longitude/latitude projection
+LON_LAT_PROJECTION = 'EPSG:4326'
 
 
 def crop_manifestarray(marr, starts, stops):
@@ -229,8 +239,8 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
    tuple of (xr.Dataset or None, str)
       A tuple containing:
       - The cropped dataset with chunk-aligned spatial bounds, or None if
-        this granule doesn't overlap `bbox` or has no valid data in the
-        overlap region.
+      this granule doesn't overlap `bbox` or has no valid data in the
+      overlap region.
       - The granule URL string from the dataset's attributes.
    """
    xmin, xmax, ymin, ymax = bbox
@@ -571,19 +581,19 @@ if __name__ == "__main__":
       # Using JSON file for granules
       python src/virtual_itslive_cube_per_chunk.py \
          --granules-file granules.json \
-         --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]' \
+         --polygon '[[-1658887.5, -430072.5], [-1597447.5, -430072.5], [-1597447.5, -368632.5], [-1658887.5, -368632.5], [-1658887.5, -430072.5]]' \
          --output-store output.icechunk
 
       # Using 4 granules with valid data in cube's polygon
-      python ./virtual_itslive_cube_per_chunk.py --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]' --granules-file virtual_input_4files.json --output-store its_live_cube_subset_m11_m12_s1_s2_landsat.icechunk
+      python ./virtual_itslive_cube_per_chunk.py --polygon '[[-1658887.5, -430072.5], [-1597447.5, -430072.5], [-1597447.5, -368632.5], [-1658887.5, -368632.5], [-1658887.5, -430072.5]]' --granules-file virtual_input_4files.json --output-store its_live_cube_subset_m11_m12_s1_s2_landsat.icechunk
 
       # Using 39 input granules with only 7 having valid data in cube's polygon:
-      python ./virtual_itslive_cube_per_chunk.py --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]' --granules-file virtual_input_39files.json --output-store its_live_cube_subset_m11_m12_s1_s2_landsat.icechunk
+      python ./virtual_itslive_cube_per_chunk.py --polygon '[[-1658887.5, -430072.5], [-1597447.5, -430072.5], [-1597447.5, -368632.5], [-1658887.5, -368632.5], [-1658887.5, -430072.5]]' --granules-file virtual_input_39files.json --output-store its_live_cube_subset_m11_m12_s1_s2_landsat.icechunk
 
       # Using direct granule list
       python src/virtual_itslive_cube_per_chunk.py \
          --granules granule1.nc granule2.nc granule3.nc \
-         --bbox '[-1658887.5, -1597447.5, -430072.5, -368632.5]'
+         --polygon '[[-1658887.5, -430072.5], [-1597447.5, -430072.5], [-1597447.5, -368632.5], [-1658887.5, -368632.5], [-1658887.5, -430072.5]]'
       """
    )
 
@@ -600,17 +610,18 @@ if __name__ == "__main__":
       help="List of granule paths (space-separated)"
    )
    granules_group.add_argument(
-      "--useSearchAPI",
+      "--use-searchAPI",
       action='store_true',
       default=False,
       help="Use searchAPI to get list of granules for the bounding box"
    )
 
    parser.add_argument(
-      "--bbox",
+      "--polygon",
       type=str,
       required=True,
-      help="Bounding box as JSON list string: '[xmin, xmax, ymin, ymax]'"
+      help="Bounding polygon as JSON list of [x,y] coordinates: "
+         "'[[x1,y1],[x2,y2],[x3,y3],[x4,y4],[x1,y1]]' (closed polygon)"
    )
    parser.add_argument(
       "--output-store",
@@ -622,7 +633,7 @@ if __name__ == "__main__":
       "--bucket",
       type=str,
       default="s3://its-live-data",
-      help="S3 bucket URL (default: s3://its-live-data)"
+      help="S3 bucket URL [%(default)s]"
    )
    parser.add_argument(
       '-t', '--threads',
@@ -634,33 +645,67 @@ if __name__ == "__main__":
       "--start-date",
       type=lambda s: parse(s).strftime('%Y-%m-%d'),
       default='1982-01-01',
-      help="Start date for searchAPI query (required with --useSearchAPI) [%(default)s]"
+      help="Start date for searchAPI query (required with --use-SearchAPI) [%(default)s]"
    )
    parser.add_argument(
       "--end-date",
       type=lambda s: parse(s).strftime('%Y-%m-%d'),
       default=datetime.now().strftime('%Y-%m-%d'),
-      help="End date for searchAPI query (required with --useSearchAPI) [%(default)s]"
+      help="End date for searchAPI query (required with --use-SearchAPI) [%(default)s]"
    )
    parser.add_argument(
       '--projection',
       type=str,
       required=True,
       help='UTM target projection for the virtual cube and granules it will be'
-         'constructed of.'
+         'constructed (required with --use-SearchAPI) [%(default)s]'
    )
-
 
    args = parser.parse_args()
 
-   # Validate that startDate and endDate are provided when using searchAPI
-   if args.useSearchAPI:
-      if not args.startDate or not args.endDate or not args.projection:
-         parser.error(
-            "--useSearchAPI requires --startDate, --endDate, --projection  arguments"
-         )
-
    MAX_AWS_CONNECTIONS = args.threads
+
+   # Parse bounding polygon from JSON string in UTM coordinates
+   polygon = json.loads(args.polygon)
+
+   # Extract bounding box from polygon
+   x_coords = [coord[0] for coord in polygon]
+   y_coords = [coord[1] for coord in polygon]
+
+   xmin = min(x_coords)
+   xmax = max(x_coords)
+   ymin = min(y_coords)
+   ymax = max(y_coords)
+
+   logging.info(f"Extracted bbox from polygon: {xmin=}, {xmax=}, {ymin=}, {ymax=}")
+
+   # Adjust cube cell edge coordinates to the cell centers (like granules grids
+   # have it)
+   xmin = xmin + PIXEL_SIZE_HALF
+   xmax = xmax - PIXEL_SIZE_HALF
+   ymin = ymin + PIXEL_SIZE_HALF
+   ymax = ymax - PIXEL_SIZE_HALF
+
+   bbox = [xmin, xmax, ymin, ymax]
+
+   xmid = (xmin + xmax) / 2
+   ymid = (ymin + ymax) / 2
+
+   # Convert UTM coordinates to lon/lat (ensure lonlat output order)
+   to_lon_lat_transformer = pyproj.Transformer.from_crs(
+      f"EPSG:{args.projection}", LON_LAT_PROJECTION, always_xy=True
+   )
+
+   # Introduce 5 points per each polygon side
+   polygon = itslive_utils.add_five_points_to_polygon_side(polygon)
+
+   # Convert polygon from its target projection to longitude/latitude
+   # coordinates which are used by granule search API
+   polygon_coords = []
+
+   for each in polygon:
+      coords = to_lon_lat_transformer.transform(each[0], each[1])
+      polygon_coords.append(list(coords))
 
    # Load granules from either JSON file or command-line arguments
    if args.granules_file:
@@ -673,11 +718,16 @@ if __name__ == "__main__":
    elif args.granules:
       granules = args.granules
 
-   elif args.useSearchAPI:
-      # TODO:
+   elif args.use_searchAPI:
+      # Validate that other arguments are provided when using searchAPI
+      if not args.startDate or not args.endDate or not args.projection:
+         parser.error(
+            "--use-searchAPI requires --startDate, --endDate, --projection arguments"
+         )
+
       roi = {
          "type": "Polygon",
-         "coordinates": [self.polygon_coords]
+         "coordinates": [polygon_coords]
       }
 
       granules = itslive_utils.serverless_search(
@@ -687,8 +737,6 @@ if __name__ == "__main__":
          roi=roi
       )
 
-
-
    granules = [
       each.replace(
          'https://its-live-data.s3.amazonaws.com/',
@@ -696,19 +744,6 @@ if __name__ == "__main__":
    ]
 
    logging.info(f"Processing {len(granules)} granules")
-
-   # Parse bounding box from JSON string
-   bbox_list = json.loads(args.bbox)
-
-   if not isinstance(bbox_list, list) or len(bbox_list) != 4:
-      raise ValueError(f"bbox must be a list with 4 values [xmin, xmax, ymin, ymax], got {bbox_list}")
-
-   # Adjust cube cell edge coordinates to the cell centers (like granules grids
-   # have it): bbox_list is [xmin, xmax, ymin, ymax]
-   bbox_list[0] = bbox_list[0] + PIXEL_SIZE_HALF  # xmin
-   bbox_list[1] = bbox_list[1] - PIXEL_SIZE_HALF  # xmax
-   bbox_list[2] = bbox_list[2] + PIXEL_SIZE_HALF  # ymin
-   bbox_list[3] = bbox_list[3] - PIXEL_SIZE_HALF  # ymax
 
    bucket = args.bucket
 
@@ -732,8 +767,6 @@ if __name__ == "__main__":
    #    -1658887.5 + PIXEL_SIZE_HALF, -1597447.5 - PIXEL_SIZE_HALF,
    #    -430072.5 + PIXEL_SIZE_HALF, -368632.5 - PIXEL_SIZE_HALF)
 
-   bbox = tuple(bbox_list)
-
    # Store to load each of the granule's "v" values to check if granule has
    # any valid "v" data in the cube polygon
    netcdf_store = S3Store(
@@ -743,6 +776,34 @@ if __name__ == "__main__":
    )
 
    cube, skipped_granules = build_virtual_cube_subset(vds_list, bbox, netcdf_store)
+
+   # Add new attributes to the cube
+   if cube:
+      date_created = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
+      cube.attrs[CubeFormat.date_created] = date_created
+      cube.attrs[CubeFormat.date_updated] = date_created
+
+      cube.attrs[utils.OutputFormat.title] = \
+         CubeFormat.values[utils.OutputFormat.title]
+
+      cube.attrs[CubeFormat.gdal_area_or_point] = \
+         CubeFormat.values[CubeFormat.gdal_area_or_point]
+
+      cube.attrs[CubeFormat.geo_polygon] = json.dumps(polygon_coords)
+
+      cube.attrs[utils.OutputFormat.institution] = \
+         CubeFormat.values[utils.OutputFormat.institution]
+
+      center_lon_lat = to_lon_lat_transformer.transform(xmid, ymid)
+      cube.attrs[utils.OutputFormat.latitude] = round(center_lon_lat[1], 2)
+      cube.attrs[utils.OutputFormat.longitude] = round(center_lon_lat[0], 2)
+
+      cube.attrs[CubeFormat.proj_polygon] = json.dumps(polygon)
+      cube.attrs[utils.OutputFormat.projection] = str(args.projection)
+
+      # Remove granule specific attributes
+      del cube.attrs['motion_detection_method']
+
    print(f"\n{cube}")
 
    format_skipped_granules = "\n".join(skipped_granules)
@@ -767,7 +828,7 @@ if __name__ == "__main__":
    session = repo.writable_session("main")
    cube_clean = _drop_nonfinite_attrs(cube)
    cube_clean.vz.to_icechunk(session.store)
-   snapshot_id = session.commit("its_live virtual cube subset: cropped to bbox")
+   snapshot_id = session.commit("its_live virtual cube subset: create cube")
    logging.info(f"icechunk committed snapshot: {snapshot_id=}")
 
    cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
