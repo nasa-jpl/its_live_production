@@ -471,7 +471,7 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    _assert_identical_grids(cropped, bbox)
 
    logging.info(f'Number of skipped granules: {len(skipped_granules)}')
-   return build_virtual_cube(cropped), skipped_granules
+   return *build_virtual_cube(cropped), skipped_granules
 
 
 def read_virtual_dataset(granule_url, parser, registry):
@@ -775,7 +775,8 @@ if __name__ == "__main__":
       skip_signature=True,
    )
 
-   cube, skipped_granules = build_virtual_cube_subset(vds_list, bbox, netcdf_store)
+   cube, autorift_param_file, skipped_granules = \
+      build_virtual_cube_subset(vds_list, bbox, netcdf_store)
 
    # Add new attributes to the cube
    if cube:
@@ -793,6 +794,8 @@ if __name__ == "__main__":
 
       cube.attrs[utils.OutputFormat.institution] = \
          CubeFormat.values[utils.OutputFormat.institution]
+
+      cube.attrs[Vars.attrs.autorift_param_file] = autorift_param_file
 
       center_lon_lat = to_lon_lat_transformer.transform(xmid, ymid)
       cube.attrs[utils.OutputFormat.latitude] = round(center_lon_lat[1], 2)

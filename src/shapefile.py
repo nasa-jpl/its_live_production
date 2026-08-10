@@ -4,11 +4,11 @@ Shapefile processing utilities for ITS_LIVE data.
 This module provides functions to read and process shapefiles containing ice
 mask information, which are used in the SensorExcludeFilter for filtering
 ITS_LIVE data based on land ice coverage.
+
+Note: Heavy geospatial dependencies (geopandas, rioxarray, xarray) are
+imported lazily to allow lightweight imports of constants.
 """
 import logging
-import geopandas as gpd
-import rioxarray
-import xarray as xr
 import numpy as np
 
 import itslive_utils
@@ -57,6 +57,8 @@ def read_file(shapeFile: str):
    ========
    Object representing the shapefile.
    """
+   import geopandas as gpd
+
    # Make sure it's S3 URL that is provided
    shape_file = shapeFile.replace(utils.HTTP_PREFIX, utils.S3_PREFIX)
    shape_file = shape_file.replace(utils.PATH_URL, '')
@@ -83,6 +85,9 @@ def read_ice_mask(shapefile_gdp, mask_name, grid_x, grid_y, projection):
                polygon, or ice mask cropped to the provided grid.
                URL to the mask file as provided in the shapefile.
    """
+   import rioxarray
+   import xarray as xr
+
    row = shapefile_gdp.loc[shapefile_gdp[EPSG] == int(projection)]
    if len(row) != 1:
       raise RuntimeError(f'Expected one entry for EPSG {projection} in '

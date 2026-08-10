@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from dateutil.parser import parse
 from datetime import datetime
 import numpy as np
+import xarray as xr
 
 S3_PREFIX = 's3://'
 HTTP_PREFIX = 'https://'
@@ -347,3 +348,127 @@ def parse_time(value: str, var_name: str = None, attr_name: str = None,
          f"Error converting {value} to date format '%Y%m%d': "
          f"{exc} for {var_name}.{attr_name} in {ds_url}"
       )
+
+
+def get_data_var_binary_attr(
+   ds: xr.Dataset,
+   ds_url: str,
+   var_name: str,
+   attr_name: str,
+   token: str,
+   data_dtype=np.uint8,
+   missing_value=None
+):
+   """
+   Return attribute for the data variable in data set if it exists,
+   or missing_value if it is not present.
+   If "missing_value" is set to None, than specified attribute is expected
+   to exist for the data variable "var_name" and exception is raised if
+   it does not.
+
+   Inputs:
+   ds (xarray.Dataset): The dataset the variable belongs to.
+   ds_url (str): URL of the granule that corresponds to the input "ds"
+                  dataset (used for error reporting only).
+   var_name (str): Name of the variable to extract attribute for.
+   attr_name (str): Name of the attribute to extract value for.
+   token (str): Token to use for the attribute value to convert it to
+                  binary value. If token is present in the attribute
+                  value, then the attribute value is set to 1,
+                  otherwise 0.
+   missing_value: Value to use if attribute is missing for the variable.
+                  Default is None, which will result in raising an
+                  exception if attribute is missing for the variable.
+   data_dtype: Datatype to use for the attribute value. Default is
+               np.uint8.
+   """
+   if var_name in ds and attr_name in ds[var_name].attrs:
+      # NISAR workaround for some attributes being stored as arrays
+      # instead of a single value: take the first element of the array
+      # if it has only one element.``
+      value = ds[var_name].attrs[attr_name]
+
+      if np.ndim(value) != 0:
+            # Not a scalar (int, float, or 0-d numpy array)
+            # list, tuple, or numpy array.
+            value = np.asarray(value).flat[0]
+
+      value = data_dtype(value == token)
+
+      # print(f"Return value for {var_name}.{attr_name}: {value}")
+      return value
+
+   if missing_value is None:
+      # If missing_value is not provided, attribute is expected to exist always
+      raise RuntimeError(
+            f"{attr_name} is expected within {var_name} for {ds_url}"
+      )
+
+   return missing_value
+
+
+def get_data_var_attr(
+   ds: xr.Dataset,
+   ds_url: str,
+   var_name: str,
+   attr_name: str,
+   missing_value=None,
+   to_date=False,
+   data_dtype=np.float32
+):
+   """
+   Return attribute for the data variable in data set if it exists,
+   or missing_value if it is not present.
+   If "missing_value" is set to None, than specified attribute is expected
+   to exist for the data variable "var_name" and exception is raised if
+   it does not.
+
+   Inputs:
+   ds (xarray.Dataset): The dataset the variable belongs to.
+   ds_url (str): URL of the granule that corresponds to the input "ds"
+                  dataset (used for error reporting only).
+   var_name (str): Name of the variable to extract attribute for.
+   attr_name (str): Name of the attribute to extract value for.
+   missing_value: Value to use if attribute is missing for the variable.
+                  Default is None, which will result in raising an
+                  exception if attribute is missing for the variable.
+   to_date (bool): Flag if attribute value should be converted to
+                  datetime object. Default is False.
+   data_dtype: Datatype to use for the attribute value. Default is
+               np.float32.
+   """
+   if var_name in ds and attr_name in ds[var_name].attrs:
+      # NISAR workaround for some attributes being stored as arrays
+      # instead of a single value: take the first element of the array
+      # if it has only one element.``
+      value = ds[var_name].attrs[attr_name]
+
+      # Check if type has "length"
+      # if hasattr(type(value), '__len__') and len(value) == 1:
+      #     value = value[0]
+
+      if np.ndim(value) != 0:
+            # Not a scalar (int, float, or 0-d numpy array)
+            # list, tuple, or numpy array.
+            value = np.asarray(value).flat[0]
+
+      # print(f"Read value for {var_name}.{attr_name}: {value}")
+      if to_date is True:
+            value = parse_time(value, var_name, attr_name, ds_url)
+
+      else:
+            # Convert value to expected datatype
+            if data_dtype and \
+               not isinstance(data_dtype, np.dtypes.StringDType):
+               value = data_dtype(value)
+
+      # print(f"Return value for {var_name}.{attr_name}: {value}")
+      return value
+
+   if missing_value is None:
+      # If missing_value is not provided, attribute is expected to exist always
+      raise RuntimeError(
+            f"{attr_name} is expected within {var_name} for {ds_url}"
+      )
+
+   return missing_value

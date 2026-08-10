@@ -1472,128 +1472,6 @@ class ITSCube:
             dims=[utils.Coords.Y, utils.Coords.X]
         )
 
-    @staticmethod
-    def get_data_var_attr(
-        ds: xr.Dataset,
-        ds_url: str,
-        var_name: str,
-        attr_name: str,
-        missing_value=None,
-        to_date=False,
-        data_dtype=np.float32
-    ):
-        """
-        Return attribute for the data variable in data set if it exists,
-        or missing_value if it is not present.
-        If "missing_value" is set to None, than specified attribute is expected
-        to exist for the data variable "var_name" and exception is raised if
-        it does not.
-
-        Inputs:
-        ds (xarray.Dataset): The dataset the variable belongs to.
-        ds_url (str): URL of the granule that corresponds to the input "ds"
-                        dataset (used for error reporting only).
-        var_name (str): Name of the variable to extract attribute for.
-        attr_name (str): Name of the attribute to extract value for.
-        missing_value: Value to use if attribute is missing for the variable.
-                        Default is None, which will result in raising an
-                        exception if attribute is missing for the variable.
-        to_date (bool): Flag if attribute value should be converted to
-                        datetime object. Default is False.
-        data_dtype: Datatype to use for the attribute value. Default is
-                    np.float32.
-        """
-        if var_name in ds and attr_name in ds[var_name].attrs:
-            # NISAR workaround for some attributes being stored as arrays
-            # instead of a single value: take the first element of the array
-            # if it has only one element.``
-            value = ds[var_name].attrs[attr_name]
-
-            # Check if type has "length"
-            # if hasattr(type(value), '__len__') and len(value) == 1:
-            #     value = value[0]
-
-            if np.ndim(value) != 0:
-                # Not a scalar (int, float, or 0-d numpy array)
-                # list, tuple, or numpy array.
-                value = np.asarray(value).flat[0]
-
-            # print(f"Read value for {var_name}.{attr_name}: {value}")
-            if to_date is True:
-                value = utils.parse_time(value, var_name, attr_name, ds_url)
-
-            else:
-                # Convert value to expected datatype
-                if data_dtype:
-                    value = data_dtype(value)
-
-            # print(f"Return value for {var_name}.{attr_name}: {value}")
-            return value
-
-        if missing_value is None:
-            # If missing_value is not provided, attribute is expected to exist always
-            raise RuntimeError(
-                f"{attr_name} is expected within {var_name} for {ds_url}"
-            )
-
-        return missing_value
-
-    @staticmethod
-    def get_data_var_binary_attr(
-        ds: xr.Dataset,
-        ds_url: str,
-        var_name: str,
-        attr_name: str,
-        token: str,
-        data_dtype=np.uint8,
-        missing_value=None
-    ):
-        """
-        Return attribute for the data variable in data set if it exists,
-        or missing_value if it is not present.
-        If "missing_value" is set to None, than specified attribute is expected
-        to exist for the data variable "var_name" and exception is raised if
-        it does not.
-
-        Inputs:
-        ds (xarray.Dataset): The dataset the variable belongs to.
-        ds_url (str): URL of the granule that corresponds to the input "ds"
-                        dataset (used for error reporting only).
-        var_name (str): Name of the variable to extract attribute for.
-        attr_name (str): Name of the attribute to extract value for.
-        token (str): Token to use for the attribute value to convert it to
-                        binary value. If token is present in the attribute
-                        value, then the attribute value is set to 1,
-                        otherwise 0.
-        missing_value: Value to use if attribute is missing for the variable.
-                        Default is None, which will result in raising an
-                        exception if attribute is missing for the variable.
-        data_dtype: Datatype to use for the attribute value. Default is
-                    np.uint8.
-        """
-        if var_name in ds and attr_name in ds[var_name].attrs:
-            # NISAR workaround for some attributes being stored as arrays
-            # instead of a single value: take the first element of the array
-            # if it has only one element.``
-            value = ds[var_name].attrs[attr_name]
-
-            if np.ndim(value) != 0:
-                # Not a scalar (int, float, or 0-d numpy array)
-                # list, tuple, or numpy array.
-                value = np.asarray(value).flat[0]
-
-            value = data_dtype(value == token)
-
-            # print(f"Return value for {var_name}.{attr_name}: {value}")
-            return value
-
-        if missing_value is None:
-            # If missing_value is not provided, attribute is expected to exist always
-            raise RuntimeError(
-                f"{attr_name} is expected within {var_name} for {ds_url}"
-            )
-
-        return missing_value
 
     @staticmethod
     def preprocess_dataset(ds: xr.Dataset, ds_url: str):
@@ -1713,43 +1591,6 @@ class ITSCube:
         the attributes of "var_name" variable. These variables names are used
         to set their encoding parameters when storing datacube to the Zarr store.
         """
-        # Dictionary of attributes values for new v*_error data variables:
-        # std_name, description
-        _attrs = {
-            'vx_error': (
-                "x_velocity_error",
-                "error for velocity component in x direction"
-            ),
-            'vy_error': (
-                "y_velocity_error",
-                "error for velocity component in y direction"
-            ),
-            'va_error': (
-                "azimuth_velocity_error",
-                "error for velocity in radar azimuth direction"
-            ),
-            'vr_error': (
-                "range_velocity_error",
-                "error for velocity in radar range direction"
-            ),
-            # The following descriptions are the same for all v* data
-            # variables
-            'error_stationary': (
-                None,
-                "RMSE over stable surfaces, stationary or slow-flowing " \
-                "surfaces with velocity < 15 m/yr identified from an " \
-                "external mask"
-            ),
-            'error_slow': (
-                None,
-                "RMSE over slowest 25% of retrieved velocities"
-            ),
-            'error_modeled': (
-                None,
-                "1-sigma error calculated using a modeled error-dt relationship"
-            )
-        }
-
         # Possible attributes for the velocity data variable
         _v_comp_attrs = [
             Vars.postfix.error,
@@ -1774,7 +1615,7 @@ class ITSCube:
             # optical legacy format vs. v[xy].v[xy]_error in radar format as
             # these are the same
             error_data = [
-                ITSCube.get_data_var_attr(
+                utils.get_data_var_attr(
                     ds, url, var_name, each_attr, utils.Missing.value
                 )
                 for ds, url in zip(self.ds, self.urls)
@@ -1787,13 +1628,13 @@ class ITSCube:
                     error_name_desc in self.ds[0][var_name].attrs:
                 desc_str = self.ds[0][var_name].attrs[error_name_desc]
 
-            elif each_attr in _attrs:
+            elif each_attr in Vars.errorAttrs:
                 # If generic description is provided
-                desc_str = _attrs[each_attr][1]
+                desc_str = Vars.errorAttrs[each_attr][1]
 
-            elif error_name in _attrs:
+            elif error_name in Vars.errorAttrs:
                 # If variable specific description is provided
-                desc_str = _attrs[error_name][1]
+                desc_str = Vars.errorAttrs[error_name][1]
 
             else:
                 raise RuntimeError(
@@ -1835,7 +1676,7 @@ class ITSCube:
                     each_attr in self.ds[0][var_name].attrs:
                 self.layers[each_attr] = xr.DataArray(
                     data=[
-                        ITSCube.get_data_var_attr(
+                        utils.get_data_var_attr(
                             ds, url, var_name, each_attr, data_dtype=np.int32
                         )
                         for ds, url in zip(self.ds, self.urls)
@@ -1865,7 +1706,7 @@ class ITSCube:
         shift_var_name = _name_sep.join([var_name, Vars.postfix.stable_shift])
         stable_shift_values = np.array(
             [
-                ITSCube.get_data_var_attr(
+                utils.get_data_var_attr(
                     ds,
                     url,
                     var_name,
@@ -1918,8 +1759,8 @@ class ITSCube:
             _desc_str = Vars.description[each_attr].format(var_name)
             self.layers[shift_var_name] = xr.DataArray(
                 data=[
-                    ITSCube.get_data_var_attr(ds, url, var_name, each_attr,
-                                                utils.Missing.value)
+                    utils.get_data_var_attr(ds, url, var_name, each_attr,
+                                            utils.Missing.value)
                     for ds, url in zip(self.ds, self.urls)
                 ],
                 coords=[mid_date_coord],
@@ -1952,9 +1793,9 @@ class ITSCube:
         attr_name = f'{var_name}{_name_sep}{Vars.postfix.dr_to_vr_factor}'
 
         attr_data = [
-            ITSCube.get_data_var_attr(ds, url, var_name,
-                                        Vars.postfix.dr_to_vr_factor,
-                                        utils.Missing.byte)
+            utils.get_data_var_attr(ds, url, var_name,
+                                    Vars.postfix.dr_to_vr_factor,
+                                    utils.Missing.byte)
             for ds, url in zip(self.ds, self.urls)
         ]
 
@@ -2440,8 +2281,16 @@ class ITSCube:
             # Flag if value should be converted to date type
             convert_to_date = each in ImgPairInfo.toDate
 
+            each_attrs = {
+                Vars.attrs.std_name: ImgPairInfo.stdName[each],
+                Vars.attrs.description: ImgPairInfo.allDescriptions[each]
+            }
+            if each in ImgPairInfo.allUnits:
+                # Units attribute exists for the variable
+                each_attrs[utils.Units.name] = ImgPairInfo.allUnits[each]
+
             self.layers[each] = xr.DataArray(
-                data=[ITSCube.get_data_var_attr(
+                data=[utils.get_data_var_attr(
                     ds,
                     url,
                     ImgPairInfo.name,
@@ -2451,15 +2300,8 @@ class ITSCube:
                 ) for ds, url in zip(self.ds, self.urls)],
                 coords=[mid_date_coord],
                 dims=[utils.Coords.MID_DATE],
-                attrs={
-                    Vars.attrs.std_name: ImgPairInfo.stdName[each],
-                    Vars.attrs.description: ImgPairInfo.allDescriptions[each]
-                }
+                attrs=each_attrs
             )
-
-            if each in ImgPairInfo.allUnits:
-                # Units attribute exists for the variable
-                self.layers[each].attrs[utils.Units.name] = ImgPairInfo.allUnits[each]
 
         for (each, new_each) in zip(
             [ImgPairInfo.flight_direction_img1, ImgPairInfo.flight_direction_img2],
@@ -2468,7 +2310,7 @@ class ITSCube:
             # Add new variables that correspond to flight direction attributes
             # of 'img_pair_info'
             self.layers[new_each] = xr.DataArray(
-                data=[ITSCube.get_data_var_binary_attr(
+                data=[utils.get_data_var_binary_attr(
                     ds,
                     url,
                     ImgPairInfo.name,

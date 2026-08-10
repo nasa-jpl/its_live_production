@@ -295,6 +295,43 @@ class VarsInfo:
         vr: utils.Missing.value,
     }
 
+    # Standard names and descriptions for velocity error data variables
+    # Each entry is a tuple of (std_name, description)
+    errorAttrs = {
+        'vx_error': (
+            "x_velocity_error",
+            "error for velocity component in x direction"
+        ),
+        'vy_error': (
+            "y_velocity_error",
+            "error for velocity component in y direction"
+        ),
+        'va_error': (
+            "azimuth_velocity_error",
+            "error for velocity in radar azimuth direction"
+        ),
+        'vr_error': (
+            "range_velocity_error",
+            "error for velocity in radar range direction"
+        ),
+        # The following descriptions are the same for all v* data
+        # variables
+        'error_stationary': (
+            None,
+            "RMSE over stable surfaces, stationary or slow-flowing "
+            "surfaces with velocity < 15 m/yr identified from an "
+            "external mask"
+        ),
+        'error_slow': (
+            None,
+            "RMSE over slowest 25% of retrieved velocities"
+        ),
+        'error_modeled': (
+            None,
+            "1-sigma error calculated using a modeled error-dt relationship"
+        )
+    }
+
 Vars = VarsInfo()
 
 

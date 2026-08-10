@@ -18,10 +18,14 @@ import shutil
 import icechunk as ic
 
 import utils
+from itslive_binary_type import BinaryFlag
 from itscube_types import (
    ImgPairInfo,
    Vars
 )
+
+HTTP_PREFIX = 'http://'
+HTTPS_PREFIX = 'https://'
 
 
 def pad_manifestarray(marr, new_shape, offsets=None):
@@ -349,9 +353,14 @@ def build_virtual_cube(vds_list):
    sizes = {"x": len(x_union), "y": len(y_union)}
 
    # Collect only a subset of data variables in the virtual datacube
-   _vars = ['img_pair_info', 'v', 'M11', 'M12', 'vx', 'vy']
+   _vars = [ImgPairInfo.name, Var.v, Var.vx, Var.vy, Var.m11, Var.m12]
 
    placed = []
+
+   # Only one value as virtual cube attribute should be preserved, but need
+   # to confirm that all layers have the same parameter file.
+   autorift_param_files = []
+
    for vds, off in zip(vds_list, offsets):
       new_vars = {}
       for name, var in vds.data_vars.items():
@@ -359,7 +368,8 @@ def build_virtual_cube(vds_list):
             # Skip data variable if it's not going to be in a virtual cube
             continue
 
-         # Skip img_pair_info - we'll extract mission_img1 from it instead
+         # Skip img_pair_info but extract its attributes into new data variables
+         # within virtual datacube
          if name == ImgPairInfo.name:
             for attr in ImgPairInfo.all:
                # Add new variables that correspond to selected attributes of
@@ -368,17 +378,8 @@ def build_virtual_cube(vds_list):
                if attr in ImgPairInfo.allTypes:
                   attr_dtype = ImgPairInfo.allTypes[attr]
 
-               attr_value = vds[name].attrs[attr]
-
                # Flag if value should be converted to date type
-               if attr in ImgPairInfo.toDate:
-                  # Convert attribute value to datetime object
-                  attr_value = utils.parse_time(attr_value, name, attr,
-                                                vds.attrs[Vars.url])
-
-               elif attr_dtype and \
-                  not isinstance(attr_dtype, np.dtypes.StringDType):
-                  attr_value = attr_dtype(attr_value)
+               convert_to_date = attr in ImgPairInfo.toDate
 
                new_var_attrs = {
                   Vars.attrs.std_name: ImgPairInfo.stdName[attr],
@@ -390,65 +391,64 @@ def build_virtual_cube(vds_list):
 
                new_vars[attr] = xr.Variable(
                   dims=(),
-                  data=np.array(attr_value, dtype=attr_dtype),
+                  data=utils.get_data_var_attr(
+                        vds,
+                        vds.attrs[Vars.url],
+                        ImgPairInfo.name,
+                        attr,
+                        to_date=convert_to_date,
+                        data_dtype=attr_dtype
+                     ),
                   attrs=new_var_attrs
                )
 
-         # TODO:
-         # for (each, new_each) in zip(
-         #       [ImgPairInfo.flight_direction_img1, ImgPairInfo.flight_direction_img2],
-         #       [Vars.ascending_img1, Vars.ascending_img2]
-         # ):
-         #       # Add new variables that correspond to flight direction attributes
-         #       # of 'img_pair_info'
-         #       self.layers[new_each] = xr.DataArray(
-         #          data=[ITSCube.get_data_var_binary_attr(
-         #             ds,
-         #             url,
-         #             ImgPairInfo.name,
-         #             each,
-         #             ImgPairInfo.ascending,
-         #             data_dtype=np.uint8,
-         #             missing_value=utils.Missing.u8value
-         #          ) for ds, url in zip(self.ds, self.urls)],
-         #          coords=[mid_date_coord],
-         #          dims=[utils.Coords.MID_DATE],
-         #          attrs={
-         #             Vars.attrs.std_name: Vars.name[new_each],
-         #             Vars.attrs.description: Vars.description[new_each],
-         #             BinaryFlag.attrs.values: BinaryFlag.values,
-         #             BinaryFlag.attrs.meanings: BinaryFlag.meanings[new_each]
-         #          }
-         #       )
+            for (each, new_each) in zip(
+                  [ImgPairInfo.flight_direction_img1, ImgPairInfo.flight_direction_img2],
+                  [Vars.ascending_img1, Vars.ascending_img2]
+            ):
+                  # Add new variables that correspond to flight direction attributes
+                  # of 'img_pair_info'
+                  new_vars[new_each] = xr.Variable(
+                     data=utils.get_data_var_binary_attr(
+                        vds,
+                        vds.attrs[Vars.url],
+                        ImgPairInfo.name,
+                        each,
+                        ImgPairInfo.ascending,
+                        data_dtype=np.uint8,
+                        missing_value=utils.Missing.u8value
+                     ),
+                     dims=(),
+                     attrs={
+                        Vars.attrs.std_name: Vars.name[new_each],
+                        Vars.attrs.description: Vars.description[new_each],
+                        BinaryFlag.attrs.values: BinaryFlag.values,
+                        BinaryFlag.attrs.meanings: BinaryFlag.meanings[new_each]
+                     }
+                  )
 
-         # Add new variable that corresponds to autoRIFT_software_version
-         # self.layers[Vars.autorift_software_version] = xr.DataArray(
-         #       data=[ds.attrs[Vars.autorift_software_version] for ds in self.ds],
-         #       coords=[mid_date_coord],
-         #       dims=[utils.Coords.MID_DATE],
-         #       attrs={
-         #          Vars.attrs.std_name: Vars.autorift_software_version,
-         #          Vars.attrs.description: Vars.description[Vars.autorift_software_version]
-         #       }
-         # )
-
-            # Add "mission_img*" and "satellite_img*"" (img_pair_info attributes):
-            # have to add all of the attributes that represent cube's data
-            # variables. This is just to proof a concept that we can
-            # introduce attributes as new variables in the virtual dataset.
-            # for attr_name in [
-            #    "mission_img1", "mission_img2",
-            #    "satellite_img1", "satellite_img2"
-            # ]:
-            #    attr_value = vds["img_pair_info"].attrs.get(attr_name, "")
-            #    new_vars[attr_name] = xr.Variable(
-            #       dims=(),
-            #       data=np.array(attr_value, dtype=np.dtypes.StringDType()),
-            #       attrs={"description": attr_name}
-            #    )
             continue  # Skip adding img_pair_info itself to the cube
 
-         # Extract vx attributes as scalar data variables (e.g., error_modeled)
+         # Add autoRIFT_software_version
+         new_vars[Vars.autorift_software_version] = xr.Variable(
+               data=vds.attrs[Vars.autorift_software_version],
+               dims=(),
+               attrs={
+                  Vars.attrs.std_name: Vars.autorift_software_version,
+                  Vars.attrs.description: Vars.description[Vars.autorift_software_version]
+               }
+         )
+
+         # Remember autoRIFT_parameter_file value - must be the same across
+         # all cube layers
+         autorift_param_files.append(vds.attrs[Vars.attrs.autorift_param_file])
+
+         # Process 'v[xy]' data variables and their attributes
+         # if name in [Vars.vx, Vars.vy]:
+
+
+         # Extract "v*"'s attributes as scalar data variables (e.g., error_modeled)
+
          if name == 'vx':
             attr_value = vds["vx"].attrs.get("error_modeled", -32767)
             logging.info(f'Getting vx.error_modeled {attr_value}')
@@ -501,7 +501,21 @@ def build_virtual_cube(vds_list):
       combine_attrs="drop_conflicts", data_vars="all"
    )
 
-   return result
+   # Some param files have 'http' and some 'https' - remove them before comparison
+   autorift_param_files = [
+      each.replace(HTTPS_PREFIX, '').replace(HTTP_PREFIX, '') \
+      for each in autorift_param_files
+   ]
+   unique_values = list(set(autorift_param_files))
+   if len(unique_values) > 1:
+      raise RuntimeError(
+         f"Multiple values for '{Vars.attrs.autorift_param_file}' "
+         f"are detected for {len(vds_list)} granules: "
+         f"{unique_values} (one value is expected)"
+      )
+
+   return result, HTTPS_PREFIX + unique_values[0]
+
 
 # icechunk metadata is strict JSON and cannot represent NaN/inf, but ITS_LIVE
 # stores NaN in some attributes (e.g. 'stable_shift_stationary'); drop those.
@@ -557,7 +571,10 @@ if __name__ == "__main__":
 
 
    # mosaic both granules onto their common grid and stack along time
-   cube = build_virtual_cube(vds)
+   cube, autorift_param_file = build_virtual_cube(vds)
+
+   cube.attrs[Vars.attrs.autorift_param_file] = autorift_param_file
+
    logging.info(f"\n{cube}")
 
    # the referenced chunk data lives on this public, anonymous S3 bucket
