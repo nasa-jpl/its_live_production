@@ -353,7 +353,7 @@ def build_virtual_cube(vds_list):
    sizes = {"x": len(x_union), "y": len(y_union)}
 
    # Collect only a subset of data variables in the virtual datacube
-   _vars = [ImgPairInfo.name, Var.v, Var.vx, Var.vy, Var.m11, Var.m12]
+   _vars = [ImgPairInfo.name, Vars.v, Vars.vx, Vars.vy, Vars.m11, Vars.m12]
 
    placed = []
 
