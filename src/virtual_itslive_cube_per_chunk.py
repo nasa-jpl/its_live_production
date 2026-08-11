@@ -19,7 +19,6 @@ import numpy as np
 import pyproj
 import xarray as xr
 import os
-import io
 import json
 import shutil
 import obstore
@@ -33,6 +32,11 @@ from virtual_itslive_cube import _drop_nonfinite_attrs
 
 from virtualizarr.manifests import ManifestArray
 from virtualizarr.manifests.utils import copy_and_replace_metadata
+
+from zarr.core.codec_pipeline import BatchedCodecPipeline
+from zarr.core.array_spec import ArraySpec, ArrayConfig
+from zarr.core.buffer import default_buffer_prototype
+from zarr.core.sync import sync
 
 from virtual_itslive_cube import build_virtual_cube
 import itslive_utils
@@ -149,30 +153,74 @@ def crop_manifestarray(marr, starts, stops):
    return ManifestArray(metadata=new_metadata, chunkmanifest=new_manifest)
 
 
-def open_netcdf_from_s3(store, key, engine='h5netcdf'):
-   """Open a NetCDF file from S3 as an xarray Dataset.
+# Chunk data for ITS_LIVE granules lives under this bucket prefix; manifest
+# paths are absolute s3:// URLs, but obstore range reads take a bucket-relative
+# key.
+_BUCKET_PREFIX = 's3://its-live-data/'
+
+
+def _cropped_var_has_valid_data(marr, netcdf_store):
+   """Return True if a cropped ManifestArray references any non-fill data.
+
+   Reads ONLY the chunk bytes the manifest references (a single 512x512 chunk
+   for a chunk-aligned tile) via S3 byte-range GETs and decodes them through the
+   array's own zarr codec pipeline -- instead of downloading the entire granule
+   NetCDF just to inspect one window. It also reuses the virtual dataset already
+   opened in load_granules, so the granule file is never opened a second time.
+
+   A chunk counts as "valid" if any element differs from the fill value. This
+   matches the previous test `np.isnan(cf_decoded_v).all()`: v is stored as
+   int16 whose only NaN-producing value on CF-decode is `_FillValue`, so
+   "all fill" is exactly "all NaN after decode". Missing chunks (empty path)
+   read back as fill and are skipped.
 
    Parameters
    ----------
-   store : obstore.store.S3Store
-      S3 object store instance for accessing files.
-   key : str
-      S3 key or HTTPS URL to the NetCDF file. HTTPS URLs are automatically
-      converted to S3 keys.
-   engine : str, optional
-      Xarray engine to use for opening the file (default: 'h5netcdf').
+   marr : ManifestArray
+      A ManifestArray already cropped to the target window (e.g. v cropped via
+      crop_manifestarray).
+   netcdf_store : obstore.store.S3Store
+      Object store used to fetch the referenced chunk byte ranges.
 
    Returns
    -------
-   xr.Dataset
-      The opened dataset with all data loaded into memory.
+   bool
+      True if any referenced chunk contains a non-fill value.
    """
-   if 'https://' in key:
-      key = key.replace('https://its-live-data.s3.amazonaws.com/', '')
+   metadata = marr.metadata
+   fill = metadata.fill_value
+   prototype = default_buffer_prototype()
+   pipeline = BatchedCodecPipeline.from_codecs(metadata.codecs)
 
-   result = obstore.get(store, key)
-   buf = io.BytesIO(result.bytes())
-   return xr.open_dataset(buf, engine=engine)
+   # Per-chunk decode spec: shape is the chunk shape (not the window); dtype,
+   # fill value and codecs come from the array metadata.
+   spec = ArraySpec(
+      shape=marr.chunks,
+      dtype=metadata.dtype,
+      fill_value=fill,
+      config=ArrayConfig.from_dict({}),
+      prototype=prototype,
+   )
+
+   manifest = marr.manifest
+   for path, offset, length in zip(
+      manifest._paths.flat, manifest._offsets.flat, manifest._lengths.flat
+   ):
+      if not path:
+         # Missing chunk -> reads back as fill, no valid data contributed
+         continue
+
+      key = str(path).replace(_BUCKET_PREFIX, '')
+      raw = bytes(obstore.get_range(
+         netcdf_store, key, start=int(offset), length=int(length)
+      ))
+      buffer = prototype.buffer.from_bytes(raw)
+      chunk = sync(pipeline.decode([(buffer, spec)]))[0].as_numpy_array()
+
+      if not np.all(chunk == fill):
+         return True
+
+   return False
 
 
 def bbox_to_chunk_aligned_indices(coord, step, chunk_size, bbox_lo, bbox_hi):
@@ -281,21 +329,6 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
       logging.info(f'{vds.attrs["granule_url"]} does not overlap the polygon')
       return None, vds.attrs["granule_url"]
 
-   # Check if overlapping region contains any valid data for the cube
-   with open_netcdf_from_s3(netcdf_store, vds.attrs['granule_path']) as granule_ds:
-      # Need to open the granule by loading "v" data - ManifestArray has only
-      # chunk references, no actual data so can't mask arrays
-      mask_lon = (granule_ds.x >= xmin) & (granule_ds.x <= xmax)
-      mask_lat = (granule_ds.y >= ymin) & (granule_ds.y <= ymax)
-      mask = (mask_lon & mask_lat)
-
-      mask_data = granule_ds.v.isel(x=slice(*x_range), y=slice(*y_range)).isel(time=0).load()
-
-      if np.isnan(mask_data).all():
-         # Granule does not have any valid data within intersection
-         logging.info(f'{vds.attrs["granule_url"]} does not have valid data within polygon')
-         return None, vds.attrs["granule_url"]
-
    logging.debug(f'Updating to {x_range=}')
    logging.debug(f'Updating to {y_range=}')
 
@@ -304,14 +337,31 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
    start_by_dim = {"x": x_start, "y": y_start}
    stop_by_dim = {"x": x_stop, "y": y_stop}
 
+   # Crop v to the window first, then check for valid data via v's chunk
+   # references (reads only the window's chunk bytes, not the whole granule).
+   # The cropped v is reused below so v is only cropped once.
+   v_var = vds.data_vars[Vars.v]
+   v_starts = [start_by_dim.get(str(d), 0) for d in v_var.dims]
+   v_stops = [stop_by_dim.get(str(d), s) for d, s in zip(v_var.dims, v_var.data.shape)]
+   cropped_v = crop_manifestarray(v_var.data, v_starts, v_stops)
+
+   if not _cropped_var_has_valid_data(cropped_v, netcdf_store):
+      # Granule does not have any valid data within intersection
+      logging.info(f'{vds.attrs["granule_url"]} does not have valid data within polygon')
+      return None, vds.attrs["granule_url"]
+
    new_vars = {}
    for name, var in vds.data_vars.items():
       data = var.data
 
       if isinstance(data, ManifestArray):
-         starts = [start_by_dim.get(str(d), 0) for d in var.dims]
-         stops = [stop_by_dim.get(str(d), s) for d, s in zip(var.dims, data.shape)]
-         data = crop_manifestarray(data, starts, stops)
+         if name == Vars.v:
+            # Reuse the v ManifestArray already cropped for the valid-data check
+            data = cropped_v
+         else:
+            starts = [start_by_dim.get(str(d), 0) for d in var.dims]
+            stops = [stop_by_dim.get(str(d), s) for d, s in zip(var.dims, data.shape)]
+            data = crop_manifestarray(data, starts, stops)
 
       new_vars[name] = xr.Variable(var.dims, data, attrs=var.attrs, encoding=var.encoding)
 
