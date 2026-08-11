@@ -281,7 +281,7 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
       logging.info(f'{vds.attrs["granule_url"]} does not overlap the polygon')
       return None, vds.attrs["granule_url"]
 
-   # Check if overlapping region contain any valid data
+   # Check if overlapping region contains any valid data for the cube
    with open_netcdf_from_s3(netcdf_store, vds.attrs['granule_path']) as granule_ds:
       # Need to open the granule by loading "v" data - ManifestArray has only
       # chunk references, no actual data so can't mask arrays
@@ -471,7 +471,9 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    _assert_identical_grids(cropped, bbox)
 
    logging.info(f'Number of skipped granules: {len(skipped_granules)}')
-   return *build_virtual_cube(cropped), skipped_granules
+   # All cropped granules are on identical grids (verified by _assert_identical_grids),
+   # so skip the extend_coords() step in build_virtual_cube
+   return *build_virtual_cube(cropped, already_aligned=True), skipped_granules
 
 
 def read_virtual_dataset(granule_url, parser, registry):
@@ -493,17 +495,23 @@ def read_virtual_dataset(granule_url, parser, registry):
       and data variables as ManifestArrays (chunk references only). The dataset
       includes 'granule_url' and 'granule_path' in its attributes.
    """
-   v = vz.open_virtual_dataset(
-      url=granule_url,
-      parser=parser,
-      registry=registry,
-      loadable_variables=["time", "y", "x"],
-      decode_times=True,
-   )
+   v = None
 
-   # Remember the granule url
-   v.attrs["granule_url"] = granule_url
-   v.attrs["granule_path"] = granule_url.replace('s3://its-live-data/', '')
+   try:
+      v = vz.open_virtual_dataset(
+         url=granule_url,
+         parser=parser,
+         registry=registry,
+         loadable_variables=["time", "y", "x"],
+         decode_times=True,
+      )
+
+      # Remember the granule url
+      v.attrs["granule_url"] = granule_url
+      v.attrs["granule_path"] = granule_url.replace('s3://its-live-data/', '')
+
+   except Exception as e:
+      raise RuntimeError(f'Got exception loading {granule_url=}: e')
 
    return v
 
@@ -642,6 +650,12 @@ if __name__ == "__main__":
       help='Number of threads to use for parallel processing [%(default)d].'
    )
    parser.add_argument(
+      '-n', '--num-granules',
+      type=int,
+      default=0,
+      help='Number of granules to process [%(default)d meaning to process all granules].'
+   )
+   parser.add_argument(
       "--start-date",
       type=lambda s: parse(s).strftime('%Y-%m-%d'),
       default='1982-01-01',
@@ -720,9 +734,9 @@ if __name__ == "__main__":
 
    elif args.use_searchAPI:
       # Validate that other arguments are provided when using searchAPI
-      if not args.startDate or not args.endDate or not args.projection:
+      if not args.start_date or not args.end_date or not args.projection:
          parser.error(
-            "--use-searchAPI requires --startDate, --endDate, --projection arguments"
+            "--use-searchAPI requires --start-date, --end-date, --projection arguments"
          )
 
       roi = {
@@ -742,6 +756,13 @@ if __name__ == "__main__":
          'https://its-live-data.s3.amazonaws.com/',
          's3://its-live-data/') for each in granules
    ]
+
+   granules = [each for each in granules if not each.endswith('P000.nc')]
+
+   # If testing and want to process only a subset of granules
+   if args.num_granules > 0:
+      num_granules = args.num_granules
+      granules = granules[:num_granules]
 
    logging.info(f"Processing {len(granules)} granules")
 
@@ -810,7 +831,7 @@ if __name__ == "__main__":
       print(f"\n{cube}")
 
       format_skipped_granules = "\n".join(skipped_granules)
-      logging.info(f'Skipped granules: \n{format_skipped_granules}')
+      logging.info(f'Skipped first 10 granules: \n{format_skipped_granules[:10]}')
 
       url_prefix = "s3://its-live-data/"
       store_path = args.output_store

@@ -155,7 +155,7 @@ def copy_and_replace_metadata_dtype(old_metadata, new_shape, new_dtype, new_fill
       physical on-disk itemsize doesn't necessarily match `new_dtype`'s
       itemsize (e.g. packed/scaled storage), so there's no dtype-derived
       fallback to guess from -- the caller must supply a codec spec known
-      to be correct (see `_HARDCODED_M_VAR_PLACEHOLDER_CODECS`).
+      to be correct (see `_M_VAR_PLACEHOLDER_CODECS`).
    """
    metadata_dict = old_metadata.to_dict().copy()
    metadata_dict["shape"] = tuple(int(s) for s in new_shape)
@@ -183,13 +183,20 @@ def copy_and_replace_metadata_dtype(old_metadata, new_shape, new_dtype, new_fill
 #   print(vds["M11"].data.metadata.to_dict()["codecs"])
 #
 # and paste the result below verbatim.
-_HARDCODED_M_VAR_PLACEHOLDER_CODECS = (
+_M_VAR_PLACEHOLDER_CODECS = (
    {'name': 'bytes', 'configuration': {'endian': 'little'}},
    {'name': 'numcodecs.shuffle', 'configuration': {'elementsize': 4}},
    {'name': 'numcodecs.zlib', 'configuration': {'level': 2}},
 )
 
-
+# Codecs for synthesized vr/va placeholders (used only for
+# granules missing real vr/va; granules that already have real data are
+# left untouched and never go through this path). Captured directly from a
+# radar granule confirmed to have REAL vr/va data, so it's the exact,
+# known-correct codec structure for these variables.
+#
+# IMPORTANT: this is the dict form zarr's ArrayV3Metadata.from_dict()
+# expects (i.e. what `.metadata.to_dict()["codecs"]` produces), not the
 def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
    """Add M11 and M12 data variables as ManifestArrays with missing chunks if not
    present in the granule.
@@ -211,63 +218,46 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
       Union y coordinates for the datacube
    reference_codecs : dict
       Mapping {"M11": codecs, "M12": codecs}, resolved once per cube by
-      `_resolve_placeholder_codecs` (see `_HARDCODED_M_VAR_PLACEHOLDER_CODECS`).
+      `_resolve_placeholder_codecs` (see `_M_VAR_PLACEHOLDER_CODECS`).
       Used verbatim for any placeholder synthesized here. Real M11/M12 data
       (when present in `vds`) is untouched and never reaches this codepath.
    """
    # M11 and M12 metadata based on itscube.py and itscube_types.py
    m_vars_info = {
-      'M11': {
-         'standard_name': 'conversion_matrix_element_11',
-         'description': 'conversion matrix element (1st row, 1st column) that can be '
-                        'multiplied with vx to give range pixel displacement dr (see '
-                        'Eq. A18 in https://www.mdpi.com/2072-4292/13/4/749)',
-         'units': 'pixel/(meter/year)'
+      Vars.m11: {
+         Vars.attrs.std_name: Vars.name[Vars.m11],
+         Vars.attrs.description: Vars.description[Vars.m11],
+         utils.Units.name: utils.Units.pixel_per_m_year
       },
-      'M12': {
-         'standard_name': 'conversion_matrix_element_12',
-         'description': 'conversion matrix element (1st row, 2nd column) that can be '
-                        'multiplied with vy to give range pixel displacement dr (see '
-                        'Eq. A18 in https://www.mdpi.com/2072-4292/13/4/749)',
-         'units': 'pixel/(meter/year)'
+      Vars.m12: {
+         Vars.attrs.std_name: Vars.name[Vars.m12],
+         Vars.attrs.description: Vars.description[Vars.m12],
+         utils.Units.name: utils.Units.pixel_per_m_year
       }
    }
 
-   if 'M11' in vds.data_vars:
+   if Vars.m11 in vds.data_vars:
       # Variable is already in the dataset, nothing to do
       return
 
+   # Use 'v' as template since it's present in all granules (both optical and radar)
+   template_var = vds.data_vars[Vars.v]
+
+   # Get dimension indices
+   time_idx = template_var.dims.index('time')
+   y_idx = template_var.dims.index('y')
+   x_idx = template_var.dims.index('x')
+
+   # Get chunk sizes from template
+   chunk_time = template_var.data.chunks[time_idx]
+   chunk_y = template_var.data.chunks[y_idx]
+   chunk_x = template_var.data.chunks[x_idx]
+   chunks = (chunk_time, chunk_y, chunk_x)
+
    for m_var_name, m_var_attrs in m_vars_info.items():
       # Create ManifestArray with missing chunks for optical granules
-      # Use an existing 3D ManifestArray variable (time, y, x) as a template
-      # Granules have 3D variables with single-valued time dimension
-      template_var = None
-      for var in vds.data_vars.values():
-         if isinstance(var.data, ManifestArray) and len(var.dims) == 3:
-            dims = var.dims
-            if 'time' in dims and 'y' in dims and 'x' in dims:
-               template_var = var
-               break
-
-      if template_var is None:
-         # No suitable ManifestArray found, skip M11/M12 for this granule
-         logging.info(f"Warning: No 3D ManifestArray template found for {m_var_name}, skipping")
-         continue
-
-      # Get shape and chunks from template - create 3D (time, y, x) just like other variables
-      # This ensures M11/M12 can be concatenated along time dimension later
-      time_idx = template_var.dims.index('time')
-      y_idx = template_var.dims.index('y')
-      x_idx = template_var.dims.index('x')
-
       # Create 3D shape with time=1 (single time slice)
       shape = (1, len(y_union), len(x_union))
-
-      # Get chunk sizes from template (time, y, x)
-      chunk_time = template_var.data.chunks[time_idx]
-      chunk_y = template_var.data.chunks[y_idx]
-      chunk_x = template_var.data.chunks[x_idx]
-      chunks = (chunk_time, chunk_y, chunk_x)
 
       # Create 3D chunk grid filled with MISSING_CHUNK_PATH (all missing chunks)
       chunk_grid_shape = (
@@ -307,14 +297,12 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
       # exposes it as `encoding["fill_value"]` otherwise -- either way,
       # no FillValueCoder round-trip is involved when no separate
       # `_FillValue` attribute is present.
-      fill_value = np.float32(-32767.0)
-
       new_metadata = copy_and_replace_metadata_dtype(
          template_var.data.metadata,
          new_shape=list(shape),
          new_dtype="float32",
-         new_fill_value=float(fill_value),
-         codecs=_HARDCODED_M_VAR_PLACEHOLDER_CODECS,
+         new_fill_value=float(utils.Missing.value),
+         codecs=_M_VAR_PLACEHOLDER_CODECS,
       )
 
       manifest_array = ManifestArray(metadata=new_metadata, chunkmanifest=manifest)
@@ -322,11 +310,7 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
       new_vars[m_var_name] = xr.Variable(
          dims=('time', 'y', 'x'),
          data=manifest_array,
-         attrs={
-            'standard_name': m_var_attrs['standard_name'],
-            'description': m_var_attrs['description'],
-            'units': m_var_attrs['units'],
-         },
+         attrs=m_var_attrs,
          # _FillValue belongs in encoding, not attrs, per xarray's CF
          # convention -- attrs is inert metadata, encoding is what
          # actually participates in xarray's encode/decode machinery.
@@ -336,24 +320,359 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
 
       logging.info(f"Added {m_var_name} as 3D ManifestArray (time, y, x) with missing chunks (not present in granule)")
 
+      # Promote the dr_to_vr_factor variable for this synthesized M variable
+      # (resolves to the missing value since m_var_name is not in the granule),
+      # keeping the promoted variable set identical to real radar granules.
+      _extract_m_attributes(new_vars, vds, m_var_name)
 
-def build_virtual_cube(vds_list):
+
+def _extract_velocity_attributes(new_vars, vds, var_name):
+   """Extract all attributes from a velocity variable and create scalar variables.
+
+   Extracts the same attributes that itscube.py process_v_attributes() extracts:
+   - Error attributes: error, error_mask, error_modeled, error_slow
+   - Stable shift attributes: stable_shift, stable_shift_mask, stable_shift_slow
+   - Shared attributes (once per granule): flag_stable_shift, stable_count_mask, stable_count_slow
+
+   In the regular datacube, these become 1-D arrays indexed by mid_date. In the
+   virtual cube, they're scalar variables per granule (dims=()).
+
+   Parameters
+   ----------
+   new_vars : dict
+      Dictionary to add attribute variables to
+   vds : xr.Dataset
+      Virtual dataset for the granule
+   var_name : str
+      Name of the velocity variable (vx, vy, vr, va)
+   """
+   _name_sep = '_'
+
+   # Error attributes for velocity variables (one per velocity component)
+   _v_comp_attrs = [
+      Vars.postfix.error,
+      Vars.postfix.error_mask,
+      Vars.postfix.error_modeled,
+      Vars.postfix.error_slow
+   ]
+
+   # Extract error attributes
+   for each_attr in _v_comp_attrs:
+      error_var_name = f'{var_name}{_name_sep}{each_attr}'
+
+      # Get attribute value from the granule if it exists
+      if var_name in vds.data_vars and each_attr in vds[var_name].attrs:
+         attr_value = vds[var_name].attrs[each_attr]
+      else:
+         attr_value = utils.Missing.value
+
+      # Get description for the attribute
+      error_name_desc = f'{each_attr}{_name_sep}{Vars.attrs.description}'
+      desc_str = None
+
+      if var_name in vds and error_name_desc in vds[var_name].attrs:
+         desc_str = vds[var_name].attrs[error_name_desc]
+      elif each_attr in Vars.errorAttrs:
+         # If generic description is provided
+         desc_str = Vars.errorAttrs[each_attr][1]
+      elif error_var_name in Vars.errorAttrs:
+         # If variable specific description is provided
+         desc_str = Vars.errorAttrs[error_var_name][1]
+      else:
+         raise RuntimeError(
+            f"Unknown description for {error_var_name} of {var_name}"
+         )
+
+      # Create scalar variable for this attribute
+      new_vars[error_var_name] = xr.Variable(
+         dims=(),
+         data=np.array(attr_value),
+         attrs={
+            utils.Units.name: utils.Units.m_y,
+            Vars.attrs.std_name: error_var_name,
+            Vars.attrs.description: desc_str
+         }
+      )
+
+      logging.info(f'Extracted {error_var_name}: {attr_value}')
+
+   # Shared attributes (appear for all v* variables, capture only once per granule)
+   for each_attr, each_attr_units in zip(
+      [Vars.flag_stable_shift, Vars.stable_count_mask, Vars.stable_count_slow],
+      [None, utils.Units.count, utils.Units.count]
+   ):
+      # Only add if not already present in new_vars (shared across velocity variables)
+      if each_attr not in new_vars:
+         if var_name in vds.data_vars and each_attr in vds[var_name].attrs:
+            attr_value = utils.get_data_var_attr(
+               vds, vds.attrs[Vars.url], var_name, each_attr,
+               data_dtype=np.int32
+            )
+         else:
+            # Default value if attribute doesn't exist
+            attr_value = np.int32(0)
+
+         new_vars[each_attr] = xr.Variable(
+            dims=(),
+            data=np.array(attr_value),
+            attrs={
+               Vars.attrs.std_name: each_attr,
+               Vars.attrs.description: Vars.description[each_attr]
+            }
+         )
+
+         # Set units if appropriate
+         if each_attr_units is not None:
+            new_vars[each_attr].attrs[utils.Units.name] = each_attr_units
+
+         logging.info(f'Extracted shared attribute {each_attr}: {attr_value}')
+
+   # Extract stable_shift (specific to each velocity variable).
+   # Read via get_data_var_attr so the value is coerced to float32 (and any
+   # array-wrapped NISAR attribute is flattened to a scalar) before the NaN
+   # check, matching itscube.py process_v_attributes(). Reading the raw attr
+   # here could hand np.isnan a non-float or a length-1 array and crash.
+   shift_var_name = _name_sep.join([var_name, Vars.postfix.stable_shift])
+
+   stable_shift_value = utils.get_data_var_attr(
+      vds, vds.attrs[Vars.url], var_name, Vars.postfix.stable_shift,
+      utils.Missing.value
+   )
+
+   # Some granules have "stable_shift" attribute set to NaN: set it to zero
+   if np.isnan(stable_shift_value):
+      logging.info(f'Setting NaN stable_shift to 0 for {var_name}')
+      stable_shift_value = np.float32(0)
+
+   _desc_str = f'applied {var_name} shift calibrated using pixels over stable or slow surfaces'
+   new_vars[shift_var_name] = xr.Variable(
+      dims=(),
+      data=np.array(stable_shift_value),
+      attrs={
+         utils.Units.name: utils.Units.m_y,
+         Vars.attrs.std_name: shift_var_name,
+         Vars.attrs.description: _desc_str
+      }
+   )
+
+   logging.info(f'Extracted {shift_var_name}: {stable_shift_value}')
+
+   # Extract stable_shift_mask and stable_shift_slow
+   for each_attr in [Vars.postfix.stable_shift_mask, Vars.postfix.stable_shift_slow]:
+      shift_var_name = _name_sep.join([var_name, each_attr])
+
+      if var_name in vds.data_vars and each_attr in vds[var_name].attrs:
+         attr_value = vds[var_name].attrs[each_attr]
+      else:
+         attr_value = utils.Missing.value
+
+      _desc_str = Vars.description[each_attr].format(var_name)
+      new_vars[shift_var_name] = xr.Variable(
+         dims=(),
+         data=np.array(attr_value),
+         attrs={
+            utils.Units.name: utils.Units.m_y,
+            Vars.attrs.std_name: shift_var_name,
+            Vars.attrs.description: _desc_str
+         }
+      )
+
+      logging.info(f'Extracted {shift_var_name}: {attr_value}')
+
+
+def _extract_m_attributes(new_vars, vds, var_name):
+   """Promote an M11/M12 variable's dr_to_vr_factor attribute into its own
+   scalar variable, mirroring itscube.py process_m_attributes().
+
+   Works for both real M11/M12 (reads the attribute) and synthesized
+   placeholders (var_name not in vds.data_vars -> uses the missing value),
+   so the promoted variable set stays identical across radar and optical
+   granules and build_virtual_cube()'s variable-set check does not fail on
+   mixed cubes.
+
+   NOTE: unlike the regular datacube, scale_factor/add_offset are intentionally
+   NOT stripped from M11/M12 here. Virtual cubes reference the raw, packed
+   on-disk chunks, so those encoding keys are required for xarray to decode the
+   referenced data correctly on read.
+
+   Parameters
+   ----------
+   new_vars : dict
+      Dictionary to add the dr_to_vr_factor variable to
+   vds : xr.Dataset
+      Virtual dataset for the granule
+   var_name : str
+      Name of the M variable (M11, M12)
+   """
+   attr_name = f'{var_name}_{Vars.postfix.dr_to_vr_factor}'
+
+   # Missing.byte matches itscube.py process_m_attributes() default; absent for
+   # synthesized placeholders (optical granules).
+   attr_value = utils.get_data_var_attr(
+      vds, vds.attrs[Vars.url], var_name, Vars.postfix.dr_to_vr_factor,
+      utils.Missing.byte
+   )
+
+   new_vars[attr_name] = xr.Variable(
+      dims=(),
+      data=np.array(attr_value),
+      attrs={
+         Vars.attrs.std_name: attr_name,
+         Vars.attrs.description: Vars.description[Vars.postfix.dr_to_vr_factor],
+         utils.Units.name: utils.Units.m_per_year_pixel
+      }
+   )
+
+   logging.info(f'Extracted {attr_name}: {attr_value}')
+
+
+def _add_missing_vr_va(new_vars, vds, x_union, y_union):
+   """Add vr and va data variables as ManifestArrays with missing chunks if not
+   present in the granule.
+
+   vr (range velocity) and va (azimuth velocity) are radar-specific variables.
+   Optical granules don't have these variables, so we create ManifestArrays with
+   all-missing chunks that read as fill value. This ensures consistency when
+   combining optical and radar granules.
+
+   Parameters
+   ----------
+   new_vars : dict
+      Dictionary to add vr/va variables to
+   vds : xr.Dataset
+      Virtual dataset for the granule
+   x_union : np.ndarray
+      Union x coordinates for the datacube
+   y_union : np.ndarray
+      Union y coordinates for the datacube
+   """
+   # vr and va metadata based on itscube_types.py
+   radar_vars_info = {
+      Vars.vr: {
+         Vars.attrs.std_name: Vars.name[Vars.vr],
+         Vars.attrs.description: Vars.description[Vars.vr],
+         utils.Units.name: utils.Units.m_y
+      },
+      Vars.va: {
+         Vars.attrs.std_name: Vars.name[Vars.va],
+         Vars.attrs.description: Vars.description[Vars.va],
+         utils.Units.name: utils.Units.m_y
+      }
+   }
+
+   if Vars.vr in vds.data_vars and Vars.va in vds.data_vars:
+      # Variables are already in the dataset, nothing to do
+      return
+
+   logging.info(f'Adding va and vr to the {vds.attrs['granule_url']}...')
+
+   # Use 'v' as template since it's present in all granules (both optical and radar)
+   template_var = vds.data_vars[Vars.v]
+
+   # Get dimension indices
+   time_idx = template_var.dims.index('time')
+   y_idx = template_var.dims.index('y')
+   x_idx = template_var.dims.index('x')
+
+   # Get chunk sizes from template
+   chunk_time = template_var.data.chunks[time_idx]
+   chunk_y = template_var.data.chunks[y_idx]
+   chunk_x = template_var.data.chunks[x_idx]
+   chunks = (chunk_time, chunk_y, chunk_x)
+
+   for var_name, var_attrs in radar_vars_info.items():
+      # Create ManifestArray with missing chunks for optical granules
+      # Create 3D shape with time=1 (single time slice)
+      shape = (1, len(y_union), len(x_union))
+
+      # Create 3D chunk grid filled with MISSING_CHUNK_PATH
+      chunk_grid_shape = (
+         -(-shape[0] // chunks[0]),  # time chunks
+         -(-shape[1] // chunks[1]),  # y chunks
+         -(-shape[2] // chunks[2])   # x chunks
+      )
+
+      paths = np.full(chunk_grid_shape, MISSING_CHUNK_PATH, dtype=np.dtypes.StringDType())
+      offsets = np.zeros(chunk_grid_shape, dtype="uint64")
+      lengths = np.zeros(chunk_grid_shape, dtype="uint64")
+
+      manifest = ChunkManifest.from_arrays(
+         paths=paths,
+         offsets=offsets,
+         lengths=lengths,
+         validate_paths=False
+      )
+
+      # vr and va use int16, same as v, so reuse v's metadata directly
+      manifest_array = ManifestArray(metadata=template_var.data.metadata, chunkmanifest=manifest)
+
+      new_vars[var_name] = xr.Variable(
+         dims=('time', 'y', 'x'),
+         data=manifest_array,
+         attrs=var_attrs,
+      )
+
+      logging.info(f"Added {var_name} as 3D ManifestArray (time, y, x) with missing chunks (not present in granule)")
+
+      # Promote the FULL set of velocity attribute variables for this
+      # synthesized component (error/error_mask/error_modeled/error_slow,
+      # stable_shift/_mask/_slow, plus the shared flag/count attributes),
+      # exactly as a real radar granule would via _extract_velocity_attributes.
+      # Since var_name is not in vds.data_vars, every attribute resolves to its
+      # missing value. This keeps the promoted variable set identical between
+      # optical and radar granules so build_virtual_cube()'s variable-set check
+      # (and combine_by_coords) does not fail on mixed cubes. The shared
+      # attributes were already added while processing vx/vy, so
+      # _extract_velocity_attributes skips re-adding them.
+      _extract_velocity_attributes(new_vars, vds, var_name)
+
+
+def build_virtual_cube(vds_list, already_aligned=False):
    """Mosaic virtual datasets onto their common x/y grid and stack along time.
 
    Three steps:
    1. ``extend_coords``    -> union x/y grid + each granule's offset into it
+                              (skipped if already_aligned=True)
    2. ``pad_manifestarray``-> drop each granule's data at its offset on the
                               union grid (nodata everywhere else)
+                              (no-op if already_aligned=True, offsets are all zeros)
    3. ``combine_by_coords``-> order/stack the granules along time
 
    Data variables stay virtual (ManifestArray); x/y/time are real, indexed
    coordinates. No pixel data is read.
+
+   Parameters
+   ----------
+   vds_list : list of xr.Dataset
+      Virtual datasets to combine. Each must have x, y, time coordinates.
+   already_aligned : bool, optional
+      If True, assumes all datasets in vds_list are already on identical x/y
+      grids (same coordinates, same extents). Skips extend_coords() and uses
+      the first dataset's x/y directly. Default is False.
+      Use True when granules have been pre-cropped to identical grids (e.g.,
+      via crop_virtual_dataset_to_bbox in virtual_itslive_cube_per_chunk.py).
+
+   Returns
+   -------
+   tuple of (xr.Dataset, str)
+      The combined virtual datacube and the autorift parameter file path.
    """
-   x_union, y_union, offsets = extend_coords(vds_list)
+   if already_aligned:
+      # All granules are on identical grids - use first granule's x/y
+      # and set all offsets to zero
+      x_union = vds_list[0]["x"].values
+      y_union = vds_list[0]["y"].values
+      offsets = [{"x": 0, "y": 0}] * len(vds_list)
+      logging.info(f"Using already-aligned grids: x={len(x_union)}, y={len(y_union)}")
+   else:
+      # Compute union grid and offsets
+      x_union, y_union, offsets = extend_coords(vds_list)
+
    sizes = {"x": len(x_union), "y": len(y_union)}
 
    # Collect only a subset of data variables in the virtual datacube
-   _vars = [ImgPairInfo.name, Vars.v, Vars.vx, Vars.vy, Vars.m11, Vars.m12]
+   _vars = [ImgPairInfo.name, Vars.v, Vars.vx, Vars.vy, Vars.vr, Vars.va, Vars.m11, Vars.m12]
+   # _vars = [ImgPairInfo.name, Vars.v, Vars.vx, Vars.vy, Vars.m11, Vars.m12]
 
    placed = []
 
@@ -430,34 +749,61 @@ def build_virtual_cube(vds_list):
             continue  # Skip adding img_pair_info itself to the cube
 
          # Add autoRIFT_software_version
-         new_vars[Vars.autorift_software_version] = xr.Variable(
-               data=vds.attrs[Vars.autorift_software_version],
-               dims=(),
-               attrs={
-                  Vars.attrs.std_name: Vars.autorift_software_version,
-                  Vars.attrs.description: Vars.description[Vars.autorift_software_version]
-               }
-         )
-
-         # Remember autoRIFT_parameter_file value - must be the same across
-         # all cube layers
-         autorift_param_files.append(vds.attrs[Vars.attrs.autorift_param_file])
-
-         # Process 'v[xy]' data variables and their attributes
-         # if name in [Vars.vx, Vars.vy]:
-
-
-         # Extract "v*"'s attributes as scalar data variables (e.g., error_modeled)
-
-         if name == 'vx':
-            attr_value = vds["vx"].attrs.get("error_modeled", -32767)
-            logging.info(f'Getting vx.error_modeled {attr_value}')
-            new_vars["vx_error_modeled"] = xr.Variable(
-               dims=(),
-               data=np.array(attr_value),
-               attrs={"description": "vx_error_modeled"}
+         if Vars.autorift_software_version not in new_vars:
+            new_vars[Vars.autorift_software_version] = xr.Variable(
+                  data=vds.attrs[Vars.autorift_software_version],
+                  dims=(),
+                  attrs={
+                     Vars.attrs.std_name: Vars.autorift_software_version,
+                     Vars.attrs.description: Vars.description[Vars.autorift_software_version]
+                  }
             )
-            # Continue to add vx itself (don't skip like img_pair_info)
+
+            # Remember autoRIFT_parameter_file value - must be the same across
+            # all cube layers
+            autorift_param_files.append(vds.attrs[Vars.attrs.autorift_param_file])
+
+         # Process velocity data variables and their attributes
+         if name in [Vars.vx, Vars.vy, Vars.vr, Vars.va]:
+            # Extract ALL velocity attributes (error, error_mask, error_modeled, error_slow,
+            # stable_shift, stable_shift_mask, stable_shift_slow) and shared attributes
+            # (flag_stable_shift, stable_count_mask, stable_count_slow) to match regular
+            # datacube behavior (see itscube.py process_v_attributes()).
+            # Only process if variable exists in original granule (not synthetic placeholder)
+            if name in vds.data_vars:
+               _extract_velocity_attributes(new_vars, vds, name)
+
+            # OLD CODE (commented out - only extracted error_modeled):
+            # # TODO: Currently only extracting error_modeled attribute to match existing
+            # # vx/vy behavior. Regular datacubes extract all error/stable_shift attributes
+            # # (error, error_mask, error_slow, stable_shift, stable_shift_mask, stable_shift_slow).
+            # # See itscube.py process_v_attributes() for full implementation. This creates
+            # # a known parity gap with regular datacubes.
+            #
+            # # Extract "v*"'s error_modeled attribute as scalar data variable
+            # # This is done for all velocity components: vx, vy, vr, va
+            # # Check if variable exists in ORIGINAL granule (not synthetic variables added by
+            # # _add_missing_vr_va or _add_missing_m11_m12)
+            # if name in vds.data_vars and Vars.postfix.error_modeled in vds[name].attrs:
+            #    attr_value = vds[name].attrs[Vars.postfix.error_modeled]
+            #
+            # else:
+            #    attr_value = utils.Missing.value
+            #
+            # logging.info(f'Getting {name}.{Vars.postfix.error_modeled}: {attr_value}')
+            # new_vars[f"{name}_{Vars.postfix.error_modeled}"] = xr.Variable(
+            #    dims=(),
+            #    data=np.array(attr_value),
+            #    attrs={Vars.attrs.description: f"{name}_{Vars.postfix.error_modeled}"}
+            # )
+            # Continue to add the velocity variable itself (don't skip like img_pair_info)
+
+         # Promote M11/M12 dr_to_vr_factor attribute into its own variable to
+         # match itscube.py process_m_attributes(). Real M11/M12 reach this path
+         # (they're in _vars); optical granules that lack M11/M12 get the same
+         # variable synthesized in _add_missing_m11_m12().
+         if name in [Vars.m11, Vars.m12]:
+            _extract_m_attributes(new_vars, vds, name)
 
          data = var.data
          original_dtype = var.dtype  # Capture original dtype BEFORE any operations
@@ -490,11 +836,29 @@ def build_virtual_cube(vds_list):
       # (optical granules don't have these)
       _add_missing_m11_m12(new_vars, vds, x_union, y_union)
 
+      # Add vr and va if not present in granule
+      # (optical granules don't have these radar-specific variables)
+      _add_missing_vr_va(new_vars, vds, x_union, y_union)
+
       placed.append(xr.Dataset(
          new_vars,
          coords={"x": ("x", x_union), "y": ("y", y_union), "time": vds["time"]},
          attrs=vds.attrs,
       ))
+
+   var_sets = [frozenset(ds.data_vars) for ds in placed]
+   if len(set(var_sets)) > 1:
+      from collections import Counter
+      counts = Counter(var_sets)
+
+      # find the minority set(s) and report which granule(s) have them
+      majority = counts.most_common(1)[0][0]
+      for ds, vs in zip(placed, var_sets):
+         if vs != majority:
+            raise ValueError(
+               f"{ds.attrs.get(Vars.url, '<unknown>')}: variable set differs "
+               f"from majority.\n  extra: {vs - majority}\n  missing: {majority - vs}"
+            )
 
    result = xr.combine_by_coords(
       placed, coords="minimal", compat="override", join="override",
