@@ -61,7 +61,11 @@ PIXEL_SIZE_HALF = PIXEL_SIZE / 2
 
 # Number of threads for parallel processing
 MAX_AWS_CONNECTIONS = 8
-NUM_GRANULES_TO_READ = 100
+
+# Log progress after this many granules complete. Tasks are dispatched to the
+# pool continuously (no batch barrier); this only controls how often progress
+# is reported.
+PROGRESS_LOG_INTERVAL = 100
 
 # String representation of longitude/latitude projection
 LON_LAT_PROJECTION = 'EPSG:4326'
@@ -454,25 +458,22 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
 
    Returns
    -------
-   tuple of (xr.Dataset, list of str)
+   tuple of (xr.Dataset or None, str or None, list of str)
       A tuple containing:
       - The virtual datacube with all cropped granules stacked along the
-        time dimension.
+        time dimension, or None if no granule had valid data in the bbox.
+      - The autorift parameter file path, or None if no cube was built.
       - List of URLs for granules that were skipped (no overlap or no valid
         data in overlap region).
 
    Raises
    ------
    ValueError
-      If no granules overlap the bbox, or if cropped granules don't share
-      identical x/y grids.
+      If cropped granules don't share identical x/y grids.
    """
    logging.info(f'Building cube out of {len(vds_list)} granules')
    cropped = []
    skipped_granules = []
-
-   start = 0
-   num_to_process = len(vds_list)
 
    # Threads ("threading"), not processes: cropping is S3-I/O-bound work whose
    # per-granule path is now pure obstore range reads + numpy manifest slicing +
@@ -480,37 +481,47 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    # there is no thread-unsafe library on this path and no GIL-bound compute to
    # contend on. Threads also avoid pickling each granule's ManifestArray-bearing
    # dataset to a worker process and the cropped dataset back again.
+   #
+   # Hand joblib the whole list (no manual batching) so the n_jobs-sized pool
+   # stays continuously saturated -- a manual batch barrier would make every
+   # batch wait on its slowest granule. return_as="generator_unordered" yields
+   # each result as soon as it completes (as-completed), so progress advances
+   # smoothly even under skewed granule durations; the ordered generator would
+   # stall behind a slow early granule (head-of-line blocking). Arrival order is
+   # irrelevant: build_virtual_cube stacks layers by the time coordinate.
    with parallel_config(
       backend='threading',
       n_jobs=MAX_AWS_CONNECTIONS
    ):
-      while num_to_process > 0:
-         # How many tasks to process at a time
-         num_tasks = min(num_to_process, NUM_GRANULES_TO_READ)
+      # This returns a lazy generator immediately -- no cropping has run yet.
+      # The tasks execute as the loop below pulls from result_stream, each
+      # result yielded the moment its task finishes.
+      result_stream = Parallel(return_as="generator_unordered")(
+         delayed(crop_virtual_dataset_to_bbox)(each_vds, bbox, netcdf_store)
+         for each_vds in vds_list
+      )
 
-         # Run in parallel with joblib
-         log_msg = f"Building virtual cube: processing {num_tasks} tasks out of " \
-                     f"{num_to_process} remaining"
-         logging.info(log_msg)
+      total = len(vds_list)
+      for done, (cropped_ds, cropped_url) in enumerate(result_stream, start=1):
+         if cropped_ds is not None:
+            cropped.append(cropped_ds)
 
-         results = Parallel()(
-            delayed(crop_virtual_dataset_to_bbox)(each_vds, bbox, netcdf_store) for
-            each_vds in vds_list[start:start + num_tasks]
-         )
+         else:
+            skipped_granules.append(cropped_url)
 
-         for each_result in results:
-            cropped_ds, cropped_url = each_result
-            if cropped_ds is not None:
-               cropped.append(cropped_ds)
-
-            else:
-               skipped_granules.append(cropped_url)
-
-         num_to_process -= num_tasks
-         start += num_tasks
+         if done % PROGRESS_LOG_INTERVAL == 0 or done == total:
+            logging.info(
+               f"Cropped {done}/{total} granules "
+               f"({len(cropped)} kept, {len(skipped_granules)} skipped)"
+            )
 
    if not cropped:
-      raise ValueError(f"Building virtual cube: no granules overlap bbox {bbox}")
+      # No granule had valid data within the bbox: report and return no cube so
+      # the caller can skip the rest of the processing instead of failing.
+      logging.info(
+         f"No granules overlap bbox {bbox} with valid data; no cube built"
+      )
+      return None, None, skipped_granules
 
    logging.info(f'Got {len(cropped)} cropped granules')
 
@@ -584,47 +595,47 @@ def load_granules(granules, bucket):
    Returns
    -------
    list of xr.Dataset
-      List of virtual datasets, one per granule, with the same order as the
-      input granules list. Each dataset has 'time', 'y', 'x' coordinates loaded
-      and data variables as ManifestArrays.
+      List of virtual datasets, one per granule. Order is not guaranteed to
+      match the input (results are collected as-completed); downstream stacking
+      keys off the time coordinate, not list position. Each dataset has 'time',
+      'y', 'x' coordinates loaded and data variables as ManifestArrays.
    """
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
    registry = ObjectStoreRegistry({bucket: store})
    parser = HDFParser(drop_variables=[Mapping.name])
 
    vds_list = []
-   start = 0
-   num_to_process = len(granules)
 
-   # Use processes ("loky") instead of threads ("threading") for parallel
-   # processing - each process is getting their own copy of the object instance
-   # (registry, object store, etc.) that are passed to each of the processes,
-   # Using loky (process-based) bypasses the threading-lock contention entirely,
-   # by construction, because there is no shared process for a lock to live in.
+   # Processes ("loky"), not threads: opening a granule as a virtual dataset
+   # goes through HDF parsing whose thread-safety is not guaranteed, so keep it
+   # in separate worker processes. (The crop pass in build_virtual_cube_subset
+   # is h5py-free and uses threads instead.)
+   #
+   # Hand joblib the whole list (no manual batching) so the n_jobs-sized pool
+   # stays continuously saturated; return_as="generator_unordered" yields each
+   # result as soon as it completes (as-completed progress, no head-of-line
+   # stall behind a slow granule) and throttles dispatch to pre_dispatch
+   # (~2*n_jobs), so a million granules don't all get queued at once. Arrival
+   # order does not matter: downstream cropping/stacking keys off the time
+   # coordinate, not list position.
+   total = len(granules)
    with parallel_config(
       backend='loky',
       n_jobs=MAX_AWS_CONNECTIONS
    ):
-      while num_to_process > 0:
-         # How many tasks to process at a time
-         num_tasks = min(num_to_process, NUM_GRANULES_TO_READ)
+      # This returns a lazy generator immediately -- no granule is opened yet.
+      # The tasks execute as the loop below pulls from result_stream, each
+      # result yielded the moment its task finishes.
+      result_stream = Parallel(return_as="generator_unordered")(
+         delayed(read_virtual_dataset)(each_file, parser, registry)
+         for each_file in granules
+      )
 
-         # Run in parallel with joblib
-         log_msg = f"Processing {num_tasks} tasks out of " \
-                     f"{num_to_process} remaining"
-         logging.info(log_msg)
+      for done, each_ds in enumerate(result_stream, start=1):
+         vds_list.append(each_ds)
 
-         # with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
-         results = Parallel()(
-            delayed(read_virtual_dataset)(each_file, parser, registry) for
-            each_file in granules[start:start + num_tasks]
-         )
-
-         for each_ds in results:
-            vds_list.append(each_ds)
-
-         num_to_process -= num_tasks
-         start += num_tasks
+         if done % PROGRESS_LOG_INTERVAL == 0 or done == total:
+            logging.info(f"Loaded {done}/{total} granules")
 
    return vds_list
 
