@@ -474,13 +474,14 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    start = 0
    num_to_process = len(vds_list)
 
-   # Use processes ("loky") instead of threads ("threading") for parallel
-   # processing - each process is getting their own copy of the object instance
-   # (registry, object store, etc.) that are passed to each of the processes,
-   # Using loky (process-based) bypasses the threading-lock contention entirely,
-   # by construction, because there is no shared process for a lock to live in.
+   # Threads ("threading"), not processes: cropping is S3-I/O-bound work whose
+   # per-granule path is now pure obstore range reads + numpy manifest slicing +
+   # zarr codec decode (no h5py) after the manifest-based valid-data check, so
+   # there is no thread-unsafe library on this path and no GIL-bound compute to
+   # contend on. Threads also avoid pickling each granule's ManifestArray-bearing
+   # dataset to a worker process and the cropped dataset back again.
    with parallel_config(
-      backend='loky',
+      backend='threading',
       n_jobs=MAX_AWS_CONNECTIONS
    ):
       while num_to_process > 0:
@@ -492,7 +493,6 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
                      f"{num_to_process} remaining"
          logging.info(log_msg)
 
-         # with tqdm_joblib(tqdm(desc=log_msg, total=num_tasks)):
          results = Parallel()(
             delayed(crop_virtual_dataset_to_bbox)(each_vds, bbox, netcdf_store) for
             each_vds in vds_list[start:start + num_tasks]
@@ -514,9 +514,10 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
 
    logging.info(f'Got {len(cropped)} cropped granules')
 
-   for i, vds in enumerate(cropped):
-      t = vds["time"]
-      logging.info(f"Granule {i}: {t.values=} {t.dtype=} {t.dims=} {t.shape=}")
+   if logging.getLogger().isEnabledFor(logging.DEBUG):
+      for i, vds in enumerate(cropped):
+         t = vds["time"]
+         logging.debug(f"Granule {i}: {t.values=} {t.dtype=} {t.dims=} {t.shape=}")
 
    _assert_identical_grids(cropped, bbox)
 
@@ -561,7 +562,7 @@ def read_virtual_dataset(granule_url, parser, registry):
       v.attrs["granule_path"] = granule_url.replace('s3://its-live-data/', '')
 
    except Exception as e:
-      raise RuntimeError(f'Got exception loading {granule_url=}: e')
+      raise RuntimeError(f'Got exception loading {granule_url=}: {e}')
 
    return v
 

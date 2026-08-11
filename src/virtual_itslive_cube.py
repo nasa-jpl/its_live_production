@@ -50,6 +50,7 @@ def pad_manifestarray(marr, new_shape, offsets=None):
    new_shape = tuple(int(s) for s in new_shape)
    if offsets is None:
       offsets = (0,) * len(new_shape)
+      offsets = (0,) * len(new_shape)
    offsets = tuple(int(o) for o in offsets)
    shape, chunks = marr.shape, marr.chunks
 
@@ -810,14 +811,20 @@ def build_virtual_cube(vds_list, already_aligned=False):
          if isinstance(data, ManifestArray):
                new_shape = [sizes.get(str(d), s) for d, s in zip(var.dims, data.shape)]
                var_offsets = [off.get(str(d), 0) for d in var.dims]
-               data = pad_manifestarray(data, new_shape, var_offsets)
 
-               # Verify dtype is preserved in ManifestArray
-               if data.dtype != original_dtype:
-                  raise RuntimeError(
-                     f"{name} dtype changed from {original_dtype} to "
-                     f"{data.dtype} during padding"
-                  )
+               # Skip the manifest rebuild when the array already fills the
+               # target grid (already_aligned granules: shape unchanged and all
+               # offsets zero). pad_manifestarray would just reconstruct a
+               # byte-identical manifest, so reuse `data` as-is.
+               if new_shape != list(data.shape) or any(var_offsets):
+                  data = pad_manifestarray(data, new_shape, var_offsets)
+
+                  # Verify dtype is preserved in ManifestArray
+                  if data.dtype != original_dtype:
+                     raise RuntimeError(
+                        f"{name} dtype changed from {original_dtype} to "
+                        f"{data.dtype} during padding"
+                     )
 
          # Create variable with original dtype preserved
          new_vars[name] = xr.Variable(
