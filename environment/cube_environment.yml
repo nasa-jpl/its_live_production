@@ -33,6 +33,8 @@ dependencies:
   - pystac-client=0.8    # required by itslive-py
   - python-duckdb=1.3.0  # required by itslive-py
   - rustac>=0.8          # required by itslive-py
+  - pytest>=7.0          # testing framework
+  - pytest-ordering      # allows test execution ordering with @pytest.mark.order
   - pip
   - pip:
     - git+https://github.com/nasa-jpl/itslive-py
