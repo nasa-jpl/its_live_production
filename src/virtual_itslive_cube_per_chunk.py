@@ -55,6 +55,11 @@ logging.basicConfig(
    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+# Suppress Zarr V3 unstable string dtype warnings
+# These are informational - string specs are being finalized in Zarr V3
+import warnings
+warnings.filterwarnings('ignore', message='.*UnstableSpecificationWarning.*')
+
 # Grid pixel size in meters
 PIXEL_SIZE = 120
 PIXEL_SIZE_HALF = PIXEL_SIZE / 2
