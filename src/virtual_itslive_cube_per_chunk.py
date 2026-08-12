@@ -70,6 +70,9 @@ PROGRESS_LOG_INTERVAL = 100
 # String representation of longitude/latitude projection
 LON_LAT_PROJECTION = 'EPSG:4326'
 
+HTTPS_URL = 'https://its-live-data.s3.amazonaws.com/'
+S3_URL = 's3://its-live-data/'
+
 
 def crop_manifestarray(marr, starts, stops):
    """Chunk-aligned crop: return a new ManifestArray referencing only the
@@ -461,10 +464,10 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    tuple of (xr.Dataset or None, str or None, list of str)
       A tuple containing:
       - The virtual datacube with all cropped granules stacked along the
-        time dimension, or None if no granule had valid data in the bbox.
+      time dimension, or None if no granule had valid data in the bbox.
       - The autorift parameter file path, or None if no cube was built.
       - List of URLs for granules that were skipped (no overlap or no valid
-        data in overlap region).
+      data in overlap region).
 
    Raises
    ------
@@ -816,11 +819,7 @@ if __name__ == "__main__":
          roi=roi
       )
 
-   granules = [
-      each.replace(
-         'https://its-live-data.s3.amazonaws.com/',
-         's3://its-live-data/') for each in granules
-   ]
+   granules = [each.replace(HTTPS_URL, S3_URL) for each in granules]
 
    granules = [each for each in granules if not each.endswith('P000.nc')]
 
@@ -867,21 +866,18 @@ if __name__ == "__main__":
    # Add new attributes to the cube
    if cube:
       date_created = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
+
+      # Set all datacube attributes matching itscube.py
+      cube.attrs[utils.OutputFormat.conventions] = \
+         CubeFormat.values[utils.OutputFormat.conventions]
+      cube.attrs[CubeFormat.datacube_software_version] = '1.0'
       cube.attrs[CubeFormat.date_created] = date_created
       cube.attrs[CubeFormat.date_updated] = date_created
-
-      cube.attrs[utils.OutputFormat.title] = \
-         CubeFormat.values[utils.OutputFormat.title]
-
       cube.attrs[CubeFormat.gdal_area_or_point] = \
          CubeFormat.values[CubeFormat.gdal_area_or_point]
-
       cube.attrs[CubeFormat.geo_polygon] = json.dumps(polygon_coords)
-
       cube.attrs[utils.OutputFormat.institution] = \
          CubeFormat.values[utils.OutputFormat.institution]
-
-      cube.attrs[Vars.attrs.autorift_param_file] = autorift_param_file
 
       center_lon_lat = to_lon_lat_transformer.transform(xmid, ymid)
       cube.attrs[utils.OutputFormat.latitude] = round(center_lon_lat[1], 2)
@@ -889,6 +885,28 @@ if __name__ == "__main__":
 
       cube.attrs[CubeFormat.proj_polygon] = json.dumps(polygon)
       cube.attrs[utils.OutputFormat.projection] = str(args.projection)
+
+      # S3 and URL attributes (will be set after determining output path)
+      cube.attrs[utils.OutputFormat.s3] = ''
+      cube.attrs[utils.OutputFormat.url] = ''
+
+      # Time standard attributes from first granule
+      if len(vds_list) > 0:
+         first_vds = vds_list[0]
+         if ImgPairInfo.name in first_vds.data_vars:
+            img_pair_attrs = first_vds[ImgPairInfo.name].attrs
+            for var_name in [ImgPairInfo.time_standard_img1, ImgPairInfo.time_standard_img2]:
+               if var_name in img_pair_attrs:
+                  cube.attrs[var_name] = img_pair_attrs[var_name]
+
+      cube.attrs[utils.OutputFormat.title] = \
+         CubeFormat.values[utils.OutputFormat.title]
+      cube.attrs[Vars.attrs.autorift_param_file] = autorift_param_file
+
+      # Set attributes for 'url' data variable
+      if Vars.url in cube.data_vars:
+         cube[Vars.url].attrs[Vars.attrs.std_name] = Vars.url
+         cube[Vars.url].attrs[Vars.attrs.description] = Vars.description[Vars.url]
 
       # Remove granule specific attributes
       del cube.attrs['motion_detection_method']
@@ -902,6 +920,21 @@ if __name__ == "__main__":
 
       # Determine if output is S3 or local filesystem
       is_s3_output = store_path.startswith('s3://')
+
+      # Set S3 and URL attributes based on output location
+      if is_s3_output:
+         cube.attrs[utils.OutputFormat.s3] = store_path
+         # Convert s3:// to http:// URL
+         cube.attrs[utils.OutputFormat.url] = store_path.replace(
+            's3://its-live-data/', 'http://its-live-data.s3.amazonaws.com/'
+         )
+      else:
+         cube.attrs[utils.OutputFormat.s3] = ''
+         cube.attrs[utils.OutputFormat.url] = ''
+
+      # Set skipped_granules attribute pointing to JSON file location
+      skipped_json_path = store_path.rstrip('/').rstrip('.icechunk') + '_skippedGranules.json'
+      cube.attrs[SkippedGranules.name] = skipped_json_path
 
       if is_s3_output:
          # S3 storage - parse bucket and prefix
@@ -957,6 +990,9 @@ if __name__ == "__main__":
 
       # Save skipped granules to JSON file with _skippedGranules.json postfix
       skipped_json_path = store_path.rstrip('/').rstrip('.icechunk') + '_skippedGranules.json'
+
+      # Restore original http:// granules urls before saving to the json file
+      skipped_granules = [each.replace(S3_URL, HTTPS_URL) for each in skipped_granules]
 
       if is_s3_output:
          # Write to S3 using boto3
