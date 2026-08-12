@@ -355,7 +355,7 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
 
       )
 
-      logging.info(
+      logging.debug(
          f"Added {m_var_name} as 3D ManifestArray (time, y, x) with missing "
          "chunks (not present in granule)"
       )
@@ -437,7 +437,7 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
          }
       )
 
-      logging.info(f'Extracted {error_var_name}: {attr_value}')
+      logging.debug(f'Extracted {error_var_name}: {attr_value}')
 
    # Shared attributes (appear for all v* variables, capture only once per granule)
    for each_attr, each_attr_units in zip(
@@ -469,7 +469,7 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
          if each_attr_units is not None:
             new_vars[each_attr].attrs[utils.Units.name] = each_attr_units
 
-         logging.info(f'Extracted shared attribute {each_attr}: {attr_value}')
+         logging.debug(f'Extracted shared attribute {each_attr}: {attr_value}')
 
    # Extract stable_shift (specific to each velocity variable).
    # Read via get_data_var_attr so the value is coerced to float32 (and any
@@ -499,7 +499,7 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
       }
    )
 
-   logging.info(f'Extracted {shift_var_name}: {stable_shift_value}')
+   logging.debug(f'Extracted {shift_var_name}: {stable_shift_value}')
 
    # Extract stable_shift_mask and stable_shift_slow
    for each_attr in [Vars.postfix.stable_shift_mask, Vars.postfix.stable_shift_slow]:
@@ -521,7 +521,7 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
          }
       )
 
-      logging.info(f'Extracted {shift_var_name}: {attr_value}')
+      logging.debug(f'Extracted {shift_var_name}: {attr_value}')
 
 
 def _extract_m_attributes(new_vars, vds, var_name):
@@ -567,7 +567,7 @@ def _extract_m_attributes(new_vars, vds, var_name):
       }
    )
 
-   logging.info(f'Extracted {attr_name}: {attr_value}')
+   logging.debug(f'Extracted {attr_name}: {attr_value}')
 
 
 def _add_missing_vr_va(new_vars, vds, x_union, y_union):
@@ -608,7 +608,7 @@ def _add_missing_vr_va(new_vars, vds, x_union, y_union):
       # Variables are already in the dataset, nothing to do
       return
 
-   logging.info(f'Adding va and vr to the {vds.attrs['granule_url']}...')
+   logging.debug(f'Adding va and vr to the {vds.attrs['granule_url']}...')
 
    # Use 'v' as template since it's present in all granules (both optical and radar)
    template_var = vds.data_vars[Vars.v]
@@ -657,7 +657,7 @@ def _add_missing_vr_va(new_vars, vds, x_union, y_union):
          attrs=var_attrs,
       )
 
-      logging.info(f"Added {var_name} as 3D ManifestArray (time, y, x) with missing chunks (not present in granule)")
+      logging.debug(f"Added {var_name} as 3D ManifestArray (time, y, x) with missing chunks (not present in granule)")
 
       # Promote the FULL set of velocity attribute variables for this
       # synthesized component (error/error_mask/error_modeled/error_slow,

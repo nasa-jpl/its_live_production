@@ -376,7 +376,7 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
 
    if x_range is None or y_range is None:
       # Granule doesn't intersect the bounding bbox
-      logging.info(f'{vds.attrs["granule_url"]} does not overlap the polygon')
+      logging.debug(f'{vds.attrs["granule_url"]} does not overlap the polygon')
       return None, vds.attrs["granule_url"]
 
    logging.debug(f'Updating to {x_range=}')
@@ -986,7 +986,14 @@ if __name__ == "__main__":
 
          logging.info(f'Writing icechunk repo to S3: bucket={bucket}, prefix={prefix}')
 
+         # Configure storage settings for stronger recovery from transient S3 failures
+         storage_settings = ic.StorageSettings(
+            unsafe_use_metadata=True,           # Enable metadata stamping for write-id recovery
+            unsafe_use_conditional_update=True  # Enable conditional PUTs to prevent conflicts
+         )
+
          config = ic.RepositoryConfig.default()
+         config.storage = storage_settings
          config.set_virtual_chunk_container(
             ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
          )
@@ -1009,6 +1016,9 @@ if __name__ == "__main__":
          # Local filesystem storage
          shutil.rmtree(store_path, ignore_errors=True)
 
+         # Note: Don't enable unsafe_use_metadata for local filesystem - it only
+         # works with S3 storage and will cause "put_opts with opts.attributes
+         # not yet implemented" error on local filesystem.
          config = ic.RepositoryConfig.default()
          config.set_virtual_chunk_container(
             ic.VirtualChunkContainer(
