@@ -110,7 +110,8 @@ def crop_manifestarray(marr, starts, stops):
       If starts/stops have wrong dimensionality, contain invalid ranges, or
       are not aligned to chunk boundaries.
    """
-   shape, chunks = marr.shape, marr.chunks
+   shape = marr.shape
+   chunks = _get_manifestarray_chunks(marr)
    starts = tuple(int(s) for s in starts)
    stops = tuple(int(s) for s in stops)
 
@@ -166,6 +167,40 @@ def crop_manifestarray(marr, starts, stops):
 _BUCKET_PREFIX = 's3://its-live-data/'
 
 
+def _get_manifestarray_chunks(marr):
+   """Get chunk shape from ManifestArray, handling different API versions.
+
+   Parameters
+   ----------
+   marr : ManifestArray
+      The ManifestArray to get chunks from.
+
+   Returns
+   -------
+   tuple of int
+      Chunk shape for each dimension.
+
+   Raises
+   ------
+   AttributeError
+      If chunks cannot be determined from the ManifestArray.
+   """
+   # Try different API versions
+   if hasattr(marr, 'chunks'):
+      return marr.chunks
+   elif hasattr(marr, 'metadata'):
+      if hasattr(marr.metadata, 'chunk_shape'):
+         return marr.metadata.chunk_shape
+      elif hasattr(marr.metadata, 'chunk_grid'):
+         # Zarr v3 chunk grid
+         return tuple(marr.metadata.chunk_grid.chunk_shape)
+
+   raise AttributeError(
+      f"Cannot determine chunks from ManifestArray. "
+      f"Available attributes: {dir(marr)}"
+   )
+
+
 def _cropped_var_has_valid_data(marr, netcdf_store):
    """Return True if a cropped ManifestArray references any non-fill data.
 
@@ -202,7 +237,7 @@ def _cropped_var_has_valid_data(marr, netcdf_store):
    # Per-chunk decode spec: shape is the chunk shape (not the window); dtype,
    # fill value and codecs come from the array metadata.
    spec = ArraySpec(
-      shape=marr.chunks,
+      shape=_get_manifestarray_chunks(marr),
       dtype=metadata.dtype,
       fill_value=fill,
       config=ArrayConfig.from_dict({}),
@@ -310,10 +345,18 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
       data = var.data
       if isinstance(data, ManifestArray):
          dims = var.dims
-         if x_chunk is None and "x" in dims:
-            x_chunk = data.chunks[dims.index("x")]
-         if y_chunk is None and "y" in dims:
-            y_chunk = data.chunks[dims.index("y")]
+
+         # Get chunk shape using helper function
+         try:
+            chunks = _get_manifestarray_chunks(data)
+
+            if x_chunk is None and "x" in dims:
+               x_chunk = chunks[dims.index("x")]
+            if y_chunk is None and "y" in dims:
+               y_chunk = chunks[dims.index("y")]
+         except (AttributeError, IndexError) as e:
+            logging.warning(f"Could not get chunks from variable: {e}")
+            continue
 
       if x_chunk is not None and y_chunk is not None:
          break

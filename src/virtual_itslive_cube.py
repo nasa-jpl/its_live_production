@@ -31,6 +31,40 @@ HTTP_PREFIX = 'http://'
 HTTPS_PREFIX = 'https://'
 
 
+def _get_manifestarray_chunks(marr):
+   """Get chunk shape from ManifestArray, handling different API versions.
+
+   Parameters
+   ----------
+   marr : ManifestArray
+      The ManifestArray to get chunks from.
+
+   Returns
+   -------
+   tuple of int
+      Chunk shape for each dimension.
+
+   Raises
+   ------
+   AttributeError
+      If chunks cannot be determined from the ManifestArray.
+   """
+   # Try different API versions
+   if hasattr(marr, 'chunks'):
+      return marr.chunks
+   elif hasattr(marr, 'metadata'):
+      if hasattr(marr.metadata, 'chunk_shape'):
+         return marr.metadata.chunk_shape
+      elif hasattr(marr.metadata, 'chunk_grid'):
+         # Zarr v3 chunk grid
+         return tuple(marr.metadata.chunk_grid.chunk_shape)
+
+   raise AttributeError(
+      f"Cannot determine chunks from ManifestArray. "
+      f"Available attributes: {dir(marr)}"
+   )
+
+
 def pad_manifestarray(marr, new_shape, offsets=None):
    """Smart padding: place a ManifestArray into a larger `new_shape` at the
    given per-axis element `offsets`, filling every other chunk-grid cell with
@@ -55,7 +89,8 @@ def pad_manifestarray(marr, new_shape, offsets=None):
       offsets = (0,) * len(new_shape)
       offsets = (0,) * len(new_shape)
    offsets = tuple(int(o) for o in offsets)
-   shape, chunks = marr.shape, marr.chunks
+   shape = marr.shape
+   chunks = _get_manifestarray_chunks(marr)
 
    if len(new_shape) != len(shape):
       raise ValueError(f"new_shape {new_shape} ndim != array ndim {len(shape)}")
@@ -248,9 +283,10 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
    x_idx = template_var.dims.index('x')
 
    # Get chunk sizes from template
-   chunk_time = template_var.data.chunks[time_idx]
-   chunk_y = template_var.data.chunks[y_idx]
-   chunk_x = template_var.data.chunks[x_idx]
+   template_chunks = _get_manifestarray_chunks(template_var.data)
+   chunk_time = template_chunks[time_idx]
+   chunk_y = template_chunks[y_idx]
+   chunk_x = template_chunks[x_idx]
    chunks = (chunk_time, chunk_y, chunk_x)
 
    for m_var_name, m_var_attrs in m_vars_info.items():
@@ -583,9 +619,10 @@ def _add_missing_vr_va(new_vars, vds, x_union, y_union):
    x_idx = template_var.dims.index('x')
 
    # Get chunk sizes from template
-   chunk_time = template_var.data.chunks[time_idx]
-   chunk_y = template_var.data.chunks[y_idx]
-   chunk_x = template_var.data.chunks[x_idx]
+   template_chunks = _get_manifestarray_chunks(template_var.data)
+   chunk_time = template_chunks[time_idx]
+   chunk_y = template_chunks[y_idx]
+   chunk_x = template_chunks[x_idx]
    chunks = (chunk_time, chunk_y, chunk_x)
 
    for var_name, var_attrs in radar_vars_info.items():
