@@ -872,7 +872,6 @@ if __name__ == "__main__":
          CubeFormat.values[utils.OutputFormat.conventions]
       cube.attrs[CubeFormat.datacube_software_version] = '1.0'
       cube.attrs[CubeFormat.date_created] = date_created
-      cube.attrs[CubeFormat.date_updated] = date_created
       cube.attrs[CubeFormat.gdal_area_or_point] = \
          CubeFormat.values[CubeFormat.gdal_area_or_point]
       cube.attrs[CubeFormat.geo_polygon] = json.dumps(polygon_coords)

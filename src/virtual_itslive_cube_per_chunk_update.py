@@ -129,7 +129,6 @@ def print_cube_info(cube):
     print("\n--- GLOBAL ATTRIBUTES ---")
     key_attrs = [
         CubeFormat.date_created,
-        CubeFormat.date_updated,
         CubeFormat.datacube_software_version,
         utils.OutputFormat.projection,
         utils.OutputFormat.latitude,
