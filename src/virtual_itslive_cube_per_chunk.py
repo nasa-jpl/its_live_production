@@ -1069,11 +1069,11 @@ if __name__ == "__main__":
       cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
       logging.info(f"{cube_roundtrip=}")
 
-      logging.info(f'{cube_roundtrip.mission_img1.values=}')
-      logging.info(f'{cube_roundtrip.mission_img2.values=}')
-      logging.info(f'{cube_roundtrip.satellite_img1.values=}')
-      logging.info(f'{cube_roundtrip.satellite_img2.values=}')
-      logging.info(f'{cube_roundtrip.time.values=}')
+      # logging.info(f'{cube_roundtrip.mission_img1.values=}')
+      # logging.info(f'{cube_roundtrip.mission_img2.values=}')
+      # logging.info(f'{cube_roundtrip.satellite_img1.values=}')
+      # logging.info(f'{cube_roundtrip.satellite_img2.values=}')
+      # logging.info(f'{cube_roundtrip.time.values=}')
 
    else:
       logging.info('No cube was created')
