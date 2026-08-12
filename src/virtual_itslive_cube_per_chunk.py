@@ -564,7 +564,7 @@ def read_virtual_dataset(granule_url, parser, registry):
          url=granule_url,
          parser=parser,
          registry=registry,
-         loadable_variables=["time", "y", "x"],
+         loadable_variables=["time", "y", "x", Mapping.name],
          decode_times=True,
       )
 
@@ -602,7 +602,10 @@ def load_granules(granules, bucket):
    """
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
    registry = ObjectStoreRegistry({bucket: store})
-   parser = HDFParser(drop_variables=[Mapping.name])
+   # Keep 'mapping' (don't drop it): it's loaded as a small 0-dim variable in
+   # read_virtual_dataset so build_virtual_cube can recover its projection attrs
+   # to synthesize the cube's CF grid-mapping variable.
+   parser = HDFParser()
 
    vds_list = []
 
@@ -892,30 +895,88 @@ if __name__ == "__main__":
 
       print(f"\n{cube}")
 
-      format_skipped_granules = "\n".join(skipped_granules)
-      logging.info(f'Skipped first 10 granules: \n{format_skipped_granules[:10]}')
+      logging.info(f'Skipped granules (first 10): \n{"\n".join(skipped_granules[:10])}')
 
       url_prefix = "s3://its-live-data/"
       store_path = args.output_store
-      shutil.rmtree(store_path, ignore_errors=True)
 
-      config = ic.RepositoryConfig.default()
-      config.set_virtual_chunk_container(
-         ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
-      )
-      repo = ic.Repository.create(
-         storage=ic.local_filesystem_storage(store_path),
-         config=config,
-         authorize_virtual_chunk_access=ic.containers_credentials(
-            {url_prefix: ic.s3_credentials(anonymous=True)}
-         ),
-      )
+      # Determine if output is S3 or local filesystem
+      is_s3_output = store_path.startswith('s3://')
+
+      if is_s3_output:
+         # S3 storage - parse bucket and prefix
+         s3_parts = store_path.replace('s3://', '').split('/', 1)
+         bucket = s3_parts[0]
+         prefix = s3_parts[1] if len(s3_parts) > 1 else ''
+
+         logging.info(f'Writing icechunk repo to S3: bucket={bucket}, prefix={prefix}')
+
+         config = ic.RepositoryConfig.default()
+         config.set_virtual_chunk_container(
+            ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
+         )
+
+         # Create S3 storage for repository (authenticated write access)
+         storage = ic.s3_storage(
+            bucket=bucket,
+            prefix=prefix,
+            region="us-west-2"
+         )
+
+         repo = ic.Repository.create(
+            storage=storage,
+            config=config,
+            authorize_virtual_chunk_access=ic.containers_credentials(
+               {url_prefix: ic.s3_credentials(anonymous=True)}
+            ),
+         )
+      else:
+         # Local filesystem storage
+         shutil.rmtree(store_path, ignore_errors=True)
+
+         config = ic.RepositoryConfig.default()
+         config.set_virtual_chunk_container(
+            ic.VirtualChunkContainer(
+               url_prefix,
+               ic.s3_store(region="us-west-2", anonymous=False)
+            )
+         )
+         repo = ic.Repository.create(
+            storage=ic.local_filesystem_storage(store_path),
+            config=config,
+            authorize_virtual_chunk_access=ic.containers_credentials(
+               {url_prefix: ic.s3_credentials(anonymous=True)}
+            ),
+         )
 
       session = repo.writable_session("main")
       cube_clean = _drop_nonfinite_attrs(cube)
       cube_clean.vz.to_icechunk(session.store)
       snapshot_id = session.commit("its_live virtual cube subset: create cube")
       logging.info(f"icechunk committed snapshot: {snapshot_id=}")
+
+      # Save skipped granules to JSON file with _skippedGranules.json postfix
+      skipped_json_path = store_path.rstrip('/').rstrip('.icechunk') + '_skippedGranules.json'
+
+      if is_s3_output:
+         # Write to S3 using boto3
+         import boto3
+         s3_client = boto3.client('s3', region_name='us-west-2')
+         skipped_json_s3 = skipped_json_path.replace('s3://', '').split('/', 1)
+         s3_client.put_object(
+            Bucket=skipped_json_s3[0],
+            Key=skipped_json_s3[1],
+            Body=json.dumps(skipped_granules, indent=2),
+            ContentType='application/json'
+         )
+         logging.info(f'Saved {len(skipped_granules)} skipped granules to {skipped_json_path}')
+
+      else:
+         # Write to local filesystem
+         with open(skipped_json_path, 'w') as f:
+            json.dump(skipped_granules, f, indent=2)
+
+         logging.info(f'Saved {len(skipped_granules)} skipped granules to {skipped_json_path}')
 
       cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
       logging.info(f"{cube_roundtrip=}")

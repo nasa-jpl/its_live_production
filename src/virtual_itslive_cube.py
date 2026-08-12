@@ -21,9 +21,12 @@ import utils
 from itslive_binary_type import BinaryFlag
 from itscube_types import (
    ImgPairInfo,
+   Mapping,
    Vars
 )
 
+# Some granules have autoRIFT param. file with 'http://' and some with 'https://',
+# strip these to compare the values across the granules (should be the same)
 HTTP_PREFIX = 'http://'
 HTTPS_PREFIX = 'https://'
 
@@ -93,13 +96,6 @@ def pad_manifestarray(marr, new_shape, offsets=None):
       marr.metadata, new_shape=list(new_shape)
    )
 
-   # Ensure dtype is preserved (copy_and_replace_metadata should do this,
-   # but be explicit)
-   if hasattr(marr.metadata, 'dtype') and hasattr(new_metadata, 'dtype'):
-      if new_metadata.dtype != marr.metadata.dtype:
-         logging.info(
-            f"Warning: pad_manifestarray dtype changed from {marr.metadata.dtype} to {new_metadata.dtype}")
-
    return ManifestArray(metadata=new_metadata, chunkmanifest=new_manifest)
 
 
@@ -109,6 +105,7 @@ def _union_axis(starts, ends, step):
       lo, hi = min(starts), max(ends)
    else:
       lo, hi = max(starts), min(ends)
+
    n = round((hi - lo) / step) + 1
    return lo + np.arange(n) * step
 
@@ -141,7 +138,8 @@ def extend_coords(vds_list):
    return x_union, y_union, offsets
 
 
-def copy_and_replace_metadata_dtype(old_metadata, new_shape, new_dtype, new_fill_value, codecs):
+def copy_and_replace_metadata_dtype(old_metadata, new_shape, new_dtype,
+                                    new_fill_value, codecs):
    """Like virtualizarr's `copy_and_replace_metadata`, but also overrides
    dtype, fill_value, and codec configuration.
 
@@ -170,7 +168,7 @@ def copy_and_replace_metadata_dtype(old_metadata, new_shape, new_dtype, new_fill
 # Hard-coded codecs for synthesized M11/M12 placeholders (used only for
 # granules missing real M11/M12; granules that already have real data are
 # left untouched and never go through this path). Captured directly from a
-# granule confirmed to have REAL M11/M12 data, so it's the exact,
+# granule confirmed to have real M11/M12 data, so it's the exact,
 # known-correct codec structure for this variable -- not an approximation
 # derived from an unrelated variable like `vx` (which is packed int16 and
 # would need patching).
@@ -199,8 +197,8 @@ _M_VAR_PLACEHOLDER_CODECS = (
 # IMPORTANT: this is the dict form zarr's ArrayV3Metadata.from_dict()
 # expects (i.e. what `.metadata.to_dict()["codecs"]` produces), not the
 def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
-   """Add M11 and M12 data variables as ManifestArrays with missing chunks if not
-   present in the granule.
+   """Add M11 and M12 data variables as ManifestArrays with missing chunks
+   if not present in the granule.
 
    M11 and M12 are conversion matrix elements for radar data (see Eq. A18 in
    https://www.mdpi.com/2072-4292/13/4/749). Optical granules don't have these
@@ -267,7 +265,9 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
          -(-shape[2] // chunks[2])   # x chunks
       )
 
-      paths = np.full(chunk_grid_shape, MISSING_CHUNK_PATH, dtype=np.dtypes.StringDType())
+      paths = np.full(
+         chunk_grid_shape, MISSING_CHUNK_PATH, dtype=np.dtypes.StringDType()
+      )
       offsets = np.zeros(chunk_grid_shape, dtype="uint64")
       lengths = np.zeros(chunk_grid_shape, dtype="uint64")
 
@@ -319,7 +319,10 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
 
       )
 
-      logging.info(f"Added {m_var_name} as 3D ManifestArray (time, y, x) with missing chunks (not present in granule)")
+      logging.info(
+         f"Added {m_var_name} as 3D ManifestArray (time, y, x) with missing "
+         "chunks (not present in granule)"
+      )
 
       # Promote the dr_to_vr_factor variable for this synthesized M variable
       # (resolves to the missing value since m_var_name is not in the granule),
@@ -328,7 +331,8 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
 
 
 def _extract_velocity_attributes(new_vars, vds, var_name):
-   """Extract all attributes from a velocity variable and create scalar variables.
+   """Extract all attributes from a velocity variable and create scalar
+   variables to represent them in the datacube.
 
    Extracts the same attributes that itscube.py process_v_attributes() extracts:
    - Error attributes: error, error_mask, error_modeled, error_slow
@@ -364,21 +368,23 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
       # Get attribute value from the granule if it exists
       if var_name in vds.data_vars and each_attr in vds[var_name].attrs:
          attr_value = vds[var_name].attrs[each_attr]
+
       else:
          attr_value = utils.Missing.value
 
-      # Get description for the attribute
-      error_name_desc = f'{each_attr}{_name_sep}{Vars.attrs.description}'
+      # Get description for the attribute - use canonical Vars.errorAttrs
+      # (not per-granule text) to ensure identical descriptions across all
+      # granules, matching itscube.py behavior
       desc_str = None
 
-      if var_name in vds and error_name_desc in vds[var_name].attrs:
-         desc_str = vds[var_name].attrs[error_name_desc]
-      elif each_attr in Vars.errorAttrs:
-         # If generic description is provided
+      if each_attr in Vars.errorAttrs:
+         # If generic description is provided (e.g., 'error_slow')
          desc_str = Vars.errorAttrs[each_attr][1]
+
       elif error_var_name in Vars.errorAttrs:
-         # If variable specific description is provided
+         # If variable specific description is provided (e.g., 'vr_error')
          desc_str = Vars.errorAttrs[error_var_name][1]
+
       else:
          raise RuntimeError(
             f"Unknown description for {error_var_name} of {var_name}"
@@ -409,6 +415,7 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
                vds, vds.attrs[Vars.url], var_name, each_attr,
                data_dtype=np.int32
             )
+
          else:
             # Default value if attribute doesn't exist
             attr_value = np.int32(0)
@@ -628,6 +635,47 @@ def _add_missing_vr_va(new_vars, vds, x_union, y_union):
       _extract_velocity_attributes(new_vars, vds, var_name)
 
 
+def _extra_var_cf_attrs(name):
+   """CF attributes to stamp on the extra 3D data variables (v_error,
+   chip_size_height/width, interp_mask) so the virtual cube's metadata matches
+   the regular datacube's normalized output (see itscube.py combine_layers).
+   These are merged ON TOP of the granule's own attrs -- the granule attrs are
+   kept because they carry the encoding needed to decode the referenced chunks.
+
+   Returns {} for any other variable (so merging is a no-op for v/vx/vy/...).
+
+   NOTE (chip_size_height): the regular cube substitutes chip_size_width per
+   pixel where chip_size_height == CHIP_SIZE_HEIGHT_NO_VALUE. That fallback
+   requires reading pixel data and cannot be replicated on a ManifestArray, so
+   the virtual cube references the granule's chip_size_height as-is.
+   """
+   if name == Vars.v_error:
+      return {
+         Vars.attrs.std_name: Vars.name[Vars.v_error],
+         Vars.attrs.description: Vars.description[Vars.v_error],
+         utils.Units.name: utils.Units.m_y,
+         Mapping.attrs.grid_mapping: Mapping.name,
+      }
+
+   if name in (Vars.chip_size_height, Vars.chip_size_width):
+      return {
+         Vars.attrs.chip_size_coords: Vars.description[Vars.attrs.chip_size_coords],
+         Vars.attrs.description: Vars.description[name],
+         Mapping.attrs.grid_mapping: Mapping.name,
+      }
+
+   if name == Vars.interp_mask:
+      return {
+         Vars.attrs.std_name: Vars.name[Vars.interp_mask],
+         Vars.attrs.description: Vars.description[Vars.interp_mask],
+         BinaryFlag.attrs.values: BinaryFlag.values,
+         BinaryFlag.attrs.meanings: BinaryFlag.meanings[Vars.interp_mask],
+         Mapping.attrs.grid_mapping: Mapping.name,
+      }
+
+   return {}
+
+
 def build_virtual_cube(vds_list, already_aligned=False):
    """Mosaic virtual datasets onto their common x/y grid and stack along time.
 
@@ -664,16 +712,25 @@ def build_virtual_cube(vds_list, already_aligned=False):
       x_union = vds_list[0]["x"].values
       y_union = vds_list[0]["y"].values
       offsets = [{"x": 0, "y": 0}] * len(vds_list)
-      logging.info(f"Using already-aligned grids: x={len(x_union)}, y={len(y_union)}")
+      logging.info(
+         f"Using already-aligned grids: x={len(x_union)}, y={len(y_union)}"
+      )
+
    else:
       # Compute union grid and offsets
       x_union, y_union, offsets = extend_coords(vds_list)
 
    sizes = {"x": len(x_union), "y": len(y_union)}
 
-   # Collect only a subset of data variables in the virtual datacube
-   _vars = [ImgPairInfo.name, Vars.v, Vars.vx, Vars.vy, Vars.vr, Vars.va, Vars.m11, Vars.m12]
-   # _vars = [ImgPairInfo.name, Vars.v, Vars.vx, Vars.vy, Vars.m11, Vars.m12]
+   # Collect only a subset of data variables in the virtual datacube.
+   # v_error/chip_size_height/chip_size_width/interp_mask are present in every
+   # granule, so they just need to be kept (and their CF attrs normalized via
+   # _extra_var_cf_attrs) -- no missing-chunk placeholder is required.
+   _vars = [
+      ImgPairInfo.name, Vars.v, Vars.vx, Vars.vy, Vars.vr, Vars.va,
+      Vars.m11, Vars.m12, Vars.v_error, Vars.chip_size_height,
+      Vars.chip_size_width, Vars.interp_mask
+   ]
 
    placed = []
 
@@ -709,22 +766,28 @@ def build_virtual_cube(vds_list, already_aligned=False):
                   # Units attribute exists for new variable
                   new_var_attrs[utils.Units.name] = ImgPairInfo.allUnits[attr]
 
+               value = utils.get_data_var_attr(
+                  vds, vds.attrs[Vars.url], ImgPairInfo.name, attr,
+                  to_date=convert_to_date, data_dtype=attr_dtype
+               )
+               if isinstance(value, str):
+                  value = np.array(value, dtype=np.dtypes.StringDType())
+
                new_vars[attr] = xr.Variable(
                   dims=(),
-                  data=utils.get_data_var_attr(
-                        vds,
-                        vds.attrs[Vars.url],
-                        ImgPairInfo.name,
-                        attr,
-                        to_date=convert_to_date,
-                        data_dtype=attr_dtype
-                     ),
+                  data=value,
                   attrs=new_var_attrs
                )
 
             for (each, new_each) in zip(
-                  [ImgPairInfo.flight_direction_img1, ImgPairInfo.flight_direction_img2],
-                  [Vars.ascending_img1, Vars.ascending_img2]
+                  [
+                     ImgPairInfo.flight_direction_img1,
+                     ImgPairInfo.flight_direction_img2
+                  ],
+                  [
+                     Vars.ascending_img1,
+                     Vars.ascending_img2
+                  ]
             ):
                   # Add new variables that correspond to flight direction attributes
                   # of 'img_pair_info'
@@ -749,7 +812,7 @@ def build_virtual_cube(vds_list, already_aligned=False):
 
             continue  # Skip adding img_pair_info itself to the cube
 
-         # Add autoRIFT_software_version
+         # Add autoRIFT_software_version (only if it was not added already)
          if Vars.autorift_software_version not in new_vars:
             new_vars[Vars.autorift_software_version] = xr.Variable(
                   data=vds.attrs[Vars.autorift_software_version],
@@ -766,38 +829,15 @@ def build_virtual_cube(vds_list, already_aligned=False):
 
          # Process velocity data variables and their attributes
          if name in [Vars.vx, Vars.vy, Vars.vr, Vars.va]:
-            # Extract ALL velocity attributes (error, error_mask, error_modeled, error_slow,
-            # stable_shift, stable_shift_mask, stable_shift_slow) and shared attributes
-            # (flag_stable_shift, stable_count_mask, stable_count_slow) to match regular
-            # datacube behavior (see itscube.py process_v_attributes()).
-            # Only process if variable exists in original granule (not synthetic placeholder)
+            # Extract velocity attributes (error, error_mask, error_modeled,
+            # error_slow, stable_shift, stable_shift_mask, stable_shift_slow)
+            # and shared attributes (flag_stable_shift, stable_count_mask,
+            # stable_count_slow) to match "deep copy" datacube behavior
+            # (see itscube.py process_v_attributes()).
+            # Only process if variable exists in original granule
+            # (not synthetic placeholder)
             if name in vds.data_vars:
                _extract_velocity_attributes(new_vars, vds, name)
-
-            # OLD CODE (commented out - only extracted error_modeled):
-            # # TODO: Currently only extracting error_modeled attribute to match existing
-            # # vx/vy behavior. Regular datacubes extract all error/stable_shift attributes
-            # # (error, error_mask, error_slow, stable_shift, stable_shift_mask, stable_shift_slow).
-            # # See itscube.py process_v_attributes() for full implementation. This creates
-            # # a known parity gap with regular datacubes.
-            #
-            # # Extract "v*"'s error_modeled attribute as scalar data variable
-            # # This is done for all velocity components: vx, vy, vr, va
-            # # Check if variable exists in ORIGINAL granule (not synthetic variables added by
-            # # _add_missing_vr_va or _add_missing_m11_m12)
-            # if name in vds.data_vars and Vars.postfix.error_modeled in vds[name].attrs:
-            #    attr_value = vds[name].attrs[Vars.postfix.error_modeled]
-            #
-            # else:
-            #    attr_value = utils.Missing.value
-            #
-            # logging.info(f'Getting {name}.{Vars.postfix.error_modeled}: {attr_value}')
-            # new_vars[f"{name}_{Vars.postfix.error_modeled}"] = xr.Variable(
-            #    dims=(),
-            #    data=np.array(attr_value),
-            #    attrs={Vars.attrs.description: f"{name}_{Vars.postfix.error_modeled}"}
-            # )
-            # Continue to add the velocity variable itself (don't skip like img_pair_info)
 
          # Promote M11/M12 dr_to_vr_factor attribute into its own variable to
          # match itscube.py process_m_attributes(). Real M11/M12 reach this path
@@ -807,7 +847,6 @@ def build_virtual_cube(vds_list, already_aligned=False):
             _extract_m_attributes(new_vars, vds, name)
 
          data = var.data
-         original_dtype = var.dtype  # Capture original dtype BEFORE any operations
          if isinstance(data, ManifestArray):
                new_shape = [sizes.get(str(d), s) for d, s in zip(var.dims, data.shape)]
                var_offsets = [off.get(str(d), 0) for d in var.dims]
@@ -819,16 +858,13 @@ def build_virtual_cube(vds_list, already_aligned=False):
                if new_shape != list(data.shape) or any(var_offsets):
                   data = pad_manifestarray(data, new_shape, var_offsets)
 
-                  # Verify dtype is preserved in ManifestArray
-                  if data.dtype != original_dtype:
-                     raise RuntimeError(
-                        f"{name} dtype changed from {original_dtype} to "
-                        f"{data.dtype} during padding"
-                     )
-
-         # Create variable with original dtype preserved
+         # Create variable with original dtype preserved. Merge normalized CF
+         # attrs for the extra 3D vars on top of the granule attrs (no-op for
+         # everything else).
+         var_attrs = dict(var.attrs)
+         var_attrs.update(_extra_var_cf_attrs(name))
          new_vars[name] = xr.Variable(
-            var.dims, data, attrs=var.attrs, encoding=var.encoding
+            var.dims, data, attrs=var_attrs, encoding=var.encoding
          )
 
       # Add source granule url for the layer in the cube
@@ -885,6 +921,29 @@ def build_virtual_cube(vds_list, already_aligned=False):
          f"{unique_values} (one value is expected)"
       )
 
+   # Synthesize the CF grid-mapping variable once for the whole cube (added to
+   # the combined result, not per granule, to avoid combine_by_coords conflicts).
+   # The HDF parser no longer drops 'mapping', so its projection attrs travel
+   # with each (loaded, 0-dim) granule variable; copy them from the first
+   # granule that has it and override GeoTransform with one computed for this
+   # tile's grid (the granule's own GeoTransform describes the full granule, not
+   # this tile). Mirrors itscube.py combine_layers().
+   mapping_source = next(
+      (each for each in vds_list if Mapping.name in each.variables), None
+   )
+   if mapping_source is not None:
+      x_cell = float(x_union[1] - x_union[0])
+      y_cell = float(y_union[1] - y_union[0])
+      geo_transform = (
+         f"{x_union[0] - x_cell / 2.0} {x_cell} 0 "
+         f"{y_union[0] - y_cell / 2.0} 0 {y_cell}"
+      )
+      mapping_attrs = dict(mapping_source[Mapping.name].attrs)
+      mapping_attrs[Mapping.attrs.geo_transform] = geo_transform
+      result[Mapping.name] = xr.DataArray(
+         data='', attrs=mapping_attrs, coords={}, dims=[]
+      )
+
    return result, HTTPS_PREFIX + unique_values[0]
 
 
@@ -919,7 +978,7 @@ if __name__ == "__main__":
 
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
    registry = ObjectStoreRegistry({bucket: store})
-   parser = HDFParser(drop_variables=["mapping"])
+   parser = HDFParser()
 
    vds = []
 
@@ -929,7 +988,7 @@ if __name__ == "__main__":
             url=os.path.join(bucket, key, granule),
             parser=parser,
             registry=registry,
-            loadable_variables=["time", "y", "x", "v"],
+            loadable_variables=["time", "y", "x", "v", Mapping.name],
             decode_times=True,
          )
       )

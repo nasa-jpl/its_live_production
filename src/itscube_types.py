@@ -308,11 +308,15 @@ class VarsInfo:
         ),
         'va_error': (
             "azimuth_velocity_error",
-            "error for velocity in radar azimuth direction"
+            "best estimate of azimuth_velocity error: va_error is populated "
+            "according to the approach used for the velocity bias correction "
+            "as indicated in \"stable_shift_flag\""
         ),
         'vr_error': (
             "range_velocity_error",
-            "error for velocity in radar range direction"
+            "best estimate of range_velocity error: vr_error is populated "
+            "according to the approach used for the velocity bias correction "
+            "as indicated in \"stable_shift_flag\""
         ),
         # The following descriptions are the same for all v* data
         # variables
