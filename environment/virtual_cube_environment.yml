@@ -1,0 +1,29 @@
+name: itslivecube_virtual_zarr_latest
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python
+  # - mkl  not available on os x
+  - numpy
+  - jupyterlab
+  - h5py
+  - h5netcdf
+  # - h3-py
+  - xarray
+  - flake8
+  - scipy
+  - s3fs=2025.12.0
+  - obstore
+  - icechunk
+  - virtualizarr
+  - fastparquet
+  - kerchunk
+  - tqdm
+  - zarr
+  - awscliv2
+  - pystac-client
+  - python-duckdb
+  - rustac
+  - pip
