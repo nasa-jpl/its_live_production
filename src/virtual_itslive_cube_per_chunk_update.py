@@ -80,7 +80,7 @@ warnings.filterwarnings('ignore', message='.*UnstableSpecificationWarning.*')
 
 # Import ManifestArray for dtype conversion
 from virtualizarr.manifests import ManifestArray
-from virtualizarr.manifests.utils import copy_and_replace_metadata
+from virtual_itslive_cube import copy_and_replace_metadata_dtype
 
 # Constants
 PIXEL_SIZE = 120  # meters
@@ -106,11 +106,19 @@ def _convert_variable_dtype(var, target_dtype):
         Variable with updated dtype.
     """
     if isinstance(var.data, ManifestArray):
-        # For ManifestArray, update the metadata dtype
+        # For ManifestArray, update the metadata dtype using the custom function
+        # from virtual_itslive_cube.py that properly handles zarr v3 metadata
         marr = var.data
-        new_metadata = copy_and_replace_metadata(
-            marr.metadata,
-            new_dtype=target_dtype
+        old_metadata = marr.metadata
+
+        # Use copy_and_replace_metadata_dtype to update dtype while preserving
+        # fill_value and codecs
+        new_metadata = copy_and_replace_metadata_dtype(
+            old_metadata,
+            new_shape=list(marr.shape),
+            new_dtype=target_dtype,
+            new_fill_value=old_metadata.fill_value,
+            codecs=old_metadata.codecs
         )
         new_marr = ManifestArray(
             metadata=new_metadata,
