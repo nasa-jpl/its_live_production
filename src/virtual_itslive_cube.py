@@ -25,6 +25,15 @@ from itscube_types import (
    Vars
 )
 
+# Suppress Zarr V3 unstable string dtype warnings for fixed-length UTF32 dtypes.
+# These are informational - string specs are being finalized in Zarr V3.
+# Zarr V3 has no stable spec for the fixed-length UTF32 dtype (<U2, <U3, etc.)
+# Must filter by category (the message text is "... does not have a Zarr V3
+# specification ...", which never contains the class name).
+import warnings
+from zarr.errors import UnstableSpecificationWarning
+warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
+
 # Some granules have autoRIFT param. file with 'http://' and some with 'https://',
 # strip these to compare the values across the granules (should be the same)
 HTTP_PREFIX = 'http://'
@@ -808,7 +817,8 @@ def build_virtual_cube(vds_list, already_aligned=False):
                   to_date=convert_to_date, data_dtype=attr_dtype
                )
                if isinstance(value, str):
-                  value = np.array(value, dtype=np.dtypes.StringDType())
+                  # Use fixed-length string dtype if defined, otherwise variable-length
+                  value = np.array(value, dtype=ImgPairInfo.stringType.get(attr, np.dtypes.StringDType()))
 
                new_vars[attr] = xr.Variable(
                   dims=(),
@@ -905,10 +915,11 @@ def build_virtual_cube(vds_list, already_aligned=False):
          )
 
       # Add source granule url for the layer in the cube
+      # Use fixed-length string dtype to prevent truncation issues during updates
       new_vars[Vars.url] = xr.Variable(
          dims=("time",),
          data=np.array([vds.attrs[Vars.url]],
-                        dtype=np.dtypes.StringDType()),
+                        dtype=Vars.stringType[Vars.url]),
          attrs={"description": "source granule URL for this time step"},
       )
 
