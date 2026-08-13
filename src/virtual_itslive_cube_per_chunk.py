@@ -816,6 +816,7 @@ if __name__ == "__main__":
    ymin = ymin + PIXEL_SIZE_HALF
    ymax = ymax - PIXEL_SIZE_HALF
 
+   # Bounding box using cell centers
    bbox = [xmin, xmax, ymin, ymax]
 
    xmid = (xmin + xmax) / 2
@@ -826,7 +827,7 @@ if __name__ == "__main__":
       f"EPSG:{args.projection}", LON_LAT_PROJECTION, always_xy=True
    )
 
-   # Introduce 5 points per each polygon side
+   # Introduce 5 points per each polygon side (cell corners)
    polygon = itslive_utils.add_five_points_to_polygon_side(polygon)
 
    # Convert polygon from its target projection to longitude/latitude
