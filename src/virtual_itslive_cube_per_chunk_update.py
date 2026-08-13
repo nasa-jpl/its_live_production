@@ -78,8 +78,48 @@ logging.basicConfig(
 import warnings
 warnings.filterwarnings('ignore', message='.*UnstableSpecificationWarning.*')
 
+# Import ManifestArray for dtype conversion
+from virtualizarr.manifests import ManifestArray
+from virtualizarr.manifests.utils import copy_and_replace_metadata
+
 # Constants
 PIXEL_SIZE = 120  # meters
+
+
+def _convert_variable_dtype(var, target_dtype):
+    """Convert an xarray Variable's dtype, handling ManifestArray data.
+
+    For ManifestArray data (virtual datasets), updates the metadata dtype
+    rather than converting the actual data (which doesn't exist yet).
+    For regular arrays, uses standard astype().
+
+    Parameters
+    ----------
+    var : xr.Variable
+        The variable to convert.
+    target_dtype : numpy.dtype or str
+        The target dtype.
+
+    Returns
+    -------
+    xr.Variable
+        Variable with updated dtype.
+    """
+    if isinstance(var.data, ManifestArray):
+        # For ManifestArray, update the metadata dtype
+        marr = var.data
+        new_metadata = copy_and_replace_metadata(
+            marr.metadata,
+            new_dtype=target_dtype
+        )
+        new_marr = ManifestArray(
+            metadata=new_metadata,
+            chunkmanifest=marr.manifest
+        )
+        return xr.Variable(var.dims, new_marr, attrs=var.attrs, encoding=var.encoding)
+    else:
+        # For regular arrays, use standard astype
+        return var.astype(target_dtype)
 
 
 def open_virtual_cube(cube_store_path):
@@ -690,15 +730,15 @@ def main():
 
                                 # Safe to convert - no truncation will occur
                                 logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
-                                new_cube[var_name] = new_cube[var_name].astype(existing_dtype)
+                                new_cube[var_name] = _convert_variable_dtype(new_cube[var_name], existing_dtype)
                             else:
                                 # Non-Unicode string or variable-length string
                                 logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
-                                new_cube[var_name] = new_cube[var_name].astype(existing_dtype)
+                                new_cube[var_name] = _convert_variable_dtype(new_cube[var_name], existing_dtype)
                         else:
                             # Non-string dtype mismatch
                             logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
-                            new_cube[var_name] = new_cube[var_name].astype(existing_dtype)
+                            new_cube[var_name] = _convert_variable_dtype(new_cube[var_name], existing_dtype)
 
             # Append to existing cube (dtypes are now compatible)
             session = repo.writable_session("main")
