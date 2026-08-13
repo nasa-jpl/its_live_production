@@ -280,6 +280,15 @@ class VarsInfo:
         vr: np.int16,
     }
 
+    # Fixed-length string dtypes for datacube variables
+    # These prevent dtype mismatches during updates and avoid silent truncation
+    # Format: <U{max_length} where max_length is the maximum number of Unicode characters
+    # MAX_GRANULE_URL_LEN = 1024 is defined in itscube.py ITSCube class
+    stringType = {
+        url: '<U512',                      # Granule URLs (matches ITSCube.MAX_GRANULE_URL_LEN)
+        autorift_software_version: '<U10', # Software version strings (e.g., "0.4.3")
+    }
+
     # Missing value for data variables of integer data type
     intMissingValue = {
         interp_mask: utils.Missing.byte,
@@ -403,19 +412,30 @@ class ImgPairInfoVars:
         roi_valid_percentage
     ]
 
+    # Fixed-length string dtypes for img_pair_info variables (promoted from attributes to data vars)
+    # These prevent dtype mismatches during updates and avoid silent truncation
+    # Based on sensors.py mission/sensor definitions:
+    # - Mission: single letter ('L', 'S', 'N') but using 2 chars for future missions
+    # - Sensor: 1-2 chars ('1A', '1B', '2A', '2', etc.)
+    # - Satellite: 3 chars ('L08', 'L09', 'S1A', 'S1B', 'S2A', etc.)
+    stringType = {
+        mission_img1: '<U2',     # 1 char + buffer for future missions
+        mission_img2: '<U2',
+        sensor_img1: '<U3',      # 2 chars + buffer
+        sensor_img2: '<U3',
+        satellite_img1: '<U5',   # 3 chars + buffer
+        satellite_img2: '<U5',
+    }
+
     # Data types for the variables in datacube that correspond to attributes
     # of "img_pair_info" data variable in the granules
     # ATTN: Sentinel-2 granules are using satellite_img1 and satellite_img2 instead
     # of sensor_img1 and sensor_img2
+    # NOTE: String dtypes are NOT included here - they're handled separately via
+    # ImgPairInfo.stringType in virtual_itslive_cube.py after get_data_var_attr() returns
     allTypes = {
         date_dt: np.float32,
         roi_valid_percentage: np.float32,
-        mission_img1: np.dtypes.StringDType(),
-        mission_img2: np.dtypes.StringDType(),
-        satellite_img1: np.dtypes.StringDType(),
-        satellite_img2: np.dtypes.StringDType(),
-        sensor_img1: np.dtypes.StringDType(),
-        sensor_img2: np.dtypes.StringDType()
     }
 
     # Units for the variables in datacube that correspond to attributes of
