@@ -56,9 +56,13 @@ logging.basicConfig(
 )
 
 # Suppress Zarr V3 unstable string dtype warnings
-# These are informational - string specs are being finalized in Zarr V3
+# These are informational - string specs are being finalized in Zarr V3.
+# Zarr V3 has no stable spec for the fixed-length UTF32 dtype (<U2, <U3, etc.)
+# Must filter by category (the message text is "... does not have a Zarr V3
+# specification ...", which never contains the class name).
 import warnings
-warnings.filterwarnings('ignore', message='.*UnstableSpecificationWarning.*')
+from zarr.errors import UnstableSpecificationWarning
+warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 
 # Grid pixel size in meters
 PIXEL_SIZE = 120
@@ -206,7 +210,46 @@ def _get_manifestarray_chunks(marr):
    )
 
 
-def _cropped_var_has_valid_data(marr, netcdf_store):
+def _compute_allfill_chunk_length(chunk_shape, np_dtype, zarr_dtype, fill_value, codecs):
+   """Compute the encoded length of an all-fill chunk.
+
+   This reference length allows short-circuiting: if a chunk's encoded length
+   differs from allfill_chunk_len, it CANNOT be all-fill (must contain valid data),
+   so we can skip the expensive S3 read + decode.
+
+   Parameters
+   ----------
+   chunk_shape : tuple
+      Shape of the chunk.
+   np_dtype : numpy.dtype
+      Numpy data type used to build the fill array (from `ManifestArray.dtype`).
+   zarr_dtype : zarr dtype
+      Zarr data type for the encode `ArraySpec` (from `metadata.dtype`).
+   fill_value : scalar
+      Fill value for the array.
+   codecs : list
+      Zarr codec pipeline.
+
+   Returns
+   -------
+   int
+      The encoded byte length of an all-fill chunk.
+   """
+   fill_chunk = np.full(chunk_shape, fill_value, dtype=np_dtype)
+   prototype = default_buffer_prototype()
+   pipeline = BatchedCodecPipeline.from_codecs(codecs)
+   spec = ArraySpec(
+      shape=chunk_shape,
+      dtype=zarr_dtype,
+      fill_value=fill_value,
+      config=ArrayConfig.from_dict({}),
+      prototype=prototype,
+   )
+   encoded = sync(pipeline.encode([(prototype.nd_buffer.from_numpy_array(fill_chunk), spec)]))[0]
+   return len(encoded.as_numpy_array().tobytes())
+
+
+def _cropped_var_has_valid_data(marr, netcdf_store, allfill_chunk_len):
    """Return True if a cropped ManifestArray references any non-fill data.
 
    Reads ONLY the chunk bytes the manifest references (a single 512x512 chunk
@@ -221,6 +264,10 @@ def _cropped_var_has_valid_data(marr, netcdf_store):
    "all fill" is exactly "all NaN after decode". Missing chunks (empty path)
    read back as fill and are skipped.
 
+   Performance optimization: before reading a chunk from S3, checks if its
+   encoded length differs from the reference all-fill chunk length. If so,
+   the chunk MUST contain valid data (short-circuit to True without decode).
+
    Parameters
    ----------
    marr : ManifestArray
@@ -228,6 +275,9 @@ def _cropped_var_has_valid_data(marr, netcdf_store):
       crop_manifestarray).
    netcdf_store : obstore.store.S3Store
       Object store used to fetch the referenced chunk byte ranges.
+   allfill_chunk_len : int
+      Pre-computed encoded byte length of an all-fill chunk. Passed down from
+      build_virtual_cube_subset() to avoid recomputing for every granule.
 
    Returns
    -------
@@ -238,16 +288,20 @@ def _cropped_var_has_valid_data(marr, netcdf_store):
    fill = metadata.fill_value
    prototype = default_buffer_prototype()
    pipeline = BatchedCodecPipeline.from_codecs(metadata.codecs)
+   chunk_shape = _get_manifestarray_chunks(marr)
 
    # Per-chunk decode spec: shape is the chunk shape (not the window); dtype,
    # fill value and codecs come from the array metadata.
    spec = ArraySpec(
-      shape=_get_manifestarray_chunks(marr),
+      shape=chunk_shape,
       dtype=metadata.dtype,
       fill_value=fill,
       config=ArrayConfig.from_dict({}),
       prototype=prototype,
    )
+
+   # allfill_chunk_len is now passed in from build_virtual_cube_subset() (computed once
+   # for all granules), so no need to recompute it here.
 
    manifest = marr.manifest
    for path, offset, length in zip(
@@ -257,6 +311,12 @@ def _cropped_var_has_valid_data(marr, netcdf_store):
          # Missing chunk -> reads back as fill, no valid data contributed
          continue
 
+      # Length-based short-circuit: if encoded length differs from all-fill
+      # reference, this chunk MUST contain valid data (no S3 read needed)
+      if length != allfill_chunk_len:
+         return True
+
+      # Length matches all-fill reference; need to verify by decoding
       key = str(path).replace(_BUCKET_PREFIX, '')
       raw = bytes(obstore.get_range(
          netcdf_store, key, start=int(offset), length=int(length)
@@ -313,7 +373,7 @@ def bbox_to_chunk_aligned_indices(coord, step, chunk_size, bbox_lo, bbox_hi):
    return start, stop
 
 
-def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
+def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store, allfill_chunk_len):
    """Crop one virtual dataset (real x/y coords, virtual ManifestArray data
    vars) to the chunk-grid-aligned window covering `bbox`.
 
@@ -328,6 +388,10 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
       for the cell corners.
    netcdf_store: obstore.store.S3Store
       Object store to access granule data from.
+   allfill_chunk_len : int
+      Pre-computed encoded byte length of an all-fill chunk for the 'v'
+      variable. Used to short-circuit the valid-data check when a chunk's
+      length differs from this reference.
 
    Returns
    -------
@@ -400,9 +464,9 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store):
    v_stops = [stop_by_dim.get(str(d), s) for d, s in zip(v_var.dims, v_var.data.shape)]
    cropped_v = crop_manifestarray(v_var.data, v_starts, v_stops)
 
-   if not _cropped_var_has_valid_data(cropped_v, netcdf_store):
+   if not _cropped_var_has_valid_data(cropped_v, netcdf_store, allfill_chunk_len):
       # Granule does not have any valid data within intersection
-      logging.info(f'{vds.attrs["granule_url"]} does not have valid data within polygon')
+      logging.debug(f'{vds.attrs["granule_url"]} does not have valid data within polygon')
       return None, vds.attrs["granule_url"]
 
    new_vars = {}
@@ -526,6 +590,23 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    cropped = []
    skipped_granules = []
 
+   # Compute reference all-fill chunk length once for all granules.
+   # All ITS_LIVE granules share the same chunk size (512×512), dtype (int16),
+   # fill value (-32767), and codec configuration for the 'v' variable, so
+   # allfill_chunk_len is identical across all granules. Computing it once here avoids
+   # repeating the encode operation (which requires creating and encoding a
+   # full 512×512 array) for every granule.
+   sample_v = vds_list[0].data_vars[Vars.v]
+   sample_marr = sample_v.data
+   allfill_chunk_len = _compute_allfill_chunk_length(
+      _get_manifestarray_chunks(sample_marr),
+      sample_marr.dtype,
+      sample_marr.metadata.dtype,
+      sample_marr.metadata.fill_value,
+      sample_marr.metadata.codecs
+   )
+   logging.debug(f'Computed reference all-fill chunk length: {allfill_chunk_len} bytes')
+
    # Threads ("threading"), not processes: cropping is S3-I/O-bound work whose
    # per-granule path is now pure obstore range reads + numpy manifest slicing +
    # zarr codec decode (no h5py) after the manifest-based valid-data check, so
@@ -548,7 +629,7 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
       # The tasks execute as the loop below pulls from result_stream, each
       # result yielded the moment its task finishes.
       result_stream = Parallel(return_as="generator_unordered")(
-         delayed(crop_virtual_dataset_to_bbox)(each_vds, bbox, netcdf_store)
+         delayed(crop_virtual_dataset_to_bbox)(each_vds, bbox, netcdf_store, allfill_chunk_len)
          for each_vds in vds_list
       )
 
