@@ -151,7 +151,7 @@ def print_cube_info(cube):
 
     # Basic structure
     print("\n--- STRUCTURE ---")
-    print(f"Dimensions: {dict(cube.dims)}")
+    print(f"Dimensions: {dict(cube.sizes)}")
     print(f"Number of time layers: {len(cube.time)}")
     print(
         f"Spatial extent: x=[{cube.x.values[0]:.1f}, {cube.x.values[-1]:.1f}], "
