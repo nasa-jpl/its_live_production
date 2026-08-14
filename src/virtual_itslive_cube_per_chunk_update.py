@@ -78,56 +78,13 @@ logging.basicConfig(
 import warnings
 warnings.filterwarnings('ignore', message='.*UnstableSpecificationWarning.*')
 
-# Import ManifestArray for dtype conversion
+# ManifestArray is used to distinguish granule-backed virtual variables (whose
+# dtype must not be relabeled) from in-memory numpy-backed variables during the
+# dtype-matching step in the update workflow.
 from virtualizarr.manifests import ManifestArray
-from virtual_itslive_cube import copy_and_replace_metadata_dtype
 
 # Constants
 PIXEL_SIZE = 120  # meters
-
-
-def _convert_variable_dtype(var, target_dtype):
-    """Convert an xarray Variable's dtype, handling ManifestArray data.
-
-    For ManifestArray data (virtual datasets), updates the metadata dtype
-    rather than converting the actual data (which doesn't exist yet).
-    For regular arrays, uses standard astype().
-
-    Parameters
-    ----------
-    var : xr.Variable
-        The variable to convert.
-    target_dtype : numpy.dtype or str
-        The target dtype.
-
-    Returns
-    -------
-    xr.Variable
-        Variable with updated dtype.
-    """
-    if isinstance(var.data, ManifestArray):
-        # For ManifestArray, update the metadata dtype using the custom function
-        # from virtual_itslive_cube.py that properly handles zarr v3 metadata
-        marr = var.data
-        old_metadata = marr.metadata
-
-        # Use copy_and_replace_metadata_dtype to update dtype while preserving
-        # fill_value and codecs
-        new_metadata = copy_and_replace_metadata_dtype(
-            old_metadata,
-            new_shape=list(marr.shape),
-            new_dtype=target_dtype,
-            new_fill_value=old_metadata.fill_value,
-            codecs=old_metadata.codecs
-        )
-        new_marr = ManifestArray(
-            metadata=new_metadata,
-            chunkmanifest=marr.manifest
-        )
-        return xr.Variable(var.dims, new_marr, attrs=var.attrs, encoding=var.encoding)
-    else:
-        # For regular arrays, use standard astype
-        return var.astype(target_dtype)
 
 
 def open_virtual_cube(cube_store_path):
@@ -166,11 +123,15 @@ def open_virtual_cube(cube_store_path):
         logging.info(f'Opening icechunk repo from local filesystem: {cube_store_path}')
         repo = ic.Repository.open(ic.local_filesystem_storage(cube_store_path))
 
-    # Read datacube from main branch
+    # Read datacube from main branch.
+    # mask_and_scale=False preserves raw on-disk dtypes (int16 stays int16
+    # rather than being CF-decoded to float32 with NaN fills), reflecting the
+    # true virtual representation of the cube.
     cube = xr.open_zarr(
         repo.readonly_session("main").store,
         consolidated=False,
-        zarr_format=3
+        zarr_format=3,
+        mask_and_scale=False
     )
 
     return cube, repo
@@ -462,11 +423,18 @@ def open_repo_for_update(cube_store):
             ),
         )
 
-    # Read current datacube
+    # Read current datacube.
+    # mask_and_scale=False is REQUIRED: it disables CF decoding so integer
+    # variables (int16 with scale_factor/_FillValue) keep their raw on-disk
+    # dtype instead of being promoted to float32 with NaN fills. The new cube
+    # is built from raw int16 ManifestArrays, so the existing cube must be read
+    # raw too for the append dtypes to match (and to reflect the true virtual
+    # representation).
     cube = xr.open_zarr(
         repo.readonly_session("main").store,
         consolidated=False,
-        zarr_format=3
+        zarr_format=3,
+        mask_and_scale=False
     )
 
     return repo, cube
@@ -706,47 +674,61 @@ def main():
 
             logging.info(f"Built cube from {len(new_cube.time)} new granules")
 
-            # Match dtypes with existing cube before appending
-            # This is critical for variables like granule_url which may have different string dtypes
-            # between old (fixed-length <U1024) and new (variable-length StringDType) versions
-            # With Vars.stringType and Vars.imgPairStringType defined, the new cube should already
-            # have the correct fixed-length dtypes, but we still check for safety
+            # Match dtypes with existing cube before appending.
+            #
+            # Two distinct cases:
+            #  1. In-memory (numpy-backed) variables -- granule_url, mission_img*,
+            #     etc. These are real arrays built in build_virtual_cube, so
+            #     astype() genuinely re-allocates and converts. Safe to convert
+            #     (after a truncation guard for fixed-length strings).
+            #  2. Granule-backed ManifestArray variables -- v, vx, vy, M11, etc.
+            #     Their chunk bytes are encoded on-disk for the granule's dtype
+            #     (int16). Relabeling the metadata dtype does NOT re-encode the
+            #     bytes, so a genuine dtype change (e.g. int16 -> float32) would
+            #     decode garbage. If these don't already match, the existing cube
+            #     was built with incompatible dtype definitions and must be
+            #     regenerated -- fail loudly rather than silently corrupt.
             for var_name in new_cube.data_vars:
-                if var_name in cube.data_vars:
-                    existing_dtype = cube[var_name].dtype
-                    new_dtype = new_cube[var_name].dtype
+                if var_name not in cube.data_vars:
+                    continue
 
-                    if existing_dtype != new_dtype:
-                        # Check if this is a string dtype mismatch that would cause truncation
-                        if np.issubdtype(existing_dtype, np.str_) and np.issubdtype(new_dtype, np.str_):
-                            # Extract max length from existing fixed-length string dtype
-                            # Format: <U1024 means Unicode with max 1024 chars
-                            if existing_dtype.kind == 'U':
-                                existing_max_len = existing_dtype.itemsize // 4  # Unicode chars are 4 bytes each
+                existing_dtype = cube[var_name].dtype
+                new_dtype = new_cube[var_name].dtype
+                if existing_dtype == new_dtype:
+                    continue
 
-                                # Check if any new values would be truncated
-                                new_values = new_cube[var_name].values
-                                max_new_len = max(len(str(v)) for v in new_values.flat)
+                is_manifest = isinstance(new_cube[var_name].data, ManifestArray)
 
-                                if max_new_len > existing_max_len:
-                                    raise ValueError(
-                                        f"Cannot append: {var_name} has values longer ({max_new_len} chars) "
-                                        f"than existing cube's fixed-length string ({existing_max_len} chars). "
-                                        f"This would truncate data. Please regenerate the existing cube with "
-                                        f"larger string lengths (Vars.stringType / Vars.imgPairStringType)."
-                                    )
+                # String <-> string mismatch (fixed-length UTF32): numpy-backed,
+                # safe to astype after guarding against truncation.
+                if np.issubdtype(existing_dtype, np.str_) and np.issubdtype(new_dtype, np.str_):
+                    if existing_dtype.kind == 'U':
+                        existing_max_len = existing_dtype.itemsize // 4  # UTF32: 4 bytes/char
+                        new_values = new_cube[var_name].values
+                        max_new_len = max((len(str(v)) for v in new_values.flat), default=0)
+                        if max_new_len > existing_max_len:
+                            raise ValueError(
+                                f"Cannot append: {var_name} has values longer ({max_new_len} chars) "
+                                f"than existing cube's fixed-length string ({existing_max_len} chars). "
+                                f"This would truncate data. Please regenerate the existing cube with "
+                                f"larger string lengths (Vars.stringType / ImgPairInfo.stringType)."
+                            )
+                    logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
+                    new_cube[var_name] = new_cube[var_name].astype(existing_dtype)
+                    continue
 
-                                # Safe to convert - no truncation will occur
-                                logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
-                                new_cube[var_name] = _convert_variable_dtype(new_cube[var_name], existing_dtype)
-                            else:
-                                # Non-Unicode string or variable-length string
-                                logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
-                                new_cube[var_name] = _convert_variable_dtype(new_cube[var_name], existing_dtype)
-                        else:
-                            # Non-string dtype mismatch
-                            logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
-                            new_cube[var_name] = _convert_variable_dtype(new_cube[var_name], existing_dtype)
+                # Non-string mismatch.
+                if is_manifest:
+                    raise ValueError(
+                        f"Cannot append {var_name}: existing cube stores it as {existing_dtype}, "
+                        f"but the new virtual (granule-backed) data is {new_dtype}. The on-disk "
+                        f"chunk bytes are encoded for {new_dtype}, so relabeling to {existing_dtype} "
+                        f"would decode incorrectly. The existing cube was built with incompatible "
+                        f"dtype definitions and must be regenerated to match the current code."
+                    )
+
+                logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
+                new_cube[var_name] = new_cube[var_name].astype(existing_dtype)
 
             # Append to existing cube (dtypes are now compatible)
             session = repo.writable_session("main")
@@ -769,8 +751,13 @@ def main():
             all_skipped_https = [s.replace(S3_URL, HTTPS_URL) for s in all_skipped]
             save_skipped_granules(args.cube_store, all_skipped_https)
 
-            # Verify and report
-            updated_cube = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
+            # Verify and report (raw dtypes, matching how the cube was read for append)
+            updated_cube = xr.open_zarr(
+                repo.readonly_session("main").store,
+                consolidated=False,
+                zarr_format=3,
+                mask_and_scale=False
+            )
             logging.info(f"Update complete. Cube now has {len(updated_cube.time)} time layers")
             print_cube_info(updated_cube)
 
