@@ -12,6 +12,7 @@ from virtualizarr.manifests import ChunkManifest, ManifestArray
 from virtualizarr.manifests.manifest import MISSING_CHUNK_PATH
 from virtualizarr.manifests.utils import copy_and_replace_metadata
 from zarr.core.metadata.v3 import ArrayV3Metadata
+from zarr.core.dtype import parse_data_type
 
 # Icechunk repo related
 import shutil
@@ -202,7 +203,13 @@ def copy_and_replace_metadata_dtype(old_metadata, new_shape, new_dtype,
    """
    metadata_dict = old_metadata.to_dict().copy()
    metadata_dict["shape"] = tuple(int(s) for s in new_shape)
-   metadata_dict["data_type"] = new_dtype        # e.g. "float32"
+   # `data_type` must be the zarr V3 JSON form (a string like "float32" for
+   # stable dtypes, or a dict for e.g. fixed-length UTF32), NOT a numpy dtype
+   # object. Normalize whatever `new_dtype` is (numpy dtype, string, or JSON)
+   # through zarr's parser so callers can pass any of them.
+   metadata_dict["data_type"] = parse_data_type(
+      new_dtype, zarr_format=3
+   ).to_json(zarr_format=3)
    metadata_dict["fill_value"] = new_fill_value  # e.g. float("nan")
    metadata_dict["codecs"] = codecs
 
