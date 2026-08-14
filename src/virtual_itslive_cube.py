@@ -97,7 +97,6 @@ def pad_manifestarray(marr, new_shape, offsets=None):
    new_shape = tuple(int(s) for s in new_shape)
    if offsets is None:
       offsets = (0,) * len(new_shape)
-      offsets = (0,) * len(new_shape)
    offsets = tuple(int(o) for o in offsets)
    shape = marr.shape
    chunks = _get_manifestarray_chunks(marr)
@@ -382,6 +381,50 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
       _extract_m_attributes(new_vars, vds, m_var_name)
 
 
+def _extract_shared_velocity_attributes(new_vars, vds):
+   """Extract the per-granule attributes shared identically across all v*
+   variables: flag_stable_shift, stable_count_mask, stable_count_slow.
+
+   Every granule is guaranteed to carry vx and vy (and to have these
+   attributes set on them), so read from vx directly -- matching itscube.py's
+   combine_layers(), which processes vx first (order [vx, vy] then [va, vr]
+   in process_v_attributes()) -- instead of iterating vx/vy/va/vr and
+   depending on whichever variable happens to appear first in the granule's
+   on-disk NetCDF variable order.
+
+   Call once per granule, not once per velocity variable.
+
+   Parameters
+   ----------
+   new_vars : dict
+      Dictionary to add the shared attribute variables to.
+   vds : xr.Dataset
+      Virtual dataset for the granule.
+   """
+   for each_attr, each_attr_units in zip(
+      [Vars.flag_stable_shift, Vars.stable_count_mask, Vars.stable_count_slow],
+      [None, utils.Units.count, utils.Units.count]
+   ):
+      attr_value = utils.get_data_var_attr(
+         vds, vds.attrs[Vars.url], Vars.vx, each_attr,
+         data_dtype=np.int32
+      )
+
+      new_vars[each_attr] = xr.Variable(
+         dims=(),
+         data=np.array(attr_value),
+         attrs={
+            Vars.attrs.std_name: each_attr,
+            Vars.attrs.description: Vars.description[each_attr]
+         }
+      )
+
+      if each_attr_units is not None:
+         new_vars[each_attr].attrs[utils.Units.name] = each_attr_units
+
+      logging.debug(f'Extracted shared attribute {each_attr}: {attr_value}')
+
+
 def _extract_velocity_attributes(new_vars, vds, var_name):
    """Extract all attributes from a velocity variable and create scalar
    variables to represent them in the datacube.
@@ -454,38 +497,6 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
       )
 
       logging.debug(f'Extracted {error_var_name}: {attr_value}')
-
-   # Shared attributes (appear for all v* variables, capture only once per granule)
-   for each_attr, each_attr_units in zip(
-      [Vars.flag_stable_shift, Vars.stable_count_mask, Vars.stable_count_slow],
-      [None, utils.Units.count, utils.Units.count]
-   ):
-      # Only add if not already present in new_vars (shared across velocity variables)
-      if each_attr not in new_vars:
-         if var_name in vds.data_vars and each_attr in vds[var_name].attrs:
-            attr_value = utils.get_data_var_attr(
-               vds, vds.attrs[Vars.url], var_name, each_attr,
-               data_dtype=np.int32
-            )
-
-         else:
-            # Default value if attribute doesn't exist
-            attr_value = np.int32(0)
-
-         new_vars[each_attr] = xr.Variable(
-            dims=(),
-            data=np.array(attr_value),
-            attrs={
-               Vars.attrs.std_name: each_attr,
-               Vars.attrs.description: Vars.description[each_attr]
-            }
-         )
-
-         # Set units if appropriate
-         if each_attr_units is not None:
-            new_vars[each_attr].attrs[utils.Units.name] = each_attr_units
-
-         logging.debug(f'Extracted shared attribute {each_attr}: {attr_value}')
 
    # Extract stable_shift (specific to each velocity variable).
    # Read via get_data_var_attr so the value is coerced to float32 (and any
@@ -885,13 +896,20 @@ def build_virtual_cube(vds_list, already_aligned=False):
          if name in [Vars.vx, Vars.vy, Vars.vr, Vars.va]:
             # Extract velocity attributes (error, error_mask, error_modeled,
             # error_slow, stable_shift, stable_shift_mask, stable_shift_slow)
-            # and shared attributes (flag_stable_shift, stable_count_mask,
-            # stable_count_slow) to match "deep copy" datacube behavior
+            # to match "deep copy" datacube behavior
             # (see itscube.py process_v_attributes()).
             # Only process if variable exists in original granule
             # (not synthetic placeholder)
             if name in vds.data_vars:
                _extract_velocity_attributes(new_vars, vds, name)
+
+            # Shared attributes (flag_stable_shift, stable_count_mask,
+            # stable_count_slow) are identical across vx/vy/vr/va -- read
+            # once from vx, deterministically, rather than from whichever of
+            # vx/vy/vr/va this loop happens to visit first (see
+            # _extract_shared_velocity_attributes docstring).
+            if name == Vars.vx:
+               _extract_shared_velocity_attributes(new_vars, vds)
 
          # Promote M11/M12 dr_to_vr_factor attribute into its own variable to
          # match itscube.py process_m_attributes(). Real M11/M12 reach this path

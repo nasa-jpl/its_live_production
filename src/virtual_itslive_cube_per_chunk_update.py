@@ -670,6 +670,7 @@ def main():
                 all_skipped = list(skipped_set.union(set(s.replace(HTTPS_URL, S3_URL) for s in run_skipped)))
                 all_skipped_https = [s.replace(S3_URL, HTTPS_URL) for s in all_skipped]
                 save_skipped_granules(args.cube_store, all_skipped_https)
+
                 return
 
             logging.info(f"Built cube from {len(new_cube.time)} new granules")

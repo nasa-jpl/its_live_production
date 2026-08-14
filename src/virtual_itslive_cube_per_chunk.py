@@ -13,12 +13,10 @@ unchanged.
 from dateutil.parser import parse
 from datetime import datetime
 from joblib import Parallel, delayed, parallel_config
-import gc
 import logging
 import numpy as np
 import pyproj
 import xarray as xr
-import os
 import json
 import shutil
 import obstore
@@ -28,7 +26,11 @@ from virtualizarr.parsers import HDFParser
 from obspec_utils.registry import ObjectStoreRegistry
 import icechunk as ic
 
-from virtual_itslive_cube import _drop_nonfinite_attrs
+from virtual_itslive_cube import (
+   _drop_nonfinite_attrs,
+   _get_manifestarray_chunks,
+   build_virtual_cube,
+)
 
 from virtualizarr.manifests import ManifestArray
 from virtualizarr.manifests.utils import copy_and_replace_metadata
@@ -38,7 +40,6 @@ from zarr.core.array_spec import ArraySpec, ArrayConfig
 from zarr.core.buffer import default_buffer_prototype
 from zarr.core.sync import sync
 
-from virtual_itslive_cube import build_virtual_cube
 import itslive_utils
 import utils
 from itscube_types import (
@@ -176,40 +177,6 @@ def crop_manifestarray(marr, starts, stops):
 _BUCKET_PREFIX = 's3://its-live-data/'
 
 
-def _get_manifestarray_chunks(marr):
-   """Get chunk shape from ManifestArray, handling different API versions.
-
-   Parameters
-   ----------
-   marr : ManifestArray
-      The ManifestArray to get chunks from.
-
-   Returns
-   -------
-   tuple of int
-      Chunk shape for each dimension.
-
-   Raises
-   ------
-   AttributeError
-      If chunks cannot be determined from the ManifestArray.
-   """
-   # Try different API versions
-   if hasattr(marr, 'chunks'):
-      return marr.chunks
-   elif hasattr(marr, 'metadata'):
-      if hasattr(marr.metadata, 'chunk_shape'):
-         return marr.metadata.chunk_shape
-      elif hasattr(marr.metadata, 'chunk_grid'):
-         # Zarr v3 chunk grid
-         return tuple(marr.metadata.chunk_grid.chunk_shape)
-
-   raise AttributeError(
-      f"Cannot determine chunks from ManifestArray. "
-      f"Available attributes: {dir(marr)}"
-   )
-
-
 def _compute_allfill_chunk_length(chunk_shape, np_dtype, zarr_dtype, fill_value, codecs):
    """Compute the encoded length of an all-fill chunk.
 
@@ -312,7 +279,20 @@ def _cropped_var_has_valid_data(marr, netcdf_store, allfill_chunk_len):
          continue
 
       # Length-based short-circuit: if encoded length differs from all-fill
-      # reference, this chunk MUST contain valid data (no S3 read needed)
+      # reference, this chunk MUST contain valid data (no S3 read needed).
+      # This assumes 'v' uses the same chunk size, dtype, fill value, and
+      # codec configuration across ALL granules feeding this cube (see the
+      # comment at allfill_chunk_len's computation in
+      # build_virtual_cube_subset). If that ever doesn't hold -- e.g. a
+      # differently-encoded granule from a mission/processing-version not
+      # covered by that assumption -- a genuinely all-fill chunk in it could
+      # encode to a different byte length than this reference, and this
+      # short-circuit would incorrectly return True (treat it as having
+      # valid data) instead of falling through to the decode-and-compare
+      # check below. That's a safe-direction failure (an extra near-empty
+      # layer kept, not real data silently dropped), but it means this
+      # optimization is only as safe as that cross-granule uniformity
+      # assumption.
       if length != allfill_chunk_len:
          return True
 
@@ -586,6 +566,10 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    ValueError
       If cropped granules don't share identical x/y grids.
    """
+   if not vds_list:
+      logging.info("vds_list is empty -- no granules to build a cube from; no cube built")
+      return None, None, []
+
    logging.info(f'Building cube out of {len(vds_list)} granules')
    cropped = []
    skipped_granules = []
@@ -673,6 +657,10 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
 def read_virtual_dataset(granule_url, parser, registry):
    """Read granule into virtual dataset.
 
+   Raises immediately on failure (see `load_granules`): a granule that can't
+   be opened signals a problem worth stopping the run for (bad input list,
+   broken S3 access, etc.) rather than one to silently paper over.
+
    Parameters
    ----------
    granule_url : str
@@ -688,9 +676,12 @@ def read_virtual_dataset(granule_url, parser, registry):
       Virtual dataset with 'time', 'y', 'x' coordinates loaded into memory
       and data variables as ManifestArrays (chunk references only). The dataset
       includes 'granule_url' and 'granule_path' in its attributes.
-   """
-   v = None
 
+   Raises
+   ------
+   RuntimeError
+      If the granule cannot be opened as a virtual dataset.
+   """
    try:
       v = vz.open_virtual_dataset(
          url=granule_url,
@@ -713,9 +704,9 @@ def read_virtual_dataset(granule_url, parser, registry):
 def load_granules(granules, bucket):
    """Load granules into virtual datasets using parallel processing.
 
-   Reads multiple granule files in parallel batches, converting each into
-   a virtual dataset with coordinate data loaded and data variables as
-   ManifestArrays (chunk references only, no pixel data loaded).
+   Reads multiple granule files in parallel, converting each into a virtual
+   dataset with coordinate data loaded and data variables as ManifestArrays
+   (chunk references only, no pixel data loaded).
 
    Parameters
    ----------
@@ -731,6 +722,12 @@ def load_granules(granules, bucket):
       match the input (results are collected as-completed); downstream stacking
       keys off the time coordinate, not list position. Each dataset has 'time',
       'y', 'x' coordinates loaded and data variables as ManifestArrays.
+
+   Raises
+   ------
+   RuntimeError
+      Propagated from `read_virtual_dataset` on the first granule that fails
+      to open -- aborts the whole run rather than skipping it.
    """
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
    registry = ObjectStoreRegistry({bucket: store})
@@ -1037,8 +1034,10 @@ if __name__ == "__main__":
          cube[Vars.url].attrs[Vars.attrs.std_name] = Vars.url
          cube[Vars.url].attrs[Vars.attrs.description] = Vars.description[Vars.url]
 
-      # Remove granule specific attributes
-      del cube.attrs['motion_detection_method']
+      # Remove granule specific attributes (may already be absent if
+      # combine_attrs="drop_conflicts" dropped it due to differing values
+      # across granules)
+      cube.attrs.pop('motion_detection_method', None)
 
       print(f"\n{cube}")
 
@@ -1110,7 +1109,7 @@ if __name__ == "__main__":
          config.set_virtual_chunk_container(
             ic.VirtualChunkContainer(
                url_prefix,
-               ic.s3_store(region="us-west-2", anonymous=False)
+               ic.s3_store(region="us-west-2", anonymous=True)
             )
          )
          repo = ic.Repository.create(
