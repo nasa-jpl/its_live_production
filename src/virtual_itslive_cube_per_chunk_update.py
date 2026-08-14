@@ -56,11 +56,15 @@ import utils
 import itslive_utils
 
 # Import functions from the creation script
+import virtual_itslive_cube_per_chunk
 from virtual_itslive_cube_per_chunk import (
     load_granules,
     build_virtual_cube_subset,
+    skipped_granules_path,
+    save_skipped_granules,
     HTTPS_URL,
     S3_URL,
+    P000_SUFFIX,
     PIXEL_SIZE_HALF,
     LON_LAT_PROJECTION
 )
@@ -234,22 +238,6 @@ def print_cube_info(cube):
     print("="*80 + "\n")
 
 
-def skipped_granules_path(cube_store):
-    """Get path to skipped granules JSON file for a given cube store.
-
-    Parameters
-    ----------
-    cube_store : str
-        Path to icechunk repository (S3 or local).
-
-    Returns
-    -------
-    str
-        Path to skipped granules JSON file.
-    """
-    return cube_store.rstrip('/').rstrip('.icechunk') + '_skippedGranules.json'
-
-
 def load_skipped_granules(cube_store):
     """Load previously skipped granules from JSON file.
 
@@ -289,10 +277,21 @@ def load_skipped_granules(cube_store):
 
         return skipped_set
 
-    except (FileNotFoundError, boto3.exceptions.botocore.exceptions.ClientError) as e:
-        # Empty skipped granules granules will exist for any existing
-        # virtual cube
+    except FileNotFoundError:
+        # Empty skipped granules file will exist for any existing virtual cube
         raise RuntimeError(f'No existing skipped granules file at {skipped_path}')
+
+    except boto3.exceptions.botocore.exceptions.ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code')
+        if error_code in ('NoSuchKey', '404'):
+            # Object genuinely doesn't exist -- empty skipped granules file
+            # will exist for any existing virtual cube
+            raise RuntimeError(f'No existing skipped granules file at {skipped_path}')
+
+        # Any other ClientError (permission denied, wrong region, throttling,
+        # expired credentials, bucket typo, etc.) is a real problem -- don't
+        # mask it behind a misleading "file not found" message
+        raise
 
 
 def get_existing_granule_urls(cube):
@@ -328,16 +327,23 @@ def filter_new_granules(all_urls, skipped, existing):
 
     Returns
     -------
-    list of str
-        Filtered list of new granules to process.
+    tuple of (list of str, list of str)
+        - Filtered list of new granules to process.
+        - P000 granule URLs excluded from `all_urls` (never carry usable
+          data), so the caller can record them in the persistent
+          skipped-granules JSON alongside `skipped`/`existing`-filtered ones.
     """
     # Normalize to S3 format and filter
     filtered = []
+    p000_granules = []
     for url in all_urls:
         url_s3 = url.replace(HTTPS_URL, S3_URL)
 
-        # Skip P000 granules
-        if url_s3.endswith('P000.nc'):
+        # Skip P000 granules -- excluded from processing, but recorded by the
+        # caller so the persistent skipped-granules JSON reflects every
+        # granule considered, not just the ones that made it past this filter.
+        if url_s3.endswith(P000_SUFFIX):
+            p000_granules.append(url_s3)
             continue
 
         # Skip if previously skipped or already in cube
@@ -352,7 +358,10 @@ def filter_new_granules(all_urls, skipped, existing):
         filtered.append(url_s3)
 
     logging.info(f'After filtering: {len(filtered)} new granules to process')
-    return filtered
+    if p000_granules:
+        logging.info(f'Excluding {len(p000_granules)} P000 new granules')
+
+    return filtered, p000_granules
 
 
 def open_repo_for_update(cube_store):
@@ -411,7 +420,7 @@ def open_repo_for_update(cube_store):
         config.set_virtual_chunk_container(
             ic.VirtualChunkContainer(
                 url_prefix,
-                ic.s3_store(region="us-west-2", anonymous=False)
+                ic.s3_store(region="us-west-2", anonymous=True)
             )
         )
 
@@ -438,40 +447,6 @@ def open_repo_for_update(cube_store):
     )
 
     return repo, cube
-
-
-def save_skipped_granules(cube_store, skipped_granules):
-    """Save skipped granules list to JSON file.
-
-    Parameters
-    ----------
-    cube_store : str
-        Path to icechunk repository (S3 or local).
-    skipped_granules : list of str
-        List of skipped granule URLs (in https:// form).
-    """
-    skipped_path = skipped_granules_path(cube_store)
-    is_s3 = skipped_path.startswith('s3://')
-
-    if is_s3:
-        # Write to S3 using boto3
-        s3_client = boto3.client('s3', region_name='us-west-2')
-        s3_parts = skipped_path.replace('s3://', '').split('/', 1)
-        bucket = s3_parts[0]
-        key = s3_parts[1] if len(s3_parts) > 1 else ''
-
-        s3_client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=json.dumps(skipped_granules, indent=2),
-            ContentType='application/json'
-        )
-    else:
-        # Write to local filesystem
-        with open(skipped_path, 'w') as f:
-            json.dump(skipped_granules, f, indent=2)
-
-    logging.info(f'Saved {len(skipped_granules)} skipped granules to {skipped_path}')
 
 
 def main():
@@ -575,6 +550,13 @@ def main():
 
     args = parser.parse_args()
 
+    # load_granules/build_virtual_cube_subset (imported from
+    # virtual_itslive_cube_per_chunk) read their pool size from that module's
+    # own MAX_AWS_CONNECTIONS global, not from any argument -- set it there so
+    # --threads actually takes effect instead of always using that module's
+    # hardcoded default.
+    virtual_itslive_cube_per_chunk.MAX_AWS_CONNECTIONS = args.threads
+
     # Determine if this is an update operation or inspect-only
     update_mode = args.granules_file or args.use_searchAPI
 
@@ -607,6 +589,8 @@ def main():
 
             logging.info(f"Bbox for cropping: {bbox}")
 
+            granules = []
+
             # Get candidate granules
             if args.granules_file:
                 logging.info(f"Loading granules from {args.granules_file}")
@@ -635,10 +619,10 @@ def main():
                 granules = granules[:args.num_granules]
                 logging.info(f'Leaving {args.num_granules} to process')
 
-            # Filter granules
+            # Filter granules: returned sets have s3:// url's
             skipped_set = load_skipped_granules(args.cube_store)
             existing_set = get_existing_granule_urls(cube)
-            new_granules = filter_new_granules(
+            new_granules, p000_granules = filter_new_granules(
                 granules,
                 skipped_set,
                 existing_set
@@ -646,9 +630,21 @@ def main():
 
             if not new_granules:
                 logging.info("No new granules to process - cube is up to date")
+
+                # Update skipped granules since none of the new ones qualified
+                # for the cube update
+                all_skipped = list(skipped_set.union(granules))
+                save_skipped_granules(args.cube_store, all_skipped)
                 return
 
             logging.info(f"Processing {len(new_granules)} new granules")
+
+            if p000_granules:
+                logging.info(
+                    f'Adding {len(p000_granules)} P000.nc new granules to '
+                    'skipped granules'
+                )
+                skipped_set = skipped_set.union(p000_granules)
 
             # Build cube from new granules
             netcdf_store = S3Store(
@@ -668,12 +664,53 @@ def main():
                 logging.warning("No valid data in new granules - no update performed")
                 # Still update skipped granules file
                 all_skipped = list(skipped_set.union(set(s.replace(HTTPS_URL, S3_URL) for s in run_skipped)))
-                all_skipped_https = [s.replace(S3_URL, HTTPS_URL) for s in all_skipped]
-                save_skipped_granules(args.cube_store, all_skipped_https)
+                save_skipped_granules(args.cube_store, all_skipped)
 
                 return
 
             logging.info(f"Built cube from {len(new_cube.time)} new granules")
+
+            # Variable-set consistency check: the dtype-matching loop below only
+            # walks new_cube.data_vars, so a variable present in one cube but not
+            # the other would silently skip past it and append_dim="time" would
+            # then try to stack two datasets with different schemas. Fail loudly
+            # here instead -- this usually means the cube-building code changed
+            # between when the existing cube was built and now, and the existing
+            # cube needs to be regenerated to match.
+            existing_vars = set(cube.data_vars)
+            new_vars = set(new_cube.data_vars)
+            if existing_vars != new_vars:
+                raise ValueError(
+                    f"Cannot append: new cube's data variables differ from the "
+                    f"existing cube's.\n  missing from new cube: {existing_vars - new_vars}\n"
+                    f"  extra in new cube: {new_vars - existing_vars}"
+                )
+
+            # x/y grid-identity check: `bbox` above is re-derived each run from
+            # the existing cube's stored proj_polygon attribute, so grid
+            # alignment between new_cube and the existing cube is only implicit.
+            # Verify it explicitly (mirrors _assert_identical_grids() in
+            # virtual_itslive_cube_per_chunk.py, which does the analogous check
+            # across granules within a single build) so a bbox-derivation drift
+            # (e.g. float round-tripping through JSON) fails loudly here instead
+            # of surfacing as a low-level zarr/icechunk error, or worse, a silent
+            # spatial misalignment.
+            existing_x, new_x = cube.x.values, new_cube.x.values
+            existing_y, new_y = cube.y.values, new_cube.y.values
+            if existing_x.shape != new_x.shape or not np.array_equal(existing_x, new_x):
+                raise ValueError(
+                    f"Cannot append: new cube's x grid does not match the existing "
+                    f"cube's. existing: {existing_x.shape} spanning "
+                    f"[{existing_x[0]}, {existing_x[-1]}], new: {new_x.shape} "
+                    f"spanning [{new_x[0]}, {new_x[-1]}]."
+                )
+            if existing_y.shape != new_y.shape or not np.array_equal(existing_y, new_y):
+                raise ValueError(
+                    f"Cannot append: new cube's y grid does not match the existing "
+                    f"cube's. existing: {existing_y.shape} spanning "
+                    f"[{existing_y[0]}, {existing_y[-1]}], new: {new_y.shape} "
+                    f"spanning [{new_y[0]}, {new_y[-1]}]."
+                )
 
             # Match dtypes with existing cube before appending.
             #

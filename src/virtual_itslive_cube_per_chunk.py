@@ -21,6 +21,7 @@ import json
 import shutil
 import obstore
 from obstore.store import S3Store
+import boto3
 import virtualizarr as vz
 from virtualizarr.parsers import HDFParser
 from obspec_utils.registry import ObjectStoreRegistry
@@ -82,6 +83,75 @@ LON_LAT_PROJECTION = 'EPSG:4326'
 
 HTTPS_URL = 'https://its-live-data.s3.amazonaws.com/'
 S3_URL = 's3://its-live-data/'
+
+# P000 granules are placeholder/degenerate pairs (zero-offset pair with itself)
+# that never carry usable velocity data; both this script and
+# virtual_itslive_cube_per_chunk_update.py filter them out by filename suffix.
+# Shared here so the two call sites can't drift out of sync.
+P000_SUFFIX = 'P000.nc'
+
+
+def skipped_granules_path(cube_store):
+   """Get path to skipped granules JSON file for a given cube store.
+
+   Parameters
+   ----------
+   cube_store : str
+      Path to icechunk repository (S3 or local).
+
+   Returns
+   -------
+   str
+      Path to skipped granules JSON file.
+   """
+   return cube_store.rstrip('/').rstrip('.icechunk') + '_skippedGranules.json'
+
+
+def save_skipped_granules(cube_store, skipped_granules):
+   """Save skipped granules list to JSON file.
+
+   Normalizes every URL to https:// form (and de-duplicates) before writing,
+   so the file is consistently formatted regardless of whether the caller's
+   in-memory set happened to hold s3://, https://, or a mix of both -- the
+   same granule shouldn't appear twice under two different string forms.
+   Shared between this script (fresh-cube creation) and
+   virtual_itslive_cube_per_chunk_update.py (cube updates), so both write the
+   skipped-granules JSON the same way.
+
+   Parameters
+   ----------
+   cube_store : str
+      Path to icechunk repository (S3 or local).
+   skipped_granules : list of str
+      List of skipped granule URLs, in s3:// form, https:// form, or a mix
+      of both.
+   """
+   skipped_path = skipped_granules_path(cube_store)
+   is_s3 = skipped_path.startswith('s3://')
+
+   skipped_granules = list(set(
+      url.replace(S3_URL, HTTPS_URL) for url in skipped_granules
+   ))
+
+   if is_s3:
+      # Write to S3 using boto3
+      s3_client = boto3.client('s3', region_name='us-west-2')
+      s3_parts = skipped_path.replace('s3://', '').split('/', 1)
+      bucket = s3_parts[0]
+      key = s3_parts[1] if len(s3_parts) > 1 else ''
+
+      s3_client.put_object(
+         Bucket=bucket,
+         Key=key,
+         Body=json.dumps(skipped_granules, indent=2),
+         ContentType='application/json'
+      )
+   else:
+      # Write to local filesystem
+      with open(skipped_path, 'w') as f:
+         json.dump(skipped_granules, f, indent=2)
+
+   logging.info(f'Saved {len(skipped_granules)} skipped granules to {skipped_path}')
 
 
 def crop_manifestarray(marr, starts, stops):
@@ -946,9 +1016,22 @@ if __name__ == "__main__":
          roi=roi
       )
 
-   granules = [each.replace(HTTPS_URL, S3_URL) for each in granules]
 
-   granules = [each for each in granules if not each.endswith('P000.nc')]
+   # P000 granules never have usable data; exclude them from processing but
+   # still record them in the skipped-granules JSON below (merged into
+   # skipped_granules after build_virtual_cube_subset), so the persistent
+   # record reflects every granule that was considered and passed over.
+   # P000 granules have original https:// url
+   p000_granules = [each for each in granules if each.endswith(P000_SUFFIX)]
+
+   # The rest of the granules have s3:// url
+   granules = [
+      each.replace(HTTPS_URL, S3_URL) for each in granules \
+      if not each.endswith(P000_SUFFIX)
+   ]
+
+   if p000_granules:
+      logging.info(f"Excluding {len(p000_granules)} P000 granules")
 
    # If testing and want to process only a subset of granules
    if args.num_granules > 0:
@@ -989,6 +1072,12 @@ if __name__ == "__main__":
 
    cube, autorift_param_file, skipped_granules = \
       build_virtual_cube_subset(vds_list, bbox, netcdf_store)
+
+   # Record P000 granules alongside the granules build_virtual_cube_subset
+   # itself skipped, so the persistent skipped-granules JSON reflects every
+   # granule that was considered and passed over, not just the ones that
+   # made it as far as cropping.
+   skipped_granules.extend(p000_granules)
 
    # Add new attributes to the cube
    if cube:
@@ -1061,7 +1150,7 @@ if __name__ == "__main__":
          cube.attrs[utils.OutputFormat.url] = ''
 
       # Set skipped_granules attribute pointing to JSON file location
-      skipped_json_path = store_path.rstrip('/').rstrip('.icechunk') + '_skippedGranules.json'
+      skipped_json_path = skipped_granules_path(store_path)
       cube.attrs[SkippedGranules.name] = skipped_json_path
 
       if is_s3_output:
@@ -1127,30 +1216,7 @@ if __name__ == "__main__":
       logging.info(f"icechunk committed snapshot: {snapshot_id=}")
 
       # Save skipped granules to JSON file with _skippedGranules.json postfix
-      skipped_json_path = store_path.rstrip('/').rstrip('.icechunk') + '_skippedGranules.json'
-
-      # Restore original http:// granules urls before saving to the json file
-      skipped_granules = [each.replace(S3_URL, HTTPS_URL) for each in skipped_granules]
-
-      if is_s3_output:
-         # Write to S3 using boto3
-         import boto3
-         s3_client = boto3.client('s3', region_name='us-west-2')
-         skipped_json_s3 = skipped_json_path.replace('s3://', '').split('/', 1)
-         s3_client.put_object(
-            Bucket=skipped_json_s3[0],
-            Key=skipped_json_s3[1],
-            Body=json.dumps(skipped_granules, indent=2),
-            ContentType='application/json'
-         )
-         logging.info(f'Saved {len(skipped_granules)} skipped granules to {skipped_json_path}')
-
-      else:
-         # Write to local filesystem
-         with open(skipped_json_path, 'w') as f:
-            json.dump(skipped_granules, f, indent=2)
-
-         logging.info(f'Saved {len(skipped_granules)} skipped granules to {skipped_json_path}')
+      save_skipped_granules(store_path, skipped_granules)
 
       cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
       logging.info(f"{cube_roundtrip=}")
