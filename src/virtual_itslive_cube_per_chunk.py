@@ -1016,6 +1016,15 @@ if __name__ == "__main__":
          roi=roi
       )
 
+   # If testing and want to process only a subset of granules. Truncate
+   # *before* filtering P000 granules below, so --num-granules reflects a
+   # slice of the raw candidate list (matching what a user would expect when
+   # asking for "the first N granules"), and the "Processing" count logged
+   # after P000 filtering can come out lower than N if any of that slice
+   # turned out to be P000.
+   if args.num_granules > 0:
+      num_granules = args.num_granules
+      granules = granules[:num_granules]
 
    # P000 granules never have usable data; exclude them from processing but
    # still record them in the skipped-granules JSON below (merged into
@@ -1032,11 +1041,6 @@ if __name__ == "__main__":
 
    if p000_granules:
       logging.info(f"Excluding {len(p000_granules)} P000 granules")
-
-   # If testing and want to process only a subset of granules
-   if args.num_granules > 0:
-      num_granules = args.num_granules
-      granules = granules[:num_granules]
 
    logging.info(f"Processing {len(granules)} granules")
 
