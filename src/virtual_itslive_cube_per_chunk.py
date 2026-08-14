@@ -1027,7 +1027,7 @@ if __name__ == "__main__":
    # The rest of the granules have s3:// url
    granules = [
       each.replace(HTTPS_URL, S3_URL) for each in granules \
-      if not each.endswith(P000_SUFFIX)
+      if each.endswith(P000_SUFFIX) is False
    ]
 
    if p000_granules:
