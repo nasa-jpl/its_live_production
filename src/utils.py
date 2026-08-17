@@ -226,6 +226,8 @@ class MissingInfo:
    # format. For NetCDF format, the missing value is set using the
    # "_FillValue" attribute.
    name: str = 'missing_value'
+   # The zarr-level sentinel, separate from any CF attribute.
+   fill_value: str = 'fill_value'
 
    # Missing values for different data types
    # Missing (FillValue) values for data variables
