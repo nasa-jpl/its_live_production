@@ -8,6 +8,8 @@ dependencies:
   - numpy
   - joblib
   - boto3
+  - geopandas
+  - rioxarray
   - pyproj
   - jupyterlab
   - h5py
@@ -26,8 +28,9 @@ dependencies:
   - kerchunk
   - zarr
   - awscli
-  - pystac-client=0.8    # required by itslive-py
-  - python-duckdb=1.3.0  # required by itslive-py
-  - rustac>=0.8          # required by itslive-py
+  # - pystac-client=0.8    # required by itslive-py
+  # - python-duckdb=1.3.0  # required by itslive-py
+  # - rustac>=0.8          # required by itslive-py
   - pip
+  - pip:
     - git+https://github.com/nasa-jpl/itslive-py
