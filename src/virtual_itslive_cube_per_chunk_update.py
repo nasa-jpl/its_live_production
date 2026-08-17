@@ -677,8 +677,15 @@ def main():
             # here instead -- this usually means the cube-building code changed
             # between when the existing cube was built and now, and the existing
             # cube needs to be regenerated to match.
-            existing_vars = set(cube.data_vars)
-            new_vars = set(new_cube.data_vars)
+            #
+            # Only compare *time-indexed* variables: static, cube-level
+            # variables with no 'time' dimension (mapping, landice,
+            # floatingice) are set once at cube creation and never touched
+            # again on update -- new_cube legitimately never carries them, and
+            # their already-committed chunks stay valid across every later
+            # icechunk snapshot without needing to match new_cube's schema.
+            existing_vars = {v for v in cube.data_vars if 'time' in cube[v].dims}
+            new_vars = {v for v in new_cube.data_vars if 'time' in new_cube[v].dims}
             if existing_vars != new_vars:
                 raise ValueError(
                     f"Cannot append: new cube's data variables differ from the "

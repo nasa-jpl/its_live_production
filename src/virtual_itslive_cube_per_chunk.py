@@ -36,6 +36,7 @@ from virtual_itslive_cube import (
 from virtualizarr.manifests import ManifestArray
 from virtualizarr.manifests.utils import copy_and_replace_metadata
 
+from zarr.codecs import BloscCodec, BloscShuffle
 from zarr.core.codec_pipeline import BatchedCodecPipeline
 from zarr.core.array_spec import ArraySpec, ArrayConfig
 from zarr.core.buffer import default_buffer_prototype
@@ -43,6 +44,8 @@ from zarr.core.sync import sync
 
 import itslive_utils
 import utils
+import shapefile
+from itslive_binary_type import BinaryFlag
 from itscube_types import (
    CubeFormat,
    ImgPairInfo,
@@ -844,6 +847,10 @@ def load_granules(granules, bucket):
 
 if __name__ == "__main__":
    import argparse
+   import sys
+   import os
+   from joblib.externals.loky import get_reusable_executor
+   import time
 
    parser = argparse.ArgumentParser(
       description="""
@@ -938,10 +945,22 @@ if __name__ == "__main__":
       help='UTM target projection for the virtual cube and granules it will be'
          'constructed (required with --use-SearchAPI) [%(default)s]'
    )
+   parser.add_argument(
+      '-s', '--shapeFile',
+      type=str,
+      default='s3://its-live-data/autorift_parameters/v001/autorift_landice_0120m.shp',
+      help='Shapefile with ice masks information [%(default)s]'
+   )
 
    args = parser.parse_args()
-
    MAX_AWS_CONNECTIONS = args.threads
+
+   if sys.platform == 'darwin':
+      os.environ.setdefault(
+         "PYTHONWARNINGS",
+         "ignore::UserWarning:multiprocessing.resource_tracker,"
+         "ignore::UserWarning:joblib.externals.loky.backend.resource_tracker"
+      )
 
    # Parse bounding polygon from JSON string in UTM coordinates
    polygon = json.loads(args.polygon)
@@ -1213,6 +1232,47 @@ if __name__ == "__main__":
             ),
          )
 
+      # Add land/floating ice mask data variables, matching itscube.py's
+      # combine_layers() (only added once, at cube creation -- the update
+      # script never touches them again, since they have no 'time' dimension
+      # and their already-committed chunks stay valid across every later
+      # icechunk snapshot).
+      shape_gdp = shapefile.read_file(args.shapeFile)
+
+      # Set compession for encoding
+      compressor = BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')
+      # Set chunking for 2-d variables
+      chunking_settings_2d = (len(cube.y), len(cube.x))
+      logging.info(f'Icemasks using {chunking_settings_2d=}')
+
+      for mask_name in [shapefile.LANDICE, shapefile.FLOATINGICE]:
+         mask_data, mask_url = shapefile.read_ice_mask(
+            shape_gdp, mask_name, cube.x.values, cube.y.values, args.projection
+         )
+         mask_data = utils.to_int_type(mask_data, np.uint8, utils.Missing.u8value)
+         cube[mask_name] = xr.DataArray(
+            data=mask_data,
+            coords={utils.Coords.Y: cube.y.values, utils.Coords.X: cube.x.values},
+            dims=[utils.Coords.Y, utils.Coords.X],
+            attrs={
+               Vars.attrs.std_name: shapefile.Name[mask_name],
+               Vars.attrs.description: shapefile.Description[mask_name],
+               Mapping.attrs.grid_mapping: Mapping.name,
+               BinaryFlag.attrs.values: BinaryFlag.values,
+               BinaryFlag.attrs.meanings: BinaryFlag.meanings[mask_name],
+               utils.OutputFormat.url: mask_url
+            }
+         )
+         cube[mask_name].encoding={
+               utils.OutputFormat.dtype: shapefile.Type[mask_name],
+               utils.OutputFormat.compressor: compressor,
+               utils.Missing.name: utils.Missing.u8value,
+               # The zarr-level sentinel, separate from any CF attribute,
+               # have it just in case
+               utils.Missing.fill_value: utils.Missing.u8value,
+               utils.OutputFormat.chunks: chunking_settings_2d
+         }
+
       session = repo.writable_session("main")
       cube_clean = _drop_nonfinite_attrs(cube)
       cube_clean.vz.to_icechunk(session.store)
@@ -1236,3 +1296,10 @@ if __name__ == "__main__":
 
    logging.info('Done')
 
+   if sys.platform == 'darwin':
+      get_reusable_executor().shutdown(wait=True, kill_workers=True)
+      time.sleep(0.5)  # let resource_tracker's unregister messages land
+
+      # macOS-only: works around GDAL/PROJ/loky atexit ordering on Darwin
+      # bypass Python's normal interpreter finalization
+      os._exit(0)
