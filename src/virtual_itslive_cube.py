@@ -367,7 +367,6 @@ def _add_missing_m11_m12(new_vars, vds, x_union, y_union):
          # convention -- attrs is inert metadata, encoding is what
          # actually participates in xarray's encode/decode machinery.
          # encoding={'_FillValue': fill_value},
-
       )
 
       logging.debug(
