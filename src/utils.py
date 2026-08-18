@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from dateutil.parser import parse
 from datetime import datetime
 import numpy as np
+import os
 import xarray as xr
 
 S3_PREFIX = 's3://'
@@ -19,6 +20,15 @@ PATH_URL = ".s3.amazonaws.com"
 
 # Engine to read xarray data into from NetCDF filecompression
 NC_ENGINE = 'h5netcdf'
+
+# Token to split image pair filename into two image names
+SPLIT_IMAGES_TOKEN = '_X_'
+IMAGE_TOKEN = '_'
+
+# Date format as it appears in granules filenames:
+# (LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc)
+DATE_FORMAT = "%Y%m%d"
+
 
 @dataclass(frozen=True)
 class CoordsInfo:
@@ -474,3 +484,136 @@ def get_data_var_attr(
       )
 
    return missing_value
+
+
+def extract_mid_date_from_url(url: str):
+   """
+   Extract mid_date from granule filename by parsing acquisition dates.
+   This method is used to sort granules in chronological order by
+   acquisition date by avoiding reading the granule files to get its time
+   dimension value.
+
+   Supports multiple sensor filename formats:
+   - Landsat: acquisition date at token[3] (format: YYYYMMDD)
+   - NISAR: acquisition date+time at token[11] (format: YYYYMMDDTHHMMSS)
+   - Sentinel-1: acquisition date+time at token[5] (format: YYYYMMDDTHHMMSS)
+   - Sentinel-2: acquisition date+time at token[2] (format: YYYYMMDDTHHMMSS)
+
+   Mid_date is calculated as the average of the two acquisition dates.
+
+   Inputs:
+   url (str): URL for the granule.
+
+   Returns:
+   Datetime object for sorting purposes.
+   """
+   from datetime import datetime, timedelta
+
+   # Extract filename from URL
+   filename = os.path.basename(url)
+
+   # Split into two images
+   images = filename.split(SPLIT_IMAGES_TOKEN)
+   if len(images) < 2:
+      raise RuntimeError(
+            f'Filename does not contain expected split token: '
+            f'{SPLIT_IMAGES_TOKEN} in {filename}'
+      )
+
+   # Parse first image tokens
+   tokens_1 = images[0].split(IMAGE_TOKEN)
+   # Parse second image tokens
+   tokens_2 = images[1].split(IMAGE_TOKEN)
+
+   # Detect sensor type and extract acquisition dates accordingly
+   sensor_prefix = tokens_1[0][:5] if len(tokens_1[0]) >= 5 else tokens_1[0]
+
+   if sensor_prefix == 'NISAR':
+      # NISAR: acquisition date+time at token[11]
+      # Format: YYYYMMDDTHHMMSS (e.g., 20251120T130632)
+      date_token_idx = 11
+      date_format = "%Y%m%dT%H%M%S"
+
+   elif sensor_prefix.startswith('S1'):
+      # Sentinel-1: acquisition date+time at token[5]
+      # Format: YYYYMMDDTHHMMSS (e.g., 20200221T095209)
+      date_token_idx = 5
+      date_format = "%Y%m%dT%H%M%S"
+
+   elif sensor_prefix.startswith('S2'):
+      # Sentinel-2: acquisition date+time at token[2]
+      # Format: YYYYMMDDTHHMMSS (e.g., 20181008T190459)
+      date_token_idx = 2
+      date_format = "%Y%m%dT%H%M%S"
+
+   elif sensor_prefix.startswith('L'):
+      # Landsat (LC08, LC09, LE07, LT05, etc.): acquisition date at token[3]
+      # Format: YYYYMMDD
+      date_token_idx = 3
+      date_format = DATE_FORMAT
+
+   else:
+      # Unsupported sensor format
+      raise ValueError(
+            f"Unsupported sensor filename format: {sensor_prefix} in {filename}"
+      )
+
+   # Parse acquisition dates using the determined token index and format
+   try:
+      date_1 = datetime.strptime(tokens_1[date_token_idx], date_format)
+      date_2 = datetime.strptime(tokens_2[date_token_idx], date_format)
+   except IndexError:
+      raise RuntimeError(
+            f'Missing expected token at index {date_token_idx} for sensor '
+            f'{sensor_prefix} in filename: {filename}'
+      )
+   except ValueError as e:
+      raise RuntimeError(
+            f'Invalid date format at token {date_token_idx} for sensor '
+            f'{sensor_prefix} in filename {filename}: {e}'
+      )
+
+   # Calculate mid_date as average
+   mid_date = date_1 + (date_2 - date_1) / 2
+   return mid_date
+
+
+def get_tokens_from_filename(filename):
+   """
+   Extract processing dates for two images from the filename and
+   construct unique identifier for the image pair by removing processing
+   dates, percent valid pixels fields and file extension.
+
+   Inputs:
+   filename (str): Granule filename to parse.
+
+   Returns:
+   url_proc_date_1 (datetime): Processing date for first image.
+   url_proc_date_2 (datetime): Processing date for second image.
+   id (str): Unique identifier for the image pair.
+   """
+   files = os.path.basename(filename).split(SPLIT_IMAGES_TOKEN)
+
+   # Get acquisition, processing date, path_row for both images
+   # from url and index_url
+   url_tokens = os.path.basename(files[0]).split(IMAGE_TOKEN)
+
+   url_proc_date_1 = datetime.strptime(url_tokens[4], DATE_FORMAT)
+
+   # Remove processing date from the first image name: don't replace date
+   # token with an empty string as acquisition and processing dates can be
+   # the same
+   id_tokens = url_tokens[:4]
+   id_tokens.extend(url_tokens[5:])
+
+   url_tokens = os.path.basename(files[1]).split(IMAGE_TOKEN)
+   url_proc_date_2 = datetime.strptime(url_tokens[4], DATE_FORMAT)
+
+   # Remove processing date and _Pxxx.nc from the second image name
+   id_tokens.extend(url_tokens[:4])
+   id_tokens.extend(url_tokens[5:8])
+
+   id = IMAGE_TOKEN.join(id_tokens)
+
+   return url_proc_date_1, url_proc_date_2, id
+

@@ -594,3 +594,4 @@ def add_five_points_to_polygon_side(polygon):
     polylist.append((x.min, y.min))
 
     return polylist
+

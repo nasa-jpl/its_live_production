@@ -107,10 +107,6 @@ class ITSCube:
     # Local path to the skipped granules info
     SKIPPED_GRANULES_FILE = ''
 
-    # Date format as it appears in granules filenames:
-    # (LC08_L1TP_011002_20150821_20170405_01_T1_X_LC08_L1TP_011002_20150720_20170406_01_T1_G0240V01_P038.nc)
-    DATE_FORMAT = "%Y%m%d"
-
     # Date and time format for acquisition dates of img_info_pair
     DATE_TIME_NO_MICROSECS_FORMAT = '%Y%m%dT%H:%M:%S'
     DATE_TIME_FORMAT = '%Y%m%dT%H:%M:%S.%f'
@@ -147,10 +143,6 @@ class ITSCube:
 
     # Maximum length of the granule URL
     MAX_GRANULE_URL_LEN = 1024
-
-    # Token to split image pair filename into two image names
-    SPLIT_IMAGES_TOKEN = '_X_'
-    IMAGE_TOKEN = '_'
 
     # If a list of granules to generate datacube from is provided through
     # an input JSON file.
@@ -419,7 +411,7 @@ class ITSCube:
 
         # Sort URLs by mid_date extracted from the filename in chronological
         # order
-        urls = sorted(urls, key=ITSCube.extract_mid_date_from_url)
+        urls = sorted(urls, key=utils.extract_mid_date_from_url)
 
         # DEBUG: pick only S1 granules to test
         # sentinel_granules = [each for each in urls if
@@ -453,9 +445,9 @@ class ITSCube:
         landsat89_granules = [
             each for each in found_urls
             if os.path.basename(each)
-            .split(ITSCube.SPLIT_IMAGES_TOKEN)[0].startswith(LANDSAT89_PREFIX)
+            .split(utils.SPLIT_IMAGES_TOKEN)[0].startswith(LANDSAT89_PREFIX)
             or os.path.basename(each)
-            .split(ITSCube.SPLIT_IMAGES_TOKEN)[1].startswith(LANDSAT89_PREFIX)
+            .split(utils.SPLIT_IMAGES_TOKEN)[1].startswith(LANDSAT89_PREFIX)
         ]
 
         if len(landsat89_granules) == 0:
@@ -467,7 +459,7 @@ class ITSCube:
             # be searched for duplicates
             granules = list(set(found_urls).difference(landsat89_granules))
             logging.info(f'Number of non-Landsat89 granules={len(granules)}'
-                         f', Landsat89 granules={len(landsat89_granules)}')
+                        f', Landsat89 granules={len(landsat89_granules)}')
 
         for each_url in tqdm(
             landsat89_granules, ascii=True,
@@ -476,7 +468,7 @@ class ITSCube:
         ):
             # Extract acquisition and processing dates
             url_proc_1, url_proc_2, granule_id = \
-                ITSCube.get_tokens_from_filename(each_url)
+                utils.get_tokens_from_filename(each_url)
             # logging.info(f'ID={granule_id} for granule={each_url}')
 
             # There is a granule for the mid_date already, check which processing
@@ -488,7 +480,7 @@ class ITSCube:
                 for found_url in keep_urls[granule_id]:
                     # Check already found URLs for processing time
                     found_proc_1, found_proc_2, found_granule_id = \
-                        ITSCube.get_tokens_from_filename(found_url)
+                        utils.get_tokens_from_filename(found_url)
 
                     # IDs must match
                     if granule_id != found_granule_id:
@@ -515,7 +507,7 @@ class ITSCube:
                     for found_url in keep_urls[granule_id]:
                         # Check already found URL for processing time
                         found_proc_1, found_proc_2, _ = \
-                            ITSCube.get_tokens_from_filename(found_url)
+                            utils.get_tokens_from_filename(found_url)
 
                         if url_proc_1 >= found_proc_1 and \
                                 url_proc_2 >= found_proc_2:
@@ -671,138 +663,6 @@ class ITSCube:
 
         return granules
 
-    @staticmethod
-    def extract_mid_date_from_url(url: str):
-        """
-        Extract mid_date from granule filename by parsing acquisition dates.
-        This method is used to sort granules in chronological order by
-        acquisition date by avoiding reading the granule files to get its time
-        dimension value.
-
-        Supports multiple sensor filename formats:
-        - Landsat: acquisition date at token[3] (format: YYYYMMDD)
-        - NISAR: acquisition date+time at token[11] (format: YYYYMMDDTHHMMSS)
-        - Sentinel-1: acquisition date+time at token[5] (format: YYYYMMDDTHHMMSS)
-        - Sentinel-2: acquisition date+time at token[2] (format: YYYYMMDDTHHMMSS)
-
-        Mid_date is calculated as the average of the two acquisition dates.
-
-        Inputs:
-        url (str): URL for the granule.
-
-        Returns:
-        Datetime object for sorting purposes.
-        """
-        from datetime import datetime, timedelta
-
-        # Extract filename from URL
-        filename = os.path.basename(url)
-
-        # Split into two images
-        images = filename.split(ITSCube.SPLIT_IMAGES_TOKEN)
-        if len(images) < 2:
-            raise RuntimeError(
-                f'Filename does not contain expected split token: '
-                f'{ITSCube.SPLIT_IMAGES_TOKEN} in {filename}'
-            )
-
-        # Parse first image tokens
-        tokens_1 = images[0].split(ITSCube.IMAGE_TOKEN)
-        # Parse second image tokens
-        tokens_2 = images[1].split(ITSCube.IMAGE_TOKEN)
-
-        # Detect sensor type and extract acquisition dates accordingly
-        sensor_prefix = tokens_1[0][:5] if len(tokens_1[0]) >= 5 else tokens_1[0]
-
-        if sensor_prefix == 'NISAR':
-            # NISAR: acquisition date+time at token[11]
-            # Format: YYYYMMDDTHHMMSS (e.g., 20251120T130632)
-            date_token_idx = 11
-            date_format = "%Y%m%dT%H%M%S"
-
-        elif sensor_prefix.startswith('S1'):
-            # Sentinel-1: acquisition date+time at token[5]
-            # Format: YYYYMMDDTHHMMSS (e.g., 20200221T095209)
-            date_token_idx = 5
-            date_format = "%Y%m%dT%H%M%S"
-
-        elif sensor_prefix.startswith('S2'):
-            # Sentinel-2: acquisition date+time at token[2]
-            # Format: YYYYMMDDTHHMMSS (e.g., 20181008T190459)
-            date_token_idx = 2
-            date_format = "%Y%m%dT%H%M%S"
-
-        elif sensor_prefix.startswith('L'):
-            # Landsat (LC08, LC09, LE07, LT05, etc.): acquisition date at token[3]
-            # Format: YYYYMMDD
-            date_token_idx = 3
-            date_format = ITSCube.DATE_FORMAT
-
-        else:
-            # Unsupported sensor format
-            raise ValueError(
-                f"Unsupported sensor filename format: {sensor_prefix} in {filename}"
-            )
-
-        # Parse acquisition dates using the determined token index and format
-        try:
-            date_1 = datetime.strptime(tokens_1[date_token_idx], date_format)
-            date_2 = datetime.strptime(tokens_2[date_token_idx], date_format)
-        except IndexError:
-            raise RuntimeError(
-                f'Missing expected token at index {date_token_idx} for sensor '
-                f'{sensor_prefix} in filename: {filename}'
-            )
-        except ValueError as e:
-            raise RuntimeError(
-                f'Invalid date format at token {date_token_idx} for sensor '
-                f'{sensor_prefix} in filename {filename}: {e}'
-            )
-
-        # Calculate mid_date as average
-        mid_date = date_1 + (date_2 - date_1) / 2
-        return mid_date
-
-    @staticmethod
-    def get_tokens_from_filename(filename):
-        """
-        Extract processing dates for two images from the filename and
-        construct unique identifier for the image pair by removing processing
-        dates, percent valid pixels fields and file extension.
-
-        Inputs:
-        filename (str): Granule filename to parse.
-
-        Returns:
-        url_proc_date_1 (datetime): Processing date for first image.
-        url_proc_date_2 (datetime): Processing date for second image.
-        id (str): Unique identifier for the image pair.
-        """
-        files = os.path.basename(filename).split(ITSCube.SPLIT_IMAGES_TOKEN)
-
-        # Get acquisition, processing date, path_row for both images
-        # from url and index_url
-        url_tokens = os.path.basename(files[0]).split(ITSCube.IMAGE_TOKEN)
-
-        url_proc_date_1 = datetime.strptime(url_tokens[4], ITSCube.DATE_FORMAT)
-
-        # Remove processing date from the first image name: don't replace date
-        # token with an empty string as acquisition and processing dates can be
-        # the same
-        id_tokens = url_tokens[:4]
-        id_tokens.extend(url_tokens[5:])
-
-        url_tokens = os.path.basename(files[1]).split(ITSCube.IMAGE_TOKEN)
-        url_proc_date_2 = datetime.strptime(url_tokens[4],
-                                            ITSCube.DATE_FORMAT)
-
-        # Remove processing date and _Pxxx.nc from the second image name
-        id_tokens.extend(url_tokens[:4])
-        id_tokens.extend(url_tokens[5:8])
-
-        id = ITSCube.IMAGE_TOKEN.join(id_tokens)
-
-        return url_proc_date_1, url_proc_date_2, id
 
     def add_layer(self, is_empty, layer_projection, mid_date, url, data, msgs):
         """
