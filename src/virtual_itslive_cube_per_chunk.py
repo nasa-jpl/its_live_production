@@ -10,22 +10,22 @@ cropped grids onto a shared grid and stacks them on time. This reuses all of
 the existing padding / combine_by_coords / img_pair_info-handling logic
 unchanged.
 """
+import boto3
 from dateutil.parser import parse
 from datetime import datetime
 from joblib import Parallel, delayed, parallel_config
+import json
 import logging
 import numpy as np
 import pyproj
-import xarray as xr
-import json
 import shutil
 import obstore
 from obstore.store import S3Store
-import boto3
 import virtualizarr as vz
 from virtualizarr.parsers import HDFParser
 from obspec_utils.registry import ObjectStoreRegistry
 import icechunk as ic
+import xarray as xr
 
 from virtual_itslive_cube import (
    _drop_nonfinite_attrs,
@@ -884,11 +884,6 @@ if __name__ == "__main__":
       help="Path to JSON file containing a list of granule paths"
    )
    granules_group.add_argument(
-      "--granules",
-      nargs="+",
-      help="List of granule paths (space-separated)"
-   )
-   granules_group.add_argument(
       "--use-searchAPI",
       action='store_true',
       default=False,
@@ -915,6 +910,12 @@ if __name__ == "__main__":
       help="S3 bucket URL [%(default)s]"
    )
    parser.add_argument(
+      "--bucketHTTP",
+      type=str,
+      default="https://its-live-data.s3.amazonaws.com",
+      help="S3 bucket HTTP URL [%(default)s]"
+   )
+   parser.add_argument(
       '-t', '--threads',
       type=int,
       default=8,
@@ -925,6 +926,16 @@ if __name__ == "__main__":
       type=int,
       default=0,
       help='Number of granules to process [%(default)d meaning to process all granules].'
+   )
+   parser.add_argument(
+      '--batch-size',
+      type=int,
+      default=100000,
+      help='Number of granules to load and commit together per icechunk snapshot '
+         '[%(default)d]. Granules are sorted chronologically first, then split '
+         'into batches of this size to bound memory use for very large granule '
+         'lists; the first batch creates the icechunk repo and each subsequent '
+         'batch appends to it.'
    )
    parser.add_argument(
       "--start-date",
@@ -953,6 +964,9 @@ if __name__ == "__main__":
    )
 
    args = parser.parse_args()
+   logging.info(f'Command: {sys.argv}')
+   logging.info(f'Using command-line arguments: {args}')
+
    MAX_AWS_CONNECTIONS = args.threads
 
    if sys.platform == 'darwin':
@@ -976,8 +990,7 @@ if __name__ == "__main__":
 
    logging.info(f"Extracted bbox from polygon: {xmin=}, {xmax=}, {ymin=}, {ymax=}")
 
-   # Adjust cube cell edge coordinates to the cell centers (like granules grids
-   # have it)
+   # Adjust cube cell edge coordinates to the cell centers (like in granules)
    xmin = xmin + PIXEL_SIZE_HALF
    xmax = xmax - PIXEL_SIZE_HALF
    ymin = ymin + PIXEL_SIZE_HALF
@@ -1013,8 +1026,6 @@ if __name__ == "__main__":
 
       if not isinstance(granules, list):
          raise ValueError(f"JSON file must contain a list of granule paths")
-   elif args.granules:
-      granules = args.granules
 
    elif args.use_searchAPI:
       # Validate that other arguments are provided when using searchAPI
@@ -1049,10 +1060,10 @@ if __name__ == "__main__":
    # still record them in the skipped-granules JSON below (merged into
    # skipped_granules after build_virtual_cube_subset), so the persistent
    # record reflects every granule that was considered and passed over.
-   # P000 granules have original https:// url
+   # P000 granules have original "https://"" url
    p000_granules = [each for each in granules if each.endswith(P000_SUFFIX)]
 
-   # The rest of the granules have s3:// url
+   # The rest of the granules have "s3://"" url
    granules = [
       each.replace(HTTPS_URL, S3_URL) for each in granules \
       if each.endswith(P000_SUFFIX) is False
@@ -1061,235 +1072,276 @@ if __name__ == "__main__":
    if p000_granules:
       logging.info(f"Excluding {len(p000_granules)} P000 granules")
 
+   # Sort chronologically by mid_date parsed from each filename -- no granule
+   # is opened for this, so it's cheap even for very large granule counts.
+   # This both gives the cube's layers a sensible time order and lets the
+   # batches below be processed (and appended to the cube) in time order.
+   granules = sorted(granules, key=utils.extract_mid_date_from_url)
+
    logging.info(f"Processing {len(granules)} granules")
 
    bucket = args.bucket
+   bucketHTTP = args.bucketHTTP
 
-   vds_list = load_granules(granules, bucket)
-   logging.info(f'Parsed {len(vds_list)} datasets')
+   batch_size = args.batch_size
+   batches = [granules[i:i + batch_size] for i in range(0, len(granules), batch_size)]
+   num_batches = len(batches)
 
-   # Look up a cube that overlapps both granules in latest catalog:
-   # 1. Run tools/tests/verify_chunk_alignment_granules_datacubes.py
-   #     - identifies overlapping datacubes per catalog, pick UTM polygon
-   #       coordinates
+   # Ties every commit made by this run together (see commit metadata below),
+   # so a large run's history can be identified as one logical build.
+   batch_job_id = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
 
-   # 2. Adjust cube cell edge coordinates for the cells centers:
-   # bbox = (xmin, xmax, ymin, ymax)
-   # bbox for original 2 Landsat granules
-   # bbox = (
-   #    -61447.5 + PIXEL_SIZE_HALF, -7.5 - PIXEL_SIZE_HALF,
-   #    -983032.5 + PIXEL_SIZE_HALF, -921592.5 - PIXEL_SIZE_HALF)
+   logging.info(
+      f"Split into {num_batches} batch(es) of up to {batch_size} granules "
+      f"[batch_job_id={batch_job_id}]"
+   )
 
-   # bbox for test case with S1, S2, Landsat granules
-   # bbox = (
-   #    -1658887.5 + PIXEL_SIZE_HALF, -1597447.5 - PIXEL_SIZE_HALF,
-   #    -430072.5 + PIXEL_SIZE_HALF, -368632.5 - PIXEL_SIZE_HALF)
-
-   # Store to load each of the granule's "v" values to check if granule has
-   # any valid "v" data in the cube polygon
    netcdf_store = S3Store(
       bucket="its-live-data",
       region="us-west-2",
       skip_signature=True,
    )
 
-   cube, autorift_param_file, skipped_granules = \
-      build_virtual_cube_subset(vds_list, bbox, netcdf_store)
+   # "s3://its-live-data/"
+   url_prefix = bucket + os.sep
+   store_path = args.output_store
 
-   # Record P000 granules alongside the granules build_virtual_cube_subset
-   # itself skipped, so the persistent skipped-granules JSON reflects every
-   # granule that was considered and passed over, not just the ones that
-   # made it as far as cropping.
-   skipped_granules.extend(p000_granules)
+   # Determine if output is S3 or local filesystem
+   is_s3_output = store_path.startswith(utils.S3_PREFIX)
 
-   # Add new attributes to the cube
-   if cube:
-      date_created = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
+   # Accumulates skipped granules across all batches; P000 granules were
+   # never handed to any batch, so seed with those up front.
+   skipped_granules = list(p000_granules)
 
-      # Set all datacube attributes matching itscube.py
-      cube.attrs[utils.OutputFormat.conventions] = \
-         CubeFormat.values[utils.OutputFormat.conventions]
-      cube.attrs[CubeFormat.datacube_software_version] = '1.0'
-      cube.attrs[CubeFormat.date_created] = date_created
-      cube.attrs[CubeFormat.gdal_area_or_point] = \
-         CubeFormat.values[CubeFormat.gdal_area_or_point]
-      cube.attrs[CubeFormat.geo_polygon] = json.dumps(polygon_coords)
-      cube.attrs[utils.OutputFormat.institution] = \
-         CubeFormat.values[utils.OutputFormat.institution]
+   # None until the first batch that actually produces a cube creates the
+   # icechunk repo; every later batch with data appends to it.
+   repo = None
 
-      center_lon_lat = to_lon_lat_transformer.transform(xmid, ymid)
-      cube.attrs[utils.OutputFormat.latitude] = round(center_lon_lat[1], 2)
-      cube.attrs[utils.OutputFormat.longitude] = round(center_lon_lat[0], 2)
+   for batch_num, batch_granules in enumerate(batches, start=1):
+      logging.info(f'Batch {batch_num}/{num_batches}: loading {len(batch_granules)} granules')
 
-      cube.attrs[CubeFormat.proj_polygon] = json.dumps(polygon)
-      cube.attrs[utils.OutputFormat.projection] = str(args.projection)
+      vds_list = load_granules(batch_granules, bucket)
+      logging.info(f'Batch {batch_num}/{num_batches}: parsed {len(vds_list)} datasets')
 
-      # S3 and URL attributes (will be set after determining output path)
-      cube.attrs[utils.OutputFormat.s3] = ''
-      cube.attrs[utils.OutputFormat.url] = ''
+      cube, autorift_param_file, batch_skipped_granules = \
+         build_virtual_cube_subset(vds_list, bbox, netcdf_store)
 
-      # Time standard attributes from first granule
-      if len(vds_list) > 0:
-         first_vds = vds_list[0]
-         if ImgPairInfo.name in first_vds.data_vars:
-            img_pair_attrs = first_vds[ImgPairInfo.name].attrs
-            for var_name in [ImgPairInfo.time_standard_img1, ImgPairInfo.time_standard_img2]:
-               if var_name in img_pair_attrs:
-                  cube.attrs[var_name] = img_pair_attrs[var_name]
+      # Record granules build_virtual_cube_subset skipped for this batch, so
+      # the persistent skipped-granules JSON reflects every granule that was
+      # considered and passed over, not just the ones that made it as far as
+      # cropping.
+      skipped_granules.extend(batch_skipped_granules)
 
-      cube.attrs[utils.OutputFormat.title] = \
-         CubeFormat.values[utils.OutputFormat.title]
-      cube.attrs[Vars.attrs.autorift_param_file] = autorift_param_file
+      if cube is None:
+         logging.info(f'Batch {batch_num}/{num_batches}: no valid data, nothing committed')
+         save_skipped_granules(store_path, skipped_granules)
+         continue
 
-      # Set attributes for 'url' data variable
-      if Vars.url in cube.data_vars:
-         cube[Vars.url].attrs[Vars.attrs.std_name] = Vars.url
-         cube[Vars.url].attrs[Vars.attrs.description] = Vars.description[Vars.url]
+      # Ties every commit from this run together so they can be identified
+      # as one logical build (see icechunk repo.ops_log()/ancestry()).
+      commit_metadata = {
+         "batch_job_id": batch_job_id,
+         "batch_index": batch_num,
+         "total_batches": num_batches,
+         "batch_size": len(batch_granules),
+      }
 
-      # Remove granule specific attributes (may already be absent if
-      # combine_attrs="drop_conflicts" dropped it due to differing values
-      # across granules)
-      cube.attrs.pop('motion_detection_method', None)
+      if repo is None:
+         # First batch with data: set up cube-level attributes, ice masks,
+         # and create the icechunk repository.
+         date_created = batch_job_id
 
-      print(f"\n{cube}")
+         # Set all datacube attributes matching itscube.py
+         cube.attrs[utils.OutputFormat.conventions] = \
+            CubeFormat.values[utils.OutputFormat.conventions]
+         cube.attrs[CubeFormat.datacube_software_version] = '1.0'
+         cube.attrs[CubeFormat.date_created] = date_created
+         cube.attrs[CubeFormat.gdal_area_or_point] = \
+            CubeFormat.values[CubeFormat.gdal_area_or_point]
+         cube.attrs[CubeFormat.geo_polygon] = json.dumps(polygon_coords)
+         cube.attrs[utils.OutputFormat.institution] = \
+            CubeFormat.values[utils.OutputFormat.institution]
 
-      logging.info(f'Skipped granules (first 10): \n{"\n".join(skipped_granules[:10])}')
+         center_lon_lat = to_lon_lat_transformer.transform(xmid, ymid)
+         cube.attrs[utils.OutputFormat.latitude] = round(center_lon_lat[1], 2)
+         cube.attrs[utils.OutputFormat.longitude] = round(center_lon_lat[0], 2)
 
-      url_prefix = "s3://its-live-data/"
-      store_path = args.output_store
+         cube.attrs[CubeFormat.proj_polygon] = json.dumps(polygon)
+         cube.attrs[utils.OutputFormat.projection] = str(args.projection)
 
-      # Determine if output is S3 or local filesystem
-      is_s3_output = store_path.startswith('s3://')
+         # Time standard attributes from this (creation) batch's first granule
+         if len(vds_list) > 0:
+            first_vds = vds_list[0]
+            if ImgPairInfo.name in first_vds.data_vars:
+               img_pair_attrs = first_vds[ImgPairInfo.name].attrs
+               for var_name in [ImgPairInfo.time_standard_img1, ImgPairInfo.time_standard_img2]:
+                  if var_name in img_pair_attrs:
+                     cube.attrs[var_name] = img_pair_attrs[var_name]
 
-      # Set S3 and URL attributes based on output location
-      if is_s3_output:
-         cube.attrs[utils.OutputFormat.s3] = store_path
-         # Convert s3:// to http:// URL
-         cube.attrs[utils.OutputFormat.url] = store_path.replace(
-            's3://its-live-data/', 'http://its-live-data.s3.amazonaws.com/'
-         )
-      else:
-         cube.attrs[utils.OutputFormat.s3] = ''
-         cube.attrs[utils.OutputFormat.url] = ''
+         cube.attrs[utils.OutputFormat.title] = \
+            CubeFormat.values[utils.OutputFormat.title]
+         cube.attrs[Vars.attrs.autorift_param_file] = autorift_param_file
 
-      # Set skipped_granules attribute pointing to JSON file location
-      skipped_json_path = skipped_granules_path(store_path)
-      cube.attrs[SkippedGranules.name] = skipped_json_path
+         # Set attributes for 'url' data variable
+         if Vars.url in cube.data_vars:
+            cube[Vars.url].attrs[Vars.attrs.std_name] = Vars.url
+            cube[Vars.url].attrs[Vars.attrs.description] = Vars.description[Vars.url]
 
-      if is_s3_output:
-         # S3 storage - parse bucket and prefix
-         s3_parts = store_path.replace('s3://', '').split('/', 1)
-         bucket = s3_parts[0]
-         prefix = s3_parts[1] if len(s3_parts) > 1 else ''
+         # Remove granule specific attributes (may already be absent if
+         # combine_attrs="drop_conflicts" dropped it due to differing values
+         # across granules)
+         cube.attrs.pop('motion_detection_method', None)
 
-         logging.info(f'Writing icechunk repo to S3: bucket={bucket}, prefix={prefix}')
+         logging.info(f"\n{cube}")
 
-         # Configure storage settings for stronger recovery from transient S3 failures
-         storage_settings = ic.StorageSettings(
-            unsafe_use_metadata=True,           # Enable metadata stamping for write-id recovery
-            unsafe_use_conditional_update=True  # Enable conditional PUTs to prevent conflicts
-         )
-
-         config = ic.RepositoryConfig.default()
-         config.storage = storage_settings
-         config.set_virtual_chunk_container(
-            ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
-         )
-
-         # Create S3 storage for repository (authenticated write access)
-         storage = ic.s3_storage(
-            bucket=bucket,
-            prefix=prefix,
-            region="us-west-2"
-         )
-
-         repo = ic.Repository.create(
-            storage=storage,
-            config=config,
-            authorize_virtual_chunk_access=ic.containers_credentials(
-               {url_prefix: ic.s3_credentials(anonymous=True)}
-            ),
-         )
-      else:
-         # Local filesystem storage
-         shutil.rmtree(store_path, ignore_errors=True)
-
-         # Note: Don't enable unsafe_use_metadata for local filesystem - it only
-         # works with S3 storage and will cause "put_opts with opts.attributes
-         # not yet implemented" error on local filesystem.
-         config = ic.RepositoryConfig.default()
-         config.set_virtual_chunk_container(
-            ic.VirtualChunkContainer(
-               url_prefix,
-               ic.s3_store(region="us-west-2", anonymous=True)
+         # Set S3 and URL attributes based on output location
+         if is_s3_output:
+            cube.attrs[utils.OutputFormat.s3] = store_path
+            # Convert s3:// to https:// URL
+            cube.attrs[utils.OutputFormat.url] = store_path.replace(
+               bucket, bucketHTTP
             )
-         )
-         repo = ic.Repository.create(
-            storage=ic.local_filesystem_storage(store_path),
-            config=config,
-            authorize_virtual_chunk_access=ic.containers_credentials(
-               {url_prefix: ic.s3_credentials(anonymous=True)}
-            ),
-         )
 
-      # Add land/floating ice mask data variables, matching itscube.py's
-      # combine_layers() (only added once, at cube creation -- the update
-      # script never touches them again, since they have no 'time' dimension
-      # and their already-committed chunks stay valid across every later
-      # icechunk snapshot).
-      shape_gdp = shapefile.read_file(args.shapeFile)
+         else:
+            cube.attrs[utils.OutputFormat.s3] = ''
+            cube.attrs[utils.OutputFormat.url] = ''
 
-      # Set compession for encoding
-      compressor = BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')
-      # Set chunking for 2-d variables
-      chunking_settings_2d = (len(cube.y), len(cube.x))
-      logging.info(f'Icemasks using {chunking_settings_2d=}')
+         # Set skipped_granules attribute pointing to JSON file location
+         skipped_json_path = skipped_granules_path(store_path)
+         cube.attrs[SkippedGranules.name] = skipped_json_path
 
-      for mask_name in [shapefile.LANDICE, shapefile.FLOATINGICE]:
-         mask_data, mask_url = shapefile.read_ice_mask(
-            shape_gdp, mask_name, cube.x.values, cube.y.values, args.projection
-         )
-         mask_data = utils.to_int_type(mask_data, np.uint8, utils.Missing.u8value)
-         cube[mask_name] = xr.DataArray(
-            data=mask_data,
-            coords={utils.Coords.Y: cube.y.values, utils.Coords.X: cube.x.values},
-            dims=[utils.Coords.Y, utils.Coords.X],
-            attrs={
-               Vars.attrs.std_name: shapefile.Name[mask_name],
-               Vars.attrs.description: shapefile.Description[mask_name],
-               Mapping.attrs.grid_mapping: Mapping.name,
-               BinaryFlag.attrs.values: BinaryFlag.values,
-               BinaryFlag.attrs.meanings: BinaryFlag.meanings[mask_name],
-               utils.OutputFormat.url: mask_url
+         if is_s3_output:
+            # S3 storage - parse bucket and prefix. Named out_bucket (not
+            # `bucket`) so it doesn't shadow the granule-source bucket that
+            # later batches' load_granules() calls still need.
+            s3_parts = store_path.replace(utils.S3_PREFIX, '').split('/', 1)
+            out_bucket = s3_parts[0]
+            prefix = s3_parts[1] if len(s3_parts) > 1 else ''
+
+            logging.info(f'Writing icechunk repo to S3: bucket={out_bucket}, prefix={prefix}')
+
+            # Configure storage settings for stronger recovery from transient S3 failures
+            storage_settings = ic.StorageSettings(
+               unsafe_use_metadata=True,           # Enable metadata stamping for write-id recovery
+               unsafe_use_conditional_update=True  # Enable conditional PUTs to prevent conflicts
+            )
+
+            config = ic.RepositoryConfig.default()
+            config.storage = storage_settings
+            config.set_virtual_chunk_container(
+               ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
+            )
+
+            # Create S3 storage for repository (authenticated write access)
+            storage = ic.s3_storage(
+               bucket=out_bucket,
+               prefix=prefix,
+               region="us-west-2"
+            )
+
+            repo = ic.Repository.create(
+               storage=storage,
+               config=config,
+               authorize_virtual_chunk_access=ic.containers_credentials(
+                  {url_prefix: ic.s3_credentials(anonymous=True)}
+               ),
+            )
+         else:
+            # Local filesystem storage
+            shutil.rmtree(store_path, ignore_errors=True)
+
+            # Note: Don't enable unsafe_use_metadata for local filesystem - it only
+            # works with S3 storage and will cause "put_opts with opts.attributes
+            # not yet implemented" error on local filesystem.
+            config = ic.RepositoryConfig.default()
+            config.set_virtual_chunk_container(
+               ic.VirtualChunkContainer(
+                  url_prefix,
+                  ic.s3_store(region="us-west-2", anonymous=True)
+               )
+            )
+            repo = ic.Repository.create(
+               storage=ic.local_filesystem_storage(store_path),
+               config=config,
+               authorize_virtual_chunk_access=ic.containers_credentials(
+                  {url_prefix: ic.s3_credentials(anonymous=True)}
+               ),
+            )
+
+         # Add land/floating ice mask data variables, matching itscube.py's
+         # combine_layers() (only added once, at cube creation -- the update
+         # script never touches them again, since they have no 'time' dimension
+         # and their already-committed chunks stay valid across every later
+         # icechunk snapshot).
+         shape_gdp = shapefile.read_file(args.shapeFile)
+
+         # Set compession for encoding
+         compressor = BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')
+         # Set chunking for 2-d variables
+         chunking_settings_2d = (len(cube.y), len(cube.x))
+         logging.info(f'Icemasks using {chunking_settings_2d=}')
+
+         for mask_name in [shapefile.LANDICE, shapefile.FLOATINGICE]:
+            mask_data, mask_url = shapefile.read_ice_mask(
+               shape_gdp, mask_name, cube.x.values, cube.y.values, args.projection
+            )
+            mask_data = utils.to_int_type(mask_data, np.uint8, utils.Missing.u8value)
+            cube[mask_name] = xr.DataArray(
+               data=mask_data,
+               coords={utils.Coords.Y: cube.y.values, utils.Coords.X: cube.x.values},
+               dims=[utils.Coords.Y, utils.Coords.X],
+               attrs={
+                  Vars.attrs.std_name: shapefile.Name[mask_name],
+                  Vars.attrs.description: shapefile.Description[mask_name],
+                  Mapping.attrs.grid_mapping: Mapping.name,
+                  BinaryFlag.attrs.values: BinaryFlag.values,
+                  BinaryFlag.attrs.meanings: BinaryFlag.meanings[mask_name],
+                  utils.OutputFormat.url: mask_url
+               }
+            )
+            cube[mask_name].encoding={
+                  utils.OutputFormat.dtype: shapefile.Type[mask_name],
+                  utils.OutputFormat.compressor: compressor,
+                  utils.Missing.name: utils.Missing.u8value,
+                  # The zarr-level sentinel, separate from any CF attribute,
+                  # have it just in case
+                  utils.Missing.fill_value: utils.Missing.u8value,
+                  utils.OutputFormat.chunks: chunking_settings_2d
             }
-         )
-         cube[mask_name].encoding={
-               utils.OutputFormat.dtype: shapefile.Type[mask_name],
-               utils.OutputFormat.compressor: compressor,
-               utils.Missing.name: utils.Missing.u8value,
-               # The zarr-level sentinel, separate from any CF attribute,
-               # have it just in case
-               utils.Missing.fill_value: utils.Missing.u8value,
-               utils.OutputFormat.chunks: chunking_settings_2d
-         }
 
-      session = repo.writable_session("main")
-      cube_clean = _drop_nonfinite_attrs(cube)
-      cube_clean.vz.to_icechunk(session.store)
-      snapshot_id = session.commit("its_live virtual cube subset: create cube")
-      logging.info(f"icechunk committed snapshot: {snapshot_id=}")
+         session = repo.writable_session("main")
+         cube_clean = _drop_nonfinite_attrs(cube)
+         cube_clean.vz.to_icechunk(session.store)
+         snapshot_id = session.commit(
+            f"its_live virtual cube subset: create cube (batch {batch_num}/{num_batches}, "
+            f"{len(cube.time)} granules)",
+            metadata=commit_metadata
+         )
+         logging.info(f"Batch {batch_num}/{num_batches}: icechunk committed snapshot {snapshot_id=}")
+
+      else:
+         # Subsequent batches with data: append along time to the existing repo.
+         session = repo.writable_session("main")
+         cube_clean = _drop_nonfinite_attrs(cube)
+         cube_clean.vz.to_icechunk(session.store, append_dim="time")
+         snapshot_id = session.commit(
+            f"its_live virtual cube subset: append batch {batch_num}/{num_batches} "
+            f"({len(cube.time)} granules)",
+            metadata=commit_metadata
+         )
+         logging.info(f"Batch {batch_num}/{num_batches}: icechunk committed snapshot {snapshot_id=}")
 
       # Save skipped granules to JSON file with _skippedGranules.json postfix
+      # after every committed batch, so progress survives a mid-run failure
+      # on a later batch.
       save_skipped_granules(store_path, skipped_granules)
+
+   if repo is not None:
+      if len(skipped_granules):
+         logging.info(f'Skipped granules (first 10): \n{"\n".join(skipped_granules[:10])}')
 
       cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
       logging.info(f"{cube_roundtrip=}")
-
-      # logging.info(f'{cube_roundtrip.mission_img1.values=}')
-      # logging.info(f'{cube_roundtrip.mission_img2.values=}')
-      # logging.info(f'{cube_roundtrip.satellite_img1.values=}')
-      # logging.info(f'{cube_roundtrip.satellite_img2.values=}')
-      # logging.info(f'{cube_roundtrip.time.values=}')
 
    else:
       logging.info('No cube was created')
