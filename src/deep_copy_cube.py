@@ -11,7 +11,9 @@ import os
 import shutil
 
 import icechunk as ic
+import s3fs
 import xarray as xr
+import zarr
 from zarr.codecs import BloscCodec
 
 import utils
@@ -31,6 +33,11 @@ from zarr.errors import UnstableSpecificationWarning
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 
 S3_PREFIX = 's3://'
+
+# Values below match ITSCube's current defaults in itscube.py, kept as local
+# constants rather than importing ITSCube: this virtual-cube -> deep-copy
+# pipeline is meant to eventually replace itscube.py's regular datacube
+# generation entirely, so it should not depend on it.
 
 # Granules are written to the file in chunks to avoid out of memory issues.
 # Number of granules to write to the file at a time.
@@ -188,10 +195,13 @@ def resolve_output_store(output_store):
    """Prepare the output location for a fresh zarr v3 store write.
 
    For a local path, remove any pre-existing directory first (mirrors
-   ITSCube.init_output_store). For an s3:// path, return it as-is --
-   xarray/zarr resolve 's3://...' store URLs via fsspec, with authenticated
-   write access expected to come from the ambient AWS credential chain (not
-   anonymous, unlike the *input* virtual chunk container).
+   ITSCube.init_output_store). For an s3:// path, refuse to proceed if
+   something already exists there (mirrors ITSCube.exists()) -- unlike the
+   local case, there's no single directory to just remove, so silently
+   writing over an existing S3 store risks leaving orphaned chunks from a
+   differently-shaped previous store. Authenticated write access is expected
+   to come from the ambient AWS credential chain (not anonymous, unlike the
+   *input* virtual chunk container).
 
    Parameters
    ----------
@@ -203,7 +213,17 @@ def resolve_output_store(output_store):
    str
       The (possibly cleaned-up) output store path.
    """
-   if not output_store.startswith(S3_PREFIX) and os.path.exists(output_store):
+   if output_store.startswith(S3_PREFIX):
+      s3_path = output_store.replace(S3_PREFIX, '', 1)
+      s3 = s3fs.S3FileSystem()
+
+      if s3.exists(s3_path):
+         raise RuntimeError(
+            f"Output store {output_store} already exists in S3; refusing "
+            "to overwrite. Remove it first if this is intentional."
+         )
+
+   elif os.path.exists(output_store):
       logging.info(f"Removing existing {output_store}")
       shutil.rmtree(output_store)
 
@@ -243,6 +263,13 @@ def deep_copy_cube(
    cube = open_virtual_cube(input_store, bucket_prefix)
    total_layers = cube.sizes[utils.Coords.TIME]
    logging.info(f'Opened virtual cube {input_store}: {total_layers} layers')
+
+   if total_layers == 0:
+      # Should never happen in practice -- virtual cubes are guaranteed to
+      # have at least one layer -- but log clearly rather than silently
+      # writing nothing if it ever does.
+      logging.info(f'{input_store} has no layers, nothing to deep-copy')
+      return
 
    time_vars, static_vars = split_vars_by_time(cube)
    encoding = build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d)
@@ -284,6 +311,10 @@ def deep_copy_cube(
 
       logging.info(f'Wrote layers {start}:{stop} of {total_layers} to {output_store}')
 
+   # # Consolidate metadata once, after all batches are written, instead of
+   # # re-consolidating on every batch (matches itscube.py's convention of a
+   # # consolidated output store, without the redundant per-batch cost).
+   # zarr.consolidate_metadata(output_store)
    logging.info(f'Done: deep-copied {total_layers} layers to {output_store}')
 
 
