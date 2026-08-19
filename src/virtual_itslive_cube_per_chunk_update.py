@@ -36,6 +36,7 @@ python virtual_itslive_cube_per_chunk_update.py \
 """
 import argparse
 import logging
+import time
 import xarray as xr
 import icechunk as ic
 from datetime import datetime
@@ -550,6 +551,8 @@ def main():
 
     args = parser.parse_args()
 
+    start_time = time.time()
+
     # load_granules/build_virtual_cube_subset (imported from
     # virtual_itslive_cube_per_chunk) read their pool size from that module's
     # own MAX_AWS_CONNECTIONS global, not from any argument -- set it there so
@@ -842,6 +845,10 @@ def main():
     except Exception as e:
         logging.error(f"Failed: {e}")
         raise
+
+    finally:
+        elapsed_time = time.time() - start_time
+        logging.info(f'Total runtime: {elapsed_time:.1f}s ({elapsed_time/60:.2f} min)')
 
 
 if __name__ == "__main__":
