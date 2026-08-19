@@ -852,6 +852,8 @@ if __name__ == "__main__":
    from joblib.externals.loky import get_reusable_executor
    import time
 
+   start_time = time.time()
+
    parser = argparse.ArgumentParser(
       description="""
       Build a virtual ITS_LIVE datacube from granules, restricted to a bounding box.
@@ -1340,12 +1342,19 @@ if __name__ == "__main__":
       if len(skipped_granules):
          logging.info(f'Skipped granules (first 10): \n{"\n".join(skipped_granules[:10])}')
 
-      cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
+      cube_roundtrip = xr.open_zarr(
+         repo.readonly_session("main").store,
+         consolidated=False,
+         zarr_format=3,
+         mask_and_scale=False
+      )
       logging.info(f"{cube_roundtrip=}")
 
    else:
       logging.info('No cube was created')
 
+   elapsed_time = time.time() - start_time
+   logging.info(f'Total runtime: {elapsed_time:.1f}s ({elapsed_time/60:.2f} min)')
    logging.info('Done')
 
    if sys.platform == 'darwin':
