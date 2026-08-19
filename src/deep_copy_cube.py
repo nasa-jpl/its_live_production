@@ -9,6 +9,7 @@ from datetime import datetime
 import logging
 import os
 import shutil
+import time
 
 import icechunk as ic
 import s3fs
@@ -16,6 +17,7 @@ import xarray as xr
 import zarr
 from zarr.codecs import BloscCodec
 
+import itslive_utils
 import utils
 from itscube_types import CubeFormat
 
@@ -99,8 +101,16 @@ def open_virtual_cube(store_path, bucket_prefix):
       authorize_virtual_chunk_access=credentials,
    )
 
+   # mask_and_scale=False preserves the granules' raw on-disk dtypes (int16
+   # stays int16 rather than being CF-decoded to float32 with NaN fills), so
+   # the deep copy materializes the same dtypes the virtual cube references
+   # instead of doubling storage/memory with a float32 promotion. Matches
+   # virtual_itslive_cube_per_chunk_update.py's reads.
    return xr.open_zarr(
-      repo.readonly_session("main").store, consolidated=False, zarr_format=3
+      repo.readonly_session("main").store,
+      consolidated=False,
+      zarr_format=3,
+      mask_and_scale=False
    )
 
 
@@ -130,9 +140,15 @@ def split_vars_by_time(cube):
 def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
    """Build the zarr v3 encoding dict for the deep-copy store.
 
-   Only sets chunking + compressor per variable: dtype/fill_value are already
-   correct on the virtual cube (see src/wiki dtype-preservation notes), so
-   they're left untouched. Chunking follows itscube.py's scheme:
+   Sets chunking + compressor per variable, plus the fill value under the
+   itscube.py convention (see itscube.py's encoding block, ~lines 2246-2313):
+   integer / unsigned-integer variables use the 'missing_value' attribute,
+   floating point variables use '_FillValue'. (xarray ignores a requested int
+   dtype and assumes float if '_FillValue' is set on an int variable, so ints
+   must use 'missing_value'.) dtypes themselves are already correct on the
+   virtual cube and are left untouched.
+
+   Chunking follows itscube.py's scheme:
    - 3D (time, y, x) variables: (min(total_layers, time_chunk), xy_chunk, xy_chunk)
    - 1D (time,) variables: (min(total_layers, time_chunk_1d),)
    - static 2D (y, x) variables (landice/floatingice): full extent
@@ -142,7 +158,12 @@ def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
    Parameters
    ----------
    cube : xr.Dataset
-      The virtual datacube (used only for each variable's dims/sizes).
+      The virtual datacube. Opened with mask_and_scale=False, so each
+      variable's granule-inherited fill value sits in its attrs (as
+      '_FillValue'); this function reads it from there and re-keys it into the
+      write encoding. _strip_fill_attrs() then clears it from attrs so the fill
+      lives only in the encoding dict (a fill present in both attrs and
+      encoding collides in to_zarr's CF encoder).
    total_layers : int
       Total number of layers along 'time', to cap chunk sizes the same way
       itscube.py does (min(max_number_of_layers, TIME_CHUNK_VALUE)).
@@ -168,7 +189,8 @@ def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
          }
 
    for var_name in cube.data_vars:
-      dims = cube[var_name].dims
+      var = cube[var_name]
+      dims = var.dims
 
       if len(dims) == 0:
          # Scalar variable (e.g. 'mapping'): no chunk encoding needed.
@@ -183,12 +205,47 @@ def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
          # Static 2D (y, x) variable: full extent, matching itscube.py.
          chunks = tuple(cube.sizes[d] for d in dims)
 
-      encoding[var_name] = {
+      var_encoding = {
          'chunks': chunks,
          'compressors': [COMPRESSOR],
       }
 
+      # Re-key the granule-inherited fill (in attrs due to mask_and_scale=False)
+      # into the write encoding: 'missing_value' for int/uint, '_FillValue' for
+      # float. datetime ('M') / string ('U') variables carry no numeric fill.
+      fill = var.attrs.get(
+         utils.OutputFormat.fill_value, var.attrs.get(utils.Missing.name)
+      )
+      if fill is not None:
+         if var.dtype.kind in ('i', 'u'):
+            var_encoding[utils.Missing.name] = var.dtype.type(fill)
+         elif var.dtype.kind == 'f':
+            var_encoding[utils.OutputFormat.fill_value] = var.dtype.type(fill)
+
+      encoding[var_name] = var_encoding
+
    return encoding
+
+
+def _strip_fill_attrs(ds):
+   """Remove fill-value attributes from every variable of a batch in place.
+
+   Opening the virtual cube with mask_and_scale=False (to preserve int dtypes)
+   leaves the granule-inherited fill in each variable's attrs, while the zarr
+   backend also carries a fill in encoding; to_zarr's CF encoder then refuses
+   to reconcile the two ("Key '_FillValue' already exists in attrs..."). Once
+   build_encoding() has captured the fill into the write encoding, this makes
+   that encoding the single source of truth by clearing the attrs copy. Also
+   clears coordinate fills (x/y/time inherit a spurious '_FillValue' too).
+
+   Parameters
+   ----------
+   ds : xr.Dataset
+      A batch about to be written; mutated in place.
+   """
+   for var in ds.variables:
+      ds[var].attrs.pop(utils.OutputFormat.fill_value, None)
+      ds[var].attrs.pop(utils.Missing.name, None)
 
 
 def resolve_output_store(output_store):
@@ -230,6 +287,44 @@ def resolve_output_store(output_store):
    return output_store
 
 
+def upload_local_staging_dir(local_staging_dir, output_store, keep_local_staging):
+   """Upload a local zarr store to its final S3 destination in one shot, then
+   remove the local copy.
+
+   Uses the AWS CLI (via itslive_utils.s3_copy_using_subprocess), matching
+   the "write locally, then upload" convention already used elsewhere in this
+   codebase (e.g. tools/fix_datacubes_v2_restore_m11_m12_add_new_vars.py) --
+   a single recursive `aws s3 cp` uploads each chunk file exactly once,
+   instead of the interleaved per-batch S3 writes (and repeated partial
+   rewrites of the same small chunks) that direct-to-S3 writing incurs.
+
+   Parameters
+   ----------
+   local_staging_dir : str
+      Local directory the deep-copy store was written to.
+   output_store : str
+      Final s3:// destination for the deep-copy store.
+   keep_local_staging : bool
+      If False (default), remove `local_staging_dir` after a successful
+      upload.
+   """
+   logging.info(f'Uploading local staging directory {local_staging_dir} to {output_store}')
+
+   command_line = [
+      "aws", "s3", "cp", "--recursive",
+      local_staging_dir,
+      output_store,
+      "--acl", "bucket-owner-full-control"
+   ]
+   itslive_utils.s3_copy_using_subprocess(command_line, os.environ.copy())
+
+   if keep_local_staging:
+      logging.info(f'Keeping local staging directory {local_staging_dir}')
+   else:
+      logging.info(f'Removing local staging directory {local_staging_dir}')
+      shutil.rmtree(local_staging_dir)
+
+
 def deep_copy_cube(
    input_store,
    output_store,
@@ -237,7 +332,9 @@ def deep_copy_cube(
    batch_size,
    time_chunk,
    xy_chunk,
-   time_chunk_1d
+   time_chunk_1d,
+   local_staging_dir=None,
+   keep_local_staging=False
 ):
    """Materialize a virtual datacube into a real zarr v3 datacube, batched
    along 'time' to bound memory use.
@@ -259,7 +356,23 @@ def deep_copy_cube(
       Chunk size along 'x'/'y' for 3D variables.
    time_chunk_1d : int
       Chunk size for 1D ('time',) variables.
+   local_staging_dir : str, optional
+      If set, `output_store` must be an s3:// path. All batches are written
+      to this local directory first, and the whole store is uploaded to
+      `output_store` with a single `aws s3 cp --recursive` after the last
+      batch, instead of writing every batch directly to S3. Local writes
+      avoid per-request network latency and the repeated partial rewrites
+      of small zarr chunks that direct-to-S3 batched writes incur.
+   keep_local_staging : bool
+      If True, keep `local_staging_dir` after a successful upload instead of
+      removing it. Ignored if `local_staging_dir` is not set.
    """
+   if local_staging_dir and not output_store.startswith(S3_PREFIX):
+      raise ValueError(
+         "--local-staging-dir only applies when --output-store is an s3:// "
+         f"path, got {output_store}"
+      )
+
    cube = open_virtual_cube(input_store, bucket_prefix)
    total_layers = cube.sizes[utils.Coords.TIME]
    logging.info(f'Opened virtual cube {input_store}: {total_layers} layers')
@@ -276,7 +389,16 @@ def deep_copy_cube(
 
    cube.attrs[CubeFormat.date_updated] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
 
-   output_store = resolve_output_store(output_store)
+   # Fail fast if the final S3 destination already exists, even when staging
+   # locally first -- otherwise that check would only happen after every
+   # batch has already been materialized and written locally.
+   resolve_output_store(output_store)
+
+   # Batches are written to write_target; local_staging_dir (when set) is
+   # cleaned up here the same way resolve_output_store cleans up a local
+   # output_store, so a pre-existing staging directory from a failed prior
+   # run doesn't get silently merged into.
+   write_target = resolve_output_store(local_staging_dir) if local_staging_dir else output_store
 
    for batch_num, start in enumerate(range(0, total_layers, batch_size)):
       stop = min(start + batch_size, total_layers)
@@ -293,9 +415,14 @@ def deep_copy_cube(
 
       batch = batch.load()
 
+      # Clear fill attrs so the fill lives only in the write encoding (see
+      # _strip_fill_attrs); required on every batch, including appends, since
+      # the CF-encoder collision would otherwise fire on each write.
+      _strip_fill_attrs(batch)
+
       if batch_num == 0:
          batch.to_zarr(
-            output_store,
+            write_target,
             mode='w',
             encoding=encoding,
             zarr_format=3,
@@ -303,18 +430,22 @@ def deep_copy_cube(
          )
       else:
          batch.to_zarr(
-            output_store,
+            write_target,
             append_dim=utils.Coords.TIME,
             zarr_format=3,
             consolidated=True
          )
 
-      logging.info(f'Wrote layers {start}:{stop} of {total_layers} to {output_store}')
+      logging.info(f'Wrote layers {start}:{stop} of {total_layers} to {write_target}')
 
    # # Consolidate metadata once, after all batches are written, instead of
    # # re-consolidating on every batch (matches itscube.py's convention of a
    # # consolidated output store, without the redundant per-batch cost).
-   # zarr.consolidate_metadata(output_store)
+   # zarr.consolidate_metadata(write_target)
+
+   if local_staging_dir:
+      upload_local_staging_dir(local_staging_dir, output_store, keep_local_staging)
+
    logging.info(f'Done: deep-copied {total_layers} layers to {output_store}')
 
 
@@ -331,6 +462,13 @@ if __name__ == '__main__':
       python src/deep_copy_cube.py \
          --input-store my_virtual_cube.icechunk \
          --output-store my_deep_copy_cube.zarr
+
+      # Stage locally, then upload the whole store to S3 in one shot
+      # (much faster than writing directly to S3 batch-by-batch):
+      python src/deep_copy_cube.py \
+         --input-store my_virtual_cube.icechunk \
+         --output-store s3://its-live-data/path/to/my_deep_copy_cube.zarr \
+         --local-staging-dir /local/scratch/my_deep_copy_cube.zarr
       """,
       formatter_class=argparse.RawDescriptionHelpFormatter
    )
@@ -377,8 +515,29 @@ if __name__ == '__main__':
       default=TIME_CHUNK_VALUE_1D,
       help='Chunk size for 1D (time,) variables [%(default)d].'
    )
+   parser.add_argument(
+      '--local-staging-dir',
+      type=str,
+      default=None,
+      help='If set, --output-store must be an s3:// path. Write the '
+         'deep-copy store to this local directory first, then upload the '
+         'whole store to --output-store with a single "aws s3 cp '
+         '--recursive" at the end, instead of writing every batch directly '
+         'to S3. Much faster for S3 output, since it avoids per-request '
+         'network latency and repeated partial rewrites of small zarr '
+         'chunks. Requires enough local disk to hold the full deep-copy '
+         'store.'
+   )
+   parser.add_argument(
+      '--keep-local-staging',
+      action='store_true',
+      help='Keep --local-staging-dir after a successful upload instead of '
+         'deleting it [%(default)s].'
+   )
 
    args = parser.parse_args()
+
+   start_time = time.time()
 
    deep_copy_cube(
       args.input_store,
@@ -387,7 +546,11 @@ if __name__ == '__main__':
       args.batch_size,
       args.time_chunk_value,
       args.xy_chunk_value,
-      args.time_chunk_value_1d
+      args.time_chunk_value_1d,
+      args.local_staging_dir,
+      args.keep_local_staging
    )
 
+   elapsed_time = time.time() - start_time
+   logging.info(f'Total runtime: {elapsed_time:.1f}s ({elapsed_time/60:.2f} min)')
    logging.info('Done')
