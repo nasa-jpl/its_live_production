@@ -1122,5 +1122,7 @@ if __name__ == "__main__":
    logging.info("committed snapshot", snapshot_id)
 
    # reopen from the committed store
+   # zarr_format=3, not 2: icechunk repos are natively Zarr V3 metadata;
+   # forcing zarr_format=2 raises GroupNotFoundError.
    cube_roundtrip = xr.open_zarr(repo.readonly_session("main").store, consolidated=False, zarr_format=3)
    logging.info(f'{cube_roundtrip=}')
