@@ -132,6 +132,9 @@ def open_virtual_cube(cube_store_path):
     # mask_and_scale=False preserves raw on-disk dtypes (int16 stays int16
     # rather than being CF-decoded to float32 with NaN fills), reflecting the
     # true virtual representation of the cube.
+    # zarr_format=3, not 2: icechunk repos are natively Zarr V3 metadata;
+    # forcing zarr_format=2 raises GroupNotFoundError (no .zgroup/.zarray
+    # markers exist in an icechunk store).
     cube = xr.open_zarr(
         repo.readonly_session("main").store,
         consolidated=False,
@@ -440,6 +443,9 @@ def open_repo_for_update(cube_store):
     # is built from raw int16 ManifestArrays, so the existing cube must be read
     # raw too for the append dtypes to match (and to reflect the true virtual
     # representation).
+    # zarr_format=3, not 2: icechunk repos are natively Zarr V3 metadata;
+    # forcing zarr_format=2 raises GroupNotFoundError (no .zgroup/.zarray
+    # markers exist in an icechunk store).
     cube = xr.open_zarr(
         repo.readonly_session("main").store,
         consolidated=False,
@@ -800,6 +806,8 @@ def main():
             save_skipped_granules(args.cube_store, all_skipped_https)
 
             # Verify and report (raw dtypes, matching how the cube was read for append)
+            # zarr_format=3, not 2: icechunk repos are natively Zarr V3
+            # metadata; forcing zarr_format=2 raises GroupNotFoundError.
             updated_cube = xr.open_zarr(
                 repo.readonly_session("main").store,
                 consolidated=False,
