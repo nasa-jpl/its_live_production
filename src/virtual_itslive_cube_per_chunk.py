@@ -1342,6 +1342,9 @@ if __name__ == "__main__":
       if len(skipped_granules):
          logging.info(f'Skipped granules (first 10): \n{"\n".join(skipped_granules[:10])}')
 
+      # zarr_format=3: icechunk repos are natively Zarr V3 metadata; forcing
+      # zarr_format=2 here raises GroupNotFoundError (no .zgroup/.zarray
+      # markers exist in an icechunk store).
       cube_roundtrip = xr.open_zarr(
          repo.readonly_session("main").store,
          consolidated=False,
