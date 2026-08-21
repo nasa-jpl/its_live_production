@@ -218,6 +218,22 @@ def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
             utils.OutputFormat.fill_value: None,
          }
 
+   # The 'time' coordinate needs an explicit chunk size too: left unset (as
+   # it was before), it falls back to zarr's auto-chunker for a dimension
+   # that's appended across batches, which came out as chunks=(1,) -- one
+   # chunk PER LAYER. xr.open_zarr() eagerly loads dimension coordinates
+   # (time/x/y) to build their pandas index on open, so chunks=(1,) meant
+   # one S3 GET per layer just to open the cube (measured: ~35,000 GETs,
+   # ~167s of open time on a real cube) -- independent of consolidated
+   # metadata, which only covers metadata reads, never chunk data. A single
+   # chunk covering the full time extent, matching how x/y are handled
+   # above, fixes this.
+   if utils.Coords.TIME in cube.coords:
+      encoding[utils.Coords.TIME] = {
+         'chunks': (total_layers,),
+         utils.OutputFormat.compressor: COMPRESSOR,
+      }
+
    for var_name in cube.data_vars:
       var = cube[var_name]
       dims = var.dims
