@@ -1,9 +1,9 @@
 """
 Materialize a virtual ITS_LIVE datacube (icechunk repo, built by
-virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube whose data
-variables are physically copied out of the referenced granules, chunked the
-same way itscube.py chunks a regular datacube (TIME_CHUNK_VALUE,
-X_Y_CHUNK_VALUE, TIME_CHUNK_VALUE_1D).
+virtual_itslive_cube_per_chunk.py) into a real Zarr datacube (v2 or v3, see
+--zarr-format) whose data variables are physically copied out of the
+referenced granules, chunked the same way itscube.py chunks a regular
+datacube (TIME_CHUNK_VALUE, X_Y_CHUNK_VALUE, TIME_CHUNK_VALUE_1D).
 """
 from datetime import datetime
 import logging
@@ -17,6 +17,7 @@ import numpy as np
 import s3fs
 import xarray as xr
 import zarr
+from zarr.codecs import BloscCodec
 
 import itslive_utils
 import utils
@@ -59,6 +60,13 @@ TIME_CHUNK_VALUE_1D = 200000
 # -- it's the zarr-v2-compatible equivalent and requires the singular
 # 'compressor' encoding key (not v3's 'compressors' list).
 COMPRESSOR = numcodecs.Blosc(cname="lz4", clevel=1, shuffle=numcodecs.Blosc.BITSHUFFLE)
+
+# Same compression settings as COMPRESSOR, but as a zarr-v3-native codec: v3
+# arrays require the plural 'compressors' encoding key (a list of codecs)
+# rather than v2's singular 'compressor' key, and don't accept numcodecs
+# codec objects directly.
+COMPRESSOR_V3 = BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')
+COMPRESSORS_KEY_V3 = 'compressors'
 
 # Variables whose virtual-cube attrs carry no _FillValue/missing_value at all
 # -- utils.get_data_var_binary_attr() (the helper that synthesizes these two
@@ -161,8 +169,8 @@ def split_vars_by_time(cube):
    return time_vars, static_vars
 
 
-def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
-   """Build the zarr v3 encoding dict for the deep-copy store.
+def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d, zarr_format):
+   """Build the zarr v2 or v3 encoding dict for the deep-copy store.
 
    Sets chunking + compressor per variable, plus the fill value under the
    itscube.py convention (see itscube.py's encoding block, ~lines 2246-2313):
@@ -170,7 +178,12 @@ def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
    floating point variables use '_FillValue'. (xarray ignores a requested int
    dtype and assumes float if '_FillValue' is set on an int variable, so ints
    must use 'missing_value'.) dtypes themselves are already correct on the
-   virtual cube and are left untouched.
+   virtual cube and are left untouched. This fill convention is unchanged
+   between zarr v2 and v3 -- verified (Aug 2026) that a float's '_FillValue'
+   masks correctly on read under both formats' default
+   use_zarr_fill_value_as_mask behavior, even though v3 stores it as a
+   base64-encoded attribute in zarr.json rather than the array-level
+   fill_value (a cosmetic xarray-serialization artifact, not a masking bug).
 
    Chunking follows itscube.py's scheme:
    - 3D (time, y, x) variables: (min(total_layers, time_chunk), xy_chunk, xy_chunk)
@@ -197,6 +210,10 @@ def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
       Chunk size along 'x'/'y' for 3D variables.
    time_chunk_1d : int
       Chunk size for 1D ('time',) variables.
+   zarr_format : int
+      2 or 3. Selects the compressor object and its encoding key: v2 needs
+      numcodecs.Blosc under the singular 'compressor' key, v3 needs
+      zarr.codecs.BloscCodec under the plural 'compressors' (list) key.
 
    Returns
    -------
@@ -205,16 +222,24 @@ def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
    """
    encoding = {}
 
+   if zarr_format == 3:
+      compressor_key = COMPRESSORS_KEY_V3
+      compressor_value = [COMPRESSOR_V3]
+   else:
+      compressor_key = utils.OutputFormat.compressor
+      compressor_value = COMPRESSOR
+
    for coord_name in (utils.Coords.X, utils.Coords.Y):
       if coord_name in cube.coords:
          encoding[coord_name] = {
             'chunks': (cube.sizes[coord_name],),
-            utils.OutputFormat.compressor: COMPRESSOR,
+            compressor_key: compressor_value,
             # Suppress xarray's default _FillValue=NaN on these float
             # coordinates (they have no missing values). itscube.py avoids
             # this combination due to an old xarray bug where _FillValue=None
             # alongside 'chunks' encoding broke the write; verified fixed in
             # the xarray/zarr versions this pipeline uses (August 2026).
+            # Verified clean (no stray attrs) under zarr v3 too.
             utils.OutputFormat.fill_value: None,
          }
 
@@ -231,7 +256,7 @@ def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
    if utils.Coords.TIME in cube.coords:
       encoding[utils.Coords.TIME] = {
          'chunks': (total_layers,),
-         utils.OutputFormat.compressor: COMPRESSOR,
+         compressor_key: compressor_value,
       }
 
    for var_name in cube.data_vars:
@@ -253,7 +278,7 @@ def build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d):
 
       var_encoding = {
          'chunks': chunks,
-         utils.OutputFormat.compressor: COMPRESSOR,
+         compressor_key: compressor_value,
       }
 
       # Re-key the granule-inherited fill (in attrs due to mask_and_scale=False)
@@ -406,18 +431,19 @@ def deep_copy_cube(
    time_chunk,
    xy_chunk,
    time_chunk_1d,
+   zarr_format=2,
    local_staging_dir=None,
    keep_local_staging=False
 ):
-   """Materialize a virtual datacube into a real zarr v3 datacube, batched
-   along 'time' to bound memory use.
+   """Materialize a virtual datacube into a real zarr datacube (v2 or v3),
+   batched along 'time' to bound memory use.
 
    Parameters
    ----------
    input_store : str
       Path to the virtual cube's icechunk repository (s3:// or local).
    output_store : str
-      Path to write the deep-copy zarr v3 store to (s3:// or local).
+      Path to write the deep-copy zarr store to (s3:// or local).
    bucket_prefix : str
       S3 URL prefix the virtual chunk container resolves granule references
       against (see open_virtual_cube).
@@ -429,6 +455,8 @@ def deep_copy_cube(
       Chunk size along 'x'/'y' for 3D variables.
    time_chunk_1d : int
       Chunk size for 1D ('time',) variables.
+   zarr_format : int
+      2 or 3. Zarr format version for the output store (see build_encoding).
    local_staging_dir : str, optional
       If set, `output_store` must be an s3:// path. All batches are written
       to this local directory first, and the whole store is uploaded to
@@ -458,7 +486,7 @@ def deep_copy_cube(
       return
 
    time_vars, static_vars = split_vars_by_time(cube)
-   encoding = build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d)
+   encoding = build_encoding(cube, total_layers, time_chunk, xy_chunk, time_chunk_1d, zarr_format)
 
    cube.attrs[CubeFormat.date_updated] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
 
@@ -498,14 +526,14 @@ def deep_copy_cube(
             write_target,
             mode='w',
             encoding=encoding,
-            zarr_format=2,
+            zarr_format=zarr_format,
             consolidated=True
          )
       else:
          batch.to_zarr(
             write_target,
             append_dim=utils.Coords.TIME,
-            zarr_format=2,
+            zarr_format=zarr_format,
             consolidated=True
          )
 
@@ -528,13 +556,20 @@ if __name__ == '__main__':
    parser = argparse.ArgumentParser(
       description="""
       Materialize a virtual ITS_LIVE datacube (icechunk repo built by
-      virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube, chunked
-      the same way itscube.py chunks a regular datacube.
+      virtual_itslive_cube_per_chunk.py) into a real Zarr datacube (v2 or v3,
+      see --zarr-format), chunked the same way itscube.py chunks a regular
+      datacube.
 
       Usage example:
       python src/deep_copy_cube.py \
          --input-store my_virtual_cube.icechunk \
          --output-store my_deep_copy_cube.zarr
+
+      # Write a Zarr v3 store instead of the default v2:
+      python src/deep_copy_cube.py \
+         --input-store my_virtual_cube.icechunk \
+         --output-store my_deep_copy_cube.zarr \
+         --zarr-format 3
 
       # Stage locally, then upload the whole store to S3 in one shot
       # (much faster than writing directly to S3 batch-by-batch):
@@ -589,6 +624,13 @@ if __name__ == '__main__':
       help='Chunk size for 1D (time,) variables [%(default)d].'
    )
    parser.add_argument(
+      '--zarr-format',
+      type=int,
+      choices=[2, 3],
+      default=2,
+      help='Zarr format version for the output store: 2 or 3 [%(default)d].'
+   )
+   parser.add_argument(
       '--local-staging-dir',
       type=str,
       default=None,
@@ -620,6 +662,7 @@ if __name__ == '__main__':
       args.time_chunk_value,
       args.xy_chunk_value,
       args.time_chunk_value_1d,
+      args.zarr_format,
       args.local_staging_dir,
       args.keep_local_staging
    )
