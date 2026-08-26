@@ -1,5 +1,6 @@
 """
-Open, inspect, and update an existing virtual ITS_LIVE datacube stored in icechunk repository.
+Open, inspect, and update an existing virtual ITS_LIVE datacube stored in
+icechunk repository.
 
 This script can:
 1. Inspect an existing virtual datacube (read-only mode)

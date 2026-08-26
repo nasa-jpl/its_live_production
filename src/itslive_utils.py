@@ -36,6 +36,25 @@ _AWS_COPY_SLEEP_SECONDS = 60
 CUBE_META = ['.zattrs', '.zgroup', '.zmetadata']
 VAR_META = ['.zarray', '.zattrs']
 
+# v2 equivalents above don't apply to Zarr v3: v3 uses a single 'zarr.json'
+# per group/array (no separate .zarray/.zattrs/.zgroup), and consolidated
+# metadata is embedded inside the root group's zarr.json rather than a
+# separate .zmetadata file (verified against zarr-python 3.3.0, Aug 2026).
+# ROOT_META_V3/VAR_META_V3 are backed up for every variable regardless
+# (rather than relying solely on the root's embedded consolidated copy) to
+# match CUBE_META/VAR_META's conservative "back up both root- and
+# variable-level metadata" convention -- these are tiny files, so the extra
+# safety margin is effectively free.
+ROOT_META_V3 = ['zarr.json']
+VAR_META_V3 = ['zarr.json']
+
+# v3's default chunk/shard key-encoding convention: a 'c' path segment
+# followed by '/'-separated indices (e.g. shard/chunk index (0, 3, 5) ->
+# 'c/0/3/5'), unlike v2's dot-joined 'i.j.k' keys. Verified against
+# zarr-python 3.3.0 (Aug 2026); confirm this hasn't changed if upgrading.
+SHARD_KEY_PREFIX_V3 = 'c'
+SHARD_KEY_SEPARATOR_V3 = '/'
+
 # Extension for the file that contains chunk information
 # for each data variable in the datacube
 # (ranges for each dimension and last chunk ranges)
@@ -44,6 +63,11 @@ VAR_META = ['.zarray', '.zattrs']
 # The file is created in the same directory as the datacube
 # and is named <datacube_name>.chunks.json.
 CHUNKS_FILE_EXTENSION = '.chunks.json'
+
+# v3/shard analogue of CHUNKS_FILE_EXTENSION, used by
+# backup_datacube_latest_shards()/identify_datacube_latest_shards() so a v3
+# shard backup's sidecar file never collides with a v2 chunk backup's.
+SHARDS_FILE_EXTENSION = '.shards.json'
 
 
 def timing_decorator(func):
@@ -364,6 +388,209 @@ def backup_datacube_latest_chunks(
         )
 
     return last_chunk_map
+
+
+def shard_key_v3(
+    shard_indices,
+    prefix: str = SHARD_KEY_PREFIX_V3,
+    sep: str = SHARD_KEY_SEPARATOR_V3
+) -> str:
+    """Build a Zarr v3 shard/chunk store key from an index tuple, e.g.
+    (0, 3, 5) -> 'c/0/3/5' (see SHARD_KEY_PREFIX_V3/SHARD_KEY_SEPARATOR_V3).
+
+    Args:
+        shard_indices: Tuple/list of per-dimension shard (or, for a
+            non-sharded v3 array, chunk) indices.
+
+    Returns:
+        str: The store key for that shard, relative to the variable's
+            sub-directory (matching the relative keys
+            identify_datacube_latest_chunks/backup_datacube_latest_chunks
+            build for v2 via ".".join(...)).
+    """
+    return sep.join([prefix] + [str(each) for each in shard_indices])
+
+
+@timing_decorator
+def identify_datacube_latest_shards(bucket_url: str):
+    """
+    Zarr v3/shard analogue of identify_datacube_latest_chunks(): identify
+    metadata files and latest shards (or, for a non-sharded v3 array,
+    chunks) for each of the data variables for the given datacube s3 URL.
+
+    Uses each array's `.shards` attribute (the outer/shard grid shape) when
+    sharding is enabled, falling back to `.chunks` (the plain chunk grid
+    shape) for arrays that aren't sharded -- zarr-python reports `.shards`
+    as None in that case (verified against zarr-python 3.3.0, Aug 2026).
+    The last-dimension-only-for-mid_date, all-other-dimensions logic is
+    otherwise identical to identify_datacube_latest_chunks().
+
+    Args:
+        bucket_url (str): Name of the S3 bucket and full path to the
+            datacube in Zarr v3 format. Must start with 's3://'.
+
+    Returns:
+        Map of data variable to the ranges for existing shards (or chunks,
+        if unsharded), and the last shard ranges for each data variable.
+    """
+    store = zarr.open_consolidated(
+        store=bucket_url,
+        mode='r'
+    )
+
+    # Identify last shard (or chunk, if unsharded) for each data variable
+    last_shard_map = {}
+
+    for var_name in store:
+        var_obj = store[var_name]
+        shard_shape = getattr(var_obj, 'shards', None) or var_obj.chunks
+
+        shape = np.array(var_obj.shape)
+        shard_shape = np.array(shard_shape)
+
+        # Compute total number of shards along each axis: zero-based indexing
+        num_shards = (shape + shard_shape - 1) // shard_shape - 1
+        logging.info(f'{var_name=} got {num_shards=}')
+
+        if len(num_shards) == 0:
+            # For variables with no chunking, just set last shard to '0'
+            # as it exists
+            last_shard_map[var_name] = ZarrChunk([range(0, 1)], [range(0, 1)])
+            logging.info(
+                f'No chunking for {var_name=}, setting last shard to {last_shard_map[var_name]}'
+            )
+
+        else:
+            # Generate all prior indices per dimension
+            dim_ranges = [range(0, idx + 1) for idx in num_shards]
+
+            logging.info(f'{var_name=} {dim_ranges=}')
+
+            # Keep only last shard for the mid_date/time dimension
+            last_mid_date = num_shards[0]
+            last_shards = [range(last_mid_date, last_mid_date + 1)]
+
+            # There are only 1D, 2D or 3D variables, nothing to do for 1D variables
+            if len(num_shards) == 2:
+                # For 2D data variables, have to download all shards since
+                # it corresponds to the whole x/y spatial coverage
+                last_shards = dim_ranges
+
+            elif len(num_shards) == 3:
+                # For 3D data variables, have to download all shards that
+                # correspond to the last shard in the first dimension
+                # (mid_date/time for datacubes)
+                last_shards.extend(
+                    [
+                        dim_ranges[1],
+                        dim_ranges[2]
+                    ]
+                )
+
+            logging.info(f'{var_name=}: {dim_ranges=} {last_shards=}')
+
+            last_shard_map[var_name] = ZarrChunk(
+                dim_ranges,
+                last_shards
+            )
+
+    return last_shard_map
+
+
+@timing_decorator
+def backup_datacube_latest_shards(
+    bucket_url: str,
+    backup_url: str,
+    num_threads: int = 32
+):
+    """
+    Zarr v3/shard analogue of backup_datacube_latest_chunks(): create a
+    backup of metadata files and latest shards (or chunks, if unsharded) for
+    each of the data variables from the given datacube s3 URL.
+
+    Kept fully separate from backup_datacube_latest_chunks()/
+    identify_datacube_latest_chunks() (used only by itscube.py's v2-only
+    update path, which this does not affect) since v3 uses different
+    metadata filenames (ROOT_META_V3/VAR_META_V3 vs. CUBE_META/VAR_META) and
+    a different chunk/shard key encoding (shard_key_v3() vs. v2's dot-joined
+    keys).
+
+    Args:
+        bucket_url (str): s3 bucket path for the v3 datacube to backup.
+        backup_url (str): s3 bucket path for the datacube to backup latest
+            Zarr shards to.
+        num_threads (int): Number of threads to use for parallel processing.
+            Default is 32.
+
+    Returns:
+        Map of data variable to the ranges for existing shards, and the last
+        shard ranges for each data variable.
+    """
+    logging.info(f'Backing up {bucket_url} to {backup_url}...')
+
+    # Identify last shard for each data variable in the cube
+    last_shard_map = identify_datacube_latest_shards(bucket_url)
+
+    # Isolate bucket name and file path from the given S3 URLs
+    bucket_name, source_url = bucket_cube_name_from_url(bucket_url)
+    _, target_url = bucket_cube_name_from_url(backup_url)
+
+    # Save identified shards to the local file
+    local_filename = os.path.basename(source_url) + SHARDS_FILE_EXTENSION
+    logging.info(f'Saving identified shards to {local_filename}')
+    with open(local_filename, 'w') as fhandle:
+        json.dump(
+            to_serializable(last_shard_map),
+            fhandle,
+            indent=3
+        )
+
+    s3 = boto3.resource('s3', config=Config(max_pool_connections=num_threads))
+    s3_bucket = s3.Bucket(bucket_name)
+
+    # Upload shard information file to the backup path
+    logging.info(f'Backup {local_filename} to {target_url + SHARDS_FILE_EXTENSION}')
+    s3_bucket.upload_file(local_filename, target_url + SHARDS_FILE_EXTENSION)
+
+    # Backup root-level metadata files
+    for each_meta in ROOT_META_V3:
+        logging.info(
+            f'Backup cube {each_meta} to {target_url}'
+        )
+        backup_chunk(s3_bucket, source_url, each_meta, target_url)
+
+    # Build flat list of all (var, shard-key) copy tasks across all
+    # variables, and corresponding variable metadata files to copy.
+    all_tasks = [
+        (each_var, shard_key_v3(each_shard))
+        for each_var, each_shard_info in last_shard_map.items()
+        for each_shard in itertools.product(*each_shard_info.last_dim_ranges)
+    ] + [
+        (each_var, each_meta)
+        for each_var in last_shard_map
+        for each_meta in VAR_META_V3
+    ]
+
+    logging.info(
+        f"Backing up {len(all_tasks)} shards across {len(last_shard_map)} "
+        "variables..."
+    )
+
+    with parallel_config(backend='threading', n_jobs=num_threads):
+        Parallel()(
+            delayed(backup_chunk)(
+                s3_bucket,
+                os.path.join(source_url, each_var),
+                each_shard_key,
+                os.path.join(target_url, each_var),
+            )
+            for each_var, each_shard_key in tqdm(all_tasks,
+                                                    desc='Backing up shards',
+                                                    total=len(all_tasks)
+                                                )
+        )
+
+    return last_shard_map
 
 
 @timing_decorator
