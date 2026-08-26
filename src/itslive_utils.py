@@ -22,8 +22,11 @@ import zarr
 # Local imports
 from grid import Bounds
 
+# STAC catalog related
 import itslive
 from itslive.search import EQ, GTE
+import earthcatalog as ec
+from obstore.store import S3Store
 
 # Number of 'aws s3 cp' retries in case of a failure
 _NUM_AWS_COPY_RETRIES = 5
@@ -591,6 +594,60 @@ def backup_datacube_latest_shards(
         )
 
     return last_shard_map
+
+
+@timing_decorator
+def earthcatalog_search(
+    epsg_code: str,
+    start_date: str,
+    end_date: str,
+    polygon: dict,
+    percent_valid_pixels: float = 1.0,
+    s3_bucket: str='its-live-data',
+    stac_catalog: str='s3://its-live-data/test-space/stac/catalog'
+):
+    """Get list of granules using earthcatalog Python package.
+
+    Args:
+        epsg_code (str): EPSG code of the target projection to filter
+            granules by (e.g. '32717').
+        start_date (str): Start date of the search range (e.g.
+            '1982-01-01').
+        end_date (str): End date of the search range (e.g.
+            '2026-03-04').
+        polygon (dict): GeoJSON polygon defining the region of interest
+            to intersect granules with.
+        percent_valid_pixels (float): Minimum percentage of valid pixels
+            required for a granule to be included. Defaults to 1.0.
+        s3_bucket (str): S3 bucket to search for the STAC catalog.
+            Defaults to 'its-live-data'.
+        stac_catalog (str): S3 URL of the STAC catalog to search.
+            Defaults to 's3://its-live-data/test-space/stac/catalog'.
+
+    Returns:
+        list(str): Found list of granule URLs.
+    """
+    store = S3Store(
+        bucket=s3_bucket, region="us-west-2", skip_signature=True
+    )
+    cat = ec.open(store=store, base=stac_catalog)
+
+    cql_filter = {"op": "and", "args": [
+        {"op": ">=", "args": [{"property": "percent_valid_pixels"}, percent_valid_pixels]},
+        {"op": "=",  "args": [{"property": "proj:code"}, f"EPSG:{epsg_code}"]},
+    ]}
+
+    search = cat.search(
+        intersects=polygon,
+        datetime=f"{start_date}/{end_date}",
+        filter=cql_filter,
+    )
+
+    granule_urls = [
+        asset.href for item in search.items() for asset in item.assets.values()
+    ]
+
+    return granule_urls
 
 
 @timing_decorator
