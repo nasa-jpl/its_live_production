@@ -78,7 +78,7 @@ TIME_CHUNK_VALUE_1D = 200000
 # most basic no-args call raise ValueError. Pass this value explicitly via
 # --xy-shard-multiplier together with --zarr-format 3 to enable sharding.
 #
-# A shard's extent along 'time' is always exactly one inner chunk's time
+# A shard's extent along 'time' is always exactly one inner chunk's times
 # extent -- see build_encoding() -- so this constant only ever affects
 # spatial shard size, never how many time-chunks get grouped together
 # (grouping across time would force a shard rewrite that touches historical,
@@ -91,7 +91,9 @@ XY_SHARD_MULTIPLIER = 4
 # 3.x (this pipeline's zarr version), so numcodecs.Blosc is used here instead
 # -- it's the zarr-v2-compatible equivalent and requires the singular
 # 'compressor' encoding key (not v3's 'compressors' list).
-COMPRESSOR = numcodecs.Blosc(cname="lz4", clevel=1, shuffle=numcodecs.Blosc.BITSHUFFLE)
+COMPRESSOR = numcodecs.Blosc(
+   cname="lz4", clevel=1, shuffle=numcodecs.Blosc.BITSHUFFLE
+)
 
 # Same compression settings as COMPRESSOR, but as a zarr-v3-native codec: v3
 # arrays require the plural 'compressors' encoding key (a list of codecs)
