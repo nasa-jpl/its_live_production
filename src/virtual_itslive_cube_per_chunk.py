@@ -81,6 +81,20 @@ MAX_AWS_CONNECTIONS = 8
 # is reported.
 PROGRESS_LOG_INTERVAL = 100
 
+# Chunk size to declare for the cube's 1-D (time,) data variables (the real,
+# synthesized arrays -- e.g. granule_url, acquisition_date_img1, the
+# *_error/*_stable_shift attrs -- not the 3D (time,y,x) variables, whose
+# per-granule ManifestArray chunk size is physically fixed at 1 and cannot be
+# widened; see np.concatenate's handling of ManifestArrays in
+# virtual_itslive_cube.py, which only ever changes shape, never chunks).
+# Without an explicit encoding, xarray/icechunk defaults to one chunk
+# spanning however many granules were in the very first written batch --
+# and a Zarr array's chunk grid is fixed at creation and can't change on
+# later appends, so a small first batch would otherwise wall in a tiny,
+# permanent chunk size for the rest of a large run. Matches
+# deep_copy_cube.py's TIME_CHUNK_VALUE_1D.
+TIME_CHUNK_VALUE_1D = 200000
+
 # String representation of longitude/latitude projection
 LON_LAT_PROJECTION = 'EPSG:4326'
 
@@ -845,6 +859,33 @@ def load_granules(granules, bucket):
    return vds_list
 
 
+def set_1d_time_chunk_encoding(cube, chunk_size):
+   """Set an explicit 'chunks' encoding on every 1-D (time,) data variable of
+   a virtual cube, overriding xarray/icechunk's default of one chunk
+   spanning the whole write (see TIME_CHUNK_VALUE_1D).
+
+   Must be called before the cube's first write -- the one that creates the
+   icechunk repo -- since a Zarr array's chunk grid is fixed at creation and
+   can't change on later appends; this only needs to run once per cube.
+
+   Only touches real (non-ManifestArray) 1-D (time,) variables. The 3D
+   (time,y,x) variables are virtual references whose time-chunk size is
+   physically fixed at 1 (see virtual_itslive_cube.py's ManifestArray
+   np.concatenate handling) and must not be touched here.
+
+   Parameters
+   ----------
+   cube : xr.Dataset
+      The virtual cube about to be written (first batch only).
+   chunk_size : int
+      Chunk size along 'time' to set on every 1-D data variable.
+   """
+   for var_name in cube.data_vars:
+      var = cube[var_name]
+      if var.dims == (utils.Coords.TIME,):
+         var.encoding[utils.OutputFormat.chunks] = (chunk_size,)
+
+
 if __name__ == "__main__":
    import argparse
    import sys
@@ -1082,6 +1123,13 @@ if __name__ == "__main__":
 
    logging.info(f"Processing {len(granules)} granules")
 
+   # Total granule count for the whole run (all batches) -- sizes the write
+   # chunk for the cube's 1D (time,) data variables at creation (see
+   # TIME_CHUNK_VALUE_1D / set_1d_time_chunk_encoding), independent of how
+   # many granules land in any individual batch.
+   total_granules = len(granules)
+   time_chunk_1d = min(total_granules, TIME_CHUNK_VALUE_1D)
+
    bucket = args.bucket
    bucketHTTP = args.bucketHTTP
 
@@ -1310,6 +1358,11 @@ if __name__ == "__main__":
                   utils.Missing.fill_value: utils.Missing.u8value,
                   utils.OutputFormat.chunks: chunking_settings_2d
             }
+
+         # Fix the 1D (time,) data variables' write chunk size to the whole
+         # run's granule count (capped), not whatever this first batch's
+         # size happens to be -- see TIME_CHUNK_VALUE_1D.
+         set_1d_time_chunk_encoding(cube, time_chunk_1d)
 
          session = repo.writable_session("main")
          cube_clean = _drop_nonfinite_attrs(cube)
