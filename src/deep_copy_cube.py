@@ -49,10 +49,11 @@ NUM_GRANULES_TO_WRITE = 2000
 
 # Chunking to apply when writing datacube to the Zarr store for 3-d variables.
 # X_Y_CHUNK_VALUE=8 (rather than itscube.py's 10) divides both production
-# grid sizes (512px @ 120m, 256px @ 240m for the 61.44km chunk-aligned
-# catalog) evenly, since 512 and 256 are powers of 2 -- no partial trailing
-# chunk on either grid, which also keeps every XY_SHARD_MULTIPLIER below an
-# exact divisor of the per-side chunk count.
+# grid sizes evenly (512px @ 120m -> 64 chunks/side, 256px @ 240m -> 32
+# chunks/side, for the 61.44km chunk-aligned catalog), since 512 and 256 are
+# powers of 2 -- no partial trailing chunk on either grid. With
+# XY_SHARD_MULTIPLIER=4 those per-side chunk counts also divide evenly into
+# shards (64/4=16 and 32/4=8 shards/side respectively).
 TIME_CHUNK_VALUE = 20000
 X_Y_CHUNK_VALUE = 8
 
@@ -65,9 +66,10 @@ TIME_CHUNK_VALUE_1D = 200000
 # variables (only applies when writing v3; v2 has no sharding). 4 groups
 # chunks into 32x32px shards -- on the 61.44km chunk-aligned production grid
 # (512px @ 120m / 256px @ 240m) with X_Y_CHUNK_VALUE=8, that divides both
-# grids evenly (64 and 32 chunks/side respectively), cutting per-variable
-# object count ~16x (2,704 chunks -> 169 shards on the 512px grid) while
-# keeping worst-case shard rewrite size in the tens-of-MB range.
+# grids evenly (16 and 8 shards/side, from 64 and 32 chunks/side
+# respectively), cutting per-variable object count 16x (4,096 chunks -> 256
+# shards on the 512px grid) while keeping worst-case shard rewrite size in
+# the tens-of-MB range.
 #
 # NOT wired as the implicit default for build_encoding()/deep_copy_cube()'s
 # xy_shard_multiplier parameter (that defaults to 1, i.e. sharding off) --
@@ -249,17 +251,23 @@ def build_encoding(
       zarr.codecs.BloscCodec under the plural 'compressors' (list) key.
    xy_shard_multiplier : int
       Number of xy_chunk-sized inner chunks grouped into one shard per
-      spatial axis, for 3D (time,y,x) variables only. 1 (or any value <=1,
-      the default) omits the 'shards' encoding key entirely (unsharded).
-      Only meaningful when zarr_format==3 (see XY_SHARD_MULTIPLIER for the
-      recommended value to pass explicitly); raises ValueError if >1 and
-      zarr_format!=3, since v2 has no sharding support.
+      spatial axis, for 3D (time,y,x) variables only. Must be >= 1; 1 (the
+      default) omits the 'shards' encoding key entirely (unsharded). Only
+      meaningful when zarr_format==3 (see XY_SHARD_MULTIPLIER for the
+      recommended value to pass explicitly); raises ValueError if < 1, or if
+      > 1 and zarr_format != 3 (v2 has no sharding support).
 
    Returns
    -------
    dict
       Per-variable/coordinate encoding dict for xr.Dataset.to_zarr().
    """
+   if xy_shard_multiplier < 1:
+      raise ValueError(
+         f"xy_shard_multiplier must be >= 1 (1 disables sharding), "
+         f"got {xy_shard_multiplier}"
+      )
+
    if xy_shard_multiplier > 1 and zarr_format != 3:
       raise ValueError(
          f"xy_shard_multiplier={xy_shard_multiplier} requires zarr_format=3 "
@@ -334,11 +342,24 @@ def build_encoding(
          # extent -- never group multiple time-chunks into one shard (see
          # XY_SHARD_MULTIPLIER). Only x/y are grouped, by xy_shard_multiplier
          # inner chunks per axis.
-         var_encoding['shards'] = (
-            chunks[0],
-            xy_chunk * xy_shard_multiplier,
-            xy_chunk * xy_shard_multiplier,
-         )
+         xy_shard_size = xy_chunk * xy_shard_multiplier
+         var_encoding['shards'] = (chunks[0], xy_shard_size, xy_shard_size)
+
+         # The XY_SHARD_MULTIPLIER divisibility argument only holds for the
+         # chunk-aligned production grids (512px/256px). On any other grid a
+         # spatial extent not divisible by the shard size leaves a ragged,
+         # partially-filled trailing shard -- valid in Zarr v3, and the write
+         # stays correct, but it wastes space and undercuts the object-count
+         # reduction sharding is meant to buy. Warn rather than fail.
+         for spatial_dim in dims[1:]:
+            dim_size = cube.sizes[spatial_dim]
+            if dim_size % xy_shard_size:
+               logging.warning(
+                  f"{var_name}: '{spatial_dim}' size {dim_size} is not a "
+                  f"multiple of shard size {xy_shard_size} (xy_chunk="
+                  f"{xy_chunk} * xy_shard_multiplier={xy_shard_multiplier}); "
+                  f"trailing shard will be partially filled"
+               )
 
       # Re-key the granule-inherited fill (in attrs due to mask_and_scale=False)
       # into the write encoding: 'missing_value' for int/uint, '_FillValue' for
@@ -518,10 +539,10 @@ def deep_copy_cube(
    zarr_format : int
       2 or 3. Zarr format version for the output store (see build_encoding).
    xy_shard_multiplier : int
-      1 (the default) leaves the store unsharded. Only meaningful when
-      zarr_format==3 (see build_encoding/XY_SHARD_MULTIPLIER for the
-      recommended value to pass explicitly). Raises ValueError if >1 and
-      zarr_format!=3.
+      Must be >= 1; 1 (the default) leaves the store unsharded. Only
+      meaningful when zarr_format==3 (see build_encoding/XY_SHARD_MULTIPLIER
+      for the recommended value to pass explicitly). Raises ValueError if
+      < 1, or if > 1 and zarr_format != 3.
    local_staging_dir : str, optional
       If set, `output_store` must be an s3:// path. All batches are written
       to this local directory first, and the whole store is uploaded to
