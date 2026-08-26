@@ -546,7 +546,7 @@ def main():
     parser.add_argument(
         '--batch-size',
         type=int,
-        default=100000,
+        default=10000,
         help='Number of new granules to load and commit together per icechunk '
             'snapshot [%(default)d]. New granules are sorted chronologically '
             'first, then split into batches of this size to bound memory use '
