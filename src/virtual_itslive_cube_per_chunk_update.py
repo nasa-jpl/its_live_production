@@ -543,6 +543,15 @@ def main():
         default=0,
         help='Number of granules to process [%(default)d meaning to process all granules].'
     )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=100000,
+        help='Number of new granules to load and commit together per icechunk '
+            'snapshot [%(default)d]. New granules are sorted chronologically '
+            'first, then split into batches of this size to bound memory use '
+            'for very large update runs; each batch appends to the existing cube.'
+    )
 
     parser.add_argument(
         '--show-variables',
@@ -656,155 +665,225 @@ def main():
                 )
                 skipped_set = skipped_set.union(p000_granules)
 
-            # Build cube from new granules
+            # Sort new granules chronologically by mid_date parsed from the
+            # filename -- no granule is opened for this, so it's cheap even
+            # for very large lists. Matches virtual_itslive_cube_per_chunk.py's
+            # ordering so batches are appended in time order.
+            new_granules = sorted(new_granules, key=utils.extract_mid_date_from_url)
+
+            batch_size = args.batch_size
+            batches = [
+                new_granules[i:i + batch_size]
+                for i in range(0, len(new_granules), batch_size)
+            ]
+            num_batches = len(batches)
+
+            # Ties every commit made by this run together (see commit_metadata
+            # below), so a large update run's history can be identified as one
+            # logical update.
+            batch_job_id = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
+
+            logging.info(
+                f"Split into {num_batches} batch(es) of up to {batch_size} "
+                f"granules [batch_job_id={batch_job_id}]"
+            )
+
             netcdf_store = S3Store(
                 bucket="its-live-data",
                 region="us-west-2",
                 skip_signature=True,
             )
 
-            vds_list = load_granules(new_granules, args.bucket)
-            logging.info(f'Loaded {len(vds_list)} virtual datasets')
+            total_appended = 0
 
-            new_cube, autorift_param_file, run_skipped = build_virtual_cube_subset(
-                vds_list, bbox, netcdf_store
-            )
-
-            if new_cube is None:
-                logging.warning("No valid data in new granules - no update performed")
-                # Still update skipped granules file
-                all_skipped = list(skipped_set.union(set(s.replace(HTTPS_URL, S3_URL) for s in run_skipped)))
-                save_skipped_granules(args.cube_store, all_skipped)
-
-                return
-
-            logging.info(f"Built cube from {len(new_cube.time)} new granules")
-
-            # Variable-set consistency check: the dtype-matching loop below only
-            # walks new_cube.data_vars, so a variable present in one cube but not
-            # the other would silently skip past it and append_dim="time" would
-            # then try to stack two datasets with different schemas. Fail loudly
-            # here instead -- this usually means the cube-building code changed
-            # between when the existing cube was built and now, and the existing
-            # cube needs to be regenerated to match.
-            #
-            # Only compare *time-indexed* variables: static, cube-level
-            # variables with no 'time' dimension (mapping, landice,
-            # floatingice) are set once at cube creation and never touched
-            # again on update -- new_cube legitimately never carries them, and
-            # their already-committed chunks stay valid across every later
-            # icechunk snapshot without needing to match new_cube's schema.
-            existing_vars = {v for v in cube.data_vars if 'time' in cube[v].dims}
-            new_vars = {v for v in new_cube.data_vars if 'time' in new_cube[v].dims}
-            if existing_vars != new_vars:
-                raise ValueError(
-                    f"Cannot append: new cube's data variables differ from the "
-                    f"existing cube's.\n  missing from new cube: {existing_vars - new_vars}\n"
-                    f"  extra in new cube: {new_vars - existing_vars}"
+            for batch_num, batch_granules in enumerate(batches, start=1):
+                logging.info(
+                    f'Batch {batch_num}/{num_batches}: loading '
+                    f'{len(batch_granules)} granules'
                 )
 
-            # x/y grid-identity check: `bbox` above is re-derived each run from
-            # the existing cube's stored proj_polygon attribute, so grid
-            # alignment between new_cube and the existing cube is only implicit.
-            # Verify it explicitly (mirrors _assert_identical_grids() in
-            # virtual_itslive_cube_per_chunk.py, which does the analogous check
-            # across granules within a single build) so a bbox-derivation drift
-            # (e.g. float round-tripping through JSON) fails loudly here instead
-            # of surfacing as a low-level zarr/icechunk error, or worse, a silent
-            # spatial misalignment.
-            existing_x, new_x = cube.x.values, new_cube.x.values
-            existing_y, new_y = cube.y.values, new_cube.y.values
-            if existing_x.shape != new_x.shape or not np.array_equal(existing_x, new_x):
-                raise ValueError(
-                    f"Cannot append: new cube's x grid does not match the existing "
-                    f"cube's. existing: {existing_x.shape} spanning "
-                    f"[{existing_x[0]}, {existing_x[-1]}], new: {new_x.shape} "
-                    f"spanning [{new_x[0]}, {new_x[-1]}]."
-                )
-            if existing_y.shape != new_y.shape or not np.array_equal(existing_y, new_y):
-                raise ValueError(
-                    f"Cannot append: new cube's y grid does not match the existing "
-                    f"cube's. existing: {existing_y.shape} spanning "
-                    f"[{existing_y[0]}, {existing_y[-1]}], new: {new_y.shape} "
-                    f"spanning [{new_y[0]}, {new_y[-1]}]."
+                vds_list = load_granules(batch_granules, args.bucket)
+                logging.info(
+                    f'Batch {batch_num}/{num_batches}: loaded '
+                    f'{len(vds_list)} virtual datasets'
                 )
 
-            # Match dtypes with existing cube before appending.
-            #
-            # Two distinct cases:
-            #  1. In-memory (numpy-backed) variables -- granule_url, mission_img*,
-            #     etc. These are real arrays built in build_virtual_cube, so
-            #     astype() genuinely re-allocates and converts. Safe to convert
-            #     (after a truncation guard for fixed-length strings).
-            #  2. Granule-backed ManifestArray variables -- v, vx, vy, M11, etc.
-            #     Their chunk bytes are encoded on-disk for the granule's dtype
-            #     (int16). Relabeling the metadata dtype does NOT re-encode the
-            #     bytes, so a genuine dtype change (e.g. int16 -> float32) would
-            #     decode garbage. If these don't already match, the existing cube
-            #     was built with incompatible dtype definitions and must be
-            #     regenerated -- fail loudly rather than silently corrupt.
-            for var_name in new_cube.data_vars:
-                if var_name not in cube.data_vars:
+                new_cube, autorift_param_file, run_skipped = build_virtual_cube_subset(
+                    vds_list, bbox, netcdf_store
+                )
+
+                # Record whatever this batch skipped regardless of whether it
+                # produced a cube, so the persistent skipped-granules JSON
+                # reflects every granule considered across the whole run.
+                skipped_set = skipped_set.union(
+                    set(s.replace(HTTPS_URL, S3_URL) for s in run_skipped)
+                )
+
+                if new_cube is None:
+                    logging.warning(
+                        f"Batch {batch_num}/{num_batches}: no valid data in "
+                        "this batch - nothing appended"
+                    )
+                    save_skipped_granules(args.cube_store, list(skipped_set))
                     continue
 
-                existing_dtype = cube[var_name].dtype
-                new_dtype = new_cube[var_name].dtype
-                if existing_dtype == new_dtype:
-                    continue
+                logging.info(
+                    f"Batch {batch_num}/{num_batches}: built cube from "
+                    f"{len(new_cube.time)} new granules"
+                )
 
-                is_manifest = isinstance(new_cube[var_name].data, ManifestArray)
-
-                # String <-> string mismatch (fixed-length UTF32): numpy-backed,
-                # safe to astype after guarding against truncation.
-                if np.issubdtype(existing_dtype, np.str_) and np.issubdtype(new_dtype, np.str_):
-                    if existing_dtype.kind == 'U':
-                        existing_max_len = existing_dtype.itemsize // 4  # UTF32: 4 bytes/char
-                        new_values = new_cube[var_name].values
-                        max_new_len = max((len(str(v)) for v in new_values.flat), default=0)
-                        if max_new_len > existing_max_len:
-                            raise ValueError(
-                                f"Cannot append: {var_name} has values longer ({max_new_len} chars) "
-                                f"than existing cube's fixed-length string ({existing_max_len} chars). "
-                                f"This would truncate data. Please regenerate the existing cube with "
-                                f"larger string lengths (Vars.stringType / ImgPairInfo.stringType)."
-                            )
-                    logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
-                    new_cube[var_name] = new_cube[var_name].astype(existing_dtype)
-                    continue
-
-                # Non-string mismatch.
-                if is_manifest:
+                # Variable-set consistency check: the dtype-matching loop below only
+                # walks new_cube.data_vars, so a variable present in one cube but not
+                # the other would silently skip past it and append_dim="time" would
+                # then try to stack two datasets with different schemas. Fail loudly
+                # here instead -- this usually means the cube-building code changed
+                # between when the existing cube was built and now, and the existing
+                # cube needs to be regenerated to match.
+                #
+                # Only compare *time-indexed* variables: static, cube-level
+                # variables with no 'time' dimension (mapping, landice,
+                # floatingice) are set once at cube creation and never touched
+                # again on update -- new_cube legitimately never carries them, and
+                # their already-committed chunks stay valid across every later
+                # icechunk snapshot without needing to match new_cube's schema.
+                existing_vars = {v for v in cube.data_vars if 'time' in cube[v].dims}
+                new_vars = {v for v in new_cube.data_vars if 'time' in new_cube[v].dims}
+                if existing_vars != new_vars:
                     raise ValueError(
-                        f"Cannot append {var_name}: existing cube stores it as {existing_dtype}, "
-                        f"but the new virtual (granule-backed) data is {new_dtype}. The on-disk "
-                        f"chunk bytes are encoded for {new_dtype}, so relabeling to {existing_dtype} "
-                        f"would decode incorrectly. The existing cube was built with incompatible "
-                        f"dtype definitions and must be regenerated to match the current code."
+                        f"Cannot append: new cube's data variables differ from the "
+                        f"existing cube's.\n  missing from new cube: {existing_vars - new_vars}\n"
+                        f"  extra in new cube: {new_vars - existing_vars}"
                     )
 
-                logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
-                new_cube[var_name] = new_cube[var_name].astype(existing_dtype)
+                # x/y grid-identity check: `bbox` above is re-derived each run from
+                # the existing cube's stored proj_polygon attribute, so grid
+                # alignment between new_cube and the existing cube is only implicit.
+                # Verify it explicitly (mirrors _assert_identical_grids() in
+                # virtual_itslive_cube_per_chunk.py, which does the analogous check
+                # across granules within a single build) so a bbox-derivation drift
+                # (e.g. float round-tripping through JSON) fails loudly here instead
+                # of surfacing as a low-level zarr/icechunk error, or worse, a silent
+                # spatial misalignment.
+                existing_x, new_x = cube.x.values, new_cube.x.values
+                existing_y, new_y = cube.y.values, new_cube.y.values
+                if existing_x.shape != new_x.shape or not np.array_equal(existing_x, new_x):
+                    raise ValueError(
+                        f"Cannot append: new cube's x grid does not match the existing "
+                        f"cube's. existing: {existing_x.shape} spanning "
+                        f"[{existing_x[0]}, {existing_x[-1]}], new: {new_x.shape} "
+                        f"spanning [{new_x[0]}, {new_x[-1]}]."
+                    )
+                if existing_y.shape != new_y.shape or not np.array_equal(existing_y, new_y):
+                    raise ValueError(
+                        f"Cannot append: new cube's y grid does not match the existing "
+                        f"cube's. existing: {existing_y.shape} spanning "
+                        f"[{existing_y[0]}, {existing_y[-1]}], new: {new_y.shape} "
+                        f"spanning [{new_y[0]}, {new_y[-1]}]."
+                    )
 
-            # Append to existing cube (dtypes are now compatible)
-            session = repo.writable_session("main")
-            new_cube_clean = _drop_nonfinite_attrs(new_cube)
+                # Match dtypes with existing cube before appending.
+                #
+                # Two distinct cases:
+                #  1. In-memory (numpy-backed) variables -- granule_url, mission_img*,
+                #     etc. These are real arrays built in build_virtual_cube, so
+                #     astype() genuinely re-allocates and converts. Safe to convert
+                #     (after a truncation guard for fixed-length strings).
+                #  2. Granule-backed ManifestArray variables -- v, vx, vy, M11, etc.
+                #     Their chunk bytes are encoded on-disk for the granule's dtype
+                #     (int16). Relabeling the metadata dtype does NOT re-encode the
+                #     bytes, so a genuine dtype change (e.g. int16 -> float32) would
+                #     decode garbage. If these don't already match, the existing cube
+                #     was built with incompatible dtype definitions and must be
+                #     regenerated -- fail loudly rather than silently corrupt.
+                for var_name in new_cube.data_vars:
+                    if var_name not in cube.data_vars:
+                        continue
 
-            try:
-                logging.info("Attempting to append new granules with append_dim='time'")
-                new_cube_clean.vz.to_icechunk(session.store, append_dim="time")
-                snapshot_id = session.commit(f"its_live virtual cube subset: append {len(new_cube.time)} new granules")
-                logging.info(f"Successfully appended {len(new_cube.time)} granules, snapshot: {snapshot_id}")
+                    existing_dtype = cube[var_name].dtype
+                    new_dtype = new_cube[var_name].dtype
+                    if existing_dtype == new_dtype:
+                        continue
 
-            except TypeError as e:
-                if "append_dim" in str(e):
-                    raise RuntimeError(f"append_dim not supported by virtualizarr: {e}")
-                else:
-                    raise
+                    is_manifest = isinstance(new_cube[var_name].data, ManifestArray)
 
-            # Update skipped granules file
-            all_skipped = list(skipped_set.union(set(s.replace(HTTPS_URL, S3_URL) for s in run_skipped)))
-            all_skipped_https = [s.replace(S3_URL, HTTPS_URL) for s in all_skipped]
-            save_skipped_granules(args.cube_store, all_skipped_https)
+                    # String <-> string mismatch (fixed-length UTF32): numpy-backed,
+                    # safe to astype after guarding against truncation.
+                    if np.issubdtype(existing_dtype, np.str_) and np.issubdtype(new_dtype, np.str_):
+                        if existing_dtype.kind == 'U':
+                            existing_max_len = existing_dtype.itemsize // 4  # UTF32: 4 bytes/char
+                            new_values = new_cube[var_name].values
+                            max_new_len = max((len(str(v)) for v in new_values.flat), default=0)
+                            if max_new_len > existing_max_len:
+                                raise ValueError(
+                                    f"Cannot append: {var_name} has values longer ({max_new_len} chars) "
+                                    f"than existing cube's fixed-length string ({existing_max_len} chars). "
+                                    f"This would truncate data. Please regenerate the existing cube with "
+                                    f"larger string lengths (Vars.stringType / ImgPairInfo.stringType)."
+                                )
+                        logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
+                        new_cube[var_name] = new_cube[var_name].astype(existing_dtype)
+                        continue
+
+                    # Non-string mismatch.
+                    if is_manifest:
+                        raise ValueError(
+                            f"Cannot append {var_name}: existing cube stores it as {existing_dtype}, "
+                            f"but the new virtual (granule-backed) data is {new_dtype}. The on-disk "
+                            f"chunk bytes are encoded for {new_dtype}, so relabeling to {existing_dtype} "
+                            f"would decode incorrectly. The existing cube was built with incompatible "
+                            f"dtype definitions and must be regenerated to match the current code."
+                        )
+
+                    logging.debug(f"Converting {var_name} dtype from {new_dtype} to {existing_dtype}")
+                    new_cube[var_name] = new_cube[var_name].astype(existing_dtype)
+
+                # Append to existing cube (dtypes are now compatible)
+                session = repo.writable_session("main")
+                new_cube_clean = _drop_nonfinite_attrs(new_cube)
+
+                # Ties every commit from this run together so they can be
+                # identified as one logical update (see icechunk
+                # repo.ops_log()/ancestry()), matching
+                # virtual_itslive_cube_per_chunk.py's creation-batch metadata.
+                commit_metadata = {
+                    "batch_job_id": batch_job_id,
+                    "batch_index": batch_num,
+                    "total_batches": num_batches,
+                    "batch_size": len(batch_granules),
+                }
+
+                try:
+                    logging.info(
+                        f"Batch {batch_num}/{num_batches}: attempting to append "
+                        "new granules with append_dim='time'"
+                    )
+                    new_cube_clean.vz.to_icechunk(session.store, append_dim="time")
+                    snapshot_id = session.commit(
+                        f"its_live virtual cube subset: append {len(new_cube.time)} "
+                        f"new granules (batch {batch_num}/{num_batches})",
+                        metadata=commit_metadata
+                    )
+                    logging.info(
+                        f"Batch {batch_num}/{num_batches}: successfully appended "
+                        f"{len(new_cube.time)} granules, snapshot: {snapshot_id}"
+                    )
+
+                except TypeError as e:
+                    if "append_dim" in str(e):
+                        raise RuntimeError(f"append_dim not supported by virtualizarr: {e}")
+                    else:
+                        raise
+
+                total_appended += len(new_cube.time)
+
+                # Save skipped granules to JSON file after every committed
+                # batch, so progress survives a mid-run failure on a later
+                # batch.
+                save_skipped_granules(args.cube_store, list(skipped_set))
+
+            if total_appended == 0:
+                logging.info("No batch produced any appended data - no update performed")
+                return
 
             # Verify and report (raw dtypes, matching how the cube was read for append)
             # zarr_format=3, not 2: icechunk repos are natively Zarr V3
@@ -815,7 +894,10 @@ def main():
                 zarr_format=3,
                 mask_and_scale=False
             )
-            logging.info(f"Update complete. Cube now has {len(updated_cube.time)} time layers")
+            logging.info(
+                f"Update complete. Cube now has {len(updated_cube.time)} time layers "
+                f"({total_appended} appended across {num_batches} batch(es))"
+            )
             print_cube_info(updated_cube)
 
         else:
