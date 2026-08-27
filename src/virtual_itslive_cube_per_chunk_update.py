@@ -623,11 +623,13 @@ def main():
                     "coordinates": [geo_polygon]
                 }
 
-                logging.info(f"Querying searchAPI for {projection} from {args.start_date} to {args.end_date}")
+                # TODO: might need to switch to use earthcatalog
+                # granules = itslive_utils.earthcatalog_search(
                 granules = itslive_utils.serverless_search(
                     epsg_code=projection,
                     start_date=args.start_date,
                     end_date=args.end_date,
+                    # polygon=roi
                     roi=roi
                 )
 

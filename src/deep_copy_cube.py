@@ -192,7 +192,7 @@ def split_vars_by_time(cube):
 
 
 def build_encoding(
-   cube, total_layers, time_chunk, xy_chunk, time_chunk_1d,
+   cube, time_chunk, xy_chunk, time_chunk_1d,
    xy_shard_multiplier=1
 ):
    """Build the zarr v3 encoding dict for the deep-copy store.
@@ -209,9 +209,14 @@ def build_encoding(
    base64-encoded attribute in zarr.json rather than the array-level
    fill_value (a cosmetic xarray-serialization artifact, not a masking bug).
 
-   Chunking follows itscube.py's scheme:
-   - 3D (time, y, x) variables: (min(total_layers, time_chunk), xy_chunk, xy_chunk)
-   - 1D (time,) variables: (min(total_layers, time_chunk_1d),)
+   Chunking follows itscube.py's scheme, except time-chunk sizes are always
+   the full fixed value rather than capped at the cube's current layer
+   count: a Zarr array's chunk grid is fixed at creation and can't be
+   widened on a later append, so capping at however many layers the cube
+   happens to have right now would wall in a too-small chunk size forever
+   once a cube grows past it via deep_copy_update.py.
+   - 3D (time, y, x) variables: (time_chunk, xy_chunk, xy_chunk)
+   - 1D (time,) variables and the 'time' coordinate itself: (time_chunk_1d,)
    - static 2D (y, x) variables (landice/floatingice): full extent
    - x/y coordinates: full extent
    - 0-d variables (mapping): no chunk encoding
@@ -225,9 +230,6 @@ def build_encoding(
       write encoding. _strip_fill_attrs() then clears it from attrs so the fill
       lives only in the encoding dict (a fill present in both attrs and
       encoding collides in to_zarr's CF encoder).
-   total_layers : int
-      Total number of layers along 'time', to cap chunk sizes the same way
-      itscube.py does (min(max_number_of_layers, TIME_CHUNK_VALUE)).
    time_chunk : int
       Chunk size along 'time' for 3D variables.
    xy_chunk : int
@@ -268,19 +270,20 @@ def build_encoding(
             utils.OutputFormat.fill_value: None,
          }
 
-   # The 'time' coordinate needs an explicit chunk size too: left unset (as
-   # it was before), it falls back to zarr's auto-chunker for a dimension
-   # that's appended across batches, which came out as chunks=(1,) -- one
-   # chunk PER LAYER. xr.open_zarr() eagerly loads dimension coordinates
-   # (time/x/y) to build their pandas index on open, so chunks=(1,) meant
-   # one S3 GET per layer just to open the cube (measured: ~35,000 GETs,
-   # ~167s of open time on a real cube) -- independent of consolidated
-   # metadata, which only covers metadata reads, never chunk data. A single
-   # chunk covering the full time extent, matching how x/y are handled
-   # above, fixes this.
+   # The 'time' coordinate needs an explicit chunk size too: left unset, it
+   # falls back to zarr's auto-chunker for a dimension that's appended across
+   # batches, which came out as chunks=(1,) -- one chunk PER LAYER.
+   # xr.open_zarr() eagerly loads dimension coordinates (time/x/y) to build
+   # their pandas index on open, so chunks=(1,) meant one S3 GET per layer
+   # just to open the cube (measured: ~35,000 GETs, ~167s of open time on a
+   # real cube) -- independent of consolidated metadata, which only covers
+   # metadata reads, never chunk data. Fixed to time_chunk_1d (not the
+   # cube's current total_layers) so it stays a single chunk for as long as
+   # possible as the cube grows via later appends -- same reasoning as the
+   # other 1D (time,) variables (see the chunking-scheme note above).
    if utils.Coords.TIME in cube.coords:
       encoding[utils.Coords.TIME] = {
-         'chunks': (total_layers,),
+         'chunks': (time_chunk_1d,),
          COMPRESSOR_KEY: [COMPRESSOR],
       }
 
@@ -296,9 +299,9 @@ def build_encoding(
       if utils.Coords.TIME in dims:
          if len(dims) == 3:
             is_3d = True
-            chunks = (min(total_layers, time_chunk), xy_chunk, xy_chunk)
+            chunks = (time_chunk, xy_chunk, xy_chunk)
          else:
-            chunks = (min(total_layers, time_chunk_1d),)
+            chunks = (time_chunk_1d,)
       else:
          # Static 2D (y, x) variable: full extent, matching itscube.py.
          chunks = tuple(cube.sizes[d] for d in dims)
@@ -541,7 +544,7 @@ def deep_copy_cube(
 
    time_vars, static_vars = split_vars_by_time(cube)
    encoding = build_encoding(
-      cube, total_layers, time_chunk, xy_chunk, time_chunk_1d,
+      cube, time_chunk, xy_chunk, time_chunk_1d,
       xy_shard_multiplier
    )
 

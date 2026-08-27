@@ -1082,10 +1082,13 @@ if __name__ == "__main__":
          "coordinates": [polygon_coords]
       }
 
+      # TODO: might need to switch to use earthcatalog
+      # granules = itslive_utils.earthcatalog_search(
       granules = itslive_utils.serverless_search(
          epsg_code=args.projection,
          start_date=args.start_date,
          end_date=args.end_date,
+         # polygon=roi
          roi=roi
       )
 
@@ -1122,13 +1125,6 @@ if __name__ == "__main__":
    granules = sorted(granules, key=utils.extract_mid_date_from_url)
 
    logging.info(f"Processing {len(granules)} granules")
-
-   # Total granule count for the whole run (all batches) -- sizes the write
-   # chunk for the cube's 1D (time,) data variables at creation (see
-   # TIME_CHUNK_VALUE_1D / set_1d_time_chunk_encoding), independent of how
-   # many granules land in any individual batch.
-   total_granules = len(granules)
-   time_chunk_1d = min(total_granules, TIME_CHUNK_VALUE_1D)
 
    bucket = args.bucket
    bucketHTTP = args.bucketHTTP
@@ -1359,10 +1355,11 @@ if __name__ == "__main__":
                   utils.OutputFormat.chunks: chunking_settings_2d
             }
 
-         # Fix the 1D (time,) data variables' write chunk size to the whole
-         # run's granule count (capped), not whatever this first batch's
-         # size happens to be -- see TIME_CHUNK_VALUE_1D.
-         set_1d_time_chunk_encoding(cube, time_chunk_1d)
+         # Fix the 1D (time,) data variables' write chunk size to the fixed
+         # TIME_CHUNK_VALUE_1D, not whatever this first batch's size happens
+         # to be -- leaves room to grow on later appends (see
+         # TIME_CHUNK_VALUE_1D's module comment).
+         set_1d_time_chunk_encoding(cube, TIME_CHUNK_VALUE_1D)
 
          session = repo.writable_session("main")
          cube_clean = _drop_nonfinite_attrs(cube)
