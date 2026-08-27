@@ -83,32 +83,38 @@ class TestDeepCopyCubeHelpers:
 
     def test_build_encoding_3d_var_chunks(self, synthetic_cube):
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
         )
 
-        assert encoding[Vars.vx]['chunks'] == (3, 10, 10)
+        assert encoding[Vars.vx]['chunks'] == (20000, 10, 10)
 
     def test_build_encoding_1d_var_chunks(self, synthetic_cube):
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
         )
 
-        assert encoding[Vars.url]['chunks'] == (3,)
+        assert encoding[Vars.url]['chunks'] == (200000,)
+
+    def test_build_encoding_time_coord_chunk_uses_time_chunk_1d(self, synthetic_cube):
+        # The 'time' coordinate itself is fixed to time_chunk_1d too (not the
+        # cube's current size), for the same future-growth reason as the
+        # other 1D (time,) variables.
+        encoding = dcc.build_encoding(
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
+        )
+
+        assert encoding[utils.Coords.TIME]['chunks'] == (200000,)
 
     def test_build_encoding_static_var_full_extent(self, synthetic_cube):
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
         )
 
         assert encoding['landice']['chunks'] == (20, 30)
 
     def test_build_encoding_coords_full_extent(self, synthetic_cube):
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
         )
 
         assert encoding[utils.Coords.X]['chunks'] == (30,)
@@ -117,8 +123,7 @@ class TestDeepCopyCubeHelpers:
     def test_build_encoding_coords_disable_fill_value(self, synthetic_cube):
         # x/y have no missing values; suppress xarray's default _FillValue=NaN.
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
         )
 
         assert encoding[utils.Coords.X][utils.OutputFormat.fill_value] is None
@@ -126,27 +131,27 @@ class TestDeepCopyCubeHelpers:
 
     def test_build_encoding_scalar_var_skipped(self, synthetic_cube):
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
         )
 
         assert 'mapping' not in encoding
 
-    def test_build_encoding_caps_time_chunk_at_total_layers(self, synthetic_cube):
-        # time_chunk (20000) exceeds total_layers (3): the chunk must be
-        # capped, matching itscube.py's min(max_number_of_layers, TIME_CHUNK_VALUE).
+    def test_build_encoding_time_chunk_not_capped_by_cube_size(self, synthetic_cube):
+        # synthetic_cube only has 3 layers, but time_chunk (20000) must be
+        # used as-is: a Zarr chunk grid is fixed at creation, so capping it at
+        # however many layers exist right now would wall in a too-small
+        # chunk size forever once the cube grows via a later deep_copy_update.py
+        # append.
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
         )
 
-        assert encoding[Vars.vx]['chunks'][0] == 3
+        assert encoding[Vars.vx]['chunks'][0] == 20000
 
     def test_build_encoding_no_shards_by_default(self, synthetic_cube):
         # xy_shard_multiplier defaults to 1: unsharded.
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
         )
 
         assert 'shards' not in encoding[Vars.vx]
@@ -154,23 +159,23 @@ class TestDeepCopyCubeHelpers:
     def test_build_encoding_rejects_shard_multiplier_below_one(self, synthetic_cube):
         with pytest.raises(ValueError, match="xy_shard_multiplier must be >= 1"):
             dcc.build_encoding(
-                synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
+                synthetic_cube, time_chunk=20000, xy_chunk=10,
                 time_chunk_1d=200000, xy_shard_multiplier=0
             )
 
     def test_build_encoding_adds_shards_for_3d_var(self, synthetic_cube):
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=8,
+            synthetic_cube, time_chunk=20000, xy_chunk=8,
             time_chunk_1d=200000, xy_shard_multiplier=4
         )
 
-        assert encoding[Vars.vx]['shards'] == (3, 32, 32)
+        assert encoding[Vars.vx]['shards'] == (20000, 32, 32)
 
     def test_build_encoding_shard_time_extent_matches_chunk_time_extent(self, synthetic_cube):
         # Critical invariant: never group multiple time-chunks into one
         # shard, so a shard's time extent must always equal the chunk's.
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=8,
+            synthetic_cube, time_chunk=20000, xy_chunk=8,
             time_chunk_1d=200000, xy_shard_multiplier=4
         )
 
@@ -178,7 +183,7 @@ class TestDeepCopyCubeHelpers:
 
     def test_build_encoding_no_shards_for_1d_or_static_vars(self, synthetic_cube):
         encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=8,
+            synthetic_cube, time_chunk=20000, xy_chunk=8,
             time_chunk_1d=200000, xy_shard_multiplier=4
         )
 
@@ -386,28 +391,31 @@ class TestDeepCopyCubeIntegration:
             assert 'time' not in deep[var].dims, f"{var} unexpectedly has a 'time' dimension"
 
     @pytest.mark.order(5)
-    def test_deep_copy_chunking_matches_itscube_constants(
-        self, deep_copy_cube_path, test_config
-    ):
+    def test_deep_copy_chunking_matches_itscube_constants(self, deep_copy_cube_path):
         """Chunking must match deep_copy_cube.py's own TIME_CHUNK_VALUE/
-        X_Y_CHUNK_VALUE/TIME_CHUNK_VALUE_1D scheme, capped at the actual
-        number of layers. Deliberately compares against dcc's own module
-        constants, not itscube.py's -- X_Y_CHUNK_VALUE is intentionally 8
-        here vs. itscube.py's 10 (see module docstring)."""
+        X_Y_CHUNK_VALUE/TIME_CHUNK_VALUE_1D scheme -- the full fixed values,
+        not capped at this test cube's small (4-granule) layer count, so a
+        real cube has room to grow via later deep_copy_update.py appends
+        without its chunk grid being walled in. Deliberately compares
+        against dcc's own module constants, not itscube.py's --
+        X_Y_CHUNK_VALUE is intentionally 8 here vs. itscube.py's 10 (see
+        module docstring)."""
         cube = xr.open_zarr(str(deep_copy_cube_path), zarr_format=3, consolidated=True)
-        num_layers = test_config["num_granules"]
 
         expected_3d_chunks = (
-            min(num_layers, dcc.TIME_CHUNK_VALUE),
+            dcc.TIME_CHUNK_VALUE,
             dcc.X_Y_CHUNK_VALUE,
             dcc.X_Y_CHUNK_VALUE
         )
         assert cube[Vars.vx].encoding['chunks'] == expected_3d_chunks, \
             f"vx chunks {cube[Vars.vx].encoding['chunks']} != expected {expected_3d_chunks}"
 
-        expected_1d_chunks = (min(num_layers, dcc.TIME_CHUNK_VALUE_1D),)
+        expected_1d_chunks = (dcc.TIME_CHUNK_VALUE_1D,)
         assert cube[Vars.url].encoding['chunks'] == expected_1d_chunks, \
             f"{Vars.url} chunks {cube[Vars.url].encoding['chunks']} != expected {expected_1d_chunks}"
+
+        assert cube['time'].encoding['chunks'] == expected_1d_chunks, \
+            f"time chunks {cube['time'].encoding['chunks']} != expected {expected_1d_chunks}"
 
         assert cube['x'].encoding['chunks'] == (cube.sizes['x'],), \
             "x coordinate should be chunked at full extent"
