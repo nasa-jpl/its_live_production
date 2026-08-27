@@ -89,31 +89,24 @@ def get_current_num_layers(output_store):
       return ds.sizes[utils.Coords.TIME]
 
 
-def _is_sharded_v3_store(output_store, zarr_format):
+def _is_sharded_v3_store(output_store):
    """Check whether an existing store has Zarr v3 sharding enabled on any of
    its data variables.
 
-   zarr_format==2 short-circuits to False without touching the store at all
-   (v2 has no sharding). Auto-detecting sharding from the store itself
-   (rather than requiring a matching CLI flag) avoids relying on the
-   operator remembering whether --xy-shard-multiplier was passed when
-   deep_copy_cube.py originally created the store, since sharding is
-   orthogonal to --zarr-format.
+   Auto-detecting sharding from the store itself (rather than requiring a
+   matching CLI flag) avoids relying on the operator remembering whether
+   --xy-shard-multiplier was passed when deep_copy_cube.py originally created
+   the store.
 
    Parameters
    ----------
    output_store : str
       Path to the existing deep-copy zarr store (s3:// or local).
-   zarr_format : int
-      2 or 3.
 
    Returns
    -------
    bool
    """
-   if zarr_format != 3:
-      return False
-
    store = zarr.open_consolidated(store=output_store, mode='r')
    return any(
       getattr(store[var_name], 'shards', None) is not None
@@ -122,7 +115,7 @@ def _is_sharded_v3_store(output_store, zarr_format):
 
 
 def deep_copy_update(
-   input_store, output_store, bucket_prefix, batch_size, zarr_format=2,
+   input_store, output_store, bucket_prefix, batch_size,
    backup_store=None, local_staging_dir=None, keep_local_staging=False
 ):
    """Append any layers new to the virtual cube (index >= the deep-copy
@@ -140,13 +133,10 @@ def deep_copy_update(
       against (see deep_copy_cube.open_virtual_cube).
    batch_size : int
       Number of new layers to materialize and write per batch.
-   zarr_format : int
-      2 or 3. Must match the Zarr format of the existing `output_store` (see
-      deep_copy_cube.py's --zarr-format).
    backup_store : str, optional
       S3 path to back up `output_store`'s active shards to before staging
       them locally. Required (and only meaningful) when `output_store` is a
-      sharded Zarr v3 store on S3 (see _is_sharded_v3_store) -- appending to
+      sharded store on S3 (see _is_sharded_v3_store) -- appending to
       a sharded store means a full read-modify-write of every active shard,
       so a durable, independently-restorable copy is kept in case the final
       upload back to `output_store` fails partway (this has happened before
@@ -196,24 +186,34 @@ def deep_copy_update(
       f'({current_num_layers}:{total_layers}) to {output_store}'
    )
 
-   # Appending to a sharded v3 store means every batch does a full
+   # Appending to a sharded store means every batch does a full
    # read-modify-write of each active shard. Doing that directly against S3,
    # once per batch, would repeatedly re-download/re-upload the same
    # (potentially tens-of-MB) shard files over the network. Non-sharded
    # stores and local output_store paths don't have this cost -- a
-   # partially-filled chunk (v2 or unsharded v3) is small, and local
-   # read-modify-write is plain filesystem I/O -- so only the sharded+S3
-   # case stages locally first.
+   # partially-filled chunk is small, and local read-modify-write is plain
+   # filesystem I/O -- so only the sharded+S3 case stages locally first.
    use_local_staging = (
-      zarr_format == 3
-      and str(output_store).startswith(utils.S3_PREFIX)
-      and _is_sharded_v3_store(output_store, zarr_format)
+      str(output_store).startswith(utils.S3_PREFIX)
+      and _is_sharded_v3_store(output_store)
    )
+
+   # Fail loudly instead of silently ignoring these flags: passing either one
+   # for a store that doesn't qualify for local staging (not on S3, or not
+   # sharded) previously fell straight through to a direct-to-S3 append with
+   # no indication the flags had no effect.
+   if (local_staging_dir or backup_store) and not use_local_staging:
+      raise ValueError(
+         f"--local-staging-dir/--backup-store were given but {output_store} "
+         "does not qualify for local staging (requires an s3:// "
+         "--output-store and a sharded store) -- these flags would "
+         "otherwise be silently ignored. Omit them for this store."
+      )
 
    if use_local_staging:
       if not local_staging_dir or not backup_store:
          raise ValueError(
-            f"{output_store} is a sharded Zarr v3 store on S3: "
+            f"{output_store} is a sharded store on S3: "
             "--local-staging-dir and --backup-store are both required so "
             "the active shards can be backed up and staged locally before "
             "appending (see deep_copy_update()'s docstring)."
@@ -247,7 +247,7 @@ def deep_copy_update(
          batch.to_zarr(
             write_target,
             append_dim=utils.Coords.TIME,
-            zarr_format=zarr_format,
+            zarr_format=3,
             consolidated=True
          )
 
@@ -315,19 +315,12 @@ if __name__ == '__main__':
       help='Number of new layers to materialize and write per batch [%(default)d].'
    )
    parser.add_argument(
-      '--zarr-format',
-      type=int,
-      choices=[2, 3],
-      default=2,
-      help='Zarr format version of the existing --output-store: 2 or 3 [%(default)d].'
-   )
-   parser.add_argument(
       '--backup-store',
       type=str,
       default=None,
       help='S3 path to back up --output-store\'s active shards to before '
          'staging them locally. Required when --output-store is a sharded '
-         'Zarr v3 store on S3; ignored otherwise.'
+         'store on S3; ignored otherwise.'
    )
    parser.add_argument(
       '--local-staging-dir',
@@ -353,7 +346,6 @@ if __name__ == '__main__':
       args.output_store,
       args.bucket,
       args.batch_size,
-      args.zarr_format,
       args.backup_store,
       args.local_staging_dir,
       args.keep_local_staging

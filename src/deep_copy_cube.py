@@ -1,9 +1,9 @@
 """
 Materialize a virtual ITS_LIVE datacube (icechunk repo, built by
-virtual_itslive_cube_per_chunk.py) into a real Zarr datacube (v2 or v3, see
---zarr-format) whose data variables are physically copied out of the
-referenced granules, chunked the same way itscube.py chunks a regular
-datacube (TIME_CHUNK_VALUE, X_Y_CHUNK_VALUE, TIME_CHUNK_VALUE_1D).
+virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube whose data
+variables are physically copied out of the referenced granules, chunked the
+same way itscube.py chunks a regular datacube (TIME_CHUNK_VALUE,
+X_Y_CHUNK_VALUE, TIME_CHUNK_VALUE_1D).
 """
 from datetime import datetime
 import logging
@@ -13,7 +13,6 @@ import sys
 import time
 
 import icechunk as ic
-import numcodecs
 import numpy as np
 import s3fs
 import xarray as xr
@@ -62,8 +61,7 @@ X_Y_CHUNK_VALUE = 8
 TIME_CHUNK_VALUE_1D = 200000
 
 # Recommended number of X_Y_CHUNK_VALUE-sized inner chunks to group into one
-# shard file, per spatial axis, for zarr_format==3 sharded 3D (time,y,x)
-# variables (only applies when writing v3; v2 has no sharding). 4 groups
+# shard file, per spatial axis, for sharded 3D (time,y,x) variables. 4 groups
 # chunks into 32x32px shards -- on the 61.44km chunk-aligned production grid
 # (512px @ 120m / 256px @ 240m) with X_Y_CHUNK_VALUE=8, that divides both
 # grids evenly (16 and 8 shards/side, from 64 and 32 chunks/side
@@ -72,11 +70,9 @@ TIME_CHUNK_VALUE_1D = 200000
 # the tens-of-MB range.
 #
 # NOT wired as the implicit default for build_encoding()/deep_copy_cube()'s
-# xy_shard_multiplier parameter (that defaults to 1, i.e. sharding off) --
-# zarr_format itself defaults to 2 for backward compatibility, and 2 doesn't
-# support sharding at all, so a nonzero implicit default here would make the
-# most basic no-args call raise ValueError. Pass this value explicitly via
-# --xy-shard-multiplier together with --zarr-format 3 to enable sharding.
+# xy_shard_multiplier parameter (that defaults to 1, i.e. sharding off), so
+# the most basic no-args call stays unsharded. Pass this value explicitly via
+# --xy-shard-multiplier to enable sharding.
 #
 # A shard's extent along 'time' is always exactly one inner chunk's times
 # extent -- see build_encoding() -- so this constant only ever affects
@@ -86,21 +82,13 @@ TIME_CHUNK_VALUE_1D = 200000
 # incremental updates).
 XY_SHARD_MULTIPLIER = 4
 
-# Compressor for the deep-copy zarr v2 store. Same cname/clevel/shuffle as
-# itscube.py's `zarr.Blosc` compressor; that class was removed from zarr-python
-# 3.x (this pipeline's zarr version), so numcodecs.Blosc is used here instead
-# -- it's the zarr-v2-compatible equivalent and requires the singular
-# 'compressor' encoding key (not v3's 'compressors' list).
-COMPRESSOR = numcodecs.Blosc(
-   cname="lz4", clevel=1, shuffle=numcodecs.Blosc.BITSHUFFLE
-)
-
-# Same compression settings as COMPRESSOR, but as a zarr-v3-native codec: v3
-# arrays require the plural 'compressors' encoding key (a list of codecs)
-# rather than v2's singular 'compressor' key, and don't accept numcodecs
-# codec objects directly.
-COMPRESSOR_V3 = BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')
-COMPRESSORS_KEY_V3 = 'compressors'
+# Compressor for the deep-copy zarr v3 store. Same cname/clevel/shuffle as
+# itscube.py's `zarr.Blosc` compressor; that class was removed from
+# zarr-python 3.x (this pipeline's zarr version), so zarr.codecs.BloscCodec is
+# used here instead. V3 arrays require the plural 'compressors' encoding key
+# (a list of codecs) rather than v2's singular 'compressor' key.
+COMPRESSOR = BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')
+COMPRESSOR_KEY = 'compressors'
 
 # Variables whose virtual-cube attrs carry no _FillValue/missing_value at all
 # -- utils.get_data_var_binary_attr() (the helper that synthesizes these two
@@ -204,10 +192,10 @@ def split_vars_by_time(cube):
 
 
 def build_encoding(
-   cube, total_layers, time_chunk, xy_chunk, time_chunk_1d, zarr_format,
+   cube, total_layers, time_chunk, xy_chunk, time_chunk_1d,
    xy_shard_multiplier=1
 ):
-   """Build the zarr v2 or v3 encoding dict for the deep-copy store.
+   """Build the zarr v3 encoding dict for the deep-copy store.
 
    Sets chunking + compressor per variable, plus the fill value under the
    itscube.py convention (see itscube.py's encoding block, ~lines 2246-2313):
@@ -215,10 +203,9 @@ def build_encoding(
    floating point variables use '_FillValue'. (xarray ignores a requested int
    dtype and assumes float if '_FillValue' is set on an int variable, so ints
    must use 'missing_value'.) dtypes themselves are already correct on the
-   virtual cube and are left untouched. This fill convention is unchanged
-   between zarr v2 and v3 -- verified (Aug 2026) that a float's '_FillValue'
-   masks correctly on read under both formats' default
-   use_zarr_fill_value_as_mask behavior, even though v3 stores it as a
+   virtual cube and are left untouched. Verified (Aug 2026) that a float's
+   '_FillValue' masks correctly on read under v3's default
+   use_zarr_fill_value_as_mask behavior, even though it's stored as a
    base64-encoded attribute in zarr.json rather than the array-level
    fill_value (a cosmetic xarray-serialization artifact, not a masking bug).
 
@@ -247,17 +234,12 @@ def build_encoding(
       Chunk size along 'x'/'y' for 3D variables.
    time_chunk_1d : int
       Chunk size for 1D ('time',) variables.
-   zarr_format : int
-      2 or 3. Selects the compressor object and its encoding key: v2 needs
-      numcodecs.Blosc under the singular 'compressor' key, v3 needs
-      zarr.codecs.BloscCodec under the plural 'compressors' (list) key.
    xy_shard_multiplier : int
       Number of xy_chunk-sized inner chunks grouped into one shard per
       spatial axis, for 3D (time,y,x) variables only. Must be >= 1; 1 (the
-      default) omits the 'shards' encoding key entirely (unsharded). Only
-      meaningful when zarr_format==3 (see XY_SHARD_MULTIPLIER for the
-      recommended value to pass explicitly); raises ValueError if < 1, or if
-      > 1 and zarr_format != 3 (v2 has no sharding support).
+      default) omits the 'shards' encoding key entirely (unsharded). See
+      XY_SHARD_MULTIPLIER for the recommended value to pass explicitly.
+      Raises ValueError if < 1.
 
    Returns
    -------
@@ -270,26 +252,13 @@ def build_encoding(
          f"got {xy_shard_multiplier}"
       )
 
-   if xy_shard_multiplier > 1 and zarr_format != 3:
-      raise ValueError(
-         f"xy_shard_multiplier={xy_shard_multiplier} requires zarr_format=3 "
-         f"(sharding is a Zarr v3-only feature), got zarr_format={zarr_format}"
-      )
-
    encoding = {}
-
-   if zarr_format == 3:
-      compressor_key = COMPRESSORS_KEY_V3
-      compressor_value = [COMPRESSOR_V3]
-   else:
-      compressor_key = utils.OutputFormat.compressor
-      compressor_value = COMPRESSOR
 
    for coord_name in (utils.Coords.X, utils.Coords.Y):
       if coord_name in cube.coords:
          encoding[coord_name] = {
             'chunks': (cube.sizes[coord_name],),
-            compressor_key: compressor_value,
+            COMPRESSOR_KEY: [COMPRESSOR],
             # Suppress xarray's default _FillValue=NaN on these float
             # coordinates (they have no missing values). itscube.py avoids
             # this combination due to an old xarray bug where _FillValue=None
@@ -312,7 +281,7 @@ def build_encoding(
    if utils.Coords.TIME in cube.coords:
       encoding[utils.Coords.TIME] = {
          'chunks': (total_layers,),
-         compressor_key: compressor_value,
+         COMPRESSOR_KEY: [COMPRESSOR],
       }
 
    for var_name in cube.data_vars:
@@ -336,7 +305,7 @@ def build_encoding(
 
       var_encoding = {
          'chunks': chunks,
-         compressor_key: compressor_value,
+         COMPRESSOR_KEY: [COMPRESSOR],
       }
 
       if is_3d and xy_shard_multiplier > 1:
@@ -410,12 +379,13 @@ def _reset_write_encoding(ds):
    Separately, each variable's own .encoding (populated when the virtual cube
    was opened at zarr_format=3) still carries the full V3 pipeline --
    'serializer', 'compressors', 'filters', 'shards', 'dtype',
-   'preferred_chunks', 'fill_value'. to_zarr() merges that inherited encoding
-   with the explicit `encoding=` dict passed to it, so those V3-only keys
-   survive the merge and get handed straight to zarr's array creation call --
-   which raises `ValueError: Zarr format 2 arrays do not support 'serializer'`
-   for this pipeline's zarr_format=2 output store. Clearing .encoding entirely
-   removes that leftover pipeline so only build_encoding()'s dict applies.
+   'preferred_chunks', 'fill_value' -- inherited from how the *source*
+   granules happen to be chunked/compressed. to_zarr() merges that inherited
+   encoding with the explicit `encoding=` dict passed to it, so those stale
+   values would otherwise survive the merge and fight with
+   build_encoding()'s deliberately-chosen chunking/compression for this
+   store. Clearing .encoding entirely removes that leftover pipeline so only
+   build_encoding()'s dict applies.
 
    Parameters
    ----------
@@ -513,13 +483,12 @@ def deep_copy_cube(
    time_chunk,
    xy_chunk,
    time_chunk_1d,
-   zarr_format=2,
    xy_shard_multiplier=1,
    local_staging_dir=None,
    keep_local_staging=False
 ):
-   """Materialize a virtual datacube into a real zarr datacube (v2 or v3),
-   batched along 'time' to bound memory use.
+   """Materialize a virtual datacube into a real zarr v3 datacube, batched
+   along 'time' to bound memory use.
 
    Parameters
    ----------
@@ -538,13 +507,10 @@ def deep_copy_cube(
       Chunk size along 'x'/'y' for 3D variables.
    time_chunk_1d : int
       Chunk size for 1D ('time',) variables.
-   zarr_format : int
-      2 or 3. Zarr format version for the output store (see build_encoding).
    xy_shard_multiplier : int
-      Must be >= 1; 1 (the default) leaves the store unsharded. Only
-      meaningful when zarr_format==3 (see build_encoding/XY_SHARD_MULTIPLIER
-      for the recommended value to pass explicitly). Raises ValueError if
-      < 1, or if > 1 and zarr_format != 3.
+      Must be >= 1; 1 (the default) leaves the store unsharded (see
+      build_encoding/XY_SHARD_MULTIPLIER for the recommended value to pass
+      explicitly). Raises ValueError if < 1.
    local_staging_dir : str, optional
       If set, `output_store` must be an s3:// path. All batches are written
       to this local directory first, and the whole store is uploaded to
@@ -575,7 +541,7 @@ def deep_copy_cube(
 
    time_vars, static_vars = split_vars_by_time(cube)
    encoding = build_encoding(
-      cube, total_layers, time_chunk, xy_chunk, time_chunk_1d, zarr_format,
+      cube, total_layers, time_chunk, xy_chunk, time_chunk_1d,
       xy_shard_multiplier
    )
 
@@ -617,14 +583,14 @@ def deep_copy_cube(
             write_target,
             mode='w',
             encoding=encoding,
-            zarr_format=zarr_format,
+            zarr_format=3,
             consolidated=True
          )
       else:
          batch.to_zarr(
             write_target,
             append_dim=utils.Coords.TIME,
-            zarr_format=zarr_format,
+            zarr_format=3,
             consolidated=True
          )
 
@@ -649,28 +615,19 @@ if __name__ == '__main__':
    parser = argparse.ArgumentParser(
       description="""
       Materialize a virtual ITS_LIVE datacube (icechunk repo built by
-      virtual_itslive_cube_per_chunk.py) into a real Zarr datacube (v2 or v3,
-      see --zarr-format), chunked the same way itscube.py chunks a regular
-      datacube.
+      virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube,
+      chunked the same way itscube.py chunks a regular datacube.
 
       Usage example:
       python src/deep_copy_cube.py \
          --input-store my_virtual_cube.icechunk \
          --output-store my_deep_copy_cube.zarr
 
-      # Write a Zarr v3 store instead of the default v2:
+      # Write a store with sharded 3D variables (--xy-shard-multiplier 4 is
+      # the recommended production value, see XY_SHARD_MULTIPLIER):
       python src/deep_copy_cube.py \
          --input-store my_virtual_cube.icechunk \
          --output-store my_deep_copy_cube.zarr \
-         --zarr-format 3
-
-      # Write a Zarr v3 store with sharded 3D variables (requires --zarr-format 3;
-      # --xy-shard-multiplier 4 is the recommended production value, see
-      # XY_SHARD_MULTIPLIER):
-      python src/deep_copy_cube.py \
-         --input-store my_virtual_cube.icechunk \
-         --output-store my_deep_copy_cube.zarr \
-         --zarr-format 3 \
          --xy-shard-multiplier 4
 
       # Stage locally, then upload the whole store to S3 in one shot
@@ -726,21 +683,13 @@ if __name__ == '__main__':
       help='Chunk size for 1D (time,) variables [%(default)d].'
    )
    parser.add_argument(
-      '--zarr-format',
-      type=int,
-      choices=[2, 3],
-      default=2,
-      help='Zarr format version for the output store: 2 or 3 [%(default)d].'
-   )
-   parser.add_argument(
       '--xy-shard-multiplier',
       type=int,
       default=1,
       help='Number of --xy-chunk-value-sized inner chunks grouped into one '
-         'shard per spatial axis, for 3D (time,y,x) variables. Requires '
-         f'--zarr-format 3 (sharding is v3-only); a value of 1 (the '
-         f'default) disables sharding. Recommended value once sharding is '
-         f'enabled: {XY_SHARD_MULTIPLIER} [%(default)d].'
+         'shard per spatial axis, for 3D (time,y,x) variables. A value of 1 '
+         f'(the default) disables sharding. Recommended value once sharding '
+         f'is enabled: {XY_SHARD_MULTIPLIER} [%(default)d].'
    )
    parser.add_argument(
       '--local-staging-dir',
@@ -774,7 +723,6 @@ if __name__ == '__main__':
       args.time_chunk_value,
       args.xy_chunk_value,
       args.time_chunk_value_1d,
-      args.zarr_format,
       args.xy_shard_multiplier,
       args.local_staging_dir,
       args.keep_local_staging
