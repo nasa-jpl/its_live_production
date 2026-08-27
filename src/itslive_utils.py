@@ -1,6 +1,7 @@
 # from asyncio import all_tasks
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 import collections
 import functools
 import itertools
@@ -212,6 +213,15 @@ def backup_chunk(bucket, source_path, filename, target_path):
     from one location to another. This is used to create a backup
     of the datacube in S3.
 
+    A missing source object (404) is not an error here and is skipped rather
+    than retried/raised: identify_datacube_latest_chunks()/
+    identify_datacube_latest_shards() compute the chunk/shard index grid
+    mathematically from shape/chunk_shape, but Zarr skips writing a
+    chunk/shard object entirely when that region is all fill-value (e.g. an
+    M11/M12 placeholder region synthesized for optical granules -- see
+    virtual_itslive_cube.py's _add_missing_m11_m12()). Nothing was ever
+    written there, so there's nothing to back up or later restore.
+
     Args:
         bucket (boto3.resources.factory.s3.Bucket): S3 bucket resource.
         source_path (str): Path to the datacube or its variable in S3.
@@ -222,7 +232,15 @@ def backup_chunk(bucket, source_path, filename, target_path):
         'Bucket': bucket.name,
         'Key': os.path.join(source_path, filename)
     }
-    bucket.copy(copy_source, os.path.join(target_path, filename))
+    try:
+        bucket.copy(copy_source, os.path.join(target_path, filename))
+    except ClientError as exc:
+        error_code = exc.response.get('Error', {}).get('Code')
+        status_code = exc.response.get('ResponseMetadata', {}).get('HTTPStatusCode')
+        if error_code in ('404', 'NoSuchKey') or status_code == 404:
+            logging.info(f"No object at {copy_source['Key']}, nothing to back up -- skipping")
+            return
+        raise
 
 
 @timing_decorator
