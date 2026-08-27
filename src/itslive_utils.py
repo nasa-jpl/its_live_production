@@ -655,6 +655,11 @@ def earthcatalog_search(
         {"op": "=",  "args": [{"property": "proj:code"}, f"EPSG:{epsg_code}"]},
     ]}
 
+    logging.info(
+        f"Querying earthcatalog: \n{cql_filter=}\n{polygon=}\n"
+        f"{start_date}/{end_date}"
+    )
+
     search = cat.search(
         intersects=polygon,
         datetime=f"{start_date}/{end_date}",
@@ -664,6 +669,7 @@ def earthcatalog_search(
     granule_urls = [
         asset.href for item in search.items() for asset in item.assets.values()
     ]
+    logging.info(f'Got {len(granule_urls)} granules from earthcatalog')
 
     return granule_urls
 
