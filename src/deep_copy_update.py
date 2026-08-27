@@ -23,7 +23,6 @@ from datetime import datetime
 
 import s3fs
 import xarray as xr
-import zarr
 
 import itslive_utils
 import utils
@@ -89,31 +88,6 @@ def get_current_num_layers(output_store):
       return ds.sizes[utils.Coords.TIME]
 
 
-def _is_sharded_v3_store(output_store):
-   """Check whether an existing store has Zarr v3 sharding enabled on any of
-   its data variables.
-
-   Auto-detecting sharding from the store itself (rather than requiring a
-   matching CLI flag) avoids relying on the operator remembering whether
-   --xy-shard-multiplier was passed when deep_copy_cube.py originally created
-   the store.
-
-   Parameters
-   ----------
-   output_store : str
-      Path to the existing deep-copy zarr store (s3:// or local).
-
-   Returns
-   -------
-   bool
-   """
-   store = zarr.open_consolidated(store=output_store, mode='r')
-   return any(
-      getattr(store[var_name], 'shards', None) is not None
-      for var_name in store
-   )
-
-
 def deep_copy_update(
    input_store, output_store, bucket_prefix, batch_size,
    backup_store=None, local_staging_dir=None, keep_local_staging=False
@@ -134,22 +108,21 @@ def deep_copy_update(
    batch_size : int
       Number of new layers to materialize and write per batch.
    backup_store : str, optional
-      S3 path to back up `output_store`'s active shards to before staging
-      them locally. Required (and only meaningful) when `output_store` is a
-      sharded store on S3 (see _is_sharded_v3_store) -- appending to
-      a sharded store means a full read-modify-write of every active shard,
-      so a durable, independently-restorable copy is kept in case the final
-      upload back to `output_store` fails partway (this has happened before
-      in production; some cubes have hundreds of thousands to ~1M granules,
-      making a from-scratch rebuild too costly to risk without one).
+      S3 path to back up `output_store`'s latest chunks/shards to before
+      staging them locally. Required (and only meaningful) when
+      `output_store` is on S3 -- appending means a full read-modify-write of
+      every active chunk/shard, so a durable, independently-restorable copy
+      is kept in case the final upload back to `output_store` fails partway
+      (this has happened before in production; some cubes have hundreds of
+      thousands to ~1M granules, making a from-scratch rebuild too costly to
+      risk without one).
    local_staging_dir : str, optional
-      Local directory to stage the backed-up active shards in before
+      Local directory to stage the backed-up latest chunks/shards in before
       appending, then upload back to `output_store` from. Required under
-      the same condition as `backup_store`. Ignored (and unneeded) for
-      non-sharded stores or a local `output_store`, where appends go
-      directly to `output_store` as before -- a local shard read-modify-
-      write is normal filesystem I/O; there's no network round-trip to
-      economize on.
+      the same condition as `backup_store`. Ignored (and unneeded) for a
+      local `output_store`, where appends go directly to `output_store` as
+      before -- a local chunk/shard read-modify-write is normal filesystem
+      I/O; there's no network round-trip to economize on.
    keep_local_staging : bool
       If True, keep `local_staging_dir` after a successful upload instead of
       removing it. Ignored if local staging wasn't used for this run.
@@ -186,40 +159,41 @@ def deep_copy_update(
       f'({current_num_layers}:{total_layers}) to {output_store}'
    )
 
-   # Appending to a sharded store means every batch does a full
-   # read-modify-write of each active shard. Doing that directly against S3,
-   # once per batch, would repeatedly re-download/re-upload the same
-   # (potentially tens-of-MB) shard files over the network. Non-sharded
-   # stores and local output_store paths don't have this cost -- a
-   # partially-filled chunk is small, and local read-modify-write is plain
-   # filesystem I/O -- so only the sharded+S3 case stages locally first.
-   use_local_staging = (
-      str(output_store).startswith(utils.S3_PREFIX)
-      and _is_sharded_v3_store(output_store)
-   )
+   # Every append does a full read-modify-write of each active chunk/shard.
+   # With time_chunk=20000 (see deep_copy_cube.TIME_CHUNK_VALUE), the active
+   # time-chunk holds all/most of a cube's layers until it exceeds 20000, so
+   # doing this directly against S3, once per batch, would repeatedly
+   # re-download/re-upload the same (potentially large) chunk/shard files
+   # over the network. A local output_store doesn't have this cost -- a
+   # local read-modify-write is plain filesystem I/O -- so only S3 output
+   # stages locally first.
+   use_local_staging = str(output_store).startswith(utils.S3_PREFIX)
 
    # Fail loudly instead of silently ignoring these flags: passing either one
-   # for a store that doesn't qualify for local staging (not on S3, or not
-   # sharded) previously fell straight through to a direct-to-S3 append with
+   # for a store that doesn't qualify for local staging (a local
+   # output_store) previously fell straight through to a direct append with
    # no indication the flags had no effect.
    if (local_staging_dir or backup_store) and not use_local_staging:
       raise ValueError(
          f"--local-staging-dir/--backup-store were given but {output_store} "
          "does not qualify for local staging (requires an s3:// "
-         "--output-store and a sharded store) -- these flags would "
-         "otherwise be silently ignored. Omit them for this store."
+         "--output-store) -- these flags would otherwise be silently "
+         "ignored. Omit them for this store."
       )
 
    if use_local_staging:
       if not local_staging_dir or not backup_store:
          raise ValueError(
-            f"{output_store} is a sharded store on S3: "
-            "--local-staging-dir and --backup-store are both required so "
-            "the active shards can be backed up and staged locally before "
-            "appending (see deep_copy_update()'s docstring)."
+            f"{output_store} is on S3: --local-staging-dir and "
+            "--backup-store are both required so the active chunks/shards "
+            "can be backed up and staged locally before appending (see "
+            "deep_copy_update()'s docstring)."
          )
 
-      logging.info(f'Backing up active shards from {output_store} to {backup_store}')
+      logging.info(f'Backing up latest chunks/shards from {output_store} to {backup_store}')
+      # backup_datacube_latest_shards() handles both sharded and unsharded
+      # v3 stores (falls back from .shards to .chunks -- see
+      # itslive_utils.identify_datacube_latest_shards()).
       itslive_utils.backup_datacube_latest_shards(output_store, backup_store)
 
       resolve_output_store(local_staging_dir)
@@ -318,17 +292,18 @@ if __name__ == '__main__':
       '--backup-store',
       type=str,
       default=None,
-      help='S3 path to back up --output-store\'s active shards to before '
-         'staging them locally. Required when --output-store is a sharded '
-         'store on S3; ignored otherwise.'
+      help='S3 path to back up --output-store\'s latest chunks/shards to '
+         'before staging them locally. Required when --output-store is on '
+         'S3; ignored otherwise.'
    )
    parser.add_argument(
       '--local-staging-dir',
       type=str,
       default=None,
-      help='Local directory to stage the backed-up active shards in before '
-         'appending, then upload back to --output-store from. Required '
-         'under the same condition as --backup-store; ignored otherwise.'
+      help='Local directory to stage the backed-up latest chunks/shards in '
+         'before appending, then upload back to --output-store from. '
+         'Required under the same condition as --backup-store; ignored '
+         'otherwise.'
    )
    parser.add_argument(
       '--keep-local-staging',

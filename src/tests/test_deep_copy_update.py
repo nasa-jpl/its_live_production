@@ -2,8 +2,6 @@
 Unit tests for deep_copy_update.py.
 
 Covers:
-- _is_sharded_v3_store()'s detection logic against real local Zarr v3 stores
-  (no S3/mocking)
 - The local-staging decision requirement (--local-staging-dir/--backup-store)
   is never exercised against real S3 here -- only against local stores,
   where use_local_staging is always False, so no network path is taken.
@@ -19,7 +17,6 @@ import os
 import sys
 
 import numpy as np
-import pytest
 import xarray as xr
 from zarr.codecs import BloscCodec
 
@@ -30,7 +27,7 @@ import deep_copy_update as dcu
 _COMPRESSOR = [BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')]
 
 
-def _write_v3_store(path, num_layers, sharded):
+def _write_sharded_v3_store(path, num_layers):
     ds = xr.Dataset(
         {'v': (('time', 'y', 'x'), np.arange(num_layers * 40 * 40, dtype='int16')
                                         .reshape(num_layers, 40, 40))},
@@ -40,25 +37,13 @@ def _write_v3_store(path, num_layers, sharded):
             'x': np.arange(40),
         }
     )
-    encoding = {'chunks': (num_layers, 10, 10), 'compressors': _COMPRESSOR}
-    if sharded:
-        encoding['shards'] = (num_layers, 20, 20)
+    encoding = {
+        'chunks': (num_layers, 10, 10),
+        'compressors': _COMPRESSOR,
+        'shards': (num_layers, 20, 20),
+    }
     ds.to_zarr(path, mode='w', zarr_format=3, consolidated=True, encoding={'v': encoding})
     return ds
-
-
-class TestIsShardedV3Store:
-    def test_true_for_sharded_local_store(self, tmp_path):
-        path = str(tmp_path / "sharded.zarr")
-        _write_v3_store(path, num_layers=3, sharded=True)
-
-        assert dcu._is_sharded_v3_store(path) is True
-
-    def test_false_for_unsharded_local_store(self, tmp_path):
-        path = str(tmp_path / "unsharded.zarr")
-        _write_v3_store(path, num_layers=3, sharded=False)
-
-        assert dcu._is_sharded_v3_store(path) is False
 
 
 class TestDeepCopyUpdateLocalShardedAppend:
@@ -72,7 +57,7 @@ class TestDeepCopyUpdateLocalShardedAppend:
 
     def test_second_batch_append_preserves_first_batch_data(self, tmp_path):
         path = str(tmp_path / "sharded_append.zarr")
-        first = _write_v3_store(path, num_layers=2, sharded=True)
+        first = _write_sharded_v3_store(path, num_layers=2)
 
         # Append 3 more layers directly (mimics deep_copy_update()'s batch
         # loop body without needing a real icechunk-backed virtual cube).
