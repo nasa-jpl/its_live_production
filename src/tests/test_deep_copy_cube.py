@@ -84,7 +84,7 @@ class TestDeepCopyCubeHelpers:
     def test_build_encoding_3d_var_chunks(self, synthetic_cube):
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000, zarr_format=3
+            time_chunk_1d=200000
         )
 
         assert encoding[Vars.vx]['chunks'] == (3, 10, 10)
@@ -92,7 +92,7 @@ class TestDeepCopyCubeHelpers:
     def test_build_encoding_1d_var_chunks(self, synthetic_cube):
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000, zarr_format=3
+            time_chunk_1d=200000
         )
 
         assert encoding[Vars.url]['chunks'] == (3,)
@@ -100,7 +100,7 @@ class TestDeepCopyCubeHelpers:
     def test_build_encoding_static_var_full_extent(self, synthetic_cube):
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000, zarr_format=3
+            time_chunk_1d=200000
         )
 
         assert encoding['landice']['chunks'] == (20, 30)
@@ -108,7 +108,7 @@ class TestDeepCopyCubeHelpers:
     def test_build_encoding_coords_full_extent(self, synthetic_cube):
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000, zarr_format=3
+            time_chunk_1d=200000
         )
 
         assert encoding[utils.Coords.X]['chunks'] == (30,)
@@ -118,7 +118,7 @@ class TestDeepCopyCubeHelpers:
         # x/y have no missing values; suppress xarray's default _FillValue=NaN.
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000, zarr_format=3
+            time_chunk_1d=200000
         )
 
         assert encoding[utils.Coords.X][utils.OutputFormat.fill_value] is None
@@ -127,7 +127,7 @@ class TestDeepCopyCubeHelpers:
     def test_build_encoding_scalar_var_skipped(self, synthetic_cube):
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000, zarr_format=3
+            time_chunk_1d=200000
         )
 
         assert 'mapping' not in encoding
@@ -137,41 +137,31 @@ class TestDeepCopyCubeHelpers:
         # capped, matching itscube.py's min(max_number_of_layers, TIME_CHUNK_VALUE).
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000, zarr_format=3
+            time_chunk_1d=200000
         )
 
         assert encoding[Vars.vx]['chunks'][0] == 3
 
     def test_build_encoding_no_shards_by_default(self, synthetic_cube):
-        # xy_shard_multiplier defaults to 1: unsharded, even for zarr_format=3.
+        # xy_shard_multiplier defaults to 1: unsharded.
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000, zarr_format=3
+            time_chunk_1d=200000
         )
 
         assert 'shards' not in encoding[Vars.vx]
 
-    def test_build_encoding_no_shards_for_zarr_format_2(self, synthetic_cube):
-        # xy_shard_multiplier left at its default (1, unsharded): zarr_format=2
-        # never gets a 'shards' key regardless.
-        encoding = dcc.build_encoding(
-            synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-            time_chunk_1d=200000, zarr_format=2
-        )
-
-        assert 'shards' not in encoding[Vars.vx]
-
-    def test_build_encoding_rejects_shard_multiplier_for_zarr_format_2(self, synthetic_cube):
-        with pytest.raises(ValueError, match="requires zarr_format=3"):
+    def test_build_encoding_rejects_shard_multiplier_below_one(self, synthetic_cube):
+        with pytest.raises(ValueError, match="xy_shard_multiplier must be >= 1"):
             dcc.build_encoding(
                 synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=10,
-                time_chunk_1d=200000, zarr_format=2, xy_shard_multiplier=4
+                time_chunk_1d=200000, xy_shard_multiplier=0
             )
 
     def test_build_encoding_adds_shards_for_3d_var(self, synthetic_cube):
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=8,
-            time_chunk_1d=200000, zarr_format=3, xy_shard_multiplier=4
+            time_chunk_1d=200000, xy_shard_multiplier=4
         )
 
         assert encoding[Vars.vx]['shards'] == (3, 32, 32)
@@ -181,7 +171,7 @@ class TestDeepCopyCubeHelpers:
         # shard, so a shard's time extent must always equal the chunk's.
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=8,
-            time_chunk_1d=200000, zarr_format=3, xy_shard_multiplier=4
+            time_chunk_1d=200000, xy_shard_multiplier=4
         )
 
         assert encoding[Vars.vx]['shards'][0] == encoding[Vars.vx]['chunks'][0]
@@ -189,7 +179,7 @@ class TestDeepCopyCubeHelpers:
     def test_build_encoding_no_shards_for_1d_or_static_vars(self, synthetic_cube):
         encoding = dcc.build_encoding(
             synthetic_cube, total_layers=3, time_chunk=20000, xy_chunk=8,
-            time_chunk_1d=200000, zarr_format=3, xy_shard_multiplier=4
+            time_chunk_1d=200000, xy_shard_multiplier=4
         )
 
         assert 'shards' not in encoding[Vars.url]
@@ -357,10 +347,6 @@ class TestDeepCopyCubeIntegration:
             "--input-store", str(virtual_cube_path),
             "--output-store", str(deep_copy_cube_path),
             "--batch-size", str(test_config["batch_size"]),
-            # Downstream assertions open the output with zarr_format=3
-            # explicitly; deep_copy_cube.py's own CLI default is v2, so this
-            # must be requested explicitly to match.
-            "--zarr-format", "3",
         ]
 
         print(f"\nRunning command: {' '.join(cmd)}")

@@ -52,18 +52,13 @@ class TestIsShardedV3Store:
         path = str(tmp_path / "sharded.zarr")
         _write_v3_store(path, num_layers=3, sharded=True)
 
-        assert dcu._is_sharded_v3_store(path, zarr_format=3) is True
+        assert dcu._is_sharded_v3_store(path) is True
 
     def test_false_for_unsharded_local_store(self, tmp_path):
         path = str(tmp_path / "unsharded.zarr")
         _write_v3_store(path, num_layers=3, sharded=False)
 
-        assert dcu._is_sharded_v3_store(path, zarr_format=3) is False
-
-    def test_false_for_zarr_format_2_without_touching_store(self):
-        # Short-circuits before opening the store -- a nonexistent path is
-        # fine here, proving no store access is attempted.
-        assert dcu._is_sharded_v3_store("s3://does-not-exist/whatever", zarr_format=2) is False
+        assert dcu._is_sharded_v3_store(path) is False
 
 
 class TestDeepCopyUpdateLocalShardedAppend:
