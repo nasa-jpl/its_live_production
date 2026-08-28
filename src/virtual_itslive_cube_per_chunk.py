@@ -741,6 +741,55 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    return *build_virtual_cube(cropped, already_aligned=True), skipped_granules
 
 
+def _granule_exists(granule_url, store, bucket_prefix):
+   """Check whether a granule actually exists in S3, via a cheap HEAD request.
+
+   Temporary bypass for a known searchAPI/catalog bug where some returned
+   granule URLs don't correspond to any real S3 object (to be fixed by the
+   catalog developer). Runs *before* the much more expensive
+   `open_virtual_dataset()` call in `read_virtual_dataset`, so a missing
+   granule never reaches -- and never triggers -- that function's
+   intentional fail-fast error handling. A granule that exists but fails to
+   open for some other reason still hits that fail-fast path unchanged.
+
+   Parameters
+   ----------
+   granule_url : str
+      Full s3:// URL to the granule.
+   store : obstore.store.S3Store
+      Object store for the granules bucket.
+   bucket_prefix : str
+      s3:// URL prefix (with trailing slash) to strip from `granule_url` to
+      get the bucket-relative key `store` expects.
+
+   Returns
+   -------
+   bool
+      True if the object exists, False on a 404 (`FileNotFoundError`,
+      confirmed to be what `obstore.head()` raises for a missing key).
+   """
+   key = granule_url.replace(bucket_prefix, '')
+   try:
+      obstore.head(store, key)
+      return True
+   except FileNotFoundError:
+      return False
+
+
+def _check_granule_exists(granule_url, store, bucket_prefix):
+   """Parallel-map wrapper around `_granule_exists` that pairs the result
+   with its URL, since `Parallel(return_as="generator_unordered")` yields
+   results out of input order (mirrors `crop_virtual_dataset_to_bbox`'s
+   `(result, url)` return convention for the same reason).
+
+   Returns
+   -------
+   tuple of (str, bool)
+      (granule_url, exists)
+   """
+   return granule_url, _granule_exists(granule_url, store, bucket_prefix)
+
+
 def read_virtual_dataset(granule_url, parser, registry):
    """Read granule into virtual dataset.
 
@@ -804,17 +853,24 @@ def load_granules(granules, bucket):
 
    Returns
    -------
-   list of xr.Dataset
-      List of virtual datasets, one per granule. Order is not guaranteed to
-      match the input (results are collected as-completed); downstream stacking
-      keys off the time coordinate, not list position. Each dataset has 'time',
-      'y', 'x' coordinates loaded and data variables as ManifestArrays.
+   tuple of (list of xr.Dataset, list of str)
+      - List of virtual datasets, one per granule that exists in S3. Order is
+      not guaranteed to match the input (results are collected as-completed);
+      downstream stacking keys off the time coordinate, not list position.
+      Each dataset has 'time', 'y', 'x' coordinates loaded and data variables
+      as ManifestArrays.
+      - List of granule URLs from `granules` that don't exist in S3 (see
+      `_granule_exists` -- a temporary bypass for a known searchAPI/catalog
+      bug), so the caller can record them in the persistent skipped-granules
+      JSON.
 
    Raises
    ------
    RuntimeError
-      Propagated from `read_virtual_dataset` on the first granule that fails
-      to open -- aborts the whole run rather than skipping it.
+      Propagated from `read_virtual_dataset` on the first *existing* granule
+      that still fails to open -- aborts the whole run rather than skipping
+      it. Unaffected by the missing-granule bypass above: only genuinely
+      missing (404) granules are skipped, any other failure still fails fast.
    """
    store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
    registry = ObjectStoreRegistry({bucket: store})
@@ -822,6 +878,33 @@ def load_granules(granules, bucket):
    # read_virtual_dataset so build_virtual_cube can recover its projection attrs
    # to synthesize the cube's CF grid-mapping variable.
    parser = HDFParser()
+
+   # Temporary bypass for a known searchAPI/catalog bug where some returned
+   # granule URLs don't correspond to any real S3 object: check existence
+   # (cheap HEAD request) before attempting the much more expensive
+   # open_virtual_dataset() below, so a missing granule never reaches -- and
+   # never triggers -- read_virtual_dataset's intentional fail-fast error
+   # handling. Threads ("threading"), not processes: same reasoning as the
+   # cropping pass in build_virtual_cube_subset (pure I/O, thread-safe, no
+   # GIL-bound compute).
+   bucket_prefix = bucket.rstrip('/') + '/'
+   existing_granules = []
+   missing_granules = []
+   with parallel_config(backend='threading', n_jobs=MAX_AWS_CONNECTIONS):
+      result_stream = Parallel(return_as="generator_unordered")(
+         delayed(_check_granule_exists)(each_url, store, bucket_prefix)
+         for each_url in granules
+      )
+      for url, exists in result_stream:
+         (existing_granules if exists else missing_granules).append(url)
+
+   if missing_granules:
+      logging.warning(
+         f"{len(missing_granules)} granules reported by searchAPI are "
+         f"missing from S3 (known catalog issue) -- skipping: "
+         f"{missing_granules[:5]}{'...' if len(missing_granules) > 5 else ''}"
+      )
+   granules = existing_granules
 
    vds_list = []
 
@@ -856,7 +939,7 @@ def load_granules(granules, bucket):
          if done % PROGRESS_LOG_INTERVAL == 0 or done == total:
             logging.info(f"Loaded {done}/{total} granules")
 
-   return vds_list
+   return vds_list, missing_granules
 
 
 def set_1d_time_chunk_encoding(cube, chunk_size):
@@ -1166,7 +1249,14 @@ if __name__ == "__main__":
    for batch_num, batch_granules in enumerate(batches, start=1):
       logging.info(f'Batch {batch_num}/{num_batches}: loading {len(batch_granules)} granules')
 
-      vds_list = load_granules(batch_granules, bucket)
+      vds_list, missing_granules = load_granules(batch_granules, bucket)
+      if missing_granules:
+         logging.warning(
+            f'Batch {batch_num}/{num_batches}: {len(missing_granules)} '
+            'granules reported by searchAPI are missing from S3 (known '
+            'catalog issue) -- skipping'
+         )
+      skipped_granules.extend(missing_granules)
       logging.info(f'Batch {batch_num}/{num_batches}: parsed {len(vds_list)} datasets')
 
       cube, autorift_param_file, batch_skipped_granules = \

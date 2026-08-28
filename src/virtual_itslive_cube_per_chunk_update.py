@@ -704,7 +704,16 @@ def main():
                     f'{len(batch_granules)} granules'
                 )
 
-                vds_list = load_granules(batch_granules, args.bucket)
+                vds_list, missing_granules = load_granules(batch_granules, args.bucket)
+                if missing_granules:
+                    logging.warning(
+                        f'Batch {batch_num}/{num_batches}: {len(missing_granules)} '
+                        'granules reported by searchAPI are missing from S3 (known '
+                        'catalog issue) -- skipping'
+                    )
+                    skipped_set = skipped_set.union(
+                        set(s.replace(HTTPS_URL, S3_URL) for s in missing_granules)
+                    )
                 logging.info(
                     f'Batch {batch_num}/{num_batches}: loaded '
                     f'{len(vds_list)} virtual datasets'
