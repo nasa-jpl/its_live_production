@@ -435,10 +435,10 @@ if __name__ == '__main__':
    parser.add_argument(
       '--xy-shard-multiplier',
       type=int,
-      default=1,
+      default=XY_SHARD_MULTIPLIER,
       help='Number of --xy-chunk-value-sized inner chunks grouped into one '
          'shard per spatial axis, for 3D (time,y,x) variables. A value of 1 '
-         f'(the default) disables sharding. Recommended value once sharding '
+         f'disables sharding. Recommended value once sharding '
          f'is enabled: {XY_SHARD_MULTIPLIER} [%(default)d].'
    )
    parser.add_argument(
