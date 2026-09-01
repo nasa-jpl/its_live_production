@@ -283,6 +283,16 @@ def deep_copy_cube_tiled(
    # already exist, so this template must declare all of them (time_vars +
    # static_vars) up front, sliced to total_layers along 'time' to honor
    # --num-layers.
+   #
+   # safe_chunks=False: the virtual cube's own per-granule dask chunking
+   # (chunk size 1 along 'time' -- see virtual_itslive_cube_per_chunk.py)
+   # doesn't match encoding's much larger time_chunk, which xarray's
+   # dask-parallel-write safety check (validate_grid_chunks_alignment)
+   # flags as unsafe. That check exists to prevent multiple dask workers
+   # racing on the same zarr chunk during a real parallel write -- it
+   # doesn't apply here since compute=False never executes the write at
+   # all, only declares metadata; the actual pixel data is written later,
+   # per (tile, time-chunk), from already-.load()-ed (non-dask) batches.
    template = xr.merge([
       cube[time_vars].isel({utils.Coords.TIME: slice(0, total_layers)}),
       cube[static_vars]
@@ -294,7 +304,8 @@ def deep_copy_cube_tiled(
       compute=False,
       encoding=encoding,
       zarr_format=3,
-      consolidated=True
+      consolidated=True,
+      safe_chunks=False
    )
    logging.info(f'Created template store at {write_target}')
 
