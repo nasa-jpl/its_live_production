@@ -116,6 +116,13 @@ class ITSCube:
     START_DATE = '1982-01-01'
     END_DATE = None
 
+    # Granule catalog to search. 'serverless' (default) queries the geoparquet
+    # warehouse via duckdb; 'pgstac' queries the STAC API via pystac_client.
+    # STAC_CATALOG overrides the catalog location (s3:// for serverless,
+    # https:// for pgstac); None uses the itslive defaults.
+    SEARCH_TYPE = 'serverless'
+    STAC_CATALOG = None
+
     # URL path to the target datacube
     URL = ''
 
@@ -402,8 +409,9 @@ class ITSCube:
             geojson=roi,
             start=ITSCube.START_DATE,
             end=ITSCube.END_DATE or datetime.now().strftime('%Y-%m-%d'),
-            type="serverless",
+            type=ITSCube.SEARCH_TYPE,
             engine="duckdb",
+            base_catalog_href=ITSCube.STAC_CATALOG,
             filters={
                 "percent_valid_pixels": GTE(1.0),
                 "proj:code": EQ(f"EPSG:{ITSCube.PROJECTION}"),
@@ -3254,6 +3262,22 @@ if __name__ == '__main__':
             'to get velocity pair granules [%(default)s]'
     )
     parser.add_argument(
+        '--searchType',
+        choices=['serverless', 'pgstac'],
+        default='serverless',
+        help='Granule search backend: "serverless" queries the geoparquet '
+            'warehouse via duckdb (default), "pgstac" queries the STAC API '
+            'via pystac_client [%(default)s].'
+    )
+    parser.add_argument(
+        '-stacCatalog',
+        type=str,
+        default=None,
+        help='Granule catalog location override. For serverless: s3:// path to '
+            'the geoparquet warehouse (default: itslive warehouse). For pgstac: '
+            'https:// URL of the STAC API (default: https://stac.itslive.cloud).'
+    )
+    parser.add_argument(
         '--searchAPIStopDate',
         action='store',
         type=lambda s: parse(s).strftime('%Y-%m-%d'),
@@ -3322,6 +3346,8 @@ if __name__ == '__main__':
     ITSCube.CELL_SIZE = args.gridCellSize
     utils.PATH_URL = args.pathURLToken
     ITSCube.START_DATE = args.searchAPIStartDate
+    ITSCube.SEARCH_TYPE = args.searchType
+    ITSCube.STAC_CATALOG = args.stacCatalog
     ITSCube.END_DATE = args.searchAPIStopDate
     ITSCube.NO_AWS_SIGNING = args.noAWSSigning
     ITSCube.IGNORE_EXISTING_CUBE = args.ignoreExistingCube

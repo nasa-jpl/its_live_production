@@ -604,6 +604,22 @@ if __name__ == '__main__':
       default=8,
       help='Number of Dask parallel workers [%(default)d]'
    )
+   parser.add_argument(
+      '--searchType',
+      choices=['serverless', 'pgstac'],
+      default='serverless',
+      help='Granule search backend: "serverless" queries the geoparquet '
+         'warehouse via duckdb (default), "pgstac" queries the STAC API '
+         'via pystac_client [%(default)s].'
+   )
+   parser.add_argument(
+      '-stacCatalog',
+      type=str,
+      default=None,
+      help='Granule catalog location override. For serverless: s3:// path to '
+         'the geoparquet warehouse (default: itslive warehouse). For pgstac: '
+         'https:// URL of the STAC API (default: https://stac.itslive.cloud).'
+   )
 
    args = parser.parse_args()
 
@@ -636,8 +652,9 @@ if __name__ == '__main__':
          geojson=roi,
          start=start_date,
          end=end_date,
-         type="serverless",
+         type=args.searchType,
          engine="duckdb",
+         base_catalog_href=args.stacCatalog,
          filters={
             "percent_valid_pixels": GTE(1),
             "proj:code": EQ(args.epsgString),
