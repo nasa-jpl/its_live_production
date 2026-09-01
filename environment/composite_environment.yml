@@ -55,5 +55,5 @@ dependencies:
   # Pip dependencies
   - pip
   - pip:
-    - itslive==0.7.3
+    - itslive>=0.7.3
     - tqdm_joblib

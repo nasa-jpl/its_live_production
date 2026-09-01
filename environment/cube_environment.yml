@@ -35,4 +35,4 @@ dependencies:
   - rustac>=0.9          # required by itslive-py
   - pip
   - pip:
-    - itslive==0.7.3
+    - itslive>=0.7.3
