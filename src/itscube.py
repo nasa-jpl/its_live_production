@@ -25,6 +25,8 @@ from tqdm import tqdm
 import xarray as xr
 from urllib.parse import urlparse
 
+from itslive import EQ, GTE, search
+
 # Local modules
 import itslive_utils
 from grid import Bounds, Grid
@@ -110,12 +112,16 @@ class ITSCube:
     # utils.PATH_URL is set to a different value for some datacubes.
     SHAPE_PATH_URL = utils.PATH_URL
 
-    # STAC catalog S3 URL for the ITS_LIVE granules
-    STAC_CATALOG = "s3://its-live-data/test-space/stac"
-
     # Start and end dates for the catalog search
     START_DATE = '1982-01-01'
     END_DATE = None
+
+    # Granule catalog to search. 'serverless' (default) queries the geoparquet
+    # warehouse via duckdb; 'pgstac' queries the STAC API via pystac_client.
+    # STAC_CATALOG overrides the catalog location (s3:// for serverless,
+    # https:// for pgstac); None uses the itslive defaults.
+    SEARCH_TYPE = 'serverless'
+    STAC_CATALOG = None
 
     # URL path to the target datacube
     URL = ''
@@ -399,11 +405,17 @@ class ITSCube:
             "coordinates": [self.polygon_coords]
         }
 
-        found_urls = itslive_utils.serverless_search(
-            epsg_code=ITSCube.PROJECTION,
-            start_date=ITSCube.START_DATE,
-            end_date=ITSCube.END_DATE,
-            roi=roi
+        found_urls = search(
+            geojson=roi,
+            start=ITSCube.START_DATE,
+            end=ITSCube.END_DATE or datetime.now().strftime('%Y-%m-%d'),
+            type=ITSCube.SEARCH_TYPE,
+            engine="duckdb",
+            base_catalog_href=ITSCube.STAC_CATALOG,
+            filters={
+                "percent_valid_pixels": GTE(1.0),
+                "proj:code": EQ(f"EPSG:{ITSCube.PROJECTION}"),
+            }
         )
         total_num = len(found_urls)
         self.logger.info(
@@ -3148,13 +3160,6 @@ if __name__ == '__main__':
             'existing datacube residing in s3 bucket [%(default)d].'
     )
     parser.add_argument(
-        '-stacCatalog',
-        type=str,
-        default='s3://its-live-data/test-space/stac/geoparquet/h3r2',
-        help='ITS_LIVE granule STAC catalog to request granules from '
-            '[%(default)s].'
-    )
-    parser.add_argument(
         '-o', '--outputStore',
         type=str,
         default="cubedata.zarr",
@@ -3257,6 +3262,22 @@ if __name__ == '__main__':
             'to get velocity pair granules [%(default)s]'
     )
     parser.add_argument(
+        '--searchType',
+        choices=['serverless', 'pgstac'],
+        default='serverless',
+        help='Granule search backend: "serverless" queries the geoparquet '
+            'warehouse via duckdb (default), "pgstac" queries the STAC API '
+            'via pystac_client [%(default)s].'
+    )
+    parser.add_argument(
+        '-stacCatalog',
+        type=str,
+        default=None,
+        help='Granule catalog location override. For serverless: s3:// path to '
+            'the geoparquet warehouse (default: itslive warehouse). For pgstac: '
+            'https:// URL of the STAC API (default: https://stac.itslive.cloud).'
+    )
+    parser.add_argument(
         '--searchAPIStopDate',
         action='store',
         type=lambda s: parse(s).strftime('%Y-%m-%d'),
@@ -3324,8 +3345,9 @@ if __name__ == '__main__':
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
     utils.PATH_URL = args.pathURLToken
-    ITSCube.STAC_CATALOG = args.stacCatalog
     ITSCube.START_DATE = args.searchAPIStartDate
+    ITSCube.SEARCH_TYPE = args.searchType
+    ITSCube.STAC_CATALOG = args.stacCatalog
     ITSCube.END_DATE = args.searchAPIStopDate
     ITSCube.NO_AWS_SIGNING = args.noAWSSigning
     ITSCube.IGNORE_EXISTING_CUBE = args.ignoreExistingCube
