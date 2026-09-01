@@ -29,11 +29,11 @@ import s3fs
 import json
 import logging
 import numpy as np
-from pystac_client import Client
 import sys
-import time
 import xarray as xr
 import warnings
+
+from itslive import EQ, GTE, search
 
 import grid
 from itscube_types import \
@@ -50,9 +50,6 @@ logging.basicConfig(
    format='%(asctime)s - %(levelname)s - %(message)s',
    datefmt='%Y-%m-%d %H:%M:%S'
 )
-
-# Date format string for STAC queries
-DATE_FORMAT = '%Y-%m-%d'
 
 # Encoding for S1 mosaics
 SENTINEL1_ENCODING = {
@@ -104,50 +101,6 @@ def load_polygon(granule_file: str):
       granules_info = json.load(fh)
 
    return granules_info['features'][0]['geometry']['coordinates']
-
-
-def search_stac(
-   stac_catalog="https://stac.itslive.cloud",
-   page_size=100,
-   filter_list=[],
-   **kwargs
-):
-   """
-   Returns list of found granule URLs for the given STAC catalog.
-   """
-   catalog = Client.open(stac_catalog)
-   search_kwargs = {
-      "collections": ["itslive-granules"],
-      "limit": page_size,
-      **kwargs
-   }
-
-   def build_cql2_filter(filters_list):
-      if not filters_list:
-         return None
-      return filters_list[0] if len(filters_list) == 1 else {"op": "and", "args": filters_list}
-   if filter_list:
-      filters = build_cql2_filter(filter_list)
-      search_kwargs["filter"] = build_cql2_filter(filters)
-      search_kwargs["filter_lang"] = "cql2-json"
-
-   search = catalog.search(**search_kwargs)
-   logging.info(f'Search STAC catalog: {search.get_parameters()}')
-
-   hrefs = []
-   pages_count = 0
-   for page in search.pages():
-      pages_count += 1
-      for item in page:
-         if kwargs.get("debug"):
-            logging.info(f"fetching page {pages_count}")
-         for asset in item.assets.values():
-            if "data" in asset.roles and asset.href.endswith(".nc"):
-               hrefs.append(asset.href)
-      time.sleep(0.1)  # we can remove this one, just to avoid overwhelming the server
-
-   logging.info(f"Requested pages: {pages_count}")
-   return hrefs
 
 
 def create_new_granule(x, y):
@@ -677,26 +630,20 @@ if __name__ == '__main__':
       "coordinates": [coordinates]
    }
 
-   date_str = f"{start_date.strftime(DATE_FORMAT)}/{end_date.strftime(DATE_FORMAT)}"
-   logging.info(f'Got {date_str=}')
-
-   # Full list of properties can be found by inspecting a STAC item from the collection
-   # e.g. https://stac.itslive.cloud/collections/itslive-granules/items/S2B_MSIL1C_20250410T133729_N0511_R067_T33XXK_20250410T171508_X_S2A_MSIL1C_20250417T133731_N0511_R067_T33XXK_20250417T205237_G0120V02_P054
    items = {}
    for each_orbit_direction in [ascending, descending]:
-      # Format filters for the STAC query
-      filters = [
-         {"op": ">=", "args": [{"property": "percent_valid_pixels"}, 1]},
-         {"op": "=", "args": [{"property": "proj:code"}, args.epsgString]},
-         {"op": "=", "args": [{"property": "sat:orbit_state"}, each_orbit_direction]},
-      ]
-
-      items[each_orbit_direction] = search_stac(
-                                       datetime=date_str,
-                                       intersects=roi,
-                                       filter_list=filters,
-                                       page_size=2000
-                                    )
+      items[each_orbit_direction] = search(
+         geojson=roi,
+         start=start_date,
+         end=end_date,
+         type="serverless",
+         engine="duckdb",
+         filters={
+            "percent_valid_pixels": GTE(1),
+            "proj:code": EQ(args.epsgString),
+            "sat:orbit_state": EQ(each_orbit_direction),
+         }
+      )
 
    # Report number of found granules
    logging.info(f'Got {len(items[ascending])=}')

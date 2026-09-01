@@ -25,6 +25,8 @@ from tqdm import tqdm
 import xarray as xr
 from urllib.parse import urlparse
 
+from itslive import EQ, GTE, search
+
 # Local modules
 import itslive_utils
 from grid import Bounds, Grid
@@ -109,9 +111,6 @@ class ITSCube:
     # path URL for the shape files with ice masks to avoid confusion when
     # utils.PATH_URL is set to a different value for some datacubes.
     SHAPE_PATH_URL = utils.PATH_URL
-
-    # STAC catalog S3 URL for the ITS_LIVE granules
-    STAC_CATALOG = "s3://its-live-data/test-space/stac"
 
     # Start and end dates for the catalog search
     START_DATE = '1982-01-01'
@@ -399,11 +398,16 @@ class ITSCube:
             "coordinates": [self.polygon_coords]
         }
 
-        found_urls = itslive_utils.serverless_search(
-            epsg_code=ITSCube.PROJECTION,
-            start_date=ITSCube.START_DATE,
-            end_date=ITSCube.END_DATE,
-            roi=roi
+        found_urls = search(
+            geojson=roi,
+            start=ITSCube.START_DATE,
+            end=ITSCube.END_DATE or datetime.now().strftime('%Y-%m-%d'),
+            type="serverless",
+            engine="duckdb",
+            filters={
+                "percent_valid_pixels": GTE(1.0),
+                "proj:code": EQ(f"EPSG:{ITSCube.PROJECTION}"),
+            }
         )
         total_num = len(found_urls)
         self.logger.info(
@@ -3148,13 +3152,6 @@ if __name__ == '__main__':
             'existing datacube residing in s3 bucket [%(default)d].'
     )
     parser.add_argument(
-        '-stacCatalog',
-        type=str,
-        default='s3://its-live-data/test-space/stac/geoparquet/h3r2',
-        help='ITS_LIVE granule STAC catalog to request granules from '
-            '[%(default)s].'
-    )
-    parser.add_argument(
         '-o', '--outputStore',
         type=str,
         default="cubedata.zarr",
@@ -3324,7 +3321,6 @@ if __name__ == '__main__':
     ITSCube.NUM_GRANULES_TO_WRITE = args.chunks
     ITSCube.CELL_SIZE = args.gridCellSize
     utils.PATH_URL = args.pathURLToken
-    ITSCube.STAC_CATALOG = args.stacCatalog
     ITSCube.START_DATE = args.searchAPIStartDate
     ITSCube.END_DATE = args.searchAPIStopDate
     ITSCube.NO_AWS_SIGNING = args.noAWSSigning

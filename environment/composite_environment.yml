@@ -55,5 +55,5 @@ dependencies:
   # Pip dependencies
   - pip
   - pip:
-    - git+https://github.com/nasa-jpl/itslive-py
+    - itslive==0.7.3
     - tqdm_joblib
