@@ -24,10 +24,15 @@ import zarr
 from grid import Bounds
 
 # STAC catalog related
-import itslive
-from itslive.search import EQ, GTE
-import earthcatalog as ec
+from itslive import EQ, GTE, search
 from obstore.store import S3Store
+
+# Granule catalog to search. 'serverless' (default) queries the geoparquet
+# warehouse via duckdb; 'pgstac' queries the STAC API via pystac_client.
+# STAC_CATALOG overrides the catalog location (s3:// for serverless,
+# https:// for pgstac); None uses the itslive defaults.
+SEARCH_TYPE = 'serverless'
+STAC_CATALOG = None
 
 # Number of 'aws s3 cp' retries in case of a failure
 _NUM_AWS_COPY_RETRIES = 5
@@ -615,66 +620,6 @@ def backup_datacube_latest_shards(
 
 
 @timing_decorator
-def earthcatalog_search(
-    epsg_code: str,
-    start_date: str,
-    end_date: str,
-    polygon: dict,
-    percent_valid_pixels: float = 1.0,
-    s3_bucket: str='its-live-data',
-    stac_catalog: str='s3://its-live-data/test-space/stac/catalog'
-):
-    """Get list of granules using earthcatalog Python package.
-
-    Args:
-        epsg_code (str): EPSG code of the target projection to filter
-            granules by (e.g. '32717').
-        start_date (str): Start date of the search range (e.g.
-            '1982-01-01').
-        end_date (str): End date of the search range (e.g.
-            '2026-03-04').
-        polygon (dict): GeoJSON polygon defining the region of interest
-            to intersect granules with.
-        percent_valid_pixels (float): Minimum percentage of valid pixels
-            required for a granule to be included. Defaults to 1.0.
-        s3_bucket (str): S3 bucket to search for the STAC catalog.
-            Defaults to 'its-live-data'.
-        stac_catalog (str): S3 URL of the STAC catalog to search.
-            Defaults to 's3://its-live-data/test-space/stac/catalog'.
-
-    Returns:
-        list(str): Found list of granule URLs.
-    """
-    store = S3Store(
-        bucket=s3_bucket, region="us-west-2", skip_signature=True
-    )
-    cat = ec.open(store=store, base=stac_catalog)
-
-    cql_filter = {"op": "and", "args": [
-        {"op": ">=", "args": [{"property": "percent_valid_pixels"}, percent_valid_pixels]},
-        {"op": "=",  "args": [{"property": "proj:code"}, f"EPSG:{epsg_code}"]},
-    ]}
-
-    logging.info(
-        f"Querying earthcatalog: \n{cql_filter=}\n{polygon=}\n"
-        f"{start_date}/{end_date}"
-    )
-
-    search = cat.search(
-        intersects=polygon,
-        datetime=f"{start_date}/{end_date}",
-        filter=cql_filter,
-    )
-
-    granule_urls = [
-        asset.href for item in search.items() for asset in item.assets.values()
-    ]
-    logging.info(f'Got {len(granule_urls)} granules from earthcatalog')
-
-    return granule_urls
-
-
-@timing_decorator
 def serverless_search(
     epsg_code: str,
     start_date: str,
@@ -688,46 +633,21 @@ def serverless_search(
         list(str): Found list of granule URLs.
 
     For example, this query should return all the granules that intersect
-    with the provided polygon and have 100% valid pixels in EPSG:32717
-    projection between 1982-01-01 and 2026-03-04:
-
-    urls = itslive.velocity_pairs.find(
-        engine="duckdb",
-        geojson={
-            "type": "Polygon",
-            "coordinates": [[
-                [-79.20094379386568, -2.7128288679416928],
-                [-78.97615089345577, -2.7124718244728148],
-                [-78.75138943360363, -2.7120728681102473],
-                [-78.52666289912634, -2.711632029553526],
-                [-78.301974772136,   -2.7111493427123956],
-                [-78.30245463061306, -2.485223527607242],
-                [-78.30289263885614, -2.259296852744831],
-                [-78.3032888305625,  -2.0333693961602926],
-                [-78.30364323620105, -1.8074412359243268],
-                [-78.52819277641638, -1.8077629004547089],
-                [-78.75278060638821, -1.8080566770534239],
-                [-78.97740325463644, -1.8083225431391514],
-                [-79.20205724699625, -1.8085604782683422],
-                [-79.20182073376273, -2.0346286492152004],
-                [-79.20155633443191, -2.260696153747212],
-                [-79.20126402864005, -2.486762917947902],
-                [-79.20094379386568, -2.7128288679416928],
-            ]]
-        },
-        start="1982-01-01",
-        end="2026-03-04",
-        filters={
-            "percent_valid_pixels": GTE(1.0),
-            "proj:code": EQ("EPSG:32717"),
-        }
-    )
+    with the provided polygon and have at least 1% valid pixels in EPSG:epsg_code
+    projection between start and end dates.
     """
-    return itslive.velocity_pairs.find(
-        engine="duckdb",
+    logging.info(
+        f"Quering catalog: {roi=} {start_date=} {end_date=} {SEARCH_TYPE=} "
+        f"{STAC_CATALOG=} {epsg_code=} {percent_valid_pixels=}"
+    )
+
+    return search(
         geojson=roi,
         start=start_date,
         end=end_date,
+        type=SEARCH_TYPE,
+        engine="duckdb",
+        base_catalog_href=STAC_CATALOG,
         filters={
             "percent_valid_pixels": GTE(percent_valid_pixels),
             "proj:code": EQ(f"EPSG:{epsg_code}"),
