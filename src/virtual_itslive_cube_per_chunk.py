@@ -1083,6 +1083,22 @@ if __name__ == "__main__":
          'constructed (required with --use-SearchAPI) [%(default)s]'
    )
    parser.add_argument(
+      '--searchType',
+      choices=['serverless', 'pgstac'],
+      default='serverless',
+      help='Granule search backend: "serverless" queries the geoparquet '
+         'warehouse via duckdb (default), "pgstac" queries the STAC API '
+         'via pystac_client [%(default)s].'
+   )
+   parser.add_argument(
+      '--stacCatalog',
+      type=str,
+      default=None,
+      help='Granule catalog location override. For serverless: s3:// path to '
+         'the geoparquet warehouse (default: itslive warehouse). For pgstac: '
+         'https:// URL of the STAC API (default: https://stac.itslive.cloud).'
+   )
+   parser.add_argument(
       '-s', '--shapeFile',
       type=str,
       default='s3://its-live-data/autorift_parameters/v001/autorift_landice_0120m.shp',
@@ -1158,22 +1174,24 @@ if __name__ == "__main__":
       if not args.start_date or not args.end_date or not args.projection:
          parser.error(
             "--use-searchAPI requires --start-date, --end-date, --projection arguments"
+            " (and optional --searchType, --stacCatalog arguments)"
          )
+
+      itslive_utils.STAC_CATALOG = args.stacCatalog
+      itslive_utils.SEARCH_TYPE = args.searchType
 
       roi = {
          "type": "Polygon",
          "coordinates": [polygon_coords]
       }
 
-      # TODO: might need to switch to use earthcatalog
-      # granules = itslive_utils.earthcatalog_search(
       granules = itslive_utils.serverless_search(
          epsg_code=args.projection,
          start_date=args.start_date,
          end_date=args.end_date,
-         # polygon=roi
          roi=roi
       )
+      logging.info(f'Got {len(granules)} granules from searchAPI')
 
    # If testing and want to process only a subset of granules. Truncate
    # *before* filtering P000 granules below, so --num-granules reflects a

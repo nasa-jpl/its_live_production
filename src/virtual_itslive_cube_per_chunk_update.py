@@ -526,6 +526,22 @@ def main():
         help="End date for searchAPI query (required with --use-searchAPI) [%(default)s]"
     )
     parser.add_argument(
+        '--searchType',
+        choices=['serverless', 'pgstac'],
+        default='serverless',
+        help='Granule search backend: "serverless" queries the geoparquet '
+            'warehouse via duckdb (default), "pgstac" queries the STAC API '
+            'via pystac_client [%(default)s].'
+    )
+    parser.add_argument(
+        '--stacCatalog',
+        type=str,
+        default=None,
+        help='Granule catalog location override. For serverless: s3:// path to '
+            'the geoparquet warehouse (default: itslive warehouse). For pgstac: '
+            'https:// URL of the STAC API (default: https://stac.itslive.cloud).'
+    )
+    parser.add_argument(
         "--bucket",
         type=str,
         default="s3://its-live-data",
@@ -617,6 +633,16 @@ def main():
                     granules = json.load(f)
 
             elif args.use_searchAPI:
+                # Validate that other arguments are provided when using searchAPI
+                if not args.start_date or not args.end_date:
+                    parser.error(
+                        "--use-searchAPI requires --start-date, --end-date arguments"
+                        " (and optional --searchType, --stacCatalog arguments)"
+                    )
+
+                itslive_utils.STAC_CATALOG = args.stacCatalog
+                itslive_utils.SEARCH_TYPE = args.searchType
+
                 # Use searchAPI with ROI from cube attributes
                 roi = {
                     "type": "Polygon",
@@ -652,9 +678,11 @@ def main():
             if not new_granules:
                 logging.info("No new granules to process - cube is up to date")
 
-                # Update skipped granules since none of the new ones qualified
-                # for the cube update
-                all_skipped = list(skipped_set.union(granules))
+                # Only record newly-discovered P000 granules here -- unioning
+                # the raw `granules` candidate list would also record granules
+                # already present in the cube (existing_set) as "skipped",
+                # even though they're genuinely in the cube.
+                all_skipped = list(skipped_set.union(p000_granules))
                 save_skipped_granules(args.cube_store, all_skipped)
                 return
 
