@@ -488,7 +488,8 @@ def deep_copy_cube(
    time_chunk_1d,
    xy_shard_multiplier=1,
    local_staging_dir=None,
-   keep_local_staging=False
+   keep_local_staging=False,
+   num_layers=0
 ):
    """Materialize a virtual datacube into a real zarr v3 datacube, batched
    along 'time' to bound memory use.
@@ -524,6 +525,10 @@ def deep_copy_cube(
    keep_local_staging : bool
       If True, keep `local_staging_dir` after a successful upload instead of
       removing it. Ignored if `local_staging_dir` is not set.
+   num_layers : int
+      If > 0, only materialize the first `num_layers` layers of the virtual
+      cube (e.g. for benchmarking on a bounded subset of a large production
+      cube) instead of all of them. 0 (the default) processes every layer.
    """
    if local_staging_dir and not output_store.startswith(utils.S3_PREFIX):
       raise ValueError(
@@ -534,6 +539,10 @@ def deep_copy_cube(
    cube = open_virtual_cube(input_store, bucket_prefix)
    total_layers = cube.sizes[utils.Coords.TIME]
    logging.info(f'Opened virtual cube {input_store}: {total_layers} layers')
+
+   if num_layers > 0 and num_layers < total_layers:
+      logging.info(f'Limiting to first {num_layers} of {total_layers} layers (--num-layers)')
+      total_layers = num_layers
 
    if total_layers == 0:
       # Should never happen in practice -- virtual cubes are guaranteed to
@@ -713,6 +722,14 @@ if __name__ == '__main__':
       help='Keep --local-staging-dir after a successful upload instead of '
          'deleting it [%(default)s].'
    )
+   parser.add_argument(
+      '-n', '--num-layers',
+      type=int,
+      default=0,
+      help='Only materialize the first N layers of the virtual cube (e.g. '
+         'for benchmarking on a bounded subset) [%(default)d meaning to '
+         'process all layers].'
+   )
 
    args = parser.parse_args()
    logging.info(f'Command: {sys.argv}')
@@ -728,7 +745,8 @@ if __name__ == '__main__':
       args.time_chunk_value_1d,
       args.xy_shard_multiplier,
       args.local_staging_dir,
-      args.keep_local_staging
+      args.keep_local_staging,
+      args.num_layers
    )
 
    elapsed_time = time.time() - start_time
