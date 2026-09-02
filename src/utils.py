@@ -73,6 +73,7 @@ class FileExtInfo:
    zarr: str = '.zarr'
    json: str = '.json'
    nc: str = '.nc'
+   icechunk: str = '.icechunk'
 
 
 # Former FilenamePrefix
@@ -93,6 +94,35 @@ class FileInfo:
 
    mosaicsSummaryKey: str = '0000'
 
+   @staticmethod
+   def datacube_filename(
+      epsg_format: str,
+      grid_size: int,
+      mid_x: int,
+      mid_y: int
+   ):
+      """
+      Format filename for the datacube as:
+      ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000
+      """
+      name = datacube_filename(epsg_format, grid_size, mid_x, mid_y)
+      return f"{name}{FileInfo.ext.icechunk}"
+
+   # Former datacube_filename_zarr
+   @staticmethod
+   def datacube_filename_icechunk(
+      epsg_format: str,
+      grid_size: int,
+      mid_x: int,
+      mid_y: int
+   ):
+      """
+      Format filename for the virtual datacube icechunk repository as:
+      ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr
+      """
+      name = datacube_filename(epsg_format, grid_size, mid_x, mid_y)
+      return f"{name}{FileInfo.ext.zarr}"
+
    # Former datacube_filename_zarr
    @staticmethod
    def datacube_filename_zarr(
@@ -105,8 +135,8 @@ class FileInfo:
       Format filename for the datacube as:
       ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr
       """
-      return f"{FileInfo.prefix.datacube}_{epsg_format}_G{grid_size:04d}_" \
-               f"X{mid_x}_Y{mid_y}{FileInfo.ext.zarr}"
+      name = datacube_filename(epsg_format, grid_size, mid_x, mid_y)
+      return f"{name}{FileInfo.ext.zarr}"
 
    # Former composite_filename_zarr
    @staticmethod
