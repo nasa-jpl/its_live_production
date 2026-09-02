@@ -39,6 +39,7 @@ import warnings
 from datetime import datetime
 
 import xarray as xr
+import zarr
 from zarr.errors import UnstableSpecificationWarning
 
 import utils
@@ -298,13 +299,20 @@ def deep_copy_cube_tiled(
       cube[static_vars]
    ])
    _reset_write_encoding(template)
+   # consolidated=False: metadata is consolidated exactly once, after all
+   # region writes finish (see the zarr.consolidate_metadata call at the end
+   # of the time-chunk loop). Consolidating here (and on every per-tile write
+   # below) would re-scan/rewrite the whole store's metadata on each of the
+   # ~18 writes per time-chunk -- a redundant full-store metadata pass the
+   # region writes never actually change (shape/dtype/chunks are all declared
+   # once, here).
    template.to_zarr(
       write_target,
       mode='w',
       compute=False,
       encoding=encoding,
       zarr_format=3,
-      consolidated=True,
+      consolidated=False,
       safe_chunks=False
    )
    logging.info(f'Created template store at {write_target}')
@@ -313,7 +321,7 @@ def deep_copy_cube_tiled(
    # partial-chunk rewrites of their single full-extent chunk.
    static_batch = cube[static_vars].load()
    _reset_write_encoding(static_batch)
-   static_batch.to_zarr(write_target, mode='r+', zarr_format=3, consolidated=True)
+   static_batch.to_zarr(write_target, mode='r+', zarr_format=3, consolidated=False)
    logging.info(f'Wrote {len(static_vars)} static variable(s) to {write_target}')
 
    for start in range(0, total_layers, time_chunk):
@@ -332,7 +340,7 @@ def deep_copy_cube_tiled(
          mode='r+',
          region={utils.Coords.TIME: slice(start, stop)},
          zarr_format=3,
-         consolidated=True
+         consolidated=False
       )
 
       # 3D (time,y,x) vars: inner tile loop.
@@ -354,10 +362,17 @@ def deep_copy_cube_tiled(
                utils.Coords.X: x_slice,
             },
             zarr_format=3,
-            consolidated=True
+            consolidated=False
          )
 
       logging.info(f'Wrote time-chunk {start}:{stop} of {total_layers} to {write_target}')
+
+   # Consolidate metadata once, now that every region write is done -- instead
+   # of re-consolidating (a full-store metadata rescan/rewrite) on each of the
+   # ~18 writes per time-chunk above. Matches deep_copy_cube.py's intended
+   # convention of a consolidated output store, without the per-write cost.
+   zarr.consolidate_metadata(write_target)
+   logging.info(f'Consolidated metadata at {write_target}')
 
    if local_staging_dir:
       upload_local_staging_dir(local_staging_dir, output_store, keep_local_staging)

@@ -596,22 +596,24 @@ def deep_copy_cube(
             mode='w',
             encoding=encoding,
             zarr_format=3,
-            consolidated=True
+            consolidated=False
          )
       else:
          batch.to_zarr(
             write_target,
             append_dim=utils.Coords.TIME,
             zarr_format=3,
-            consolidated=True
+            consolidated=False
          )
 
       logging.info(f'Wrote layers {start}:{stop} of {total_layers} to {write_target}')
 
-   # # Consolidate metadata once, after all batches are written, instead of
-   # # re-consolidating on every batch (matches itscube.py's convention of a
-   # # consolidated output store, without the redundant per-batch cost).
-   # zarr.consolidate_metadata(write_target)
+   # Consolidate metadata once, after all batches are written, instead of
+   # re-consolidating (a full-store metadata rescan/rewrite) on every batch --
+   # matches itscube.py's convention of a consolidated output store, without
+   # the redundant per-batch cost.
+   zarr.consolidate_metadata(write_target)
+   logging.info(f'Consolidated metadata at {write_target}')
 
    if local_staging_dir:
       upload_local_staging_dir(local_staging_dir, output_store, keep_local_staging)
