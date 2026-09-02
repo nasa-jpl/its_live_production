@@ -415,7 +415,12 @@ def _extract_shared_velocity_attributes(new_vars, vds):
          attrs={
             Vars.attrs.std_name: each_attr,
             Vars.attrs.description: Vars.description[each_attr]
-         }
+         },
+         # Match itscube.py's combine_layers() encoding convention: fixes
+         # this variable's on-disk dtype at creation instead of letting zarr
+         # infer it (and a default fill value) from whatever raw int32 values
+         # happen to appear in a given batch.
+         encoding={utils.OutputFormat.dtype: Vars.intType[each_attr]}
       )
 
       if each_attr_units is not None:
@@ -492,6 +497,15 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
             utils.Units.name: utils.Units.m_y,
             Vars.attrs.std_name: error_var_name,
             Vars.attrs.description: desc_str
+         },
+         # Match itscube.py's combine_layers() encoding convention (its
+         # new_v_vars default branch: float32 with _FillValue=Missing.value)
+         # so this variable's dtype/fill is fixed at creation rather than
+         # flipping between int64/float64 depending on whether this batch's
+         # granules had a real value or fell back to the missing sentinel.
+         encoding={
+            utils.OutputFormat.fill_value: utils.Missing.value,
+            utils.OutputFormat.dtype: np.float32
          }
       )
 
@@ -522,6 +536,10 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
          utils.Units.name: utils.Units.m_y,
          Vars.attrs.std_name: shift_var_name,
          Vars.attrs.description: _desc_str
+      },
+      encoding={
+         utils.OutputFormat.fill_value: utils.Missing.value,
+         utils.OutputFormat.dtype: np.float32
       }
    )
 
@@ -544,6 +562,10 @@ def _extract_velocity_attributes(new_vars, vds, var_name):
             utils.Units.name: utils.Units.m_y,
             Vars.attrs.std_name: shift_var_name,
             Vars.attrs.description: _desc_str
+         },
+         encoding={
+            utils.OutputFormat.fill_value: utils.Missing.value,
+            utils.OutputFormat.dtype: np.float32
          }
       )
 
@@ -590,6 +612,12 @@ def _extract_m_attributes(new_vars, vds, var_name):
          Vars.attrs.std_name: attr_name,
          Vars.attrs.description: Vars.description[Vars.postfix.dr_to_vr_factor],
          utils.Units.name: utils.Units.m_per_year_pixel
+      },
+      # Match itscube.py's combine_layers() encoding convention (its
+      # new_vars_zero_missing_value branch: float32 with _FillValue=Missing.byte=0.0).
+      encoding={
+         utils.OutputFormat.dtype: np.float32,
+         utils.OutputFormat.fill_value: utils.Missing.byte
       }
    )
 
@@ -837,10 +865,25 @@ def build_virtual_cube(vds_list, already_aligned=False):
                   # Use fixed-length string dtype if defined, otherwise variable-length
                   value = np.array(value, dtype=ImgPairInfo.stringType.get(attr, np.dtypes.StringDType()))
 
+               # Match itscube.py's combine_layers() encoding convention so
+               # this variable's on-disk dtype/fill is fixed at creation
+               # instead of being inferred per-batch from whatever raw values
+               # happen to appear (see itscube.py's encoding_settings).
+               new_var_encoding = {}
+               if attr_dtype is not None:
+                  new_var_encoding[utils.OutputFormat.dtype] = attr_dtype
+               if convert_to_date:
+                  # Let xarray's CF datetime coder pick a float/NaN-fill
+                  # encoding (matching itscube.py) instead of its int64
+                  # since-epoch default (0-filled) that applies when no
+                  # 'units' is set.
+                  new_var_encoding[utils.Units.name] = utils.Units.date
+
                new_vars[attr] = xr.Variable(
                   dims=(),
                   data=value,
-                  attrs=new_var_attrs
+                  attrs=new_var_attrs,
+                  encoding=new_var_encoding
                )
 
             for (each, new_each) in zip(
@@ -871,6 +914,15 @@ def build_virtual_cube(vds_list, already_aligned=False):
                         Vars.attrs.description: Vars.description[new_each],
                         BinaryFlag.attrs.values: BinaryFlag.values,
                         BinaryFlag.attrs.meanings: BinaryFlag.meanings[new_each]
+                     },
+                     # Match itscube.py's combine_layers() encoding convention
+                     # (Vars.intType/Vars.intMissingValue: uint8, missing_value=255)
+                     # so this stays uint8 instead of silently widening to
+                     # int64 when a batch's fallback (raw Python int 255) mixes
+                     # with the real uint8 values from get_data_var_binary_attr.
+                     encoding={
+                        utils.OutputFormat.dtype: np.uint8,
+                        utils.Missing.name: utils.Missing.u8value
                      }
                   )
 
