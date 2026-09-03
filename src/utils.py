@@ -120,7 +120,7 @@ class FileInfo:
       ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr
       """
       name = FileInfo.datacube_filename(epsg_format, grid_size, mid_x, mid_y)
-      return f"{name}{FileInfo.ext.zarr}"
+      return f"{name}{FileInfo.ext.icechunk}"
 
    # Former datacube_filename_zarr
    @staticmethod

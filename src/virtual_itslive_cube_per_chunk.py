@@ -42,6 +42,7 @@ from zarr.core.array_spec import ArraySpec, ArrayConfig
 from zarr.core.buffer import default_buffer_prototype
 from zarr.core.sync import sync
 
+import itslive_catalog_utils
 import itslive_utils
 import utils
 import shapefile
@@ -1189,15 +1190,15 @@ if __name__ == "__main__":
             " (and optional --searchType, --stacCatalog arguments)"
          )
 
-      itslive_utils.STAC_CATALOG = args.stacCatalog
-      itslive_utils.SEARCH_TYPE = args.searchType
+      itslive_catalog_utils.STAC_CATALOG = args.stacCatalog
+      itslive_catalog_utils.SEARCH_TYPE = args.searchType
 
       roi = {
          "type": "Polygon",
          "coordinates": [polygon_coords]
       }
 
-      granules = itslive_utils.serverless_search(
+      granules = itslive_catalog_utils.serverless_search(
          epsg_code=args.projection,
          start_date=args.start_date,
          end_date=args.end_date,

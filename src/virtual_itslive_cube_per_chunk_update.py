@@ -56,6 +56,7 @@ from itscube_types import (
     SkippedGranules
 )
 import utils
+import itslive_catalog_utils
 import itslive_utils
 
 # Import functions from the creation script
@@ -655,8 +656,8 @@ def main():
                         " (and optional --searchType, --stacCatalog arguments)"
                     )
 
-                itslive_utils.STAC_CATALOG = args.stacCatalog
-                itslive_utils.SEARCH_TYPE = args.searchType
+                itslive_catalog_utils.STAC_CATALOG = args.stacCatalog
+                itslive_catalog_utils.SEARCH_TYPE = args.searchType
 
                 # Use searchAPI with ROI from cube attributes
                 roi = {
@@ -665,8 +666,8 @@ def main():
                 }
 
                 # TODO: might need to switch to use earthcatalog
-                # granules = itslive_utils.earthcatalog_search(
-                granules = itslive_utils.serverless_search(
+                # granules = itslive_catalog_utils.earthcatalog_search(
+                granules = itslive_catalog_utils.serverless_search(
                     epsg_code=projection,
                     start_date=args.start_date,
                     end_date=args.end_date,
