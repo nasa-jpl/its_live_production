@@ -254,3 +254,42 @@ class TestVirtualCubeUpdateEndToEnd:
             )
         rerun_cube, _ = vicu.open_virtual_cube(str(initial_cube_store))
         assert rerun_cube.sizes['time'] == updated_cube.sizes['time']
+
+
+class TestNoOpUpdateSkippedGranulesBookkeeping:
+    """Regression test for a bug where a no-op update run (candidate list
+    contains no genuinely new granules) recorded granules already present
+    in the cube into the persisted skipped-granules JSON -- because the
+    early-return branch in main() unioned the raw, unfiltered candidate
+    list into skipped_set instead of just the newly-discovered P000 ones.
+    A granule can be legitimately in the cube's granule_url variable, or
+    legitimately skipped, but never both.
+    """
+
+    def test_existing_granules_are_not_recorded_as_skipped(self, initial_cube_store):
+        # Candidate list is exactly the 4 granules the cube was already built
+        # from -- filter_new_granules() excludes all of them via existing_set,
+        # so new_granules is empty and main() takes the no-op early-return path.
+        update_script = Path(__file__).parent.parent / "virtual_itslive_cube_per_chunk_update.py"
+        cmd = [
+            sys.executable, str(update_script),
+            "--cube-store", str(initial_cube_store),
+            "--granules-file", str(_INITIAL_GRANULES_FILE),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            pytest.fail(
+                f"No-op update failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            )
+
+        cube, _ = vicu.open_virtual_cube(str(initial_cube_store))
+        existing_urls = vicu.get_existing_granule_urls(cube)
+
+        skipped_path = Path(vicu.skipped_granules_path(str(initial_cube_store)))
+        assert skipped_path.exists(), "no-op update should still write a skipped-granules file"
+        skipped = vicu.load_skipped_granules(str(initial_cube_store))
+
+        # None of the 4 already-in-cube granules should also appear as skipped.
+        assert not (existing_urls & skipped), (
+            f"granules recorded as both existing and skipped: {existing_urls & skipped}"
+        )
