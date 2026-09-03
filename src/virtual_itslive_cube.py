@@ -13,6 +13,7 @@ from virtualizarr.manifests.manifest import MISSING_CHUNK_PATH
 from virtualizarr.manifests.utils import copy_and_replace_metadata
 from zarr.core.metadata.v3 import ArrayV3Metadata
 from zarr.core.dtype import parse_data_type
+from zarr.codecs import BloscCodec
 
 # Icechunk repo related
 import shutil
@@ -39,6 +40,14 @@ warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 # strip these to compare the values across the granules (should be the same)
 HTTP_PREFIX = 'http://'
 HTTPS_PREFIX = 'https://'
+
+# Compressor applied to every newly synthesized 1-D (time,) data variable in
+# the virtual cube (img_pair_info-derived attrs, url, etc.) -- these are real
+# (non-virtual) arrays written through the normal to_zarr encoding path, so
+# unlike the 3D vx/vy/... ManifestArrays (whose bytes are never re-encoded,
+# just referenced), they need an explicit compressor or zarr falls back to
+# its own default per batch.
+NEW_VARS_COMPRESSOR = BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')
 
 
 def _get_manifestarray_chunks(marr):
@@ -865,19 +874,33 @@ def build_virtual_cube(vds_list, already_aligned=False):
                   # Use fixed-length string dtype if defined, otherwise variable-length
                   value = np.array(value, dtype=ImgPairInfo.stringType.get(attr, np.dtypes.StringDType()))
 
-               # Match itscube.py's combine_layers() encoding convention so
-               # this variable's on-disk dtype/fill is fixed at creation
-               # instead of being inferred per-batch from whatever raw values
-               # happen to appear (see itscube.py's encoding_settings).
+               # Match itscube.py's combine_layers() encoding convention (for
+               # non-date attrs) so this variable's on-disk dtype/fill is
+               # fixed at creation instead of being inferred per-batch from
+               # whatever raw values happen to appear (see itscube.py's
+               # encoding_settings).
                new_var_encoding = {}
                if attr_dtype is not None:
                   new_var_encoding[utils.OutputFormat.dtype] = attr_dtype
                if convert_to_date:
-                  # Let xarray's CF datetime coder pick a float/NaN-fill
-                  # encoding (matching itscube.py) instead of its int64
-                  # since-epoch default (0-filled) that applies when no
-                  # 'units' is set.
-                  new_var_encoding[utils.Units.name] = utils.Units.date
+                  # Explicit units/calendar/dtype instead of itscube.py's
+                  # bare 'days since 1970-01-01' (no dtype): these values
+                  # carry a sub-day time-of-day component (acquisition
+                  # timestamps and their midpoint), which 'days' units can't
+                  # represent as int64 -- and since a Zarr array's CF
+                  # encoding is fixed at creation and reused by every later
+                  # append (see set_1d_time_chunk_encoding's docstring in
+                  # virtual_itslive_cube_per_chunk.py), leaving dtype
+                  # unset would let whichever batch creates the store
+                  # silently decide int64 vs. float64, and any later batch
+                  # that doesn't fit would hit xarray's
+                  # "Times can't be serialized faithfully to int64..."
+                  # UserWarning on every append. float64 seconds since the
+                  # GPS epoch (matches the cube's 'time' coordinate) avoids
+                  # that fallback entirely.
+                  new_var_encoding[utils.Units.name] = utils.Units.gps_epoch_date
+                  new_var_encoding[utils.Units.calendar_name] = utils.Units.proleptic_gregorian
+                  new_var_encoding[utils.OutputFormat.dtype] = 'float64'
 
                new_vars[attr] = xr.Variable(
                   dims=(),
@@ -1067,6 +1090,18 @@ def build_virtual_cube(vds_list, already_aligned=False):
       result[Mapping.name] = xr.DataArray(
          data='', attrs=mapping_attrs, coords={}, dims=[]
       )
+
+   # Apply the shared compressor to every newly synthesized 1-D (time,)
+   # variable (img_pair_info-derived attrs, url, ascending_img1/2, etc.) and
+   # to the 'time' coordinate itself -- it's just as real/non-virtual an
+   # array as those variables, so iterate result.variables (data_vars +
+   # coords), not just result.data_vars. Excludes the 3D vx/vy/vr/va/m11/m12
+   # ManifestArrays (dims include y/x, and their bytes are virtual
+   # references, never re-encoded through this path) and scalar vars like
+   # 'mapping' (dims=()).
+   for var_name in result.variables:
+      if result[var_name].dims == (utils.Coords.TIME,):
+         result[var_name].encoding[utils.OutputFormat.compressors] = [NEW_VARS_COMPRESSOR]
 
    return result, HTTPS_PREFIX + unique_values[0]
 

@@ -943,27 +943,32 @@ def load_granules(granules, bucket):
 
 
 def set_1d_time_chunk_encoding(cube, chunk_size):
-   """Set an explicit 'chunks' encoding on every 1-D (time,) data variable of
-   a virtual cube, overriding xarray/icechunk's default of one chunk
-   spanning the whole write (see TIME_CHUNK_VALUE_1D).
+   """Set an explicit 'chunks' encoding on every 1-D (time,) variable of
+   a virtual cube -- both data variables and the 'time' coordinate itself --
+   overriding xarray/icechunk's default of one chunk spanning the whole
+   write (see TIME_CHUNK_VALUE_1D).
 
    Must be called before the cube's first write -- the one that creates the
    icechunk repo -- since a Zarr array's chunk grid is fixed at creation and
    can't change on later appends; this only needs to run once per cube.
 
-   Only touches real (non-ManifestArray) 1-D (time,) variables. The 3D
-   (time,y,x) variables are virtual references whose time-chunk size is
-   physically fixed at 1 (see virtual_itslive_cube.py's ManifestArray
-   np.concatenate handling) and must not be touched here.
+   Only touches real (non-ManifestArray) 1-D (time,) variables/coordinates,
+   via cube.variables (data_vars + coords) rather than just cube.data_vars,
+   so the 'time' coordinate gets the same fixed chunk size instead of
+   silently keeping xarray's default. The 3D (time,y,x) variables are
+   virtual references whose time-chunk size is physically fixed at 1 (see
+   virtual_itslive_cube.py's ManifestArray np.concatenate handling) and must
+   not be touched here; 'x'/'y' (dims=('x',)/('y',), chunked at the tile's
+   512-pixel size) don't match the (TIME,) filter and are left untouched.
 
    Parameters
    ----------
    cube : xr.Dataset
       The virtual cube about to be written (first batch only).
    chunk_size : int
-      Chunk size along 'time' to set on every 1-D data variable.
+      Chunk size along 'time' to set on every 1-D variable/coordinate.
    """
-   for var_name in cube.data_vars:
+   for var_name in cube.variables:
       var = cube[var_name]
       if var.dims == (utils.Coords.TIME,):
          var.encoding[utils.OutputFormat.chunks] = (chunk_size,)
@@ -1455,7 +1460,10 @@ if __name__ == "__main__":
             )
             cube[mask_name].encoding={
                   utils.OutputFormat.dtype: shapefile.Type[mask_name],
-                  utils.OutputFormat.compressor: compressor,
+                  # icechunk repos are Zarr V3 stores, which use the plural
+                  # 'compressors' encoding key (a list of codecs) rather
+                  # than V2's singular 'compressor'.
+                  utils.OutputFormat.compressors: [compressor],
                   utils.Missing.name: utils.Missing.u8value,
                   # The zarr-level sentinel, separate from any CF attribute,
                   # have it just in case
@@ -1468,6 +1476,23 @@ if __name__ == "__main__":
          # to be -- leaves room to grow on later appends (see
          # TIME_CHUNK_VALUE_1D's module comment).
          set_1d_time_chunk_encoding(cube, TIME_CHUNK_VALUE_1D)
+
+         # Fix the 'time' coordinate's CF units/dtype at creation too: like
+         # the chunk size above, a Zarr array's units/dtype are baked in when
+         # the store is created and reused verbatim by every later append.
+         # Without an explicit encoding here, xarray infers units from
+         # whichever granules happen to be in the batch that creates the
+         # store, which can land on the coarse 'days since 1970-01-01' +
+         # int64 default -- silently fine for that batch, but any later
+         # batch whose mid_date carries a sub-day time-of-day (the norm for
+         # ITS_LIVE) can't be represented in whole days, forcing a lossy
+         # int64->float64 fallback with a UserWarning on every such append.
+         # Seconds-since-GPS-epoch as float64 losslessly represents mid_date's
+         # full resolution up front, so no batch is ever forced through that
+         # fallback.
+         cube['time'].encoding[utils.Units.name] = utils.Units.gps_epoch_date
+         cube['time'].encoding[utils.Units.calendar_name] = utils.Units.proleptic_gregorian
+         cube['time'].encoding[utils.OutputFormat.dtype] = 'float64'
 
          session = repo.writable_session("main")
          cube_clean = _drop_nonfinite_attrs(cube)
