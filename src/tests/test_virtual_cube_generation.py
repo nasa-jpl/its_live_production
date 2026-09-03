@@ -12,6 +12,7 @@ Tests virtual datacube creation using VirtualiZarr and icechunk to verify:
 Authors: Masha Liukis
 """
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,79 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from itscube_types import Vars, ImgPairInfo
 import utils
+from virtual_itslive_cube_per_chunk import load_granules, HTTPS_URL, S3_URL
+
+# Golden truth for variable encoding, captured from the regular (deep-copy)
+# datacube -- see test_variable_encoding_against_golden below.
+GOLDEN_ENCODING_PATH = Path(__file__).parent / "data" / "cubeEncoding.json"
+
+# Variables in the golden truth that are passthrough, granule-native 3D/
+# coordinate arrays -- NOT newly synthesized by build_virtual_cube()/
+# virtual_itslive_cube_per_chunk.py, so their on-disk encoding is whatever
+# the source granule already used (native chunk size, native compressor),
+# not something this codebase sets. Excluded from the golden-encoding
+# comparison so it doesn't spuriously fail on encoding this code never
+# touches.
+GOLDEN_ENCODING_PASSTHROUGH_VARS = {
+    'M11', 'M12', 'v', 'v_error', 'va', 'vr', 'vx', 'vy',
+    'chip_size_height', 'chip_size_width', 'interp_mask', 'x', 'y',
+}
+
+# The virtual cube keeps each granule's original 'time' coordinate as the
+# dimension coordinate instead of renaming it to 'mid_date' like the regular
+# deep-copy datacube -- map the golden truth's 'mid_date' key onto the
+# virtual cube's 'time' variable for comparison.
+GOLDEN_ENCODING_NAME_OVERRIDES = {
+    'mid_date': 'time',
+}
+
+# Only these encoding keys are compared against the golden truth: chunk
+# sizes and compressor clevel/shuffle/blocksize legitimately differ between
+# the virtual cube (one shared compressor, granule-native chunk sizes) and
+# the deep-copy cube (per-variable-group compressors, rechunked to fixed
+# sizes), so only sentinel-value keys and compressor *type* are checked.
+GOLDEN_ENCODING_VALUE_KEYS = (
+    utils.OutputFormat.fill_value,  # '_FillValue'
+    utils.Missing.fill_value,       # 'fill_value' (zarr-level sentinel)
+    utils.Missing.name,             # 'missing_value'
+)
+
+
+def _load_golden_encoding():
+    with open(GOLDEN_ENCODING_PATH) as f:
+        return json.load(f)
+
+
+def _actual_encoding_map(var):
+    """Merge a variable's .attrs and .encoding into a single lookup.
+
+    Depending on how mask_and_scale/zarr-format round-tripping shakes out,
+    _FillValue/fill_value/missing_value can surface in either dict; this
+    test only cares whether/what value is present, not which xarray bucket
+    it lives in.
+    """
+    merged = dict(var.attrs)
+    merged.update(var.encoding)
+    return merged
+
+
+def _compressor_cname(var):
+    """Extract the compressor codec's short name (e.g. 'lz4') from a
+    variable's encoding, tolerating both the zarr v3 'compressors' (list of
+    codec objects) and legacy v2 'compressor' (single codec) encoding keys.
+    """
+    codecs = var.encoding.get(utils.OutputFormat.compressors)
+    if not codecs:
+        single = var.encoding.get(utils.OutputFormat.compressor)
+        codecs = [single] if single is not None else []
+
+    if not codecs:
+        return None
+
+    codec = codecs[0]
+    if isinstance(codec, dict):
+        return codec.get('cname')
+    return getattr(codec, 'cname', None)
 
 
 # Test configuration
@@ -533,6 +607,102 @@ class TestVirtualDatacubeGeneration:
 
         print(f"\nAll required datacube attributes present")
         print(f"Datacube attributes: {list(cube.attrs.keys())}")
+
+    @pytest.mark.order(12)
+    def test_variable_encoding_against_golden(self, virtual_cube_path):
+        """Compare newly-introduced variables' encoding against the golden
+        truth captured from the regular (deep-copy) datacube
+        (data/cubeEncoding.json).
+
+        Only checks existence/value of _FillValue, fill_value, and
+        missing_value, plus the compressor's type (cname) -- not chunk
+        sizes or exact compressor clevel/shuffle/blocksize, which
+        legitimately differ between the virtual cube (one shared
+        compressor, granule-native chunk sizes) and the deep-copy cube
+        (per-variable-group compressors, rechunked to fixed sizes). The
+        golden truth's 'mid_date' entry is compared against this cube's
+        'time' coordinate, since the virtual cube keeps the granules'
+        original 'time' coordinate rather than renaming it to 'mid_date'.
+        """
+        repo = ic.Repository.open(ic.local_filesystem_storage(str(virtual_cube_path)))
+        # mask_and_scale=False: this test inspects the raw on-disk
+        # encoding/attrs the golden truth was itself captured from, not the
+        # CF-decoded representation.
+        cube = xr.open_zarr(
+            repo.readonly_session("main").store,
+            consolidated=False,
+            zarr_format=3,
+            mask_and_scale=False
+        )
+
+        golden = _load_golden_encoding()
+        checked_vars = []
+
+        for golden_name, golden_enc in golden.items():
+            if golden_name in GOLDEN_ENCODING_PASSTHROUGH_VARS:
+                continue
+
+            var_name = GOLDEN_ENCODING_NAME_OVERRIDES.get(golden_name, golden_name)
+            assert var_name in cube.variables, \
+                f"Expected newly-introduced variable '{var_name}' " \
+                f"(golden key '{golden_name}') missing from virtual cube"
+
+            actual = _actual_encoding_map(cube[var_name])
+
+            for key in GOLDEN_ENCODING_VALUE_KEYS:
+                if key not in golden_enc:
+                    continue
+
+                assert key in actual, \
+                    f"{var_name}: missing '{key}' (golden value: {golden_enc[key]!r})"
+
+                golden_value = golden_enc[key]
+                actual_value = actual[key]
+
+                if isinstance(golden_value, float) and math.isnan(golden_value):
+                    assert isinstance(actual_value, float) and math.isnan(actual_value), \
+                        f"{var_name}: expected NaN for '{key}', got {actual_value!r}"
+                else:
+                    assert actual_value == golden_value, \
+                        f"{var_name}: '{key}' mismatch -- expected " \
+                        f"{golden_value!r}, got {actual_value!r}"
+
+            golden_cname = golden_enc.get('compressor', {}).get('cname')
+            if golden_cname is not None:
+                actual_cname = _compressor_cname(cube[var_name])
+                assert actual_cname == golden_cname, \
+                    f"{var_name}: compressor type mismatch -- expected " \
+                    f"cname={golden_cname!r}, got {actual_cname!r}"
+
+            checked_vars.append(var_name)
+
+        print(f"\nChecked encoding against golden truth for {len(checked_vars)} variables:")
+        print(sorted(checked_vars))
+
+
+class TestLoadGranulesMissingBypass:
+    """Tests for load_granules()'s temporary bypass of a known searchAPI/
+    catalog bug where some returned granule URLs don't correspond to any
+    real S3 object (see _granule_exists in virtual_itslive_cube_per_chunk.py).
+    """
+
+    def test_missing_granule_is_skipped_not_raised(self, granules_file):
+        """A granule that doesn't exist in S3 is reported back as missing
+        instead of aborting the whole load; a real granule in the same call
+        still loads normally."""
+        with open(granules_file) as f:
+            real_granules = json.load(f)
+
+        real_url = real_granules[0].replace(HTTPS_URL, S3_URL)
+        bogus_url = f"{S3_URL}velocity_image_pair/does/not/exist_test_only.nc"
+
+        vds_list, missing_granules = load_granules(
+            [real_url, bogus_url], "s3://its-live-data"
+        )
+
+        assert len(vds_list) == 1, "Only the real granule should load"
+        assert missing_granules == [bogus_url], \
+            "Bogus granule should be reported as missing, not raised"
 
 
 if __name__ == "__main__":
