@@ -105,8 +105,7 @@ class FileInfo:
       Format filename for the datacube as:
       ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000
       """
-      name = datacube_filename(epsg_format, grid_size, mid_x, mid_y)
-      return f"{name}{FileInfo.ext.icechunk}"
+      return f"{FileInfo.prefix.datacube}_{epsg_format}_G{int(grid_size):04d}_X{mid_x}_Y{mid_y}"
 
    # Former datacube_filename_zarr
    @staticmethod
@@ -120,7 +119,7 @@ class FileInfo:
       Format filename for the virtual datacube icechunk repository as:
       ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr
       """
-      name = datacube_filename(epsg_format, grid_size, mid_x, mid_y)
+      name = FileInfo.datacube_filename(epsg_format, grid_size, mid_x, mid_y)
       return f"{name}{FileInfo.ext.zarr}"
 
    # Former datacube_filename_zarr
@@ -135,7 +134,7 @@ class FileInfo:
       Format filename for the datacube as:
       ITS_LIVE_vel_EPSG3413_G0120_X-350000_Y-2650000.zarr
       """
-      name = datacube_filename(epsg_format, grid_size, mid_x, mid_y)
+      name = FileInfo.datacube_filename(epsg_format, grid_size, mid_x, mid_y)
       return f"{name}{FileInfo.ext.zarr}"
 
    # Former composite_filename_zarr
