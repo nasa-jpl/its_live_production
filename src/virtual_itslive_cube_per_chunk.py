@@ -1543,10 +1543,15 @@ if __name__ == "__main__":
    logging.info(f'Total runtime: {elapsed_time:.1f}s ({elapsed_time/60:.2f} min)')
    logging.info('Done')
 
-   if sys.platform == 'darwin':
-      get_reusable_executor().shutdown(wait=True, kill_workers=True)
-      time.sleep(0.5)  # let resource_tracker's unregister messages land
-
-      # macOS-only: works around GDAL/PROJ/loky atexit ordering on Darwin
-      # bypass Python's normal interpreter finalization
-      os._exit(0)
+   # Not Darwin-only anymore: the same "Error in sys.excepthook" /
+   # "Original exception was:" crash (both bodies blank -- traceback/sys
+   # are already partially torn down by the time it tries to print) has now
+   # been observed on Linux too, on a large multi-batch (170k-granule) run
+   # with -t 16 on a 4 vCPU instance. All commits/writes are already durable
+   # by this point (see 'Done' logged above), so unconditionally shutting
+   # down the executor and bypassing Python's normal (racy) interpreter
+   # finalization is safe on any platform, not just macOS's original
+   # GDAL/PROJ/loky atexit-ordering case.
+   get_reusable_executor().shutdown(wait=True, kill_workers=True)
+   time.sleep(0.5)  # let resource_tracker's unregister messages land
+   os._exit(0)
