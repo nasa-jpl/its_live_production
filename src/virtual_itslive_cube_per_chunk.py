@@ -1116,12 +1116,19 @@ if __name__ == "__main__":
 
    MAX_AWS_CONNECTIONS = args.threads
 
-   if sys.platform == 'darwin':
-      os.environ.setdefault(
-         "PYTHONWARNINGS",
-         "ignore::UserWarning:multiprocessing.resource_tracker,"
-         "ignore::UserWarning:joblib.externals.loky.backend.resource_tracker"
-      )
+   # Not Darwin-only anymore: the resource_tracker's own subprocess is
+   # launched via a fresh `sys.executable` invocation (not fork()), so it
+   # re-reads PYTHONWARNINGS from the environment at its own startup
+   # regardless of platform -- and on a large multi-batch run this same
+   # "resource_tracker: There appear to be N leaked folder objects to clean
+   # up at shutdown" UserWarning (benign/self-remediating -- the message
+   # itself says it cleans them up) has now been observed on Linux too, not
+   # just macOS's original semaphore-tracker noise.
+   os.environ.setdefault(
+      "PYTHONWARNINGS",
+      "ignore::UserWarning:multiprocessing.resource_tracker,"
+      "ignore::UserWarning:joblib.externals.loky.backend.resource_tracker"
+   )
 
    # Parse bounding polygon from JSON string in UTM coordinates
    polygon = json.loads(args.polygon)

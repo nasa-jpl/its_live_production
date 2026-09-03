@@ -37,6 +37,7 @@ python virtual_itslive_cube_per_chunk_update.py \
 """
 import argparse
 import logging
+import os
 import time
 import xarray as xr
 import icechunk as ic
@@ -592,6 +593,20 @@ def main():
     # hardcoded default.
     virtual_itslive_cube_per_chunk.MAX_AWS_CONNECTIONS = args.threads
 
+    # This shares the same joblib/loky-based load_granules/
+    # build_virtual_cube_subset machinery as virtual_itslive_cube_per_chunk.py
+    # (imported above), so a large multi-batch update run can hit the same
+    # benign/self-remediating "resource_tracker: There appear to be N leaked
+    # folder objects to clean up at shutdown" UserWarning. Must be set before
+    # any Parallel() call below: the resource_tracker's own subprocess is
+    # launched via a fresh `sys.executable` invocation (not fork()), so it
+    # re-reads PYTHONWARNINGS from the environment at its own startup.
+    os.environ.setdefault(
+        "PYTHONWARNINGS",
+        "ignore::UserWarning:multiprocessing.resource_tracker,"
+        "ignore::UserWarning:joblib.externals.loky.backend.resource_tracker"
+    )
+
     # Determine if this is an update operation or inspect-only
     update_mode = args.granules_file or args.use_searchAPI
 
@@ -983,3 +998,17 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    # Mirrors virtual_itslive_cube_per_chunk.py's end-of-run cleanup: this
+    # script drives the same joblib/loky-based load_granules/
+    # build_virtual_cube_subset machinery (imported above), so a large
+    # multi-batch update run can hit the same background-thread/tokio-runtime
+    # race with Python's interpreter finalization ("Error in sys.excepthook"
+    # with a blank "Original exception was:" body) after everything has
+    # already completed and committed successfully. Only reached if main()
+    # returned normally (it re-raises on failure), so this never masks a
+    # genuine error with a bypassed exit(0).
+    from joblib.externals.loky import get_reusable_executor
+    get_reusable_executor().shutdown(wait=True, kill_workers=True)
+    time.sleep(0.5)  # let resource_tracker's unregister messages land
+    os._exit(0)
