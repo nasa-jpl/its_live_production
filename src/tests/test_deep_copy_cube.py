@@ -21,6 +21,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 import warnings
 from pathlib import Path
 
@@ -505,6 +506,156 @@ class TestDeepCopyCubeIntegration:
             assert attr in cube.attrs, f"Missing required attribute: {attr}"
 
         assert cube.attrs['projection'] == test_config['projection']
+
+    @pytest.mark.order(9)
+    def test_deep_copy_num_layers_limits_output(
+        self, virtual_cube_path, deep_copy_script, test_output_dir, test_config
+    ):
+        """--num-layers truncates the deep copy to the first N layers of the
+        source virtual cube, instead of materializing all of them."""
+        limited_output_path = test_output_dir / "deep_copy_test_output_num_layers.zarr"
+        if limited_output_path.exists():
+            shutil.rmtree(limited_output_path)
+
+        requested_layers = test_config["num_granules"] - 2  # fewer than the full 4
+        cmd = [
+            sys.executable, str(deep_copy_script),
+            "--input-store", str(virtual_cube_path),
+            "--output-store", str(limited_output_path),
+            "--num-layers", str(requested_layers),
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            print(f"\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+            pytest.fail(
+                f"deep_copy_cube.py --num-layers run failed with return code {result.returncode}"
+            )
+
+        cube = xr.open_zarr(str(limited_output_path), zarr_format=3, consolidated=True)
+        assert cube.sizes['time'] == requested_layers
+        cube.close()
+        shutil.rmtree(limited_output_path)
+
+
+@pytest.fixture(scope="session")
+def shard_benchmark_config():
+    """Benchmark configuration: a bounded number of layers sliced (via
+    deep_copy_cube.py's --num-layers) from the head of a real, production-
+    scale virtual cube, deep-copied once per --xy-shard-multiplier value.
+    Input is read-only from S3 (the virtual cube itself); every benchmark
+    run's output is written to a local path only, never to S3.
+
+    Shard sizes 32/64/128/256/512 correspond to --xy-shard-multiplier
+    4/8/16/32/64 (shard_size = dcc.X_Y_CHUNK_VALUE(8) * multiplier) --
+    see src/wiki/07_Deep_Copy_Time_Chunking_And_Write_Amplification.md's
+    "Empirical Benchmarks" section for the prior ad-hoc runs (at full cube
+    scale) this is a reusable, smaller-scale companion to.
+    """
+    return {
+        "input_store": (
+            "s3://its-live-data/test-space/virtual-cubes/icechunk/"
+            "ITS_LIVE_velocity_EPSG3413_61440m_X-3256327_Y245767_zarr_v3.icechunk"
+        ),
+        "num_layers": 500,
+        "shard_multipliers": [4, 8, 16, 32, 64],
+    }
+
+
+class TestDeepCopyShardRuntimeBenchmark:
+    """Benchmarks deep_copy_cube.py generation runtime across
+    --xy-shard-multiplier values, against a fixed-size (500-layer) slice of
+    a real production-scale virtual cube, and reports ms/layer per shard
+    size. batch_size is set equal to num_layers so every run is a single,
+    clean write (no batch/time-chunk write-amplification noise mixed into
+    the shard-vs-shard comparison -- see the wiki write-up above for that
+    separate effect). Also times a `cube.v[-1].values` read against each
+    shard variant's local output. Note this read timing is a local-disk
+    proxy only -- it won't reproduce the S3 per-object request behavior
+    that actually drives shard-size read performance in production (see
+    the wiki's S3 read-benchmark section for that).
+
+    Not run as part of routine test cycles: reads real data from S3 five
+    times over and can take several minutes total. Invoke explicitly with
+    `pytest -k TestDeepCopyShardRuntimeBenchmark -s` to see the summary.
+    """
+
+    def test_shard_runtime_benchmark(
+        self, deep_copy_script, test_output_dir, shard_benchmark_config
+    ):
+        results = []
+
+        for multiplier in shard_benchmark_config["shard_multipliers"]:
+            shard_size = dcc.X_Y_CHUNK_VALUE * multiplier
+            output_path = test_output_dir / f"shard_benchmark_mult{multiplier}.zarr"
+            if output_path.exists():
+                shutil.rmtree(output_path)
+
+            cmd = [
+                sys.executable, str(deep_copy_script),
+                "--input-store", shard_benchmark_config["input_store"],
+                "--output-store", str(output_path),
+                "--num-layers", str(shard_benchmark_config["num_layers"]),
+                "--batch-size", str(shard_benchmark_config["num_layers"]),
+                "--xy-shard-multiplier", str(multiplier),
+            ]
+
+            print(f"\nRunning shard{shard_size} (multiplier={multiplier}): {' '.join(cmd)}")
+            start = time.time()
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            elapsed = time.time() - start
+
+            if result.returncode != 0:
+                print(f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+                pytest.fail(
+                    f"deep_copy_cube.py failed for shard{shard_size} "
+                    f"(multiplier={multiplier}): rc={result.returncode}"
+                )
+
+            cube = xr.open_zarr(str(output_path), zarr_format=3, consolidated=True)
+            num_layers = cube.sizes['time']
+
+            read_start = time.time()
+            _ = cube[Vars.v][-1].values
+            read_elapsed = time.time() - read_start
+
+            cube.close()
+
+            results.append({
+                "shard_size": shard_size,
+                "multiplier": multiplier,
+                "layers": num_layers,
+                "elapsed_s": elapsed,
+                "ms_per_layer": elapsed * 1000 / num_layers,
+                "read_v_last_s": read_elapsed,
+            })
+
+            # Output is only needed transiently here to confirm the layer
+            # count landed correctly; not kept, so 5 runs don't pile up
+            # local disk usage for what is a timing-only benchmark.
+            shutil.rmtree(output_path)
+
+        summary_lines = [
+            "\n=== deep_copy_cube.py generation runtime by shard size "
+            f"(input: first {shard_benchmark_config['num_layers']} layers of "
+            f"{shard_benchmark_config['input_store']}) ===",
+            f"{'shard':>8} {'multiplier':>10} {'layers':>7} {'elapsed_s':>10} "
+            f"{'ms/layer':>10} {'read_v[-1]_s':>13}",
+        ]
+        for r in results:
+            summary_lines.append(
+                f"{r['shard_size']:>8} {r['multiplier']:>10} {r['layers']:>7} "
+                f"{r['elapsed_s']:>10.1f} {r['ms_per_layer']:>10.2f} "
+                f"{r['read_v_last_s']:>13.2f}"
+            )
+        summary = "\n".join(summary_lines)
+        print(summary)
+
+        summary_path = test_output_dir / "shard_runtime_benchmark_summary.txt"
+        summary_path.write_text(summary + "\n")
+        print(f"\nSummary written to {summary_path}")
+
+        assert len(results) == len(shard_benchmark_config["shard_multipliers"])
 
 
 if __name__ == "__main__":
