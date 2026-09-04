@@ -24,8 +24,8 @@ LABEL org.opencontainers.image.authors="ITS_LIVE, a NASA MEaSUREs project (its-l
 LABEL org.opencontainers.image.licenses="MIT"
 
 # create user
-ARG CONDA_UID=1000
-ARG CONDA_GID=1000
+ARG CONDA_UID=1001
+ARG CONDA_GID=1001
 RUN groupadd -g "${CONDA_GID}" conda && \
     useradd -l -u "${CONDA_UID}" -g "${CONDA_GID}" -d /home/conda -m  -s /bin/bash conda && \
     mamba update -n base -c conda-forge mamba && \
@@ -40,7 +40,7 @@ SHELL ["/bin/bash", "-l", "-c"]
 WORKDIR /home/conda
 
 # copy the software and other files
-COPY --chown=1000:1000 ${SOURCE_DIR} /home/conda/itslive
+COPY --chown=${CONDA_UID}:${CONDA_GID} ${SOURCE_DIR} /home/conda/itslive
 
 # build datacube conda environment
 RUN mamba env create -f itslive/env/virtual_cube_environment.yml && \
