@@ -1,4 +1,4 @@
-name: itslivecube_virtualizarr_sep1.2026
+name: itslivecube_virtualizarr
 
 channels:
   - conda-forge
@@ -35,4 +35,3 @@ dependencies:
   - pip
   - pip:
     - itslive>=0.7.4
-
