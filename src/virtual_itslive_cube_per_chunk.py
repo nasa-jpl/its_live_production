@@ -1313,6 +1313,14 @@ if __name__ == "__main__":
          "batch_size": len(batch_granules),
       }
 
+      # Remove granule specific attributes (may already be absent if
+      # combine_attrs="drop_conflicts" dropped it due to differing values
+      # across granules). Applied to every batch, not just the one that
+      # creates the repo: combine_attrs re-derives cube.attrs fresh per
+      # batch, so a later append batch whose granules happen to agree on
+      # this value would otherwise re-introduce it into the committed cube.
+      cube.attrs.clear()
+
       if repo is None:
          # First batch with data: set up cube-level attributes, ice masks,
          # and create the icechunk repository.
@@ -1321,7 +1329,6 @@ if __name__ == "__main__":
          # Set all datacube attributes matching itscube.py
          cube.attrs[utils.OutputFormat.conventions] = \
             CubeFormat.values[utils.OutputFormat.conventions]
-         cube.attrs[CubeFormat.datacube_software_version] = '1.0'
          cube.attrs[CubeFormat.date_created] = date_created
          cube.attrs[CubeFormat.gdal_area_or_point] = \
             CubeFormat.values[CubeFormat.gdal_area_or_point]
@@ -1353,11 +1360,6 @@ if __name__ == "__main__":
          if Vars.url in cube.data_vars:
             cube[Vars.url].attrs[Vars.attrs.std_name] = Vars.url
             cube[Vars.url].attrs[Vars.attrs.description] = Vars.description[Vars.url]
-
-         # Remove granule specific attributes (may already be absent if
-         # combine_attrs="drop_conflicts" dropped it due to differing values
-         # across granules)
-         cube.attrs.pop('motion_detection_method', None)
 
          logging.info(f"\n{cube}")
 
@@ -1504,6 +1506,7 @@ if __name__ == "__main__":
 
          session = repo.writable_session("main")
          cube_clean = _drop_nonfinite_attrs(cube)
+
          cube_clean.vz.to_icechunk(session.store)
          snapshot_id = session.commit(
             f"its_live virtual cube subset: create cube (batch {batch_num}/{num_batches}, "
