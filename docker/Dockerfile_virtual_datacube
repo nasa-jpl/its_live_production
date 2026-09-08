@@ -5,6 +5,9 @@ FROM condaforge/miniforge3:latest
 # Set an encoding to make things work smoothly
 ENV LANG en_US.UTF-8
 
+# Set mamba environment variables
+ENV MAMBA_ROOT_PREFIX=/opt/conda
+
 # files are copied from this dir on the host to the docker image
 ARG SOURCE_DIR
 
