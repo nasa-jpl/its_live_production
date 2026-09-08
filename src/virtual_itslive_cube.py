@@ -1050,10 +1050,21 @@ def build_virtual_cube(vds_list, already_aligned=False):
                f"from majority.\n  extra: {vs - majority}\n  missing: {majority - vs}"
             )
 
-   result = xr.combine_by_coords(
-      placed, coords="minimal", compat="override", join="override",
-      combine_attrs="drop_conflicts", data_vars="all"
-   )
+   if len(placed) == 1:
+      # combine_by_coords on a single-element list returns the dataset
+      # essentially unchanged (nothing to order/stack), so the scalar
+      # (dims=()) per-granule attribute variables above never gain their
+      # intended 'time' dimension. xr.concat forces it even for one
+      # dataset; ordering isn't a concern with only one granule.
+      result = xr.concat(
+         placed, dim="time", coords="minimal",
+         combine_attrs="drop_conflicts", data_vars="all"
+      )
+   else:
+      result = xr.combine_by_coords(
+         placed, coords="minimal", compat="override", join="override",
+         combine_attrs="drop_conflicts", data_vars="all"
+      )
 
    # Some param files have 'http' and some 'https' - remove them before comparison
    autorift_param_files = [
