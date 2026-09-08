@@ -45,6 +45,7 @@ python src/deep_copy_cube_per_var.py \
    --input-store my_virtual_cube.icechunk \
    --output-store my_deep_copy_cube.zarr
 """
+import gc
 import logging
 import sys
 import time
@@ -93,6 +94,14 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers)
    decompress/merge/recompress this script exists to avoid (see module
    docstring).
 
+   Explicitly deletes the loaded batch and forces a gc pass after each
+   write: xarray/dask Datasets commonly hold internal reference cycles
+   (e.g. task-graph closures), which CPython's refcounting alone won't
+   collect promptly -- on a RAM-constrained instance, leaving a finished
+   chunk's ~10-20GB array pending cyclic collection until Python gets
+   around to it can crowd out the next variable's read/decompress
+   footprint.
+
    Parameters
    ----------
    cube : xr.Dataset
@@ -127,6 +136,9 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers)
       )
 
       logging.info(f'Wrote {var_name} layers {start}:{stop} of {total_layers} to {write_target}')
+
+      del batch
+      gc.collect()
 
 
 def deep_copy_cube_per_var(
