@@ -12,7 +12,7 @@ unchanged.
 """
 import boto3
 from dateutil.parser import parse
-from datetime import datetime
+from datetime import datetime, timedelta
 from joblib import Parallel, delayed, parallel_config
 import json
 import logging
@@ -76,6 +76,23 @@ PIXEL_SIZE_HALF = PIXEL_SIZE / 2
 
 # Number of threads for parallel processing
 MAX_AWS_CONNECTIONS = 8
+
+# obstore retry/backoff config for the S3Store used to read granules. Widens
+# obstore's defaults (max_retries=10, retry_timeout=3min, max_backoff=15s) to
+# ride out multi-minute S3 503 "SlowDown" throttling bursts observed when many
+# jobs start their granule-loading burst within the same 1-2 minutes. Safe to
+# push retry_timeout past the doc's 5-minute credential-expiry caveat since
+# these are anonymous (skip_signature=True) requests with no credentials to
+# expire.
+RETRY_CONFIG = {
+   'max_retries': 20,
+   'retry_timeout': timedelta(minutes=5),
+   'backoff': {
+      'init_backoff': timedelta(milliseconds=500),
+      'max_backoff': timedelta(seconds=30),
+      'base': 2,
+   },
+}
 
 # Log progress after this many granules complete. Tasks are dispatched to the
 # pool continuously (no batch barrier); this only controls how often progress
@@ -873,7 +890,9 @@ def load_granules(granules, bucket):
       it. Unaffected by the missing-granule bypass above: only genuinely
       missing (404) granules are skipped, any other failure still fails fast.
    """
-   store = obstore.store.from_url(bucket, region="us-west-2", skip_signature=True)
+   store = obstore.store.from_url(
+      bucket, region="us-west-2", skip_signature=True, retry_config=RETRY_CONFIG,
+   )
    registry = ObjectStoreRegistry({bucket: store})
    # Keep 'mapping' (don't drop it): it's loaded as a small 0-dim variable in
    # read_virtual_dataset so build_virtual_cube can recover its projection attrs
