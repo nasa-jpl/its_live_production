@@ -173,14 +173,6 @@ class VirtualDataCubeBatch:
 
                     target_s3_path = os.path.join(s3_bucket, bucket_dir_path, cube_filename)
 
-                    # Work around to make sure there are no partially generated cubes from
-                    # previously failed runs
-                    if self.s3.exists(target_s3_path):
-                        logging.info(
-                            f"Datacube {target_s3_path} exists, skipping datacube generation."
-                        )
-                        continue
-
                     cube_params = {
                         'outputStore': target_s3_path,
                         'projection': epsg_code,
@@ -215,15 +207,6 @@ class VirtualDataCubeBatch:
                     num_jobs += 1
                     logging.info(f'Submitted {num_jobs} to AWS')
 
-                    if not self.is_dry_run and \
-                            num_jobs % VirtualDataCubeBatch.SLEEP_AFTER_NUM_JOBS == 0:
-                        logging.info(
-                            f'Submitted {num_jobs} jobs so far; sleeping '
-                            f'{VirtualDataCubeBatch.SLEEP_DURATION_SEC}s to avoid '
-                            'overwhelming S3 with concurrent job start-up requests'
-                        )
-                        time.sleep(VirtualDataCubeBatch.SLEEP_DURATION_SEC)
-
                     jobs.append({
                         's3_filename': target_s3_path,
                         'roi_percent': roi,
@@ -235,6 +218,15 @@ class VirtualDataCubeBatch:
                     })
 
                     jobs_files.append(target_s3_path)
+
+                    if not self.is_dry_run and \
+                            num_jobs % VirtualDataCubeBatch.SLEEP_AFTER_NUM_JOBS == 0:
+                        logging.info(
+                            f'Submitted {num_jobs} jobs so far; sleeping '
+                            f'{VirtualDataCubeBatch.SLEEP_DURATION_SEC}s to avoid '
+                            'overwhelming S3 with concurrent job start-up requests'
+                        )
+                        time.sleep(VirtualDataCubeBatch.SLEEP_DURATION_SEC)
 
             logging.info(f"Number of batch jobs submitted: {num_jobs}")
 
