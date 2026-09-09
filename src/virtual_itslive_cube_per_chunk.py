@@ -962,6 +962,224 @@ def load_granules(granules, bucket):
    return vds_list, missing_granules
 
 
+# ---------------------------------------------------------------------------
+# Functions for appending new granules to a pre-existing icechunk repo,
+# merged from virtual_itslive_cube_per_chunk_update.py. This lets __main__
+# auto-detect whether --output-store already exists and append to it instead
+# of always creating fresh -- e.g. so a job killed mid-run by an S3 503 storm
+# can be safely re-submitted with the same arguments.
+# ---------------------------------------------------------------------------
+
+def _build_output_storage(store_path):
+   """Build the icechunk `Storage` object for `store_path`.
+
+   Parameters
+   ----------
+   store_path : str
+      Path to the icechunk repository (s3:// URL or local path).
+
+   Returns
+   -------
+   icechunk.Storage
+      Storage handle for `store_path`, usable with `ic.Repository.exists`,
+      `.open`, or `.create`.
+   """
+   if store_path.startswith(utils.S3_PREFIX):
+      s3_parts = store_path.replace(utils.S3_PREFIX, '').split('/', 1)
+      out_bucket = s3_parts[0]
+      prefix = s3_parts[1] if len(s3_parts) > 1 else ''
+      logging.info(f'Using icechunk repo on S3: bucket={out_bucket}, prefix={prefix}')
+      return ic.s3_storage(bucket=out_bucket, prefix=prefix, region="us-west-2")
+
+   logging.info(f'Using icechunk repo on local filesystem: {store_path}')
+   return ic.local_filesystem_storage(store_path)
+
+
+def open_repo_for_append(store_path, url_prefix):
+   """Open a pre-existing icechunk repository to append new granules to it.
+
+   Mirrors the RepositoryConfig/credentials setup __main__ uses when
+   creating a fresh repo (StorageSettings for stronger recovery from
+   transient S3 failures, anonymous virtual-chunk-container credentials for
+   the granules bucket), but opens rather than creates.
+
+   Parameters
+   ----------
+   store_path : str
+      Path to the icechunk repository (s3:// URL or local path).
+   url_prefix : str
+      s3:// URL prefix (with trailing slash) for the granules bucket, used
+      to authorize anonymous virtual-chunk access.
+
+   Returns
+   -------
+   tuple of (ic.Repository, xr.Dataset)
+      The opened repository and its current datacube. The cube is read with
+      mask_and_scale=False (raw on-disk dtypes), matching every other cube
+      read in this file.
+   """
+   config = ic.RepositoryConfig.default()
+
+   if store_path.startswith(utils.S3_PREFIX):
+      # unsafe_use_metadata/unsafe_use_conditional_update only work with S3
+      # storage -- see the create path's local-filesystem branch, which
+      # doesn't set config.storage either.
+      config.storage = ic.StorageSettings(
+         unsafe_use_metadata=True,
+         unsafe_use_conditional_update=True
+      )
+
+   config.set_virtual_chunk_container(
+      ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
+   )
+
+   repo = ic.Repository.open(
+      storage=_build_output_storage(store_path),
+      config=config,
+      authorize_virtual_chunk_access=ic.containers_credentials(
+         {url_prefix: ic.s3_credentials(anonymous=True)}
+      ),
+   )
+
+   # zarr_format=3, not 2: icechunk repos are natively Zarr V3 metadata;
+   # forcing zarr_format=2 raises GroupNotFoundError (no .zgroup/.zarray
+   # markers exist in an icechunk store).
+   cube = xr.open_zarr(
+      repo.readonly_session("main").store,
+      consolidated=False,
+      zarr_format=3,
+      mask_and_scale=False
+   )
+
+   return repo, cube
+
+
+def load_skipped_granules(cube_store):
+   """Load previously skipped granules from a cube's persistent JSON file.
+
+   Parameters
+   ----------
+   cube_store : str
+      Path to icechunk repository (S3 or local).
+
+   Returns
+   -------
+   set of str
+      Set of skipped granule URLs (normalized to s3:// form).
+
+   Raises
+   ------
+   RuntimeError
+      If no skipped-granules JSON exists yet at `cube_store`'s expected
+      path.
+   """
+   skipped_path = skipped_granules_path(cube_store)
+   is_s3 = skipped_path.startswith(utils.S3_PREFIX)
+
+   try:
+      if is_s3:
+         s3_client = boto3.client('s3', region_name='us-west-2')
+         s3_parts = skipped_path.replace(utils.S3_PREFIX, '').split('/', 1)
+         bucket = s3_parts[0]
+         key = s3_parts[1] if len(s3_parts) > 1 else ''
+
+         response = s3_client.get_object(Bucket=bucket, Key=key)
+         content = response['Body'].read().decode('utf-8')
+         skipped = json.loads(content)
+
+      else:
+         with open(skipped_path, 'r') as f:
+            skipped = json.load(f)
+
+      skipped_set = set(url.replace(HTTPS_URL, S3_URL) for url in skipped)
+      logging.info(f'Loaded {len(skipped_set)} previously skipped granules from {skipped_path}')
+
+      return skipped_set
+
+   except FileNotFoundError:
+      raise RuntimeError(f'No existing skipped granules file at {skipped_path}')
+
+   except boto3.exceptions.botocore.exceptions.ClientError as e:
+      error_code = e.response.get('Error', {}).get('Code')
+      if error_code in ('NoSuchKey', '404'):
+         raise RuntimeError(f'No existing skipped granules file at {skipped_path}')
+
+      # Any other ClientError (permission denied, wrong region, throttling,
+      # expired credentials, bucket typo, etc.) is a real problem -- don't
+      # mask it behind a misleading "file not found" message
+      raise
+
+
+def get_existing_granule_urls(cube):
+   """Extract existing granule URLs from a datacube.
+
+   Parameters
+   ----------
+   cube : xr.Dataset
+      The virtual datacube.
+
+   Returns
+   -------
+   set of str
+      Set of granule URLs already in the cube (normalized to s3:// form).
+   """
+   urls = set(str(u).replace(HTTPS_URL, S3_URL) for u in cube[Vars.url].values)
+   logging.info(f'Found {len(urls)} existing granules in cube')
+
+   return urls
+
+
+def _filter_processed_granules(urls, skipped, existing, num_p000_skipped):
+   """Filter out granules already committed to the cube or previously
+   skipped, when appending new granules to a pre-existing icechunk repo.
+
+   P000 granules are not filtered here -- __main__ already excludes them
+   from `urls` before this is ever called, for both the create and append
+   paths.
+
+   Parameters
+   ----------
+   urls : list of str
+      Candidate granule URLs (s3:// form), already sorted chronologically.
+   skipped : set of str
+      Previously skipped granule URLs (s3:// form).
+   existing : set of str
+      Granule URLs already present in the existing cube (s3:// form).
+   num_p000_skipped: int
+      Number of P000 granules that were excluded from the list of granules
+   to process.
+
+   Returns
+   -------
+   tuple of (list of str, list of str)
+      - Filtered list of new granules still to process, in the same order
+      as `urls`.
+      - The subset of `urls` that were previously skipped (redundant with
+      `skipped`, but returned so the caller can merge like-for-like). Does
+      NOT include granules dropped because they're already in `existing`
+      -- those are successfully-processed granules, not skipped ones, and
+      must never be written to the persistent skipped-granules record.
+   """
+   remaining = []
+   already_skipped = []
+   already_in_cube = 0
+   for url in urls:
+      if url in skipped:
+         already_skipped.append(url)
+      elif url in existing:
+         already_in_cube += 1
+      else:
+         remaining.append(url)
+
+   logging.info(
+      f'Filtered out {len(already_skipped)} previously-skipped, '
+      f'{num_p000_skipped} P000 skipped, and '
+      f'{already_in_cube} already-in-cube granules; {len(remaining)} new '
+      'granules remain'
+   )
+   return remaining, already_skipped
+
+
 def set_1d_time_chunk_encoding(cube, chunk_size):
    """Set an explicit 'chunks' encoding on every 1-D (time,) variable of
    a virtual cube -- both data variables and the 'time' coordinate itself --
@@ -1262,6 +1480,51 @@ if __name__ == "__main__":
    bucket = args.bucket
    bucketHTTP = args.bucketHTTP
 
+   # "s3://its-live-data/"
+   url_prefix = bucket + os.sep
+   store_path = args.output_store
+
+   # Determine if output is S3 or local filesystem
+   is_s3_output = store_path.startswith(utils.S3_PREFIX)
+
+   # Accumulates skipped granules across all batches; P000 granules were
+   # never handed to any batch, so seed with those up front.
+   skipped_granules = list(p000_granules)
+
+   # Detect whether the target icechunk repo already exists so this run
+   # appends new granules to it instead of recreating it from scratch --
+   # lets the same job be safely re-submitted (e.g. after a transient S3
+   # throttling failure) without clobbering progress already committed.
+   repo_exists = ic.Repository.exists(_build_output_storage(store_path))
+
+   # None until either an existing repo is opened below, or the first batch
+   # that actually produces a cube creates one; every later batch with data
+   # appends to it.
+   repo = None
+
+   if repo_exists:
+      repo, existing_cube = open_repo_for_append(store_path, url_prefix)
+      logging.info(
+         f'Found existing cube with {len(existing_cube.time)} time layers '
+         f'at {store_path}; appending new granules to it'
+      )
+
+      try:
+         existing_skipped = load_skipped_granules(store_path)
+      except RuntimeError:
+         logging.info(f'No existing skipped-granules file yet for {store_path}')
+         existing_skipped = set()
+
+      existing_urls = get_existing_granule_urls(existing_cube)
+
+      # Second return value (already-skipped granules re-found in this
+      # run's candidate list) is always a subset of existing_skipped, so
+      # unioning it in below would add nothing -- discarded here.
+      granules, _ = _filter_processed_granules(
+         granules, existing_skipped, existing_urls, len(skipped_granules))
+      skipped_granules = list(set(skipped_granules) | existing_skipped)
+      save_skipped_granules(store_path, skipped_granules)
+
    batch_size = args.batch_size
    batches = [granules[i:i + batch_size] for i in range(0, len(granules), batch_size)]
    num_batches = len(batches)
@@ -1280,21 +1543,6 @@ if __name__ == "__main__":
       region="us-west-2",
       skip_signature=True,
    )
-
-   # "s3://its-live-data/"
-   url_prefix = bucket + os.sep
-   store_path = args.output_store
-
-   # Determine if output is S3 or local filesystem
-   is_s3_output = store_path.startswith(utils.S3_PREFIX)
-
-   # Accumulates skipped granules across all batches; P000 granules were
-   # never handed to any batch, so seed with those up front.
-   skipped_granules = list(p000_granules)
-
-   # None until the first batch that actually produces a cube creates the
-   # icechunk repo; every later batch with data appends to it.
-   repo = None
 
    for batch_num, batch_granules in enumerate(batches, start=1):
       logging.info(f'Batch {batch_num}/{num_batches}: loading {len(batch_granules)} granules')
@@ -1398,63 +1646,34 @@ if __name__ == "__main__":
          skipped_json_path = skipped_granules_path(store_path)
          cube.attrs[SkippedGranules.name] = skipped_json_path
 
+         config = ic.RepositoryConfig.default()
+
          if is_s3_output:
-            # S3 storage - parse bucket and prefix. Named out_bucket (not
-            # `bucket`) so it doesn't shadow the granule-source bucket that
-            # later batches' load_granules() calls still need.
-            s3_parts = store_path.replace(utils.S3_PREFIX, '').split('/', 1)
-            out_bucket = s3_parts[0]
-            prefix = s3_parts[1] if len(s3_parts) > 1 else ''
-
-            logging.info(f'Writing icechunk repo to S3: bucket={out_bucket}, prefix={prefix}')
-
-            # Configure storage settings for stronger recovery from transient S3 failures
-            storage_settings = ic.StorageSettings(
+            # Configure storage settings for stronger recovery from transient
+            # S3 failures. Only works with S3 storage -- local filesystem
+            # storage doesn't set config.storage and will otherwise hit a
+            # "put_opts with opts.attributes not yet implemented" error.
+            config.storage = ic.StorageSettings(
                unsafe_use_metadata=True,           # Enable metadata stamping for write-id recovery
                unsafe_use_conditional_update=True  # Enable conditional PUTs to prevent conflicts
             )
-
-            config = ic.RepositoryConfig.default()
-            config.storage = storage_settings
-            config.set_virtual_chunk_container(
-               ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
-            )
-
-            # Create S3 storage for repository (authenticated write access)
-            storage = ic.s3_storage(
-               bucket=out_bucket,
-               prefix=prefix,
-               region="us-west-2"
-            )
-
-            repo = ic.Repository.create(
-               storage=storage,
-               config=config,
-               authorize_virtual_chunk_access=ic.containers_credentials(
-                  {url_prefix: ic.s3_credentials(anonymous=True)}
-               ),
-            )
          else:
-            # Local filesystem storage
+            # Local filesystem storage: clear any stale directory left over
+            # from a previous non-repo run (repo_exists was already checked
+            # above and is False here, so there's nothing valid to preserve).
             shutil.rmtree(store_path, ignore_errors=True)
 
-            # Note: Don't enable unsafe_use_metadata for local filesystem - it only
-            # works with S3 storage and will cause "put_opts with opts.attributes
-            # not yet implemented" error on local filesystem.
-            config = ic.RepositoryConfig.default()
-            config.set_virtual_chunk_container(
-               ic.VirtualChunkContainer(
-                  url_prefix,
-                  ic.s3_store(region="us-west-2", anonymous=True)
-               )
-            )
-            repo = ic.Repository.create(
-               storage=ic.local_filesystem_storage(store_path),
-               config=config,
-               authorize_virtual_chunk_access=ic.containers_credentials(
-                  {url_prefix: ic.s3_credentials(anonymous=True)}
-               ),
-            )
+         config.set_virtual_chunk_container(
+            ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
+         )
+
+         repo = ic.Repository.create(
+            storage=_build_output_storage(store_path),
+            config=config,
+            authorize_virtual_chunk_access=ic.containers_credentials(
+               {url_prefix: ic.s3_credentials(anonymous=True)}
+            ),
+         )
 
          # Add land/floating ice mask data variables, matching itscube.py's
          # combine_layers() (only added once, at cube creation -- the update
