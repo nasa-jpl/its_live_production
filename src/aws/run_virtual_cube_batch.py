@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import s3fs
 import sys
+import time
 from shapely import geometry
 
 from grid import Bounds
@@ -40,6 +41,14 @@ class VirtualDataCubeBatch:
 
     # Number of granules to load and commit together per icechunk snapshot
     BATCH_SIZE = 10000
+
+    # Pace job submission to AWS Batch to avoid many jobs starting their
+    # granule-loading burst within the same 1-2 minutes and overwhelming S3
+    # with concurrent HEAD/GET requests (observed to cause widespread 503
+    # "SlowDown" throttling -- see src/aws/batch_logs/virtual_cubes/09082026).
+    # Sleep SLEEP_DURATION_SEC after every SLEEP_AFTER_NUM_JOBS jobs submitted.
+    SLEEP_AFTER_NUM_JOBS = 300
+    SLEEP_DURATION_SEC = 120
 
     def __init__(self, batch_job: str, batch_queue: str, is_dry_run: bool):
         """
@@ -205,6 +214,15 @@ class VirtualDataCubeBatch:
 
                     num_jobs += 1
                     logging.info(f'Submitted {num_jobs} to AWS')
+
+                    if not self.is_dry_run and \
+                            num_jobs % VirtualDataCubeBatch.SLEEP_AFTER_NUM_JOBS == 0:
+                        logging.info(
+                            f'Submitted {num_jobs} jobs so far; sleeping '
+                            f'{VirtualDataCubeBatch.SLEEP_DURATION_SEC}s to avoid '
+                            'overwhelming S3 with concurrent job start-up requests'
+                        )
+                        time.sleep(VirtualDataCubeBatch.SLEEP_DURATION_SEC)
 
                     jobs.append({
                         's3_filename': target_s3_path,
