@@ -21,7 +21,7 @@ from zarr.codecs import BloscCodec
 
 import itslive_utils
 import utils
-from itscube_types import CubeFormat, Vars
+from itscube_types import CubeFormat, ImgPairInfo, Vars
 
 # Set up logging
 logging.basicConfig(
@@ -101,6 +101,27 @@ COMPRESSOR_KEY = 'compressors'
 MISSING_VALUE_OVERRIDES = {
    Vars.ascending_img1: utils.Missing.u8value,
    Vars.ascending_img2: utils.Missing.u8value,
+}
+
+# Variables itscube.py encodes with dtype only, no _FillValue/missing_value
+# at all (see itscube.py's encoding_settings blocks for ImgPairInfo.date_dt/
+# roi_valid_percentage, and Vars.flag_stable_shift/stable_count_slow/
+# stable_count_mask -- none of the latter three appear in
+# Vars.intMissingValue). Every granule always carries a real value for these
+# (date_dt and roi_valid_percentage are computed per pair, never absent; the
+# stable-surface counts/flag are always populated even when zero), so a fill
+# value would be meaningless -- unlike M11/M12/MISSING_VALUE_OVERRIDES above,
+# which cover variables that genuinely can be missing. build_encoding() skips
+# fill assignment entirely for these, even overriding a fill inherited from
+# the virtual cube's attrs/encoding (e.g. date_dt/roi_valid_percentage
+# inherit a granule-native _FillValue=NaN in attrs that itscube.py never
+# honors for this dtype-only convention).
+NO_FILL_VARS = {
+   ImgPairInfo.date_dt,
+   ImgPairInfo.roi_valid_percentage,
+   Vars.flag_stable_shift,
+   Vars.stable_count_slow,
+   Vars.stable_count_mask,
 }
 
 
@@ -335,16 +356,43 @@ def build_encoding(
                   f"trailing shard will be partially filled"
                )
 
+      if var_name in NO_FILL_VARS:
+         # Always-valid variable (see NO_FILL_VARS) -- omit any fill
+         # entirely, ignoring whatever the virtual cube's attrs/encoding
+         # inherited from the granule. For float dtypes this must be an
+         # explicit fill_value=None, not just an absent key: without it,
+         # xarray/zarr's own default re-introduces _FillValue=NaN on write
+         # (same reasoning as the x/y coordinate fill_value=None above) --
+         # verified via a real write, where an absent key alone still left
+         # NaN baked into date_dt/roi_valid_percentage. Int/uint dtypes
+         # don't get this unwanted default, so no override is needed there.
+         if var.dtype.kind == 'f':
+            var_encoding[utils.OutputFormat.fill_value] = None
+         encoding[var_name] = var_encoding
+         continue
+
       # Re-key the granule-inherited fill (in attrs due to mask_and_scale=False)
       # into the write encoding: 'missing_value' for int/uint, '_FillValue' for
       # float. datetime ('M') / string ('U') variables carry no numeric fill.
       fill = var.attrs.get(
          utils.OutputFormat.fill_value, var.attrs.get(utils.Missing.name)
       )
+      if fill is None and var.dtype.kind in ('i', 'u', 'f'):
+         # Not a CF _FillValue/missing_value *attribute* (e.g. M11/M12: real
+         # granules never set one on these), but the zarr-level array
+         # metadata fill still surfaces as var.encoding['fill_value'] --
+         # verified (Sep 2026) against a real virtual cube, where M11/M12's
+         # attrs are empty of any fill but their encoding carries
+         # fill_value=NaN. Fall back to it before giving up. Restricted to
+         # numeric dtypes: string ('U') variables' encoding fill is '' (the
+         # empty-string sentinel, not a missing numeric fill), which would
+         # otherwise reach the np.isnan() check below and raise a TypeError.
+         fill = var.encoding.get(utils.Missing.fill_value)
       if fill is None:
-         # No inherited fill at all (e.g. ascending_img1/img2 -- see
-         # MISSING_VALUE_OVERRIDES); None here if the variable genuinely has
-         # none (itscube.py agrees, e.g. flag_stable_shift).
+         # No inherited fill at all, from attrs or encoding (e.g.
+         # ascending_img1/img2 -- see MISSING_VALUE_OVERRIDES); None here if
+         # the variable genuinely has none (itscube.py agrees, e.g.
+         # flag_stable_shift).
          fill = MISSING_VALUE_OVERRIDES.get(var_name)
       elif np.isnan(fill):
          # Some granule-native float variables (M11/M12) carry no explicit
