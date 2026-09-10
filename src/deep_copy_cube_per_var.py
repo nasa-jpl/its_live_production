@@ -22,23 +22,31 @@ discarding the unwanted pixels afterward -- real, measured read
 amplification.
 
 This script shrinks RAM the other way: keep full x/y extent and full
-time-chunk (no write amplification, same mechanism as the wiki's Option 1),
-but process ONE DATA VARIABLE AT A TIME instead of all variables at once.
-Peak RAM becomes one variable's full-chunk footprint (one variable x
-time_chunk layers x full x/y extent) instead of the whole cube's. Unlike
-spatial tiling, this does not read-amplify: each granule's per-variable
-chunk is already an independently addressable virtual reference, so reading
-one variable at a time does not re-fetch bytes another variable's read
-already covered.
+time-chunk (no unbounded write amplification, same mechanism as the wiki's
+Option 1), but process ONE DATA VARIABLE AT A TIME instead of all variables
+at once, and write each time-chunk in two half-chunk-sized writes rather
+than one. Peak RAM becomes half of one variable's full-chunk footprint
+(one variable x time_chunk/2 layers x full x/y extent) instead of the whole
+cube's. Unlike spatial tiling, this does not read-amplify: each granule's
+per-variable chunk is already an independently addressable virtual
+reference, so reading one variable at a time does not re-fetch bytes
+another variable's read already covered.
 
-KNOWN TRADEOFF -- read this before using this script for a production run:
-processing variables one at a time forgoes any inter-variable parallelism
-in the read path (S3 GETs for variable N+1 don't start until variable N's
-full chunk has been written), so total wall-clock time is closer to
-(num_variables x per-variable read+write time) than deep_copy_cube.py's more
-overlapped batch processing. This is a deliberate RAM-vs-wall-clock
-tradeoff -- benchmark with --num-layers on a bounded slice before relying on
-this for a full production run.
+KNOWN TRADEOFFS -- read this before using this script for a production run:
+- Processing variables one at a time forgoes any inter-variable parallelism
+  in the read path (S3 GETs for variable N+1 don't start until variable N's
+  full chunk has been written), so total wall-clock time is closer to
+  (num_variables x per-variable read+write time) than deep_copy_cube.py's
+  more overlapped batch processing.
+- Writing each time-chunk in two half-chunk writes is a deliberate partial-
+  chunk write: the first half lands in empty chunk space, but the second
+  half forces one decompress/merge/recompress of that chunk. This is a
+  bounded, fixed 2x overhead per chunk -- not the unbounded per-batch
+  amplification deep_copy_cube.py's small batch_size causes -- traded for
+  half the peak RAM of a single full-chunk write.
+These are deliberate RAM-vs-wall-clock tradeoffs -- benchmark with
+--num-layers on a bounded slice before relying on this for a full
+production run.
 
 Usage example:
 python src/deep_copy_cube_per_var.py \
@@ -85,22 +93,26 @@ warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 
 
 def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers):
-   """Write one data variable's full extent, one complete time-chunk at a
-   time, via region writes into an already-templated store.
+   """Write one data variable's full extent, half a time-chunk at a time,
+   via region writes into an already-templated store.
 
-   Each (variable, time-chunk) pair is exactly one load + one write -- no
-   sub-batching within a chunk -- so every write is a complete, aligned
-   chunk written exactly once. A partial-chunk write would force the same
-   decompress/merge/recompress this script exists to avoid (see module
-   docstring).
+   Each underlying zarr time-chunk (size `chunk_size`) is written as two
+   half-chunk-sized region writes rather than one full-chunk write, to halve
+   the peak RAM of both the .load() and the write relative to loading/writing
+   the whole chunk at once. This is a deliberate partial-chunk write: the
+   first half-write lands in previously-empty chunk space (no
+   decompress/merge needed), and the second half-write forces exactly one
+   decompress/merge/recompress of that chunk -- a bounded, fixed 2x
+   overhead per chunk, not the unbounded per-batch amplification that
+   motivated this script's original full-chunk-write design (see module
+   docstring and src/wiki/07_Deep_Copy_Time_Chunking_And_Write_Amplification.md).
 
    Explicitly deletes the loaded batch and forces a gc pass after each
    write: xarray/dask Datasets commonly hold internal reference cycles
    (e.g. task-graph closures), which CPython's refcounting alone won't
    collect promptly -- on a RAM-constrained instance, leaving a finished
-   chunk's ~10-20GB array pending cyclic collection until Python gets
-   around to it can crowd out the next variable's read/decompress
-   footprint.
+   half-chunk's array pending cyclic collection until Python gets around to
+   it can crowd out the next write's read/decompress footprint.
 
    Parameters
    ----------
@@ -112,13 +124,15 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers)
    var_name : str
       Name of the data variable to write.
    chunk_size : int
-      Number of layers per time-chunk for this variable (time_chunk for 3D
-      variables, time_chunk_1d for 1D variables).
+      Size of the underlying zarr time-chunk for this variable (time_chunk
+      for 3D variables, time_chunk_1d for 1D variables). Each write covers
+      half of this many layers.
    total_layers : int
       Total number of layers to write (honors --num-layers).
    """
-   for start in range(0, total_layers, chunk_size):
-      stop = min(start + chunk_size, total_layers)
+   write_span = max(1, chunk_size // 2)
+   for start in range(0, total_layers, write_span):
+      stop = min(start + write_span, total_layers)
       logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
 
       batch = cube[[var_name]].isel(
@@ -154,10 +168,10 @@ def deep_copy_cube_per_var(
    num_layers=0
 ):
    """Materialize a virtual datacube into a real zarr v3 datacube, one data
-   variable at a time, each in exactly time_chunk-sized (3D) or
-   time_chunk_1d-sized (1D) increments at full spatial extent -- see this
-   module's docstring for the RAM-vs-wall-clock tradeoff this makes relative
-   to deep_copy_cube.py and deep_copy_cube_tiled.py.
+   variable at a time, each in half-time_chunk-sized (3D) or
+   half-time_chunk_1d-sized (1D) increments at full spatial extent -- see
+   this module's docstring for the RAM-vs-wall-clock tradeoffs this makes
+   relative to deep_copy_cube.py and deep_copy_cube_tiled.py.
 
    Like deep_copy_cube_tiled.py (and unlike deep_copy_cube.py's incremental
    append-based construction), this writes the whole store's
@@ -176,13 +190,13 @@ def deep_copy_cube_per_var(
       S3 URL prefix the virtual chunk container resolves granule references
       against (see deep_copy_cube.open_virtual_cube).
    time_chunk : int
-      Chunk size along 'time' for 3D variables, and the number of layers
-      materialized per write for each 3D variable.
+      Chunk size along 'time' for 3D variables. Each write for a 3D
+      variable materializes half this many layers.
    xy_chunk : int
       Chunk size along 'x'/'y' for 3D variables.
    time_chunk_1d : int
-      Chunk size for 1D ('time',) variables, and the number of layers
-      materialized per write for each 1D variable.
+      Chunk size for 1D ('time',) variables. Each write for a 1D variable
+      materializes half this many layers.
    xy_shard_multiplier : int
       Must be >= 1; 1 (the default) leaves the store unsharded. See
       deep_copy_cube.XY_SHARD_MULTIPLIER for the recommended value to pass
@@ -306,12 +320,13 @@ if __name__ == '__main__':
       description="""
       Materialize a virtual ITS_LIVE datacube (icechunk repo built by
       virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube, one
-      data variable at a time, each in full time_chunk-sized (3D) or
-      time_chunk_1d-sized (1D) writes at full spatial extent -- avoids
-      deep_copy_cube.py's batch_size-vs-time_chunk write amplification
-      without deep_copy_cube_tiled.py's spatial read-amplification, at the
-      cost of losing inter-variable read/write overlap (see this module's
-      docstring for the accepted tradeoff).
+      data variable at a time, each time-chunk written in two half-sized
+      (3D: time_chunk/2, 1D: time_chunk_1d/2) writes at full spatial extent
+      -- avoids deep_copy_cube.py's unbounded batch_size-vs-time_chunk write
+      amplification and deep_copy_cube_tiled.py's spatial read-amplification,
+      at the cost of losing inter-variable read/write overlap and a bounded
+      2x decompress/merge/recompress per chunk (see this module's docstring
+      for the accepted tradeoffs).
 
       Usage example:
       python src/deep_copy_cube_per_var.py \
@@ -356,8 +371,8 @@ if __name__ == '__main__':
       '--time-chunk-value',
       type=int,
       default=TIME_CHUNK_VALUE,
-      help='Chunk size along time for 3D (time, y, x) variables, and the '
-         'number of layers materialized per write for each 3D variable '
+      help='Chunk size along time for 3D (time, y, x) variables. Each write '
+         'for a 3D variable materializes half this many layers '
          '[%(default)d].'
    )
    parser.add_argument(
@@ -370,8 +385,8 @@ if __name__ == '__main__':
       '--time-chunk-value-1d',
       type=int,
       default=TIME_CHUNK_VALUE_1D,
-      help='Chunk size for 1D (time,) variables, and the number of layers '
-         'materialized per write for each 1D variable [%(default)d].'
+      help='Chunk size for 1D (time,) variables. Each write for a 1D '
+         'variable materializes half this many layers [%(default)d].'
    )
    parser.add_argument(
       '--xy-shard-multiplier',
