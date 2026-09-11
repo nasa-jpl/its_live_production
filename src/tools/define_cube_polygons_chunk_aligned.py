@@ -21,6 +21,9 @@ from tqdm import tqdm
 
 
 from grid import Bounds, Grid
+from chunk_aligned_utils import (
+    get_alignment_info, CHUNK_SIZE, PIXEL_SIZE, GRID_OFFSET
+)
 
 # GDAL settings
 gdal.SetConfigOption('CPL_VSIL_CURL_ALLOWED_EXTENSIONS', 'tif')
@@ -31,13 +34,24 @@ LON_LAT_PROJECTION = 'EPSG:4326'
 
 POLAR_EPGS = ['EPSG:3413', 'EPSG:3031']
 
-GRID_ADJUSTMENT_EPSG3031 = {
-    100000: 0.1,
-    61440: 0.0
+GRID_ADJUSTMENT = {
+    'EPSG:3031': {
+        100000: 0.1,
+        61440: 0.0
+    },
+    'EPSG:32718': {
+        100000: 0.0,
+        61440: 0.3
+    }
 }
 
-CHUNK_SIZE = 512
-PIXEL_SIZE = 120
+# Threshold to skip cubes that overlap with the very right polygon border
+# that fall below provided area fraction coverage
+RIGHT_BORDER_AREA_CUTOFF = {
+    'EPSG:32718': {
+        61440: 0.16
+    }
+}
 
 # Set up logging
 logging.basicConfig(
@@ -45,63 +59,6 @@ logging.basicConfig(
     format = '%(asctime)s - %(levelname)s - %(message)s',
     datefmt = '%Y-%m-%d %H:%M:%S'
 )
-
-# See https://github.com/ASFHyP3/hyp3-autorift/blob/develop/src/hyp3_autorift/crop.py#L127
-# for original code on chunk alignment calculations.
-# We are using similar logic to it to determine how to align the bounds of a
-# polygon to a regular grid so that the resulting cubes are properly aligned
-# with the chunk size and pixel spacing.
-def get_aligned_min(val, grid_spacing):
-    """Align a value with the nearest grid posting less than it"""
-    nearest = np.floor(val / grid_spacing) * grid_spacing
-    difference = val - nearest
-    pixel_misalignment = difference % PIXEL_SIZE
-    padding = difference - pixel_misalignment
-    return val - padding, int(padding / 120)
-
-
-def get_aligned_max(val, grid_spacing):
-    """Align a value with the nearest grid posting greater than it"""
-    nearest = np.ceil(val / grid_spacing) * grid_spacing
-    difference = nearest - val
-    pixel_misalignment = difference % PIXEL_SIZE
-    padding = difference - pixel_misalignment
-    return val + padding, int(padding / 120)
-
-
-def get_alignment_info(
-    x_min: float,
-    y_min: float,
-    x_max: float,
-    y_max: float,
-    grid_spacing: int = CHUNK_SIZE * PIXEL_SIZE,
-):
-    """Get the bounds and additional info necessary for chunk alignment
-
-    Args:
-        x_min: cropped minimum x coordinate
-        y_min: cropped minimum y coordinate
-        x_max: cropped maximum x coordinate
-        y_max: cropped maximum y coordinate
-        grid_spacing: width/height of the chunk in the units of the product's SRS
-
-    Returns:
-        1. aligned bounds
-        2. padding in pixels required to align
-        3. new range of x coordinates
-        4. new range of y coordinates
-    """
-    x_min, left_pad = get_aligned_min(x_min, grid_spacing)
-    y_min, bottom_pad = get_aligned_min(y_min, grid_spacing)
-    x_max, right_pad = get_aligned_max(x_max, grid_spacing)
-    y_max, top_pad = get_aligned_max(y_max, grid_spacing)
-
-    aligned_bounds = [x_min, y_min, x_max, y_max]
-    aligned_padding = [left_pad, bottom_pad, right_pad, top_pad]
-
-    x_values = np.arange(x_min, x_max + PIXEL_SIZE, PIXEL_SIZE)
-    y_values = np.arange(y_min, y_max + PIXEL_SIZE, PIXEL_SIZE)[::-1]
-    return aligned_bounds, aligned_padding, x_values, y_values
 
 def translate_polygons(geometry_collection: GeometryCollection) -> list:
     """
@@ -163,6 +120,7 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
         # ROI.GetGeoTransform: (-32647.5, 120.0, 0.0, 10199047.5, 0.0, -120.0)
         # ROI.XSize: 8880 ROI.YSize: 55072
         roi_data = roi_ds.GetRasterBand(1).ReadAsArray()
+        logging.info(f'Read {roi_data.shape} ROI data')
 
         if roi_data.sum() == 0:
             logging.info(f"{epsg_code}'s ROI {roi_file} has no data")
@@ -176,7 +134,7 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
         logging.info(f"ROI.GetGeoTransform: {roi_ds.GetGeoTransform()}")
         logging.info(f"ROI.XSize: {roi_ds.GetRasterBand(1).XSize} ROI.YSize: {roi_ds.GetRasterBand(1).YSize}")
 
-        # Get the cube polygon size in pixels
+        # Get the cube polygon size in pixels (pixels within one grid cell)
         cube_num_cells = int(grid_size/roi_ds.GetGeoTransform()[1])**2
         logging.info(f"Number of cube cells: {cube_num_cells}")
 
@@ -193,7 +151,15 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
         min_lon, min_lat, max_lon, max_lat = envelope.bounds
         logging.info(f"Using bounds: {[min_lon, min_lat, max_lon, max_lat]}")
 
-        # Construct the most right longitude cutoff line
+        # Construct the most right longitude cutoff line, apply the same
+        # grid adjustment as we apply to the polygon to avoid gaps in
+        # cube definitions between two adjuscent UTM zones.
+        grid_adjustment = 0.0
+        if epsg_code in GRID_ADJUSTMENT and grid_size in GRID_ADJUSTMENT[epsg_code]:
+            grid_adjustment = GRID_ADJUSTMENT[epsg_code][grid_size]
+
+        max_lon += grid_adjustment
+
         line = [[max_lon, min_lat], [max_lon, max_lat]]
         most_right_filter = LineString(line)
         logging.info(f"Using most_right: {most_right_filter}")
@@ -202,7 +168,17 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
         line = [[min_lon, min_lat], [max_lon, min_lat]]
         most_bottom_filter = LineString(line)
         logging.info(f"Using most_bottom: {most_bottom_filter}")
+
         logging.info(f"Num of polygon exterior points: {len(envelope.exterior.coords)}")
+
+        # Adjust minimum threshold for the coverage of cube vs. polygon to
+        # exclude cubes that overlap on the most right longitude and the most
+        # bottom latitude
+        intersect_threshold = 0.5
+
+        if epsg_code in RIGHT_BORDER_AREA_CUTOFF and \
+            grid_size in RIGHT_BORDER_AREA_CUTOFF[epsg_code]:
+                intersect_threshold = RIGHT_BORDER_AREA_CUTOFF[epsg_code][grid_size]
 
         # For the polar polygons, where opposite edge vertices
         # (for example,
@@ -258,9 +234,15 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
             logging.info(f"EPGS region: x: {x_bounds} y: {y_bounds}")
 
             # Round up max and round down min values of bounds
+            # new_x = x_bounds.extend_to_grid(grid_size)
+            # new_y = y_bounds.extend_to_grid(grid_size)
             new_x = x_bounds.extend_to_grid(grid_size)
             new_y = y_bounds.extend_to_grid(grid_size)
             logging.info(f"EPGS region expanded to {grid_size}m: x: {new_x} y: {new_y}")
+
+            # Apply offset
+            new_x.min -= GRID_OFFSET
+            new_y.min += GRID_OFFSET
 
             # Use same logic as ITSCube.__init__() to ensure grid alignment
             # Use Grid.bounding_box() to get grid edges with proper alignment
@@ -269,31 +251,65 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
             # logging.info(f"Grid-aligned bounds: x: {grid_x_bounds} y: {grid_y_bounds}")
 
             # Define grid for the data cubes
-            if epsg_code == 'EPSG:3031':
-                # Extend max latitude by GRID_ADJUSTMENT_EPSG3031[grid_size] degrees
-                # to include cubes slightly outside of the region to avoid gaps
-                # min lon, min lat, max lon, max lat
-                bounds = list(each_polygon.bounds)
-                logging.info(f"3031 bounds: {bounds}")
-                bounds[3] += GRID_ADJUSTMENT_EPSG3031[grid_size]
+
+            # Extend max latitude by GRID_ADJUSTMENT[epsg_code][grid_size] degrees
+            # to include cubes slightly outside of the region to avoid gaps
+            # min lon, min lat, max lon, max lat
+            bounds = list(each_polygon.bounds)
+            logging.info(f"{epsg_code} bounds: {bounds}")
+
+            if grid_adjustment != 0:
+                bounds[3] += grid_adjustment
                 each_polygon = box(*bounds)
-                logging.info(f"3031 bounds extended: {each_polygon}")
 
-            # Create x/y ranges for each of the datacubes
-            # Use the grid-aligned bounds to ensure datacubes align with ITS_LIVE grid
-            # Use np.arange() to handle float values with the 7.5m offset
-            # x_range = np.arange(grid_x_bounds.min, grid_x_bounds.max, grid_size)
-            # y_range = np.arange(grid_y_bounds.min, grid_y_bounds.max, grid_size)
+                logging.info(f"{epsg_code} bounds extended: {each_polygon}")
 
-            for each_x in tqdm(range(new_x.min, new_x.max, grid_size), ascii=True, desc="Processing X axis..."):
-                for each_y in tqdm(range(new_y.min, new_y.max, grid_size), ascii=True, desc="Processing Y axis..."):
+            aligned_bounds, _, _, _ = get_alignment_info(
+                new_x.min, new_y.min, new_x.max, new_y.max
+            )
+
+            logging.info(
+                f'For {new_x.min=}, {new_y.min=} got'
+                f' aligned_bounds={[each.item() for each in aligned_bounds]}'
+            )
+
+            # Align min X and min Y with the chunk boundary
+            # Do we want to shift the maximum x and y coordinates? - might
+            # end up with lots of overlapping cubes as a result
+            new_x.min, new_y.min, _, _ = aligned_bounds
+
+            # Adjust for the cell corner since we are using cell centers in
+            # chunk alignment
+            # new_x.min -= PIXEL_SIZE/2
+            # new_y.min -= PIXEL_SIZE/2
+            new_x.min -= PIXEL_SIZE
+            # new_y.min -= PIXEL_SIZE
+
+            for each_x in tqdm(
+                np.arange(new_x.min, new_x.max + 1, grid_size),
+                ascii=True,
+                desc="Processing X axis..."
+            ):
+                for each_y in tqdm(
+                    np.arange(new_y.min, new_y.max + 1, grid_size),
+                    ascii=True,
+                    desc="Processing Y axis..."
+                ):
+
+                    cube_x_min = each_x
+                    cube_x_max = each_x + grid_size
+                    cube_y_min = each_y
+                    cube_y_max = each_y + grid_size
+
+                    # Generate cube ID
+                    cube_id = f"ITS_LIVE_velocity_EPSG{epsg_code.replace('EPSG:', '')}_{grid_size}m_X{int(each_x)}_Y{int(each_y)}"
+
             # for each_x in tqdm(x_range, ascii=True, desc="Processing X axis..."):
             #     for each_y in tqdm(y_range, ascii=True, desc="Processing Y axis..."):
                     # Use chunk-aligned boundaries
-                    aligned_bounds, aligned_padding, x_values, y_values = get_alignment_info(
-                        each_x, each_y, each_x + grid_size, each_y + grid_size
-                    )
-                    cube_x_min, cube_y_min, cube_x_max, cube_y_max = aligned_bounds
+
+                    # x_len = abs(cube_x_max - cube_x_min)
+                    # y_len = abs(cube_y_max - cube_y_min)
 
                     # Find ROI x and y indices that correspond to the cube polygon:
                     sel = np.where((roi_x >= cube_x_min) & (roi_x < cube_x_max))
@@ -339,6 +355,9 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
                         if x_shift < minx: minx = x_shift
                         if x_shift > maxx: maxx = x_shift
 
+                    # The lon/lat polygon representation of a datacube that
+                    # will be written to the catalog, handling edge cases
+                    # like antimeridian crossings and region boundary overlaps
                     geometry_obj = Polygon(lonlat_coords)
                     if crosses_antimeridian:
                         # Define meridian to split on
@@ -372,6 +391,9 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
 
                     if geometry_obj is None:
                         # There is no valid cube to record
+                        if epsg_code == 'EPSG:32718':
+                            logging.info(f'{cube_id=} has no valid polygon to record')
+
                         continue
 
                     # Compute overlap area with original polygon: don't accept cubes
@@ -380,9 +402,20 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
 
                     # Cube centroid is outside of right and bottom boundaries
                     if epsg_code not in POLAR_EPGS:
-                        if (intersection.area/geometry_obj.area < 0.50 and \
+                        intersect_area = intersection.area/geometry_obj.area
+
+                        if (intersect_area < intersect_threshold and \
                             most_right_filter.intersects(geometry_obj)) or \
                             most_bottom_filter.intersects(geometry_obj):
+
+                            # Debug messages to find the area overlap threshold
+                            # if epsg_code == 'EPSG:32718':
+                            #     intersect_flag = most_right_filter.intersects(geometry_obj)
+                            #     logging.info(
+                            #         f'{cube_id=} is outside of right and bottom boundaries'
+                            #         f' with {intersect_area=} and {intersect_flag=}'
+                            #     )
+
                             continue
 
                     # Region Of Interest coverage within the cube
@@ -392,6 +425,12 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
                     # and UTM coordinates as a property to be accessed "manually"
                     # Append only cubes with ROI!=0
                     if roi_coverage > 0.0:
+                        logging.info(f'{cube_id=}')
+
+                        # if x_len > grid_size or y_len > grid_size:
+                        #     logging.info(f'===> exceeding {grid_size=}: {x_len=} {y_len=}')
+                        #     continue
+
                         features.append(
                             geojson.Feature(
                                 geometry=geometry_obj,
@@ -400,6 +439,7 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
                                     # "stroke-opacity": 1,
                                     "fill-opacity": 1.0 - roi_coverage,
                                     "fill": "red",
+                                    'cube_id': cube_id,
                                     'roi_percent_coverage': roi_coverage*100,
                                     'epsg': int(epsg_code.replace('EPSG:', '')),
                                     'geometry_epsg': geojson.Polygon([[
@@ -420,6 +460,8 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
                                 # }
                             )
                         )
+                    elif epsg_code == 'EPSG:32718':
+                        logging.info(f'{cube_id=} has zero ROI')
 
     feature_collection = geojson.FeatureCollection(features)
 
@@ -465,15 +507,6 @@ if __name__ == '__main__':
         default=100000,
         help='Grid size in meters [%(default)d].'
     )
-    parser.add_argument(
-        '-a', '--gridSizeAdjustment',
-        type=float,
-        default=0.0,
-        help='Grid size adjustment in degrees [%(default)d]. '
-            'The default value is based on default 100km grid size. '
-            'This value should be hand-picked to bring cells into South Pole '
-            'region to avoid gaps in the cube grid.'
-    )
 
     args = parser.parse_args()
 
@@ -482,29 +515,5 @@ if __name__ == '__main__':
         is not None else None
     if epsg_codes and len(epsg_codes):
         logging.info(f"Got EPSG codes: {epsg_codes}")
-
-    if args.gridSize not in GRID_ADJUSTMENT_EPSG3031:
-        if args.gridSizeAdjustment != 0:
-            logging.info(
-                f"New EPSG3031 grid adjustment value {args.gridSizeAdjustment} "
-                f"is provided for {grid_size} grid size"
-            )
-            GRID_ADJUSTMENT_EPSG3031[args.gridSize] = args.gridSizeAdjustment
-
-        else:
-            raise RuntimeError(
-                f"EPSG3031 grid adjustment value must be provided for not "
-                f"registered {grid_size} grid size"
-            )
-
-    # This won't allow to replace adjustment value with zero
-    elif args.gridSizeAdjustment != 0 and \
-        GRID_ADJUSTMENT_EPSG3031[args.gridSize] != args.gridSizeAdjustment:
-        logging.info(
-            f"Replacing EPSG3031 grid adjustment value "
-            f"{GRID_ADJUSTMENT_EPSG3031[args.gridSize]} with "
-            f"{args.gridSizeAdjustment} for {grid_size} grid size"
-        )
-        GRID_ADJUSTMENT_EPSG3031[args.gridSize] = args.gridSizeAdjustment
 
     define_cubes(args.shapeFile, args.outputFile, epsg_codes, args.gridSize)
