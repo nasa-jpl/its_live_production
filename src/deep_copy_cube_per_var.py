@@ -44,6 +44,11 @@ KNOWN TRADEOFFS -- read this before using this script for a production run:
   bounded, fixed 2x overhead per chunk -- not the unbounded per-batch
   amplification deep_copy_cube.py's small batch_size causes -- traded for
   half the peak RAM of a single full-chunk write.
+- M11/M12 write in quarters instead of halves (see QUARTER_CHUNK_VARS):
+  they're the only float 3D variables that are both routinely NaN
+  (radar-only) and carry a real, non-NaN _FillValue, which forces xarray's
+  CF encoder to build a full extra in-memory copy of the batch on write --
+  measured to peak near 30GB for a half-chunk write on a 32GB box.
 These are deliberate RAM-vs-wall-clock tradeoffs -- benchmark with
 --num-layers on a bounded slice before relying on this for a full
 production run.
@@ -65,7 +70,7 @@ import zarr
 from zarr.errors import UnstableSpecificationWarning
 
 import utils
-from itscube_types import CubeFormat
+from itscube_types import CubeFormat, Vars
 from deep_copy_cube import (
    TIME_CHUNK_VALUE,
    X_Y_CHUNK_VALUE,
@@ -87,32 +92,51 @@ logging.basicConfig(
    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+
 # Suppress Zarr V3 unstable string dtype warnings, same rationale as
 # deep_copy_cube.py.
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 
 
-def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers):
-   """Write one data variable's full extent, half a time-chunk at a time,
-   via region writes into an already-templated store.
+# M11/M12 are the only float 3D variables that are both routinely NaN (they're
+# radar-only -- NaN for every optical-sensor pair) and carry a real, non-NaN
+# _FillValue (see deep_copy_cube.build_encoding()). Writing such a variable
+# forces xarray's CF encoder to build a full extra in-memory copy of the batch
+# to replace its NaNs with the fill sentinel before writing, on top of the
+# ~2x fan-out overhead .load() already pays for a virtual/manifest-backed
+# read -- measured to peak near 30GB for a half-time-chunk (10000-layer)
+# write on a 32GB box. Quartering their write_span instead of halving it
+# roughly quarters that combined peak, keeping it well under the ceiling
+# while preserving their correct _FillValue (unlike disabling the fill
+# entirely, which was tried and rejected as a real fix).
+QUARTER_CHUNK_VARS = {Vars.m11, Vars.m12}
 
-   Each underlying zarr time-chunk (size `chunk_size`) is written as two
-   half-chunk-sized region writes rather than one full-chunk write, to halve
-   the peak RAM of both the .load() and the write relative to loading/writing
+
+def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers):
+   """Write one data variable's full extent, a fraction of a time-chunk at a
+   time, via region writes into an already-templated store.
+
+   Each underlying zarr time-chunk (size `chunk_size`) is written as several
+   equal-sized region writes rather than one full-chunk write, to shrink the
+   peak RAM of both the .load() and the write relative to loading/writing
    the whole chunk at once. This is a deliberate partial-chunk write: the
-   first half-write lands in previously-empty chunk space (no
-   decompress/merge needed), and the second half-write forces exactly one
-   decompress/merge/recompress of that chunk -- a bounded, fixed 2x
-   overhead per chunk, not the unbounded per-batch amplification that
-   motivated this script's original full-chunk-write design (see module
-   docstring and src/wiki/07_Deep_Copy_Time_Chunking_And_Write_Amplification.md).
+   first write of a given time-chunk lands in previously-empty chunk space
+   (no decompress/merge needed), and every later write into that same
+   time-chunk forces exactly one decompress/merge/recompress of it -- a
+   bounded, fixed overhead per chunk, not the unbounded per-batch
+   amplification that motivated this script's original full-chunk-write
+   design (see module docstring and
+   src/wiki/07_Deep_Copy_Time_Chunking_And_Write_Amplification.md).
+
+   Variables in QUARTER_CHUNK_VARS write in quarters instead of halves (see
+   its comment) -- everything else keeps the standard half-chunk split.
 
    Explicitly deletes the loaded batch and forces a gc pass after each
    write: xarray/dask Datasets commonly hold internal reference cycles
    (e.g. task-graph closures), which CPython's refcounting alone won't
    collect promptly -- on a RAM-constrained instance, leaving a finished
-   half-chunk's array pending cyclic collection until Python gets around to
-   it can crowd out the next write's read/decompress footprint.
+   write's array pending cyclic collection until Python gets around to it
+   can crowd out the next write's read/decompress footprint.
 
    Parameters
    ----------
@@ -126,11 +150,12 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers)
    chunk_size : int
       Size of the underlying zarr time-chunk for this variable (time_chunk
       for 3D variables, time_chunk_1d for 1D variables). Each write covers
-      half of this many layers.
+      a half (or, for QUARTER_CHUNK_VARS, a quarter) of this many layers.
    total_layers : int
       Total number of layers to write (honors --num-layers).
    """
-   write_span = max(1, chunk_size // 2)
+   divisor = 4 if var_name in QUARTER_CHUNK_VARS else 2
+   write_span = max(1, chunk_size // divisor)
    for start in range(0, total_layers, write_span):
       stop = min(start + write_span, total_layers)
       logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
