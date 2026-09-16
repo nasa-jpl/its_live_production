@@ -32,6 +32,7 @@ python src/deep_copy_cube_tiled.py \
    --input-store my_virtual_cube.icechunk \
    --output-store my_deep_copy_cube.zarr
 """
+import gc
 import logging
 import sys
 import time
@@ -316,6 +317,15 @@ def deep_copy_cube_tiled(
       safe_chunks=False
    )
    logging.info(f'Created template store at {write_target}')
+
+   # template holds a lazy (ManifestArray/dask-backed) reference to every
+   # time_var across the full total_layers extent -- no pixel data, but the
+   # chunk-manifest/task-graph bookkeeping for that many variables x layers
+   # is non-trivial, and nothing below needs template again (later code
+   # re-derives batches from `cube` directly), so free it now rather than
+   # let it linger for the rest of the run.
+   del template
+   gc.collect()
 
    # Static 2D (y,x) vars: written once, full extent, no tiling -- avoids
    # partial-chunk rewrites of their single full-extent chunk.

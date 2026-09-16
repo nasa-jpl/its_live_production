@@ -1,8 +1,8 @@
 """
 Materialize a virtual ITS_LIVE datacube (icechunk repo, built by
 virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube, batched by
-DATA VARIABLE rather than deep_copy_cube.py's time-only batching or
-deep_copy_cube_tiled.py's spatial-tile batching.
+DATA VARIABLE rather than deep_copy_cube.py's time-only batching or a
+spatial-tile scheme.
 
 Why: deep_copy_cube.py's batch_size (default 2000 layers) is far smaller
 than the output store's fixed TIME_CHUNK_VALUE (20000), so every batch after
@@ -14,10 +14,12 @@ batch_size to time_chunk (the wiki's preferred fix) eliminates that, but
 needs ~256 GiB RAM to hold every variable's full time-chunk, at full spatial
 extent, at once.
 
-deep_copy_cube_tiled.py shrinks that RAM need by tiling the *spatial* extent
-instead, but each granule's virtual chunk spans the full spatial grid (no
-source-side sub-tiling), so tiling the write does not tile the read: every
-tile re-fetches/decompresses each touched granule's full spatial extent,
+Spatial tiling shrinks that RAM need by tiling the *spatial* extent instead
+(tried and retired -- documented as Option 4 in
+src/wiki/07_Deep_Copy_Time_Chunking_And_Write_Amplification.md), but each
+granule's virtual chunk spans the full spatial grid (no source-side
+sub-tiling), so tiling the write does not tile the read: every tile
+re-fetches/decompresses each touched granule's full spatial extent,
 discarding the unwanted pixels afterward -- real, measured read
 amplification.
 
@@ -107,7 +109,6 @@ from deep_copy_cube import (
    resolve_output_store,
    upload_local_staging_dir,
 )
-from deep_copy_cube_tiled import split_time_vars_by_rank
 
 # Set up logging
 logging.basicConfig(
@@ -155,6 +156,38 @@ RADAR_ONLY_VARS = {Vars.m11, Vars.m12, Vars.vr, Vars.va}
 
 # Mission groups whose granules are radar (SAR)
 RADAR_GROUP_IDS = {sensors.SENTINEL1.id, sensors.NISAR.id}
+
+
+def split_time_vars_by_rank(cube, time_vars):
+   """Further split split_vars_by_time()'s time_vars into 3D (time,y,x) and
+   1D (time,) groups.
+
+   The two ranks take entirely different write paths here: 3D variables go
+   through _write_var_3d() (raw zarr writes, whole-chunk sized, radar-skip
+   aware) while 1D variables go through _write_var_1d() (xarray's
+   to_zarr(region=...), which they need for CF datetime/string encoding).
+   They also use different time-chunk sizes -- time_chunk vs time_chunk_1d.
+
+   Originally lived in deep_copy_cube_tiled.py, which needed the same split
+   for a different reason: 1D vars have no x/y dimension, so its spatial-tile
+   loop had to exclude them to avoid redundantly recompressing their single
+   (time_chunk_1d,)-sized chunk once per tile.
+
+   Parameters
+   ----------
+   cube : xr.Dataset
+      The virtual datacube.
+   time_vars : list of str
+      Output of deep_copy_cube.split_vars_by_time()'s first return value.
+
+   Returns
+   -------
+   tuple of (list of str, list of str)
+      (vars_3d, vars_1d) data variable names.
+   """
+   vars_3d = [v for v in time_vars if len(cube[v].dims) == 3]
+   vars_1d = [v for v in time_vars if len(cube[v].dims) != 3]
+   return vars_3d, vars_1d
 
 
 @itslive_utils.retry_decorator(max_retries=5)
@@ -480,14 +513,12 @@ def deep_copy_cube_per_var(
    time_chunk at a time (halved for floats, see FLOAT_CHUNK_SPLITS), 1D
    variables in half-time_chunk_1d increments. See this module's docstring
    for the RAM-vs-wall-clock tradeoffs this makes relative to
-   deep_copy_cube.py and deep_copy_cube_tiled.py.
+   deep_copy_cube.py.
 
-   Like deep_copy_cube_tiled.py (and unlike deep_copy_cube.py's incremental
-   append-based construction), this writes the whole store's
-   shape/dtype/chunk-grid up front (mode='w', compute=False) and fills it in
-   via region writes (mode='r+') -- here, per (variable, time-chunk) pair
-   instead of per (spatial-tile, time-chunk) pair. Static 2D (y,x) vars are
-   written once, full extent, matching both existing scripts.
+   Unlike deep_copy_cube.py's incremental append-based construction, this
+   writes the whole store's shape/dtype/chunk-grid up front (mode='w',
+   compute=False) and fills it in per (variable, time-chunk) afterwards.
+   Static 2D (y,x) vars are written once, at full extent.
 
    Parameters
    ----------
@@ -659,10 +690,10 @@ if __name__ == '__main__':
       data variable at a time at full spatial extent -- 3D variables a whole
       time_chunk per write (half that for floats), 1D variables in
       time_chunk_1d/2 writes. Avoids deep_copy_cube.py's unbounded
-      batch_size-vs-time_chunk write amplification and
-      deep_copy_cube_tiled.py's spatial read-amplification, at the cost of
-      losing inter-variable read/write overlap (see this module's docstring
-      for the accepted tradeoffs).
+      batch_size-vs-time_chunk write amplification and the spatial
+      read-amplification a tiled write incurs, at the cost of losing
+      inter-variable read/write overlap (see this module's docstring for the
+      accepted tradeoffs).
 
       Usage example:
       python src/deep_copy_cube_per_var.py \
