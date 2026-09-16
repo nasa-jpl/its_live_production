@@ -24,13 +24,22 @@ amplification.
 This script shrinks RAM the other way: keep full x/y extent and full
 time-chunk (no unbounded write amplification, same mechanism as the wiki's
 Option 1), but process ONE DATA VARIABLE AT A TIME instead of all variables
-at once, and write each time-chunk in two half-chunk-sized writes rather
-than one. Peak RAM becomes half of one variable's full-chunk footprint
-(one variable x time_chunk/2 layers x full x/y extent) instead of the whole
-cube's. Unlike spatial tiling, this does not read-amplify: each granule's
-per-variable chunk is already an independently addressable virtual
+at once. Peak RAM becomes one variable's chunk footprint instead of the
+whole cube's. Unlike spatial tiling, this does not read-amplify: each
+granule's per-variable chunk is already an independently addressable virtual
 reference, so reading one variable at a time does not re-fetch bytes
 another variable's read already covered.
+
+Sub-splitting a chunk's write is avoided wherever RAM allows, because it is
+pure overhead: every inner chunk spans the full time_chunk extent, so an
+N-piece write costs N full-volume compressions + N-1 full-volume
+decompressions regardless of piece size. Int variables therefore write a
+whole chunk in one pass; float ones (M11/M12, twice the bytes per layer)
+in two. See INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS for the RAM arithmetic
+behind those numbers, and _write_var_3d() for why 3D variables bypass
+xarray's CF encoder (which would otherwise allocate ~1.5x the batch in
+temporaries per write, for every variable that declares a fill -- including
+int ones, where the transform it performs is provably a no-op).
 
 KNOWN TRADEOFFS -- read this before using this script for a production run:
 - Processing variables one at a time forgoes any inter-variable parallelism
@@ -38,17 +47,20 @@ KNOWN TRADEOFFS -- read this before using this script for a production run:
   full chunk has been written), so total wall-clock time is closer to
   (num_variables x per-variable read+write time) than deep_copy_cube.py's
   more overlapped batch processing.
-- Writing each time-chunk in two half-chunk writes is a deliberate partial-
-  chunk write: the first half lands in empty chunk space, but the second
-  half forces one decompress/merge/recompress of that chunk. This is a
-  bounded, fixed 2x overhead per chunk -- not the unbounded per-batch
-  amplification deep_copy_cube.py's small batch_size causes -- traded for
-  half the peak RAM of a single full-chunk write.
-- M11/M12 write in quarters instead of halves (see QUARTER_CHUNK_VARS):
-  they're the only float 3D variables that are both routinely NaN
-  (radar-only) and carry a real, non-NaN _FillValue, which forces xarray's
-  CF encoder to build a full extra in-memory copy of the batch on write --
-  measured to peak near 30GB for a half-chunk write on a 32GB box.
+- INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS are sized for a 32 GB instance. They
+  are the one knob that trades peak RAM against write amplification: raise
+  them on a smaller box, and on a larger one drop FLOAT_CHUNK_SPLITS to 1
+  to remove the last remaining amplification here.
+- 3D variables are written with the raw zarr array API instead of
+  xr.Dataset.to_zarr(region=...), so they get none of xarray's write-time
+  validation (dimension/coordinate consistency, region alignment). This is
+  safe because the template declares every array's full
+  shape/dtype/chunks/shards/compressors/fill_value/attrs up front and the
+  region bounds are pure chunk arithmetic -- but it does mean a future
+  change to either would fail later and less clearly than it would have
+  under xarray. 1D variables deliberately keep the xarray path (they need
+  CF datetime/string encoding, and are far too small for the overhead to
+  matter).
 - M11/M12/vr/va (RADAR_ONLY_VARS) skip a whole zarr chunk entirely -- no
   load, no write -- whenever none of that chunk's layers are radar granules
   (see _compute_radar_mask). Datacubes span optical-only history back to
@@ -110,27 +122,35 @@ logging.basicConfig(
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 
 
-# M11/M12 are the only float 3D variables that are both routinely NaN (they're
-# radar-only -- NaN for every optical-sensor pair) and carry a real, non-NaN
-# _FillValue (see deep_copy_cube.build_encoding()). Writing such a variable
-# forces xarray's CF encoder to build a full extra in-memory copy of the batch
-# to replace its NaNs with the fill sentinel before writing, on top of the
-# ~2x fan-out overhead .load() already pays for a virtual/manifest-backed
-# read -- measured to peak near 30GB for a half-time-chunk (10000-layer)
-# write on a 32GB box. Quartering their write_span instead of halving it
-# roughly quarters that combined peak, keeping it well under the ceiling
-# while preserving their correct _FillValue (unlike disabling the fill
-# entirely, which was tried and rejected as a real fix).
-QUARTER_CHUNK_VARS = {Vars.m11, Vars.m12}
+# Number of equal sub-writes each whole zarr time-chunk is split into for a
+# 3D variable, by dtype. Sub-splitting a chunk is pure overhead -- every
+# inner chunk spans the FULL time_chunk extent (chunks are (time_chunk,
+# xy_chunk, xy_chunk)), so writing a chunk in N pieces costs N full-volume
+# compressions plus N-1 full-volume decompressions, regardless of how small
+# each piece is. N=1 is therefore always fastest; the only reason to split
+# is peak RAM.
+#
+# Peak per write is roughly (batch bytes) x ~2, the extra ~1x being the
+# .load() fan-out overhead a virtual/manifest-backed read pays. At the
+# production 512x512 grid and time_chunk=20000 that works out to:
+#   int16   whole chunk (20000 layers): ~19.5 GiB  -> fits a 32 GB box
+#   float32 whole chunk (20000 layers): ~39 GiB    -> does NOT fit
+#   float32 half chunk  (10000 layers): ~20 GiB    -> fits
+# so ints write whole chunks in one pass and floats (M11/M12) in two.
+#
+# ATTN: these are sized for a 32 GB instance. On a larger box, dropping
+# FLOAT_CHUNK_SPLITS to 1 removes the last remaining write amplification in
+# this script; on a smaller one, both need raising.
+INT_CHUNK_SPLITS = 1
+FLOAT_CHUNK_SPLITS = 2
 
 # Variables present ONLY in radar (Sentinel-1, NISAR) granules -- optical
 # (Landsat, Sentinel-2) granules carry all-missing placeholders for these
 # instead (see virtual_itslive_cube.py's _add_missing_m11_m12()/
-# _add_missing_vr_va()). A strict superset of QUARTER_CHUNK_VARS: vr/va are
-# int16 with a missing_value sentinel, not float+NaN, so they don't pay the
-# CF NaN-replacement-copy cost M11/M12 do and stay on the standard half-chunk
-# write_span -- but they're just as much all-fill-value for every optical
-# time range, so they're equally eligible for the whole-chunk skip below.
+# _add_missing_vr_va()). M11/M12 are float32 and vr/va int16, so they split
+# their chunk writes differently (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS),
+# but all four are equally all-fill-value for every optical time range and so
+# equally eligible for the whole-chunk skip below.
 RADAR_ONLY_VARS = {Vars.m11, Vars.m12, Vars.vr, Vars.va}
 
 # Mission groups whose granules are radar (SAR)
@@ -156,7 +176,7 @@ def _load_batch(cube, var_name, start, stop):
    var_name : str
       Name of the data variable to load.
    start, stop : int
-      Time-slice bounds (see _write_var_in_chunks).
+      Time-slice bounds (see _write_var_3d/_write_var_1d).
 
    Returns
    -------
@@ -215,36 +235,95 @@ def _compute_radar_mask(cube, total_layers):
    return np.isin(group_ids, list(RADAR_GROUP_IDS))
 
 
-def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers, is_radar=None):
-   """Write one data variable's full extent, a fraction of a time-chunk at a
-   time, via region writes into an already-templated store.
+def _fill_nan_in_place(values, fill_value):
+   """Replace NaN with `fill_value` in `values`, in place.
 
-   Each underlying zarr time-chunk (size `chunk_size`) is written as several
-   equal-sized region writes rather than one full-chunk write, to shrink the
-   peak RAM of both the .load() and the write relative to loading/writing
-   the whole chunk at once. This is a deliberate partial-chunk write: the
-   first write of a given time-chunk lands in previously-empty chunk space
-   (no decompress/merge needed), and every later write into that same
-   time-chunk forces exactly one decompress/merge/recompress of it -- a
-   bounded, fixed overhead per chunk, not the unbounded per-batch
-   amplification that motivated this script's original full-chunk-write
-   design (see module docstring and
-   src/wiki/07_Deep_Copy_Time_Chunking_And_Write_Amplification.md).
+   This reproduces exactly what xarray's CF encoder (CFMaskCoder.encode)
+   would do on write -- but in place, instead of allocating a whole extra
+   copy of the batch.
 
-   Variables in QUARTER_CHUNK_VARS write in quarters instead of halves (see
-   its comment) -- everything else keeps the standard half-chunk split.
+   Worth spelling out why this is done by hand rather than left to xarray.
+   On a region write into an existing store, xarray does NOT use the
+   batch's own encoding: backends/zarr.py replaces it wholesale with the
+   store's decoded encoding ("vars_with_encoding[vn].encoding =
+   existing_vars[vn].encoding"), so _reset_write_encoding() clearing the
+   batch's fill has no effect on this path -- the store's _FillValue is
+   re-injected and CFMaskCoder runs regardless. It then does
+   `data = fillna(data, fill_value)`, i.e. `where(notnull(data), data,
+   fill)`, which allocates a full bool mask, its inverse, AND a full-size
+   output copy. For a 10000-layer float32 batch at 512x512 that's ~14.7 GiB
+   of temporaries on top of a 9.8 GiB batch -- the actual cause of the
+   M11/M12 OOM, and (by forcing the batch size down, which multiplies
+   partial-chunk read-modify-write passes) of a ~2x runtime regression.
+   np.copyto with a boolean `where` allocates only the mask (~2.4 GiB for
+   that same batch) and mutates the buffer we're about to discard anyway.
 
-   For var_name in RADAR_ONLY_VARS, each whole zarr chunk (chunk_size layers
-   -- not each half/quarter write_span) is checked against `is_radar` first:
-   if none of its layers are radar granules, the chunk is genuinely
-   all-missing (see RADAR_ONLY_VARS's comment) and the whole chunk is
-   skipped -- no load, no write. The template store never wrote this chunk
-   either (mode='w', compute=False defers all pixel data), so skipping
-   leaves it absent on disk; reads fall back to the array's fill_value,
-   which build_encoding() sets to match the variable's real CF fill so a
-   skipped chunk reads back identically to a written, all-optical one. The
-   check is done at chunk_size granularity, not write_span, because a zarr
-   chunk is atomic -- there's no such thing as skipping only part of one.
+   Doing this here and writing the array with the raw zarr API keeps the
+   on-disk result byte-identical to what xarray would have written -- this
+   is purely an allocation/CPU optimization, not a format change.
+
+   No-ops when there's nothing to do: an int/uint batch loaded with
+   mask_and_scale=False cannot contain NaN at all (xarray's own fillna is
+   pure waste there -- it still allocates all three temporaries), a
+   fill_value of None means the variable declares no CF fill (see
+   deep_copy_cube.NO_FILL_VARS), and a NaN fill_value already matches NaN
+   in the data.
+
+   Parameters
+   ----------
+   values : np.ndarray
+      The batch's raw values, mutated in place.
+   fill_value : scalar or None
+      The variable's CF fill value as declared in the output store (see
+      build_encoding()); None if it declares none.
+   """
+   if fill_value is None or values.dtype.kind != 'f':
+      return
+
+   if np.isnan(fill_value):
+      return
+
+   np.copyto(values, fill_value, where=np.isnan(values))
+
+
+def _write_var_3d(
+   cube, write_target, var_name, chunk_size, total_layers,
+   fill_value=None, is_radar=None
+):
+   """Write one 3D (time, y, x) data variable's full extent into an
+   already-templated store, one whole zarr time-chunk at a time where RAM
+   allows, using the raw zarr array API rather than xr.Dataset.to_zarr().
+
+   Two deliberate departures from the obvious xarray implementation, both
+   purely for speed/RAM -- neither changes a single byte on disk:
+
+   1. Whole-chunk writes. Every inner chunk spans the full time_chunk
+      extent, so splitting a chunk's write into N pieces costs N full-volume
+      compressions + N-1 full-volume decompressions no matter how small the
+      pieces are (see src/wiki/07_Deep_Copy_Time_Chunking_And_Write_
+      Amplification.md). N is therefore kept at the minimum RAM allows:
+      1 for int variables, 2 for float ones (see INT_CHUNK_SPLITS/
+      FLOAT_CHUNK_SPLITS).
+   2. Raw zarr writes. to_zarr(region=...) re-derives encoding from the
+      store and runs the CF encoder, which allocates ~1.5x the batch in
+      temporaries for every variable that declares a fill -- including int
+      variables, where the transform is provably a no-op (see
+      _fill_nan_in_place). Writing the array directly skips that; the
+      NaN->sentinel substitution the encoder would have done is applied in
+      place instead. Safe because the template already declared this array's
+      full shape/dtype/chunks/shards/compressors/fill_value/attrs, so
+      there's nothing left for xarray to negotiate -- only pixels to place.
+
+   For var_name in RADAR_ONLY_VARS, each whole zarr chunk is checked against
+   `is_radar` first: if none of its layers are radar granules the chunk is
+   genuinely all-missing (see RADAR_ONLY_VARS's comment) and is skipped
+   entirely -- no load, no write. The template never wrote it either
+   (mode='w', compute=False defers all pixel data), so it stays absent on
+   disk and reads fall back to the array's fill_value, which
+   build_encoding() sets to match the variable's real CF fill -- identical
+   to what a written, all-optical chunk would return. The check is at whole-
+   chunk granularity because a zarr chunk is atomic; there's no such thing
+   as skipping part of one.
 
    Explicitly deletes the loaded batch and forces a gc pass after each
    write: xarray/dask Datasets commonly hold internal reference cycles
@@ -261,24 +340,45 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers,
       Local path or s3:// URL of the store to write into (already
       templated with full shape/dtype/chunks -- see deep_copy_cube_per_var).
    var_name : str
-      Name of the data variable to write.
+      Name of the 3D data variable to write.
    chunk_size : int
-      Size of the underlying zarr time-chunk for this variable (time_chunk
-      for 3D variables, time_chunk_1d for 1D variables). Each write covers
-      a half (or, for QUARTER_CHUNK_VARS, a quarter) of this many layers.
+      Size of the underlying zarr time-chunk for this variable (time_chunk).
    total_layers : int
       Total number of layers to write (honors --num-layers).
+   fill_value : scalar, optional
+      The variable's CF fill value as declared in the output store, used for
+      the in-place NaN substitution (see _fill_nan_in_place). None if it
+      declares no fill.
    is_radar : np.ndarray, optional
       Boolean array of length total_layers, True where that layer is a
       radar granule (see _compute_radar_mask). Only consulted when
-      var_name is in RADAR_ONLY_VARS; pass None to disable the skip (e.g.
-      for non-radar-only variables, where it has no effect anyway).
+      var_name is in RADAR_ONLY_VARS; pass None to disable the skip.
+
+   Raises
+   ------
+   ValueError
+      If the variable's dimension order isn't (time, y, x). Transposing to
+      match would silently allocate a full extra copy of the batch -- the
+      exact cost this function exists to avoid -- and the order should
+      always match, since the store was templated from this same cube.
    """
-   divisor = 4 if var_name in QUARTER_CHUNK_VARS else 2
-   write_span = max(1, chunk_size // divisor)
+   expected_dims = (utils.Coords.TIME, utils.Coords.Y, utils.Coords.X)
+   if cube[var_name].dims != expected_dims:
+      raise ValueError(
+         f'{var_name} has dims {cube[var_name].dims}, expected '
+         f'{expected_dims}; refusing to transpose (would allocate a full '
+         f'extra copy of every batch)'
+      )
+
+   splits = FLOAT_CHUNK_SPLITS if cube[var_name].dtype.kind == 'f' else INT_CHUNK_SPLITS
+   write_span = max(1, chunk_size // splits)
    check_radar = is_radar is not None and var_name in RADAR_ONLY_VARS
    num_chunks = 0
    num_skipped = 0
+
+   # Opened once per variable, not per write: every write below targets the
+   # same array.
+   target = zarr.open_group(write_target, mode='r+', zarr_format=3)[var_name]
 
    for chunk_start in range(0, total_layers, chunk_size):
       chunk_stop = min(chunk_start + chunk_size, total_layers)
@@ -297,17 +397,13 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers,
          logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
 
          batch = _load_batch(cube, var_name, start, stop)
-         _reset_write_encoding(batch)
-         batch.to_zarr(
-            write_target,
-            mode='r+',
-            region={utils.Coords.TIME: slice(start, stop)},
-            zarr_format=3,
-            consolidated=False
-         )
+         values = batch[var_name].values
+         _fill_nan_in_place(values, fill_value)
+         target[start:stop, :, :] = values
 
          logging.info(f'Wrote {var_name} layers {start}:{stop} of {total_layers} to {write_target}')
 
+         del values
          del batch
          gc.collect()
 
@@ -316,6 +412,55 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers,
          f'{var_name}: skipped {num_skipped} of {num_chunks} chunk(s) '
          f'(all-optical, no radar layers present)'
       )
+
+
+def _write_var_1d(cube, write_target, var_name, chunk_size, total_layers):
+   """Write one 1D ('time',) data variable's full extent into an
+   already-templated store, in half-chunk-sized region writes.
+
+   Unlike _write_var_3d(), this keeps xarray's to_zarr(region=...) path and
+   all of its CF encoding. 1D variables are ~262k times smaller per layer
+   than 3D ones (one value vs a 512x512 grid), so the encoder overhead
+   _write_var_3d() goes out of its way to avoid is irrelevant here -- while
+   the encoding itself very much is not: this set includes datetime
+   variables needing CF time encoding (units/calendar/epoch offsets, see
+   src/wiki/) and string variables, neither of which can be written
+   correctly by dropping raw values into a zarr array.
+
+   Parameters
+   ----------
+   cube : xr.Dataset
+      The virtual datacube.
+   write_target : str
+      Local path or s3:// URL of the store to write into.
+   var_name : str
+      Name of the 1D data variable to write.
+   chunk_size : int
+      Size of the underlying zarr time-chunk for this variable
+      (time_chunk_1d). Each write covers half this many layers.
+   total_layers : int
+      Total number of layers to write (honors --num-layers).
+   """
+   write_span = max(1, chunk_size // 2)
+
+   for start in range(0, total_layers, write_span):
+      stop = min(start + write_span, total_layers)
+      logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
+
+      batch = _load_batch(cube, var_name, start, stop)
+      _reset_write_encoding(batch)
+      batch.to_zarr(
+         write_target,
+         mode='r+',
+         region={utils.Coords.TIME: slice(start, stop)},
+         zarr_format=3,
+         consolidated=False
+      )
+
+      logging.info(f'Wrote {var_name} layers {start}:{stop} of {total_layers} to {write_target}')
+
+      del batch
+      gc.collect()
 
 
 def deep_copy_cube_per_var(
@@ -331,10 +476,11 @@ def deep_copy_cube_per_var(
    num_layers=0
 ):
    """Materialize a virtual datacube into a real zarr v3 datacube, one data
-   variable at a time, each in half-time_chunk-sized (3D) or
-   half-time_chunk_1d-sized (1D) increments at full spatial extent -- see
-   this module's docstring for the RAM-vs-wall-clock tradeoffs this makes
-   relative to deep_copy_cube.py and deep_copy_cube_tiled.py.
+   variable at a time, at full spatial extent -- 3D variables a whole
+   time_chunk at a time (halved for floats, see FLOAT_CHUNK_SPLITS), 1D
+   variables in half-time_chunk_1d increments. See this module's docstring
+   for the RAM-vs-wall-clock tradeoffs this makes relative to
+   deep_copy_cube.py and deep_copy_cube_tiled.py.
 
    Like deep_copy_cube_tiled.py (and unlike deep_copy_cube.py's incremental
    append-based construction), this writes the whole store's
@@ -354,7 +500,8 @@ def deep_copy_cube_per_var(
       against (see deep_copy_cube.open_virtual_cube).
    time_chunk : int
       Chunk size along 'time' for 3D variables. Each write for a 3D
-      variable materializes half this many layers.
+      variable materializes this many layers, or half that for float
+      variables (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS).
    xy_chunk : int
       Chunk size along 'x'/'y' for 3D variables.
    time_chunk_1d : int
@@ -457,6 +604,15 @@ def deep_copy_cube_per_var(
    )
    logging.info(f'Created template store at {write_target}')
 
+   # template holds a lazy (ManifestArray/dask-backed) reference to every
+   # time_var across the full total_layers extent -- no pixel data, but the
+   # chunk-manifest/task-graph bookkeeping for that many variables x layers
+   # is non-trivial, and nothing below needs template again (later code
+   # re-derives batches from `cube` directly), so free it now rather than
+   # let it linger for the rest of the run.
+   del template
+   gc.collect()
+
    # Static 2D (y,x) vars: written once, full extent, no per-variable
    # chunking -- they have no 'time' dimension to chunk over.
    static_batch = cube[static_vars].load()
@@ -465,10 +621,18 @@ def deep_copy_cube_per_var(
    logging.info(f'Wrote {len(static_vars)} static variable(s) to {write_target}')
 
    for var_name in vars_1d:
-      _write_var_in_chunks(cube, write_target, var_name, time_chunk_1d, total_layers, is_radar)
+      _write_var_1d(cube, write_target, var_name, time_chunk_1d, total_layers)
 
    for var_name in vars_3d:
-      _write_var_in_chunks(cube, write_target, var_name, time_chunk, total_layers, is_radar)
+      # The CF fill this variable's array was templated with -- only floats
+      # get one under build_encoding()'s convention (ints use the separate
+      # 'missing_value' key, and raw ints can't be NaN anyway, so
+      # _fill_nan_in_place has nothing to do for them).
+      _write_var_3d(
+         cube, write_target, var_name, time_chunk, total_layers,
+         encoding.get(var_name, {}).get(utils.OutputFormat.fill_value),
+         is_radar
+      )
 
    # Consolidate metadata once, now that every region write is done -- instead
    # of re-consolidating (a full-store metadata rescan/rewrite) on each write
@@ -492,12 +656,12 @@ if __name__ == '__main__':
       description="""
       Materialize a virtual ITS_LIVE datacube (icechunk repo built by
       virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube, one
-      data variable at a time, each time-chunk written in two half-sized
-      (3D: time_chunk/2, 1D: time_chunk_1d/2) writes at full spatial extent
-      -- avoids deep_copy_cube.py's unbounded batch_size-vs-time_chunk write
-      amplification and deep_copy_cube_tiled.py's spatial read-amplification,
-      at the cost of losing inter-variable read/write overlap and a bounded
-      2x decompress/merge/recompress per chunk (see this module's docstring
+      data variable at a time at full spatial extent -- 3D variables a whole
+      time_chunk per write (half that for floats), 1D variables in
+      time_chunk_1d/2 writes. Avoids deep_copy_cube.py's unbounded
+      batch_size-vs-time_chunk write amplification and
+      deep_copy_cube_tiled.py's spatial read-amplification, at the cost of
+      losing inter-variable read/write overlap (see this module's docstring
       for the accepted tradeoffs).
 
       Usage example:
@@ -544,8 +708,8 @@ if __name__ == '__main__':
       type=int,
       default=TIME_CHUNK_VALUE,
       help='Chunk size along time for 3D (time, y, x) variables. Each write '
-         'for a 3D variable materializes half this many layers '
-         '[%(default)d].'
+         'for a 3D variable materializes this many layers, or half that for '
+         'float variables [%(default)d].'
    )
    parser.add_argument(
       '--xy-chunk-value',
