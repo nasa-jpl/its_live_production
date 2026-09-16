@@ -119,9 +119,14 @@ def retry_decorator(
                         raise
                     sleep_time = random.uniform(0, delay) if jitter else delay
 
+                    # Some exceptions (e.g. icechunk's StorageError) embed
+                    # their own multi-line "context:" trace directly in
+                    # str(e) -- collapse it to one line so it doesn't break
+                    # up log output/log parsing across several lines.
+                    error_str = ' '.join(str(e).split())
                     logging.info(
-                        f"[Retry {attempt}] {func.__name__}(): {type(e).__name__}: {e} — "
-                        f"retrying in {sleep_time:.2f}s..."
+                        f"[Retry {attempt}] {func.__name__}(): {type(e).__name__}: "
+                        f"{error_str} — retrying in {sleep_time:.2f}s..."
                     )
                     time.sleep(sleep_time)
                     delay *= backoff

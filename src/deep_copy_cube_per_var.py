@@ -49,6 +49,14 @@ KNOWN TRADEOFFS -- read this before using this script for a production run:
   (radar-only) and carry a real, non-NaN _FillValue, which forces xarray's
   CF encoder to build a full extra in-memory copy of the batch on write --
   measured to peak near 30GB for a half-chunk write on a 32GB box.
+- M11/M12/vr/va (RADAR_ONLY_VARS) skip a whole zarr chunk entirely -- no
+  load, no write -- whenever none of that chunk's layers are radar granules
+  (see _compute_radar_mask). Datacubes span optical-only history back to
+  1984, well before Sentinel-1 (2014), so a full 20000-layer chunk with no
+  radar layers at all is a real, common case, not a corner case. Skipped
+  chunks read back via the store's fill_value, which is set to match each
+  variable's real CF fill -- correctness-equivalent to writing an
+  all-optical chunk, just without paying to write it.
 These are deliberate RAM-vs-wall-clock tradeoffs -- benchmark with
 --num-layers on a bounded slice before relying on this for a full
 production run.
@@ -65,13 +73,16 @@ import time
 import warnings
 from datetime import datetime
 
+import numpy as np
 import xarray as xr
 import zarr
 from zarr.errors import UnstableSpecificationWarning
 
 import itslive_utils
+import sensors
 import utils
-from itscube_types import CubeFormat, Vars
+from itscube_types import CubeFormat, ImgPairInfo, Vars
+from sensorFilters import SensorExcludeFilter
 from deep_copy_cube import (
    TIME_CHUNK_VALUE,
    X_Y_CHUNK_VALUE,
@@ -112,6 +123,19 @@ warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 # entirely, which was tried and rejected as a real fix).
 QUARTER_CHUNK_VARS = {Vars.m11, Vars.m12}
 
+# Variables present ONLY in radar (Sentinel-1, NISAR) granules -- optical
+# (Landsat, Sentinel-2) granules carry all-missing placeholders for these
+# instead (see virtual_itslive_cube.py's _add_missing_m11_m12()/
+# _add_missing_vr_va()). A strict superset of QUARTER_CHUNK_VARS: vr/va are
+# int16 with a missing_value sentinel, not float+NaN, so they don't pay the
+# CF NaN-replacement-copy cost M11/M12 do and stay on the standard half-chunk
+# write_span -- but they're just as much all-fill-value for every optical
+# time range, so they're equally eligible for the whole-chunk skip below.
+RADAR_ONLY_VARS = {Vars.m11, Vars.m12, Vars.vr, Vars.va}
+
+# Mission groups whose granules are radar (SAR)
+RADAR_GROUP_IDS = {sensors.SENTINEL1.id, sensors.NISAR.id}
+
 
 @itslive_utils.retry_decorator(max_retries=5)
 def _load_batch(cube, var_name, start, stop):
@@ -146,7 +170,52 @@ def _load_batch(cube, var_name, start, stop):
    ).load()
 
 
-def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers):
+def _compute_radar_mask(cube, total_layers):
+   """Determine, for each of the cube's first `total_layers` layers, whether
+   that layer's granule is from a radar (SAR) mission -- the layers for
+   which RADAR_ONLY_VARS carry real data rather than an all-missing
+   placeholder.
+
+   Uses (mission_img1, satellite_img1) via the same
+   SensorExcludeFilter.map_sensor_to_group() classification already used
+   elsewhere in this codebase (sensorFilters.py), rather than inspecting
+   RADAR_ONLY_VARS's own virtual chunk manifests directly, on the assumption
+   that every granule this classifier maps to a radar mission group
+   genuinely carries M11/M12/vr/va (true today; see this function's
+   docstring caller for the one-time validation this assumes was done).
+
+   map_sensor_to_group() raises KeyError for any (mission, satellite) pair
+   it doesn't recognize -- intentionally left unhandled here: an unknown
+   sensor value means we cannot classify that layer, and guessing wrong in
+   the "optical" direction would silently skip real data, so failing the
+   whole run is the correct behavior rather than a graceful fallback.
+
+   Parameters
+   ----------
+   cube : xr.Dataset
+      The virtual datacube.
+   total_layers : int
+      Number of layers to classify, from the start of 'time' (honors
+      --num-layers).
+
+   Returns
+   -------
+   np.ndarray
+      Boolean array of length total_layers; True where that layer's granule
+      is from a radar mission group (see RADAR_GROUP_IDS).
+   """
+   sensor_info = cube[[ImgPairInfo.mission_img1, ImgPairInfo.satellite_img1]].isel(
+      {utils.Coords.TIME: slice(0, total_layers)}
+   ).load()
+
+   group_ids = SensorExcludeFilter.map_sensor_to_group(
+      sensor_info[ImgPairInfo.satellite_img1].values,
+      sensor_info[ImgPairInfo.mission_img1].values
+   )
+   return np.isin(group_ids, list(RADAR_GROUP_IDS))
+
+
+def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers, is_radar=None):
    """Write one data variable's full extent, a fraction of a time-chunk at a
    time, via region writes into an already-templated store.
 
@@ -164,6 +233,18 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers)
 
    Variables in QUARTER_CHUNK_VARS write in quarters instead of halves (see
    its comment) -- everything else keeps the standard half-chunk split.
+
+   For var_name in RADAR_ONLY_VARS, each whole zarr chunk (chunk_size layers
+   -- not each half/quarter write_span) is checked against `is_radar` first:
+   if none of its layers are radar granules, the chunk is genuinely
+   all-missing (see RADAR_ONLY_VARS's comment) and the whole chunk is
+   skipped -- no load, no write. The template store never wrote this chunk
+   either (mode='w', compute=False defers all pixel data), so skipping
+   leaves it absent on disk; reads fall back to the array's fill_value,
+   which build_encoding() sets to match the variable's real CF fill so a
+   skipped chunk reads back identically to a written, all-optical one. The
+   check is done at chunk_size granularity, not write_span, because a zarr
+   chunk is atomic -- there's no such thing as skipping only part of one.
 
    Explicitly deletes the loaded batch and forces a gc pass after each
    write: xarray/dask Datasets commonly hold internal reference cycles
@@ -187,27 +268,54 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers)
       a half (or, for QUARTER_CHUNK_VARS, a quarter) of this many layers.
    total_layers : int
       Total number of layers to write (honors --num-layers).
+   is_radar : np.ndarray, optional
+      Boolean array of length total_layers, True where that layer is a
+      radar granule (see _compute_radar_mask). Only consulted when
+      var_name is in RADAR_ONLY_VARS; pass None to disable the skip (e.g.
+      for non-radar-only variables, where it has no effect anyway).
    """
    divisor = 4 if var_name in QUARTER_CHUNK_VARS else 2
    write_span = max(1, chunk_size // divisor)
-   for start in range(0, total_layers, write_span):
-      stop = min(start + write_span, total_layers)
-      logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
+   check_radar = is_radar is not None and var_name in RADAR_ONLY_VARS
+   num_chunks = 0
+   num_skipped = 0
 
-      batch = _load_batch(cube, var_name, start, stop)
-      _reset_write_encoding(batch)
-      batch.to_zarr(
-         write_target,
-         mode='r+',
-         region={utils.Coords.TIME: slice(start, stop)},
-         zarr_format=3,
-         consolidated=False
+   for chunk_start in range(0, total_layers, chunk_size):
+      chunk_stop = min(chunk_start + chunk_size, total_layers)
+      num_chunks += 1
+
+      if check_radar and not is_radar[chunk_start:chunk_stop].any():
+         logging.info(
+            f'Skipping {var_name} chunk {chunk_start}:{chunk_stop} of '
+            f'{total_layers} (all-optical, no radar layers present)'
+         )
+         num_skipped += 1
+         continue
+
+      for start in range(chunk_start, chunk_stop, write_span):
+         stop = min(start + write_span, chunk_stop)
+         logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
+
+         batch = _load_batch(cube, var_name, start, stop)
+         _reset_write_encoding(batch)
+         batch.to_zarr(
+            write_target,
+            mode='r+',
+            region={utils.Coords.TIME: slice(start, stop)},
+            zarr_format=3,
+            consolidated=False
+         )
+
+         logging.info(f'Wrote {var_name} layers {start}:{stop} of {total_layers} to {write_target}')
+
+         del batch
+         gc.collect()
+
+   if check_radar and num_skipped:
+      logging.info(
+         f'{var_name}: skipped {num_skipped} of {num_chunks} chunk(s) '
+         f'(all-optical, no radar layers present)'
       )
-
-      logging.info(f'Wrote {var_name} layers {start}:{stop} of {total_layers} to {write_target}')
-
-      del batch
-      gc.collect()
 
 
 def deep_copy_cube_per_var(
@@ -294,6 +402,15 @@ def deep_copy_cube_per_var(
       f'({time_chunk} layers/write)'
    )
 
+   # Computed once and reused for every RADAR_ONLY_VARS variable (M11, M12,
+   # vr, va): they all share the same missing-ness (all-optical time ranges),
+   # so there's no need to re-derive it per variable.
+   is_radar = _compute_radar_mask(cube, total_layers)
+   logging.info(
+      f'{np.count_nonzero(is_radar)} of {total_layers} layers are radar '
+      'granules (see RADAR_GROUP_IDS)'
+   )
+
    encoding = build_encoding(
       cube, time_chunk, xy_chunk, time_chunk_1d,
       xy_shard_multiplier
@@ -348,10 +465,10 @@ def deep_copy_cube_per_var(
    logging.info(f'Wrote {len(static_vars)} static variable(s) to {write_target}')
 
    for var_name in vars_1d:
-      _write_var_in_chunks(cube, write_target, var_name, time_chunk_1d, total_layers)
+      _write_var_in_chunks(cube, write_target, var_name, time_chunk_1d, total_layers, is_radar)
 
    for var_name in vars_3d:
-      _write_var_in_chunks(cube, write_target, var_name, time_chunk, total_layers)
+      _write_var_in_chunks(cube, write_target, var_name, time_chunk, total_layers, is_radar)
 
    # Consolidate metadata once, now that every region write is done -- instead
    # of re-consolidating (a full-store metadata rescan/rewrite) on each write

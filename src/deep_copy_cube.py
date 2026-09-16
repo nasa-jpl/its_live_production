@@ -345,16 +345,15 @@ def build_encoding(
       var_encoding = {
          'chunks': chunks,
          COMPRESSOR_KEY: [COMPRESSOR],
-         # The zarr-level array fill_value (required by the zarr v3 spec,
-         # separate from the CF _FillValue/missing_value attribute set
-         # below -- see utils.Missing.fill_value) isn't appropriate for
-         # these deep-copy cubes: every chunk is always fully written, so
-         # there's no "absent chunk" case for a zarr-level sentinel to
-         # apply to, and leaving it at whatever xarray/zarr defaults to per
-         # dtype (e.g. 0 for int, which is a real, meaningful value here)
-         # would be misleading to any tool reading zarr.json directly.
-         # Nulled out explicitly; the CF attribute below (where set) remains
-         # the sole source of truth for masking.
+         # Default for variables that end up with no CF fill computed below
+         # (e.g. string vars, or NO_FILL_VARS) -- zarr v3 requires this
+         # zarr-level array fill_value field (separate from the CF
+         # _FillValue/missing_value attribute -- see utils.Missing.fill_value)
+         # to hold a real, dtype-valid value regardless of whether it's set
+         # to None or left unset, so this has no effect beyond letting
+         # zarr/xarray compute their own dtype-zero default. Overridden below
+         # to match the real CF fill wherever one is computed, so the
+         # zarr-level sentinel is meaningful rather than an unrelated default.
          utils.Missing.fill_value: None,
       }
 
@@ -430,10 +429,20 @@ def build_encoding(
          fill = utils.Missing.value
 
       if fill is not None:
+         # Also mirror the same value into the zarr-level array fill_value
+         # (separate from the CF attribute keys above -- see
+         # utils.Missing.fill_value): zarr v3 requires this field to hold a
+         # real, dtype-valid value regardless -- passing/omitting None just
+         # makes zarr compute its own dtype-zero default (e.g. 0 for int,
+         # which is a real, meaningful value here), not a true "unset".
+         # Setting it to match the CF fill instead makes it a real sentinel
+         # rather than an unrelated, potentially misleading default.
          if var.dtype.kind in ('i', 'u'):
             var_encoding[utils.Missing.name] = var.dtype.type(fill)
+            var_encoding[utils.Missing.fill_value] = var.dtype.type(fill)
          elif var.dtype.kind == 'f':
             var_encoding[utils.OutputFormat.fill_value] = var.dtype.type(fill)
+            var_encoding[utils.Missing.fill_value] = var.dtype.type(fill)
 
       encoding[var_name] = var_encoding
 
