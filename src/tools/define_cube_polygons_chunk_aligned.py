@@ -24,6 +24,9 @@ from grid import Bounds, Grid
 from chunk_aligned_utils import (
     get_alignment_info, CHUNK_SIZE, PIXEL_SIZE, GRID_OFFSET
 )
+import utils
+from itscube_types import BatchVars
+from itslive_mosaics_types import GeoJsonVars
 
 # GDAL settings
 gdal.SetConfigOption('CPL_VSIL_CURL_ALLOWED_EXTENSIONS', 'tif')
@@ -304,6 +307,28 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
                     # Generate cube ID
                     cube_id = f"ITS_LIVE_velocity_EPSG{epsg_code.replace('EPSG:', '')}_{grid_size}m_X{int(each_x)}_Y{int(each_y)}"
 
+                    # Precompute the virtual (icechunk) datacube's filename as
+                    # it will be written to the target S3 bucket once
+                    # virtual_itslive_cube_per_chunk.py generates it, using the
+                    # same midpoint-of-bbox/rounding convention as
+                    # run_virtual_cube_batch.py (which re-derives mid_x/mid_y
+                    # from this same box's corners, read back out of
+                    # 'geometry_epsg' below) -- unlike cube_id above, which
+                    # uses the box's *corner* (each_x/each_y) and the chunk
+                    # grid_size, this uses the box's *midpoint* rounded to
+                    # BatchVars.MID_POINT_RESOLUTION and the fixed pixel size,
+                    # matching the deep-copy naming convention.
+                    mid_x = int((cube_x_min + cube_x_max) / 2)
+                    mid_y = int((cube_y_min + cube_y_max) / 2)
+                    mid_x = int(math.floor(mid_x / BatchVars.MID_POINT_RESOLUTION) * BatchVars.MID_POINT_RESOLUTION)
+                    mid_y = int(math.floor(mid_y / BatchVars.MID_POINT_RESOLUTION) * BatchVars.MID_POINT_RESOLUTION)
+
+                    icechunk_filename = utils.File.datacube_filename_icechunk(
+                        GeoJsonVars.epsg_prefix + epsg_code.replace('EPSG:', ''),
+                        PIXEL_SIZE,
+                        mid_x, mid_y
+                    )
+
             # for each_x in tqdm(x_range, ascii=True, desc="Processing X axis..."):
             #     for each_y in tqdm(y_range, ascii=True, desc="Processing Y axis..."):
                     # Use chunk-aligned boundaries
@@ -440,6 +465,7 @@ def define_cubes(shape_filename: str, cube_filename: str, target_epsg_codes: lis
                                     "fill-opacity": 1.0 - roi_coverage,
                                     "fill": "red",
                                     'cube_id': cube_id,
+                                    GeoJsonVars.icechunk_filename: icechunk_filename,
                                     'roi_percent_coverage': roi_coverage*100,
                                     'epsg': int(epsg_code.replace('EPSG:', '')),
                                     'geometry_epsg': geojson.Polygon([[

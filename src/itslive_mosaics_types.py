@@ -23,7 +23,20 @@ class GeoJsonVarsInfo:
    epsg_prefix: str = 'EPSG'
    url: str = 'zarr_url'
    composite_url: str = 'composite_zarr_url'
+   # Filename of the virtual (icechunk) datacube as it will be written to the
+   # target S3 bucket by virtual_itslive_cube_per_chunk.py, precomputed at
+   # catalog-definition time using the same midpoint/rounding convention as
+   # run_virtual_cube_batch.py (utils.File.datacube_filename_icechunk()).
+   icechunk_filename: str = 'icechunk_filename'
+   # Full S3 URL of the virtual (icechunk) datacube: the input icechunk repo
+   # location prepended to icechunk_filename, set by
+   # add_url_to_datacube_definition.py.
+   icechunk_url: str = 'icechunk_url'
    exist_flag: str = 'datacube_exist'
+   # Separate exist flag for the virtual (icechunk) datacube -- exist_flag
+   # above is specifically about the deep-copy (Zarr) cube and must keep that
+   # meaning for existing consumers.
+   icechunk_exist_flag: str = 'icechunk_exist'
    granule_count: str = 'granule_count'
    region: str = 'region_id'
    region_id: str = 'M_ID'
