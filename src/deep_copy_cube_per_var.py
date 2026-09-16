@@ -69,6 +69,7 @@ import xarray as xr
 import zarr
 from zarr.errors import UnstableSpecificationWarning
 
+import itslive_utils
 import utils
 from itscube_types import CubeFormat, Vars
 from deep_copy_cube import (
@@ -110,6 +111,39 @@ warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 # while preserving their correct _FillValue (unlike disabling the fill
 # entirely, which was tried and rejected as a real fix).
 QUARTER_CHUNK_VARS = {Vars.m11, Vars.m12}
+
+
+@itslive_utils.retry_decorator(max_retries=5)
+def _load_batch(cube, var_name, start, stop):
+   """Materialize one variable's [start:stop) time slice, retrying on any
+   exception.
+
+   This is the actual S3 fetch of the granule bytes a virtual chunk
+   references, via icechunk's own s3_store() -- which, unlike the
+   obstore.S3Store used elsewhere in this pipeline (see
+   virtual_itslive_cube_per_chunk.py's RETRY_CONFIG), has no configurable
+   retry/backoff of its own, so a transient network blip here would
+   otherwise fail the whole run outright.
+
+   Parameters
+   ----------
+   cube : xr.Dataset
+      The virtual datacube.
+   var_name : str
+      Name of the data variable to load.
+   start, stop : int
+      Time-slice bounds (see _write_var_in_chunks).
+
+   Returns
+   -------
+   xr.Dataset
+      The loaded (non-dask) batch for this variable and time slice.
+   """
+   return cube[[var_name]].isel(
+      {utils.Coords.TIME: slice(start, stop)}
+   ).drop_vars(
+      [utils.Coords.TIME, utils.Coords.Y, utils.Coords.X], errors='ignore'
+   ).load()
 
 
 def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers):
@@ -160,11 +194,7 @@ def _write_var_in_chunks(cube, write_target, var_name, chunk_size, total_layers)
       stop = min(start + write_span, total_layers)
       logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
 
-      batch = cube[[var_name]].isel(
-         {utils.Coords.TIME: slice(start, stop)}
-      ).drop_vars(
-         [utils.Coords.TIME, utils.Coords.Y, utils.Coords.X], errors='ignore'
-      ).load()
+      batch = _load_batch(cube, var_name, start, stop)
       _reset_write_encoding(batch)
       batch.to_zarr(
          write_target,

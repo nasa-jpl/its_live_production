@@ -125,8 +125,16 @@ NO_FILL_VARS = {
 }
 
 
+@itslive_utils.retry_decorator(max_retries=5)
 def open_virtual_cube(store_path, bucket_prefix):
    """Open a virtual datacube's icechunk repository read-only.
+
+   Retries up to 5 times on any exception: icechunk's own s3_store() (used
+   for the virtual chunk container below) has no configurable retry/backoff
+   of its own, unlike the granule-reading obstore.S3Store elsewhere in this
+   pipeline (see virtual_itslive_cube_per_chunk.py's RETRY_CONFIG) -- a
+   transient network blip while resolving repo/manifest metadata would
+   otherwise fail this outright.
 
    Parameters
    ----------
@@ -289,6 +297,12 @@ def build_encoding(
             # the xarray/zarr versions this pipeline uses (August 2026).
             # Verified clean (no stray attrs) under zarr v3 too.
             utils.OutputFormat.fill_value: None,
+            # The zarr-level array fill_value (required by the zarr v3 spec,
+            # separate from the CF _FillValue attribute above -- see
+            # utils.Missing.fill_value) has no meaningful role for these
+            # coordinates and would otherwise default per dtype; nulled out
+            # explicitly rather than left to whatever xarray/zarr picks.
+            utils.Missing.fill_value: None,
          }
 
    # The 'time' coordinate needs an explicit chunk size too: left unset, it
@@ -306,6 +320,7 @@ def build_encoding(
       encoding[utils.Coords.TIME] = {
          'chunks': (time_chunk_1d,),
          COMPRESSOR_KEY: [COMPRESSOR],
+         utils.Missing.fill_value: None,
       }
 
    for var_name in cube.data_vars:
@@ -330,6 +345,17 @@ def build_encoding(
       var_encoding = {
          'chunks': chunks,
          COMPRESSOR_KEY: [COMPRESSOR],
+         # The zarr-level array fill_value (required by the zarr v3 spec,
+         # separate from the CF _FillValue/missing_value attribute set
+         # below -- see utils.Missing.fill_value) isn't appropriate for
+         # these deep-copy cubes: every chunk is always fully written, so
+         # there's no "absent chunk" case for a zarr-level sentinel to
+         # apply to, and leaving it at whatever xarray/zarr defaults to per
+         # dtype (e.g. 0 for int, which is a real, meaningful value here)
+         # would be misleading to any tool reading zarr.json directly.
+         # Nulled out explicitly; the CF attribute below (where set) remains
+         # the sole source of truth for masking.
+         utils.Missing.fill_value: None,
       }
 
       if is_3d and xy_shard_multiplier > 1:
