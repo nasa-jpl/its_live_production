@@ -32,16 +32,22 @@ granule's per-variable chunk is already an independently addressable virtual
 reference, so reading one variable at a time does not re-fetch bytes
 another variable's read already covered.
 
-Sub-splitting a chunk's write is avoided wherever RAM allows, because it is
-pure overhead: every inner chunk spans the full time_chunk extent, so an
-N-piece write costs N full-volume compressions + N-1 full-volume
-decompressions regardless of piece size. Int variables therefore write a
-whole chunk in one pass; float ones (M11/M12, twice the bytes per layer)
-in two. See INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS for the RAM arithmetic
-behind those numbers, and _write_var_3d() for why 3D variables bypass
-xarray's CF encoder (which would otherwise allocate ~1.5x the batch in
-temporaries per write, for every variable that declares a fill -- including
-int ones, where the transform it performs is provably a no-op).
+Both 3D variable classes write their whole zarr time-chunk in two
+half-chunk-sized pieces (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS) rather
+than one whole-chunk write. In theory a single whole-chunk write should be
+strictly cheaper on the write side -- every inner chunk spans the full
+time_chunk extent, so an N-piece write costs N full-volume compressions +
+N-1 full-volume decompressions regardless of piece size, making N=1 always
+fastest by that model, with RAM as the only reason to split. Measured
+(2026-09-16) at production scale, that theory didn't hold for int
+variables: going whole-chunk regressed them 2.4x despite confirmed-clean
+RAM/swap throughout, so INT_CHUNK_SPLITS is set empirically to match
+FLOAT_CHUNK_SPLITS rather than by the write-amplification model above --
+see INT_CHUNK_SPLITS's own comment for the measurement and the still-open
+question of what actually dominates at that scale. _write_var_3d() also
+bypasses xarray's CF encoder (which would otherwise allocate ~1.5x the
+batch in temporaries per write, for every variable that declares a fill --
+including int ones, where the transform it performs is provably a no-op).
 
 KNOWN TRADEOFFS -- read this before using this script for a production run:
 - Processing variables one at a time forgoes any inter-variable parallelism
@@ -49,10 +55,11 @@ KNOWN TRADEOFFS -- read this before using this script for a production run:
   full chunk has been written), so total wall-clock time is closer to
   (num_variables x per-variable read+write time) than deep_copy_cube.py's
   more overlapped batch processing.
-- INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS are sized for a 32 GB instance. They
-  are the one knob that trades peak RAM against write amplification: raise
-  them on a smaller box, and on a larger one drop FLOAT_CHUNK_SPLITS to 1
-  to remove the last remaining amplification here.
+- FLOAT_CHUNK_SPLITS is sized for a 32 GB instance and trades peak RAM
+  against write amplification (raise it on a smaller box; on a larger one,
+  dropping it to 1 removes float's remaining write amplification --
+  re-benchmark first given INT_CHUNK_SPLITS's finding above). INT_CHUNK_SPLITS
+  is set empirically, not by the same RAM tradeoff -- see its own comment.
 - 3D variables are written with the raw zarr array API instead of
   xr.Dataset.to_zarr(region=...), so they get none of xarray's write-time
   validation (dimension/coordinate consistency, region alignment). This is
@@ -124,25 +131,36 @@ warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 
 
 # Number of equal sub-writes each whole zarr time-chunk is split into for a
-# 3D variable, by dtype. Sub-splitting a chunk is pure overhead -- every
-# inner chunk spans the FULL time_chunk extent (chunks are (time_chunk,
-# xy_chunk, xy_chunk)), so writing a chunk in N pieces costs N full-volume
-# compressions plus N-1 full-volume decompressions, regardless of how small
-# each piece is. N=1 is therefore always fastest; the only reason to split
-# is peak RAM.
+# 3D variable, by dtype. In *theory* every inner chunk spans the FULL
+# time_chunk extent (chunks are (time_chunk, xy_chunk, xy_chunk)), so
+# splitting a chunk's write into N pieces should cost N full-volume
+# compressions + N-1 full-volume decompressions regardless of piece size --
+# making N=1 (whole chunk) always fastest, with RAM as the only reason to
+# split.
 #
-# Peak per write is roughly (batch bytes) x ~2, the extra ~1x being the
-# .load() fan-out overhead a virtual/manifest-backed read pays. At the
-# production 512x512 grid and time_chunk=20000 that works out to:
-#   int16   whole chunk (20000 layers): ~19.5 GiB  -> fits a 32 GB box
-#   float32 whole chunk (20000 layers): ~39 GiB    -> does NOT fit
-#   float32 half chunk  (10000 layers): ~20 GiB    -> fits
-# so ints write whole chunks in one pass and floats (M11/M12) in two.
+# MEASURED (2026-09-16) this theory doesn't hold at production scale: a
+# whole-chunk (20000-layer) write of an int variable (chip_size_height, no
+# CF-encoder cost either way -- see _fill_nan_in_place) took 632s, vs 268s
+# total for the same 20000 layers as two half-chunk (10000-layer) writes on
+# the same run -- 2.4x SLOWER despite strictly less write-side work by the
+# theory above. RAM/swap was confirmed clean throughout (free -m showed
+# ~20 GiB available, 0 swap), so it isn't the RAM tradeoff this constant was
+# designed around -- something about a single, much bigger .load() call
+# (dask task-graph construction, or S3 request-pattern effects) dominates at
+# this scale instead. Root cause not yet isolated; INT_CHUNK_SPLITS is set
+# empirically (matching FLOAT_CHUNK_SPLITS) rather than by the theory above
+# until it is. M11/M12 (float, FLOAT_CHUNK_SPLITS unchanged at 2 across this
+# investigation) got faster in the same run, from the encoder-bypass +
+# radar-skip wins alone -- confirming the regression is specific to the
+# int/whole-chunk change, not the raw-zarr-write mechanism itself.
 #
-# ATTN: these are sized for a 32 GB instance. On a larger box, dropping
-# FLOAT_CHUNK_SPLITS to 1 removes the last remaining write amplification in
-# this script; on a smaller one, both need raising.
-INT_CHUNK_SPLITS = 1
+# ATTN: re-benchmark before changing either value. If revisiting the RAM
+# arithmetic: peak per write is roughly (batch bytes) x ~2 (the extra ~1x
+# being the .load() fan-out a virtual/manifest-backed read pays); at the
+# production 512x512 grid and time_chunk=20000, a float32 whole chunk is
+# ~39 GiB (doesn't fit a 32 GB box) vs ~20 GiB halved -- that RAM ceiling is
+# still real and still why FLOAT_CHUNK_SPLITS can't drop to 1 on a 32 GB box.
+INT_CHUNK_SPLITS = 2
 FLOAT_CHUNK_SPLITS = 2
 
 # Variables present ONLY in radar (Sentinel-1, NISAR) granules -- optical
@@ -324,19 +342,23 @@ def _write_var_3d(
    fill_value=None, is_radar=None
 ):
    """Write one 3D (time, y, x) data variable's full extent into an
-   already-templated store, one whole zarr time-chunk at a time where RAM
-   allows, using the raw zarr array API rather than xr.Dataset.to_zarr().
+   already-templated store, in half-chunk-sized pieces (see
+   INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS), using the raw zarr array API rather
+   than xr.Dataset.to_zarr().
 
    Two deliberate departures from the obvious xarray implementation, both
    purely for speed/RAM -- neither changes a single byte on disk:
 
-   1. Whole-chunk writes. Every inner chunk spans the full time_chunk
-      extent, so splitting a chunk's write into N pieces costs N full-volume
-      compressions + N-1 full-volume decompressions no matter how small the
-      pieces are (see src/wiki/07_Deep_Copy_Time_Chunking_And_Write_
-      Amplification.md). N is therefore kept at the minimum RAM allows:
-      1 for int variables, 2 for float ones (see INT_CHUNK_SPLITS/
-      FLOAT_CHUNK_SPLITS).
+   1. Half-chunk writes for both dtypes. Every inner chunk spans the full
+      time_chunk extent, so in theory splitting a chunk's write into N
+      pieces costs N full-volume compressions + N-1 full-volume
+      decompressions no matter how small the pieces are (see src/wiki/
+      07_Deep_Copy_Time_Chunking_And_Write_Amplification.md), making a
+      single whole-chunk write (N=1) the cheapest by that model. Measured
+      (2026-09-16) that this doesn't hold for int variables at production
+      scale -- see INT_CHUNK_SPLITS's own comment -- so both dtypes are kept
+      at N=2 empirically rather than N=1 for ints as the write-amplification
+      model alone would suggest.
    2. Raw zarr writes. to_zarr(region=...) re-derives encoding from the
       store and runs the CF encoder, which allocates ~1.5x the batch in
       temporaries for every variable that declares a fill -- including int
@@ -509,8 +531,8 @@ def deep_copy_cube_per_var(
    num_layers=0
 ):
    """Materialize a virtual datacube into a real zarr v3 datacube, one data
-   variable at a time, at full spatial extent -- 3D variables a whole
-   time_chunk at a time (halved for floats, see FLOAT_CHUNK_SPLITS), 1D
+   variable at a time, at full spatial extent -- 3D variables in
+   half-time_chunk increments (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS), 1D
    variables in half-time_chunk_1d increments. See this module's docstring
    for the RAM-vs-wall-clock tradeoffs this makes relative to
    deep_copy_cube.py.
@@ -531,8 +553,8 @@ def deep_copy_cube_per_var(
       against (see deep_copy_cube.open_virtual_cube).
    time_chunk : int
       Chunk size along 'time' for 3D variables. Each write for a 3D
-      variable materializes this many layers, or half that for float
-      variables (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS).
+      variable materializes half this many layers (see
+      INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS).
    xy_chunk : int
       Chunk size along 'x'/'y' for 3D variables.
    time_chunk_1d : int
@@ -687,9 +709,9 @@ if __name__ == '__main__':
       description="""
       Materialize a virtual ITS_LIVE datacube (icechunk repo built by
       virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube, one
-      data variable at a time at full spatial extent -- 3D variables a whole
-      time_chunk per write (half that for floats), 1D variables in
-      time_chunk_1d/2 writes. Avoids deep_copy_cube.py's unbounded
+      data variable at a time at full spatial extent -- 3D variables in
+      time_chunk/2 writes, 1D variables in time_chunk_1d/2 writes. Avoids
+      deep_copy_cube.py's unbounded
       batch_size-vs-time_chunk write amplification and the spatial
       read-amplification a tiled write incurs, at the cost of losing
       inter-variable read/write overlap (see this module's docstring for the
@@ -739,8 +761,8 @@ if __name__ == '__main__':
       type=int,
       default=TIME_CHUNK_VALUE,
       help='Chunk size along time for 3D (time, y, x) variables. Each write '
-         'for a 3D variable materializes this many layers, or half that for '
-         'float variables [%(default)d].'
+         'for a 3D variable materializes half this many layers '
+         '[%(default)d].'
    )
    parser.add_argument(
       '--xy-chunk-value',
