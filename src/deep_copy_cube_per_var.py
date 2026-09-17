@@ -485,7 +485,7 @@ def _write_var_3d(
 
 def _write_var_1d(cube, write_target, var_name, chunk_size, total_layers, num_load_workers=None):
    """Write one 1D ('time',) data variable's full extent into an
-   already-templated store, in half-chunk-sized region writes.
+   already-templated store, one whole zarr time-chunk per region write.
 
    Unlike _write_var_3d(), this keeps xarray's to_zarr(region=...) path and
    all of its CF encoding. 1D variables are ~262k times smaller per layer
@@ -495,6 +495,15 @@ def _write_var_1d(cube, write_target, var_name, chunk_size, total_layers, num_lo
    variables needing CF time encoding (units/calendar/epoch offsets, see
    src/wiki/) and string variables, neither of which can be written
    correctly by dropping raw values into a zarr array.
+
+   Written whole-chunk, unlike _write_var_3d()'s half-chunk 3D writes: 1D
+   variables are baked directly into the virtual cube rather than referenced
+   through per-granule manifest arrays (confirmed -- every 1D variable's
+   dask chunking is a single chunk spanning all layers, not one per
+   granule), so there is no per-granule task-graph to blow up at scale, and
+   RAM is a non-issue regardless -- even the largest 1D variable
+   (granule_url, a 2048-byte string) at the full time_chunk_1d=200000 span is
+   only ~410 MiB.
 
    Parameters
    ----------
@@ -506,17 +515,15 @@ def _write_var_1d(cube, write_target, var_name, chunk_size, total_layers, num_lo
       Name of the 1D data variable to write.
    chunk_size : int
       Size of the underlying zarr time-chunk for this variable
-      (time_chunk_1d). Each write covers half this many layers.
+      (time_chunk_1d). Each write covers this many layers.
    total_layers : int
       Total number of layers to write (honors --num-layers).
    num_load_workers : int, optional
       Passed straight through to _load_batch()'s dask thread-pool size.
       None (the default) leaves dask's own default in effect.
    """
-   write_span = max(1, chunk_size // 2)
-
-   for start in range(0, total_layers, write_span):
-      stop = min(start + write_span, total_layers)
+   for start in range(0, total_layers, chunk_size):
+      stop = min(start + chunk_size, total_layers)
       logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
 
       batch = _load_batch(cube, var_name, start, stop, num_load_workers)
@@ -551,9 +558,9 @@ def deep_copy_cube_per_var(
    """Materialize a virtual datacube into a real zarr v3 datacube, one data
    variable at a time, at full spatial extent -- 3D variables in
    half-time_chunk increments (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS), 1D
-   variables in half-time_chunk_1d increments. See this module's docstring
-   for the RAM-vs-wall-clock tradeoffs this makes relative to
-   deep_copy_cube.py.
+   variables in whole time_chunk_1d increments (see _write_var_1d for why
+   1D variables don't need splitting). See this module's docstring for the
+   RAM-vs-wall-clock tradeoffs this makes relative to deep_copy_cube.py.
 
    Unlike deep_copy_cube.py's incremental append-based construction, this
    writes the whole store's shape/dtype/chunk-grid up front (mode='w',
@@ -734,7 +741,7 @@ if __name__ == '__main__':
       Materialize a virtual ITS_LIVE datacube (icechunk repo built by
       virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube, one
       data variable at a time at full spatial extent -- 3D variables in
-      time_chunk/2 writes, 1D variables in time_chunk_1d/2 writes. Avoids
+      time_chunk/2 writes, 1D variables in whole time_chunk_1d writes. Avoids
       deep_copy_cube.py's unbounded
       batch_size-vs-time_chunk write amplification and the spatial
       read-amplification a tiled write incurs, at the cost of losing
@@ -799,7 +806,7 @@ if __name__ == '__main__':
       type=int,
       default=TIME_CHUNK_VALUE_1D,
       help='Chunk size for 1D (time,) variables. Each write for a 1D '
-         'variable materializes half this many layers [%(default)d].'
+         'variable materializes this many layers [%(default)d].'
    )
    parser.add_argument(
       '--xy-shard-multiplier',

@@ -492,8 +492,8 @@ def _write_var_1d_and_upload(
    cube, local_store, output_store, var_name, chunk_size, total_layers,
    num_load_workers=None
 ):
-   """Write one 1D ('time',) data variable into the local staging store in
-   half-chunk-sized region writes, uploading each whole zarr chunk to S3 as
+   """Write one 1D ('time',) data variable into the local staging store, one
+   whole zarr time-chunk per region write, uploading each chunk to S3 as
    soon as it's complete locally.
 
    Unlike _write_var_3d_and_upload(), this keeps xarray's to_zarr(region=...)
@@ -504,6 +504,15 @@ def _write_var_1d_and_upload(
    variables needing CF time encoding (units/calendar/epoch offsets, see
    src/wiki/) and string variables, neither of which can be written correctly
    by dropping raw values into a zarr array.
+
+   Written whole-chunk, unlike _write_var_3d_and_upload()'s half-chunk 3D
+   writes: 1D variables are baked directly into the virtual cube rather than
+   referenced through per-granule manifest arrays (confirmed -- every 1D
+   variable's dask chunking is a single chunk spanning all layers, not one
+   per granule), so there is no per-granule task-graph to blow up at scale,
+   and RAM is a non-issue regardless -- even the largest 1D variable
+   (granule_url, a 2048-byte string) at the full time_chunk_1d=200000 span is
+   only ~410 MiB.
 
    Parameters
    ----------
@@ -518,37 +527,33 @@ def _write_var_1d_and_upload(
       Name of the 1D data variable to write.
    chunk_size : int
       Size of the underlying zarr time-chunk for this variable
-      (time_chunk_1d). Each write covers half this many layers.
+      (time_chunk_1d). Each write covers this many layers.
    total_layers : int
       Total number of layers to write (honors --num-layers).
    num_load_workers : int, optional
       Passed straight through to _load_batch()'s dask thread-pool size.
       None (the default) leaves dask's own default in effect.
    """
-   write_span = max(1, chunk_size // 2)
-
    for chunk_start in range(0, total_layers, chunk_size):
       chunk_stop = min(chunk_start + chunk_size, total_layers)
       chunk_index = chunk_start // chunk_size
 
-      for start in range(chunk_start, chunk_stop, write_span):
-         stop = min(start + write_span, chunk_stop)
-         logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
+      logging.info(f'Materializing {var_name} layers {chunk_start}:{chunk_stop} of {total_layers}')
 
-         batch = _load_batch(cube, var_name, start, stop, num_load_workers)
-         _reset_write_encoding(batch)
-         batch.to_zarr(
-            local_store,
-            mode='r+',
-            region={utils.Coords.TIME: slice(start, stop)},
-            zarr_format=3,
-            consolidated=False
-         )
+      batch = _load_batch(cube, var_name, chunk_start, chunk_stop, num_load_workers)
+      _reset_write_encoding(batch)
+      batch.to_zarr(
+         local_store,
+         mode='r+',
+         region={utils.Coords.TIME: slice(chunk_start, chunk_stop)},
+         zarr_format=3,
+         consolidated=False
+      )
 
-         logging.info(f'Wrote {var_name} layers {start}:{stop} of {total_layers} to {local_store}')
+      logging.info(f'Wrote {var_name} layers {chunk_start}:{chunk_stop} of {total_layers} to {local_store}')
 
-         del batch
-         gc.collect()
+      del batch
+      gc.collect()
 
       _upload_chunk(local_store, output_store, var_name, chunk_index)
       logging.info(
