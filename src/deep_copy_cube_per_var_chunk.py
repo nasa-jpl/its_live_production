@@ -33,6 +33,13 @@ Sequence for each (variable, whole zarr chunk):
    of --xy-shard-multiplier, since 'time' is always the first path segment
    under 'c/') to S3.
 4. Copy the freshly consolidated root zarr.json to S3.
+5. Delete that chunk's local copy -- once it's on S3 there's no reason to
+   keep it on disk, and unlike deep_copy_cube_per_var.py's single-upload-at-
+   the-end approach, this script would otherwise need local disk for the
+   ENTIRE store rather than just one chunk at a time (the same RAM-shrinking
+   idea this whole per-variable design is built on, applied to disk).
+   Safe because chunk_index is never revisited once its upload succeeds --
+   see _upload_chunk()'s own docstring.
 
 Before any of that, the store's skeleton (root zarr.json + every array's own
 zarr.json + coordinate/static variable data -- none of which ever changes
@@ -314,13 +321,28 @@ def _fill_nan_in_place(values, fill_value):
 
 
 def _upload_chunk(local_store, output_store, var_name, chunk_index):
-   """Consolidate the local store's metadata and sync one finished zarr chunk
-   (plus the refreshed root zarr.json) to its final S3 destination.
+   """Consolidate the local store's metadata, sync one finished zarr chunk
+   (plus the refreshed root zarr.json) to its final S3 destination, then
+   delete that chunk's local copy.
 
    `{var_name}/c/{chunk_index}` captures every spatial chunk/shard under that
    time-chunk regardless of --xy-shard-multiplier, since 'time' is always the
    first path segment under 'c/'. For a 1D ('time',) variable the same path
-   shape holds, with no further segments beneath it.
+   points at a plain FILE instead of a directory -- there's no y/x axis to
+   put anything beneath it -- so the copy (and the delete afterward) both
+   check os.path.isdir() and dispatch to the file-shaped or directory-shaped
+   operation accordingly; `aws s3 cp --recursive` errors out (returncode 2)
+   on a file source.
+
+   The delete is safe because this chunk_index is never revisited: every
+   caller's outer loop advances chunk_index monotonically and never writes
+   into an already-uploaded chunk again (see this function's callers). It's
+   also safe with respect to metadata: consolidate_metadata() only reads/
+   bundles the small zarr.json documents scattered through the store, never
+   chunk payload bytes, so removing a chunk's data files doesn't perturb any
+   later consolidation. Deleting only happens after _s3_copy() returns
+   normally -- it raises (rather than returning) if every retry failed, so a
+   failed upload always leaves its local chunk in place to retry from.
 
    Parameters
    ----------
@@ -336,15 +358,23 @@ def _upload_chunk(local_store, output_store, var_name, chunk_index):
    zarr.consolidate_metadata(local_store)
 
    chunk_dir = f'{var_name}/c/{chunk_index}'
+   local_chunk_path = os.path.join(local_store, chunk_dir)
+   chunk_is_dir = os.path.isdir(local_chunk_path)
    _s3_copy(
-      os.path.join(local_store, chunk_dir),
-      f'{output_store.rstrip("/")}/{chunk_dir}'
+      local_chunk_path,
+      f'{output_store.rstrip("/")}/{chunk_dir}',
+      recursive=chunk_is_dir
    )
    _s3_copy(
       os.path.join(local_store, 'zarr.json'),
       f'{output_store.rstrip("/")}/zarr.json',
       recursive=False
    )
+
+   if chunk_is_dir:
+      shutil.rmtree(local_chunk_path)
+   else:
+      os.remove(local_chunk_path)
 
 
 def _write_var_3d_and_upload(
