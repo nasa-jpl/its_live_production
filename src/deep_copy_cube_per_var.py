@@ -209,7 +209,7 @@ def split_time_vars_by_rank(cube, time_vars):
 
 
 @itslive_utils.retry_decorator(max_retries=5)
-def _load_batch(cube, var_name, start, stop):
+def _load_batch(cube, var_name, start, stop, num_load_workers=None):
    """Materialize one variable's [start:stop) time slice, retrying on any
    exception.
 
@@ -228,17 +228,28 @@ def _load_batch(cube, var_name, start, stop):
       Name of the data variable to load.
    start, stop : int
       Time-slice bounds (see _write_var_3d/_write_var_1d).
+   num_load_workers : int, optional
+      Thread-pool size for this .load() call's dask threaded scheduler --
+      each granule in [start, stop) is one dask task (chunk size 1 along
+      'time' in the virtual cube), so this bounds how many granules get
+      fetched/decompressed concurrently. Passed straight through to
+      dask.compute() via xr.Dataset.load(**kwargs); None (the default)
+      leaves dask's own default in effect (CPU core count).
 
    Returns
    -------
    xr.Dataset
       The loaded (non-dask) batch for this variable and time slice.
    """
+   load_kwargs = {'scheduler': 'threads'}
+   if num_load_workers is not None:
+      load_kwargs['num_workers'] = num_load_workers
+
    return cube[[var_name]].isel(
       {utils.Coords.TIME: slice(start, stop)}
    ).drop_vars(
       [utils.Coords.TIME, utils.Coords.Y, utils.Coords.X], errors='ignore'
-   ).load()
+   ).load(**load_kwargs)
 
 
 def _compute_radar_mask(cube, total_layers):
@@ -339,7 +350,7 @@ def _fill_nan_in_place(values, fill_value):
 
 def _write_var_3d(
    cube, write_target, var_name, chunk_size, total_layers,
-   fill_value=None, is_radar=None
+   fill_value=None, is_radar=None, num_load_workers=None
 ):
    """Write one 3D (time, y, x) data variable's full extent into an
    already-templated store, in half-chunk-sized pieces (see
@@ -408,6 +419,9 @@ def _write_var_3d(
       Boolean array of length total_layers, True where that layer is a
       radar granule (see _compute_radar_mask). Only consulted when
       var_name is in RADAR_ONLY_VARS; pass None to disable the skip.
+   num_load_workers : int, optional
+      Passed straight through to _load_batch()'s dask thread-pool size.
+      None (the default) leaves dask's own default in effect.
 
    Raises
    ------
@@ -451,7 +465,7 @@ def _write_var_3d(
          stop = min(start + write_span, chunk_stop)
          logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
 
-         batch = _load_batch(cube, var_name, start, stop)
+         batch = _load_batch(cube, var_name, start, stop, num_load_workers)
          values = batch[var_name].values
          _fill_nan_in_place(values, fill_value)
          target[start:stop, :, :] = values
@@ -469,7 +483,7 @@ def _write_var_3d(
       )
 
 
-def _write_var_1d(cube, write_target, var_name, chunk_size, total_layers):
+def _write_var_1d(cube, write_target, var_name, chunk_size, total_layers, num_load_workers=None):
    """Write one 1D ('time',) data variable's full extent into an
    already-templated store, in half-chunk-sized region writes.
 
@@ -495,6 +509,9 @@ def _write_var_1d(cube, write_target, var_name, chunk_size, total_layers):
       (time_chunk_1d). Each write covers half this many layers.
    total_layers : int
       Total number of layers to write (honors --num-layers).
+   num_load_workers : int, optional
+      Passed straight through to _load_batch()'s dask thread-pool size.
+      None (the default) leaves dask's own default in effect.
    """
    write_span = max(1, chunk_size // 2)
 
@@ -502,7 +519,7 @@ def _write_var_1d(cube, write_target, var_name, chunk_size, total_layers):
       stop = min(start + write_span, total_layers)
       logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
 
-      batch = _load_batch(cube, var_name, start, stop)
+      batch = _load_batch(cube, var_name, start, stop, num_load_workers)
       _reset_write_encoding(batch)
       batch.to_zarr(
          write_target,
@@ -528,7 +545,8 @@ def deep_copy_cube_per_var(
    xy_shard_multiplier=1,
    local_staging_dir=None,
    keep_local_staging=False,
-   num_layers=0
+   num_layers=0,
+   num_load_workers=None
 ):
    """Materialize a virtual datacube into a real zarr v3 datacube, one data
    variable at a time, at full spatial extent -- 3D variables in
@@ -575,6 +593,12 @@ def deep_copy_cube_per_var(
    num_layers : int
       If > 0, only materialize the first `num_layers` layers of the virtual
       cube. 0 (the default) processes every layer.
+   num_load_workers : int, optional
+      Thread-pool size for each _load_batch() .load() call -- each granule
+      in a batch is one dask task (chunk size 1 along 'time' in the virtual
+      cube), so this bounds how many granules get fetched/decompressed
+      concurrently. None (the default) leaves dask's own default in effect
+      (CPU core count).
    """
    if local_staging_dir and not output_store.startswith(utils.S3_PREFIX):
       raise ValueError(
@@ -674,7 +698,7 @@ def deep_copy_cube_per_var(
    logging.info(f'Wrote {len(static_vars)} static variable(s) to {write_target}')
 
    for var_name in vars_1d:
-      _write_var_1d(cube, write_target, var_name, time_chunk_1d, total_layers)
+      _write_var_1d(cube, write_target, var_name, time_chunk_1d, total_layers, num_load_workers)
 
    for var_name in vars_3d:
       # The CF fill this variable's array was templated with -- only floats
@@ -684,7 +708,7 @@ def deep_copy_cube_per_var(
       _write_var_3d(
          cube, write_target, var_name, time_chunk, total_layers,
          encoding.get(var_name, {}).get(utils.OutputFormat.fill_value),
-         is_radar
+         is_radar, num_load_workers
       )
 
    # Consolidate metadata once, now that every region write is done -- instead
@@ -808,6 +832,16 @@ if __name__ == '__main__':
       help='Only materialize the first N layers of the virtual cube '
          '[%(default)d meaning to process all layers].'
    )
+   parser.add_argument(
+      '--num-load-workers',
+      type=int,
+      default=None,
+      help='Thread-pool size for each batch .load() call (each granule is '
+         'one dask task, chunk size 1 along "time" in the virtual cube, so '
+         'this bounds how many granules get fetched/decompressed '
+         'concurrently). Unset (the default) leaves dask\'s own default in '
+         'effect (CPU core count).'
+   )
 
    args = parser.parse_args()
    logging.info(f'Command: {sys.argv}')
@@ -823,7 +857,8 @@ if __name__ == '__main__':
       args.xy_shard_multiplier,
       args.local_staging_dir,
       args.keep_local_staging,
-      args.num_layers
+      args.num_layers,
+      args.num_load_workers
    )
 
    elapsed_time = time.time() - start_time
