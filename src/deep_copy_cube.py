@@ -80,7 +80,7 @@ TIME_CHUNK_VALUE_1D = 200000
 # (grouping across time would force a shard rewrite that touches historical,
 # already-finalized time periods on every future append, defeating
 # incremental updates).
-XY_SHARD_MULTIPLIER = 4
+XY_SHARD_MULTIPLIER = 8
 
 # Compressor for the deep-copy zarr v3 store. Same cname/clevel/shuffle as
 # itscube.py's `zarr.Blosc` compressor; that class was removed from

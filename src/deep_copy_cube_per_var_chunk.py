@@ -21,8 +21,7 @@ and 3D float variables in half-time-chunk writes -- see
 INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS, and _write_var_3d_and_upload() for why
 3D variables bypass xarray's CF encoder), but the S3 copy only happens once
 every write making up a given whole zarr chunk has landed locally. A zarr
-chunk is atomic anyway (see RADAR_ONLY_VARS's whole-chunk skip), so there's
-no reason to sync a half-finished one.
+chunk is atomic anyway, so there's no reason to sync a half-finished one.
 
 Sequence for each (variable, whole zarr chunk):
 1. Load+write the chunk into the local staging store (same as
@@ -40,6 +39,9 @@ Sequence for each (variable, whole zarr chunk):
    idea this whole per-variable design is built on, applied to disk).
    Safe because chunk_index is never revisited once its upload succeeds --
    see _upload_chunk()'s own docstring.
+6. Record that chunk as done, if --progress-dir enabled resumability (see
+   _Progress) -- last, so a marker is only ever written for a chunk whose
+   upload actually succeeded.
 
 Before any of that, the store's skeleton (root zarr.json + every array's own
 zarr.json + coordinate/static variable data -- none of which ever changes
@@ -56,6 +58,22 @@ extra S3 PUT per chunk, which is cheap enough not to bother special-casing.
 Skipped (all-optical) chunks (see RADAR_ONLY_VARS) need no copy at all --
 nothing was written locally for them either, so there's nothing to sync.
 
+Resumable, when --progress-dir is given: every (variable, chunk) upload
+above also writes a tiny marker object there, plus a whole-variable marker
+once that variable's every chunk is resolved and a whole-store _SUCCESS
+marker once everything is. A retried run (e.g. after an AWS Batch spot
+termination) checks those first and skips whatever a prior attempt already
+finished instead of rebuilding the whole store. Markers live outside
+--output-store on purpose -- the store is a published data product and has
+no business carrying this pipeline's bookkeeping -- and the parameters that
+give a chunk marker its meaning are recorded alongside them and re-checked
+on resume, so resuming with mismatched arguments (or against a cube whose
+granules shifted underneath) fails loudly instead of silently corrupting the
+store. See deep_copy_cube_progress._Progress and
+deep_copy_cube_per_var_chunk()'s own docstring.
+Without --progress-dir none of this is active and the script behaves exactly
+as it did before, including refusing to write over an existing output store.
+
 This is a test/benchmark script for comparing incremental-sync wall-clock and
 S3 request cost against deep_copy_cube_per_var.py's single-upload-at-the-end
 approach -- not yet a production replacement.
@@ -64,7 +82,8 @@ Usage example:
 python src/deep_copy_cube_per_var_chunk.py \
    --input-store my_virtual_cube.icechunk \
    --output-store s3://its-live-data/path/to/my_deep_copy_cube.zarr \
-   --local-staging-dir /local/scratch/my_deep_copy_cube.zarr
+   --local-staging-dir /local/scratch/my_deep_copy_cube.zarr \
+   --progress-dir s3://its-live-data/path/to/deep_copy_progress
 """
 import gc
 import logging
@@ -97,6 +116,12 @@ from deep_copy_cube import (
    resolve_output_store,
 )
 from deep_copy_cube_per_var import split_time_vars_by_rank
+from deep_copy_cube_progress import (
+   SUCCESS_MARKER,
+   _Progress,
+   _log_resume_or_fresh,
+   _s3_copy,
+)
 
 # Set up logging
 logging.basicConfig(
@@ -155,28 +180,6 @@ RADAR_ONLY_VARS = {Vars.m11, Vars.m12, Vars.vr, Vars.va}
 
 # Mission groups whose granules are radar (SAR).
 RADAR_GROUP_IDS = {sensors.SENTINEL1.id, sensors.NISAR.id}
-
-
-def _s3_copy(local_path, s3_path, recursive=True):
-   """Copy a local file or directory to S3 via the AWS CLI, matching
-   deep_copy_cube.upload_local_staging_dir()'s mechanism (retried, subprocess-
-   based) but scoped to a single path instead of a whole store, so it can be
-   called once per chunk without waiting for the whole run to finish.
-
-   Parameters
-   ----------
-   local_path : str
-      Local file or directory to copy.
-   s3_path : str
-      Destination s3:// URL.
-   recursive : bool
-      True (default) for a directory copy, False for a single file.
-   """
-   command_line = ["aws", "s3", "cp"]
-   if recursive:
-      command_line.append("--recursive")
-   command_line += [local_path, s3_path, "--acl", "bucket-owner-full-control"]
-   itslive_utils.s3_copy_using_subprocess(command_line, os.environ.copy())
 
 
 @itslive_utils.retry_decorator(max_retries=5)
@@ -379,7 +382,7 @@ def _upload_chunk(local_store, output_store, var_name, chunk_index):
 
 def _write_var_3d_and_upload(
    cube, local_store, output_store, var_name, chunk_size, total_layers,
-   fill_value=None, is_radar=None, num_load_workers=None
+   fill_value=None, is_radar=None, num_load_workers=None, progress=None
 ):
    """Write one 3D (time, y, x) data variable into the local staging store,
    in half-chunk-sized pieces (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS),
@@ -449,6 +452,14 @@ def _write_var_3d_and_upload(
    num_load_workers : int, optional
       Passed straight through to _load_batch()'s dask thread-pool size.
       None (the default) leaves dask's own default in effect.
+   progress : _Progress, optional
+      If given, enables resumability: this variable's own `_SUCCESS` marker
+      is checked first (skip the whole function if it's already there), then
+      each chunk's `{chunk_index}.done` marker is checked before doing that
+      chunk's work and written right after it's resolved (either uploaded,
+      or legitimately radar-skipped). None (the default) disables all of
+      this -- every chunk is always (re)done, no markers are read or
+      written.
 
    Raises
    ------
@@ -466,11 +477,16 @@ def _write_var_3d_and_upload(
          f'extra copy of every batch)'
       )
 
+   if progress is not None and progress.var_is_done(var_name):
+      logging.info(f'{var_name}: already fully processed in a previous attempt, skipping')
+      return
+
    splits = FLOAT_CHUNK_SPLITS if cube[var_name].dtype.kind == 'f' else INT_CHUNK_SPLITS
    write_span = max(1, chunk_size // splits)
    check_radar = is_radar is not None and var_name in RADAR_ONLY_VARS
    num_chunks = 0
    num_skipped = 0
+   num_resumed = 0
 
    # Opened once per variable, not per write: every write below targets the
    # same array, and the per-chunk consolidate_metadata() only rewrites the
@@ -482,12 +498,22 @@ def _write_var_3d_and_upload(
       chunk_index = chunk_start // chunk_size
       num_chunks += 1
 
+      if progress is not None and progress.chunk_is_done(var_name, chunk_index):
+         logging.info(
+            f'Skipping {var_name} chunk {chunk_start}:{chunk_stop} of '
+            f'{total_layers} (already done in a previous attempt)'
+         )
+         num_resumed += 1
+         continue
+
       if check_radar and not is_radar[chunk_start:chunk_stop].any():
          logging.info(
             f'Skipping {var_name} chunk {chunk_start}:{chunk_stop} of '
             f'{total_layers} (all-optical, no radar layers present)'
          )
          num_skipped += 1
+         if progress is not None:
+            progress.mark_chunk_done(var_name, chunk_index)
          continue
 
       for start in range(chunk_start, chunk_stop, write_span):
@@ -510,6 +536,8 @@ def _write_var_3d_and_upload(
          f'Uploaded {var_name} chunk {chunk_start}:{chunk_stop} of '
          f'{total_layers} to {output_store}'
       )
+      if progress is not None:
+         progress.mark_chunk_done(var_name, chunk_index)
 
    if check_radar and num_skipped:
       logging.info(
@@ -517,10 +545,19 @@ def _write_var_3d_and_upload(
          f'(all-optical, no radar layers present)'
       )
 
+   if num_resumed:
+      logging.info(
+         f'{var_name}: resumed past {num_resumed} of {num_chunks} chunk(s) '
+         '(already done in a previous attempt)'
+      )
+
+   if progress is not None:
+      progress.mark_var_done(var_name)
+
 
 def _write_var_1d_and_upload(
    cube, local_store, output_store, var_name, chunk_size, total_layers,
-   num_load_workers=None
+   num_load_workers=None, progress=None
 ):
    """Write one 1D ('time',) data variable into the local staging store, one
    whole zarr time-chunk per region write, uploading each chunk to S3 as
@@ -563,10 +600,31 @@ def _write_var_1d_and_upload(
    num_load_workers : int, optional
       Passed straight through to _load_batch()'s dask thread-pool size.
       None (the default) leaves dask's own default in effect.
+   progress : _Progress, optional
+      If given, enables resumability -- see _write_var_3d_and_upload()'s
+      `progress` parameter doc for the exact marker-check/write behavior;
+      this function follows the same shape (variable-level marker checked
+      first, then per-chunk markers). None (the default) disables it.
    """
+   if progress is not None and progress.var_is_done(var_name):
+      logging.info(f'{var_name}: already fully processed in a previous attempt, skipping')
+      return
+
+   num_chunks = 0
+   num_resumed = 0
+
    for chunk_start in range(0, total_layers, chunk_size):
       chunk_stop = min(chunk_start + chunk_size, total_layers)
       chunk_index = chunk_start // chunk_size
+      num_chunks += 1
+
+      if progress is not None and progress.chunk_is_done(var_name, chunk_index):
+         logging.info(
+            f'Skipping {var_name} chunk {chunk_start}:{chunk_stop} of '
+            f'{total_layers} (already done in a previous attempt)'
+         )
+         num_resumed += 1
+         continue
 
       logging.info(f'Materializing {var_name} layers {chunk_start}:{chunk_stop} of {total_layers}')
 
@@ -590,6 +648,17 @@ def _write_var_1d_and_upload(
          f'Uploaded {var_name} chunk {chunk_start}:{chunk_stop} of '
          f'{total_layers} to {output_store}'
       )
+      if progress is not None:
+         progress.mark_chunk_done(var_name, chunk_index)
+
+   if num_resumed:
+      logging.info(
+         f'{var_name}: resumed past {num_resumed} of {num_chunks} chunk(s) '
+         '(already done in a previous attempt)'
+      )
+
+   if progress is not None:
+      progress.mark_var_done(var_name)
 
 
 def deep_copy_cube_per_var_chunk(
@@ -603,7 +672,9 @@ def deep_copy_cube_per_var_chunk(
    local_staging_dir=None,
    keep_local_staging=False,
    num_layers=0,
-   num_load_workers=None
+   num_load_workers=None,
+   progress_dir=None,
+   keep_progress_markers=False
 ):
    """Materialize a virtual datacube into a real zarr v3 datacube on S3, one
    data variable at a time, uploading each whole zarr chunk to S3 as soon as
@@ -613,6 +684,23 @@ def deep_copy_cube_per_var_chunk(
    Unlike deep_copy_cube_per_var.py, --output-store must be an s3:// path and
    --local-staging-dir is required: every write always lands locally first,
    then gets synced to S3 chunk by chunk.
+
+   Resumable across retries when `progress_dir` is given (and only then --
+   without it this behaves exactly as it did before resumability existed,
+   including refusing to write over an existing output store). Whether a
+   given run is a fresh start or a resume is then auto-detected from the
+   markers themselves; no flag distinguishes the two, since an AWS Batch
+   retry resubmits the identical command line. If a fully completed prior
+   attempt left a `_SUCCESS` marker, this returns immediately without even
+   opening `input_store`. Otherwise every (variable, chunk) a prior
+   interrupted attempt already finished is skipped -- no load, no write, no
+   upload -- and everything else is (re)done, which is always safe because
+   every write here is idempotent. Unlike the pure "trust the arguments"
+   version of this design, the parameters that give a chunk marker its
+   meaning are recorded and re-checked on resume, so a mismatch fails loudly
+   instead of silently corrupting the store -- see
+   deep_copy_cube_progress._Progress and _Progress.validate_config() for
+   the mechanics and for how a changed input cube is handled.
 
    Parameters
    ----------
@@ -648,6 +736,19 @@ def deep_copy_cube_per_var_chunk(
       cube), so this bounds how many granules get fetched/decompressed
       concurrently. None (the default) leaves dask's own default in effect
       (CPU core count).
+   progress_dir : str, optional
+      s3:// directory to keep this run's progress markers in, enabling
+      resumability. Deliberately separate from `output_store` so the
+      published cube carries none of this bookkeeping; markers go under
+      `{progress_dir}/{output store name}/`, so one shared directory can
+      serve a whole batch of cubes. None (the default) disables
+      resumability entirely: no markers are read or written, and
+      `output_store` is subject to the usual refuse-to-overwrite guard.
+   keep_progress_markers : bool
+      If True, keep every per-variable/per-chunk marker after a successful
+      run instead of pruning them down to just `_SUCCESS` and
+      `run_config.json`. Useful for inspecting after the fact which chunks
+      were radar-skipped vs. written; ignored when `progress_dir` is None.
    """
    if not output_store.startswith(utils.S3_PREFIX):
       raise ValueError(
@@ -656,6 +757,21 @@ def deep_copy_cube_per_var_chunk(
 
    if not local_staging_dir:
       raise ValueError("--local-staging-dir is required for this script")
+
+   if progress_dir and not progress_dir.startswith(utils.S3_PREFIX):
+      raise ValueError(
+         f"--progress-dir must be an s3:// path so markers survive the EC2 "
+         f"instance they were written from (a local directory would be lost "
+         f"with the instance, which defeats the point), got {progress_dir}"
+      )
+
+   progress = _Progress.create(progress_dir, output_store) if progress_dir else None
+   if progress is not None and progress.is_complete():
+      logging.info(
+         f'{output_store} is already marked complete '
+         f'({progress.base}/{SUCCESS_MARKER}); nothing to do'
+      )
+      return
 
    cube = open_virtual_cube(input_store, bucket_prefix)
    total_layers = cube.sizes[utils.Coords.TIME]
@@ -668,6 +784,34 @@ def deep_copy_cube_per_var_chunk(
    if total_layers == 0:
       logging.info(f'{input_store} has no layers, nothing to deep-copy')
       return
+
+   # Reconcile against (or establish) the recorded run configuration before
+   # anything downstream consumes total_layers -- validate_config() can clamp
+   # it back to what a prior attempt froze the output store's shape at, and
+   # both _compute_radar_mask() and build_encoding() below must see the
+   # clamped value.
+   if progress is not None:
+      run_params = {
+         'time_chunk': time_chunk,
+         'xy_chunk': xy_chunk,
+         'time_chunk_1d': time_chunk_1d,
+         'xy_shard_multiplier': xy_shard_multiplier,
+         'num_layers': num_layers,
+      }
+      time_values = cube[utils.Coords.TIME].values
+      recorded_config = progress.read_config()
+
+      if recorded_config is None:
+         progress.write_config(
+            _Progress.build_config(output_store, run_params, total_layers, time_values)
+         )
+      else:
+         total_layers = progress.validate_config(
+            recorded_config,
+            _Progress.build_config(output_store, run_params, total_layers),
+            total_layers,
+            time_values
+         )
 
    time_vars, static_vars = split_vars_by_time(cube)
    vars_3d, vars_1d = split_time_vars_by_rank(cube, time_vars)
@@ -693,7 +837,15 @@ def deep_copy_cube_per_var_chunk(
 
    cube.attrs[CubeFormat.date_updated] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
 
-   resolve_output_store(output_store)
+   # With resumability on, an already-populated output store is the expected
+   # state a retry finds, so the strict refuse-to-overwrite guard would break
+   # exactly the case it's meant to protect; without it, keep that guard
+   # intact (the pre-resumability behavior).
+   if progress is not None:
+      _log_resume_or_fresh(progress.s3, output_store)
+   else:
+      resolve_output_store(output_store)
+
    local_store = resolve_output_store(local_staging_dir)
 
    # Template: declare every variable's shape/dtype/chunks/encoding up
@@ -759,7 +911,7 @@ def deep_copy_cube_per_var_chunk(
    for var_name in vars_1d:
       _write_var_1d_and_upload(
          cube, local_store, output_store, var_name, time_chunk_1d, total_layers,
-         num_load_workers
+         num_load_workers, progress
       )
 
    for var_name in vars_3d:
@@ -770,8 +922,19 @@ def deep_copy_cube_per_var_chunk(
       _write_var_3d_and_upload(
          cube, local_store, output_store, var_name, time_chunk, total_layers,
          encoding.get(var_name, {}).get(utils.OutputFormat.fill_value),
-         is_radar, num_load_workers
+         is_radar, num_load_workers, progress
       )
+
+   if progress is not None:
+      # Marked complete BEFORE pruning, so an interrupted prune still leaves
+      # the store recognizable as finished on the next attempt.
+      progress.mark_complete()
+      logging.info(f'Marked {output_store} complete ({progress.base}/{SUCCESS_MARKER})')
+
+      if keep_progress_markers:
+         logging.info(f'Keeping every progress marker under {progress.base}')
+      else:
+         progress.prune_var_markers(vars_1d + vars_3d)
 
    if keep_local_staging:
       logging.info(f'Keeping local staging directory {local_store}')
@@ -800,7 +963,8 @@ if __name__ == '__main__':
       python src/deep_copy_cube_per_var_chunk.py \
          --input-store my_virtual_cube.icechunk \
          --output-store s3://its-live-data/path/to/my_deep_copy_cube.zarr \
-         --local-staging-dir /local/scratch/my_deep_copy_cube.zarr
+         --local-staging-dir /local/scratch/my_deep_copy_cube.zarr \
+         --progress-dir s3://its-live-data/path/to/deep_copy_progress
       """,
       formatter_class=argparse.RawDescriptionHelpFormatter
    )
@@ -846,11 +1010,10 @@ if __name__ == '__main__':
    parser.add_argument(
       '--xy-shard-multiplier',
       type=int,
-      default=1,
+      default=XY_SHARD_MULTIPLIER,
       help='Number of --xy-chunk-value-sized inner chunks grouped into one '
-         'shard per spatial axis, for 3D (time,y,x) variables. A value of 1 '
-         f'(the default) disables sharding. Recommended value once sharding '
-         f'is enabled: {XY_SHARD_MULTIPLIER} [%(default)d].'
+         'shard per spatial axis, for 3D (time,y,x) variables [%(default)d]. '
+         'A value of 1 disables sharding.'
    )
    parser.add_argument(
       '--local-staging-dir',
@@ -882,6 +1045,29 @@ if __name__ == '__main__':
          'concurrently). Unset (the default) leaves dask\'s own default in '
          'effect (CPU core count).'
    )
+   parser.add_argument(
+      '--progress-dir',
+      type=str,
+      default=None,
+      help='s3:// directory to keep progress markers in, which enables '
+         'resuming an interrupted run (e.g. after an AWS Batch spot '
+         'termination) instead of rebuilding the whole cube. Kept out of '
+         '--output-store on purpose so the published cube carries none of '
+         'this bookkeeping; markers go under '
+         '{--progress-dir}/{output store name}/, so one shared directory '
+         'can serve a whole batch of cubes. Unset (the default) disables '
+         'resumability and restores the usual refuse-to-overwrite guard on '
+         '--output-store.'
+   )
+   parser.add_argument(
+      '--keep-progress-markers',
+      action='store_true',
+      help='Keep every per-variable/per-chunk progress marker after a '
+         'successful run instead of pruning them down to just _SUCCESS and '
+         'run_config.json (useful to inspect which chunks were '
+         'radar-skipped vs. written). No effect without --progress-dir '
+         '[%(default)s].'
+   )
 
    args = parser.parse_args()
    logging.info(f'Command: {sys.argv}')
@@ -898,7 +1084,9 @@ if __name__ == '__main__':
       args.local_staging_dir,
       args.keep_local_staging,
       args.num_layers,
-      args.num_load_workers
+      args.num_load_workers,
+      args.progress_dir,
+      args.keep_progress_markers
    )
 
    elapsed_time = time.time() - start_time
