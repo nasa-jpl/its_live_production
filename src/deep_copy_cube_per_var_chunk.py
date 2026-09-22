@@ -382,7 +382,8 @@ def _upload_chunk(local_store, output_store, var_name, chunk_index):
 
 def _write_var_3d_and_upload(
    cube, local_store, output_store, var_name, chunk_size, total_layers,
-   fill_value=None, is_radar=None, num_load_workers=None, progress=None
+   fill_value=None, is_radar=None, num_load_workers=None, progress=None,
+   start_layer=0
 ):
    """Write one 3D (time, y, x) data variable into the local staging store,
    in half-chunk-sized pieces (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS),
@@ -460,6 +461,16 @@ def _write_var_3d_and_upload(
       or legitimately radar-skipped). None (the default) disables all of
       this -- every chunk is always (re)done, no markers are read or
       written.
+   start_layer : int, optional
+      First layer to actually write. 0 (the default) reproduces every
+      existing code path exactly -- the outer chunk loop still starts at
+      chunk 0 and every chunk is written in full. A nonzero value (used by
+      deep_copy_update_per_var_chunk.py) starts the outer loop at that
+      layer's own chunk instead of chunk 0, and narrows that one boundary
+      chunk's write (and radar-skip check) to `[start_layer, chunk_stop)`
+      instead of the whole chunk, so an already-written prefix is never
+      rewritten. Every chunk after the boundary one is unaffected -- its
+      `write_start` still equals its `chunk_start`.
 
    Raises
    ------
@@ -493,9 +504,11 @@ def _write_var_3d_and_upload(
    # root zarr.json, never this array's own metadata or chunk paths.
    target = zarr.open_group(local_store, mode='r+', zarr_format=3)[var_name]
 
-   for chunk_start in range(0, total_layers, chunk_size):
+   first_chunk_start = (start_layer // chunk_size) * chunk_size
+   for chunk_start in range(first_chunk_start, total_layers, chunk_size):
       chunk_stop = min(chunk_start + chunk_size, total_layers)
       chunk_index = chunk_start // chunk_size
+      write_start = max(chunk_start, start_layer)
       num_chunks += 1
 
       if progress is not None and progress.chunk_is_done(var_name, chunk_index):
@@ -506,7 +519,7 @@ def _write_var_3d_and_upload(
          num_resumed += 1
          continue
 
-      if check_radar and not is_radar[chunk_start:chunk_stop].any():
+      if check_radar and not is_radar[write_start:chunk_stop].any():
          logging.info(
             f'Skipping {var_name} chunk {chunk_start}:{chunk_stop} of '
             f'{total_layers} (all-optical, no radar layers present)'
@@ -516,7 +529,7 @@ def _write_var_3d_and_upload(
             progress.mark_chunk_done(var_name, chunk_index)
          continue
 
-      for start in range(chunk_start, chunk_stop, write_span):
+      for start in range(write_start, chunk_stop, write_span):
          stop = min(start + write_span, chunk_stop)
          logging.info(f'Materializing {var_name} layers {start}:{stop} of {total_layers}')
 
@@ -557,7 +570,7 @@ def _write_var_3d_and_upload(
 
 def _write_var_1d_and_upload(
    cube, local_store, output_store, var_name, chunk_size, total_layers,
-   num_load_workers=None, progress=None
+   num_load_workers=None, progress=None, start_layer=0
 ):
    """Write one 1D ('time',) data variable into the local staging store, one
    whole zarr time-chunk per region write, uploading each chunk to S3 as
@@ -605,6 +618,12 @@ def _write_var_1d_and_upload(
       `progress` parameter doc for the exact marker-check/write behavior;
       this function follows the same shape (variable-level marker checked
       first, then per-chunk markers). None (the default) disables it.
+   start_layer : int, optional
+      First layer to actually write -- see _write_var_3d_and_upload()'s
+      `start_layer` parameter doc; the same semantics apply here (the outer
+      chunk loop starts at that layer's own chunk, and that one boundary
+      chunk's write is narrowed to `[start_layer, chunk_stop)`). 0 (the
+      default) reproduces every existing code path exactly.
    """
    if progress is not None and progress.var_is_done(var_name):
       logging.info(f'{var_name}: already fully processed in a previous attempt, skipping')
@@ -613,9 +632,11 @@ def _write_var_1d_and_upload(
    num_chunks = 0
    num_resumed = 0
 
-   for chunk_start in range(0, total_layers, chunk_size):
+   first_chunk_start = (start_layer // chunk_size) * chunk_size
+   for chunk_start in range(first_chunk_start, total_layers, chunk_size):
       chunk_stop = min(chunk_start + chunk_size, total_layers)
       chunk_index = chunk_start // chunk_size
+      write_start = max(chunk_start, start_layer)
       num_chunks += 1
 
       if progress is not None and progress.chunk_is_done(var_name, chunk_index):
@@ -626,19 +647,19 @@ def _write_var_1d_and_upload(
          num_resumed += 1
          continue
 
-      logging.info(f'Materializing {var_name} layers {chunk_start}:{chunk_stop} of {total_layers}')
+      logging.info(f'Materializing {var_name} layers {write_start}:{chunk_stop} of {total_layers}')
 
-      batch = _load_batch(cube, var_name, chunk_start, chunk_stop, num_load_workers)
+      batch = _load_batch(cube, var_name, write_start, chunk_stop, num_load_workers)
       _reset_write_encoding(batch)
       batch.to_zarr(
          local_store,
          mode='r+',
-         region={utils.Coords.TIME: slice(chunk_start, chunk_stop)},
+         region={utils.Coords.TIME: slice(write_start, chunk_stop)},
          zarr_format=3,
          consolidated=False
       )
 
-      logging.info(f'Wrote {var_name} layers {chunk_start}:{chunk_stop} of {total_layers} to {local_store}')
+      logging.info(f'Wrote {var_name} layers {write_start}:{chunk_stop} of {total_layers} to {local_store}')
 
       del batch
       gc.collect()
