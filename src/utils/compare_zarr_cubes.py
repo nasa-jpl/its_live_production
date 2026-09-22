@@ -86,22 +86,24 @@ def _open_cube(url):
    )
 
 
-def _scalar_equal(old_value, new_value):
-   """True if two scalar attribute/encoding values are equal, treating two
+def _values_equal(old_value, new_value):
+   """True if two attribute/encoding values are equal -- scalar or
+   array-valued (e.g. GeoTransform/geo_polygon-style tuples), treating two
    NaN floats as equal (same reason as test_virtual_cube_generation.py's
    golden-encoding test: a real, identical NaN sentinel on both sides must
-   not be reported as a mismatch). Uses np.isnan rather than math.isnan --
-   raw zarr metadata surfaces fill values as numpy scalars (e.g.
-   np.float32(nan)), and isinstance(x, float) is False for those, which
-   would otherwise fall through to `nan == nan` (always False).
+   not be reported as a mismatch).
+
+   np.array_equal(..., equal_nan=True) handles both cases in one call --
+   it treats scalars as 0-d arrays, and always returns a single bool
+   (never an array), unlike a bare `==` which raises ValueError ("truth
+   value of an array... is ambiguous") for multi-element array-valued
+   attributes. equal_nan=True itself raises TypeError for non-floating
+   dtypes (e.g. strings, tuples of strings) -- retried without it.
    """
    try:
-      if np.isnan(old_value) and np.isnan(new_value):
-         return True
+      return bool(np.array_equal(old_value, new_value, equal_nan=True))
    except TypeError:
-      pass
-
-   return old_value == new_value
+      return bool(np.array_equal(old_value, new_value))
 
 
 def _actual_encoding_map(var):
@@ -147,7 +149,7 @@ def _compare_global_attrs(old_ds, new_ds, findings):
          _add(findings, 'ERROR', '(global)', f"attribute '{key}' present in new cube but missing from old")
       elif key not in new_attrs:
          _add(findings, 'ERROR', '(global)', f"attribute '{key}' present in old cube but missing from new")
-      elif not _scalar_equal(old_attrs[key], new_attrs[key]):
+      elif not _values_equal(old_attrs[key], new_attrs[key]):
          _add(findings, 'ERROR', '(global)', f"attribute '{key}' differs: old={old_attrs[key]!r}, new={new_attrs[key]!r}")
 
 
@@ -283,7 +285,7 @@ def _compare_variable_encoding(old_ds, new_ds, var_name, findings):
          _add(findings, 'ERROR', var_name, f"'{key}' present in old cube but missing from new")
       elif new_has and not old_has:
          _add(findings, 'ERROR', var_name, f"'{key}' present in new cube but missing from old")
-      elif old_has and new_has and not _scalar_equal(old_map[key], new_map[key]):
+      elif old_has and new_has and not _values_equal(old_map[key], new_map[key]):
          _add(findings, 'ERROR', var_name, f"'{key}' differs: old={old_map[key]!r}, new={new_map[key]!r}")
 
 
@@ -301,7 +303,7 @@ def _compare_variable_attrs(old_ds, new_ds, var_name, findings):
          _add(findings, 'ERROR', var_name, f"attribute '{key}' present in new cube but missing from old")
       elif key not in new_attrs:
          _add(findings, 'ERROR', var_name, f"attribute '{key}' present in old cube but missing from new")
-      elif not _scalar_equal(old_attrs[key], new_attrs[key]):
+      elif not _values_equal(old_attrs[key], new_attrs[key]):
          _add(findings, 'ERROR', var_name, f"attribute '{key}' differs: old={old_attrs[key]!r}, new={new_attrs[key]!r}")
 
 
