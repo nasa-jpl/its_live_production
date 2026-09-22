@@ -31,7 +31,6 @@ python src/utils/compare_zarr_cubes.py \
 """
 import argparse
 import logging
-import math
 import sys
 
 import numpy as np
@@ -89,14 +88,15 @@ def _open_cube(url):
 
 def _scalar_equal(old_value, new_value):
    """True if two scalar attribute/encoding values are equal, treating two
-   NaN floats as equal (mirrors test_virtual_cube_generation.py's golden-
-   encoding test, which uses the same math.isnan trick for the same
-   reason: a real, identical NaN sentinel on both sides must not be
-   reported as a mismatch).
+   NaN floats as equal (same reason as test_virtual_cube_generation.py's
+   golden-encoding test: a real, identical NaN sentinel on both sides must
+   not be reported as a mismatch). Uses np.isnan rather than math.isnan --
+   raw zarr metadata surfaces fill values as numpy scalars (e.g.
+   np.float32(nan)), and isinstance(x, float) is False for those, which
+   would otherwise fall through to `nan == nan` (always False).
    """
    try:
-      if isinstance(old_value, float) and isinstance(new_value, float) \
-            and math.isnan(old_value) and math.isnan(new_value):
+      if np.isnan(old_value) and np.isnan(new_value):
          return True
    except TypeError:
       pass
