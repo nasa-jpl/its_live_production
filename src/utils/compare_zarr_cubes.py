@@ -342,20 +342,25 @@ def _compare_variable_values(old_ds, new_ds, var_name, overlap_time, batch_size,
    old_var, new_var = old_ds[var_name], new_ds[var_name]
 
    if utils.Coords.TIME in old_var.dims:
-      batches = _time_batches(overlap_time, batch_size)
+      batches = list(_time_batches(overlap_time, batch_size))
    else:
       batches = [(None, None)]
+   num_batches = len(batches)
 
    total_mismatches = 0
    total_elements = 0
    first_example = None
 
-   for start, stop in batches:
+   for batch_num, (start, stop) in enumerate(batches, start=1):
       if start is None:
          old_vals = old_var.values
          new_vals = new_var.values
          offset = 0
       else:
+         logging.info(
+            f"  '{var_name}': comparing layers {start}:{stop} of "
+            f'{overlap_time} (batch {batch_num}/{num_batches})'
+         )
          old_vals = old_var.isel({utils.Coords.TIME: slice(start, stop)}).values
          new_vals = new_var.isel({utils.Coords.TIME: slice(start, stop)}).values
          offset = start
@@ -377,13 +382,16 @@ def _compare_variable_values(old_ds, new_ds, var_name, overlap_time, batch_size,
 
    if total_mismatches:
       global_idx, old_val, new_val = first_example
-      _add(
-         findings, 'ERROR', var_name,
+      message = (
          f'{total_mismatches}/{total_elements} elements differ; first '
          f'mismatch at index {global_idx}: old={old_val!r}, new={new_val!r}'
       )
+      _add(findings, 'ERROR', var_name, message)
    else:
-      _add(findings, 'INFO', var_name, f'values match exactly across {total_elements} elements')
+      message = f'values match exactly across {total_elements} elements'
+      _add(findings, 'INFO', var_name, message)
+
+   logging.info(f"  '{var_name}': {message}")
 
 
 def _compare_datasets(old_ds, new_ds, var_names=None, batch_size=DEFAULT_BATCH_SIZE, skip_values=False):
@@ -408,7 +416,12 @@ def _compare_datasets(old_ds, new_ds, var_names=None, batch_size=DEFAULT_BATCH_S
       _add(findings, 'ERROR', '(root)', 'x/y grids differ between cubes -- skipping all per-variable checks')
       return findings
 
-   for var_name in common_vars:
+   total_vars = len(common_vars)
+   logging.info(f'{total_vars} variable(s) to compare across {overlap_time} overlapping time layer(s)')
+
+   for i, var_name in enumerate(common_vars, start=1):
+      logging.info(f"Comparing variable '{var_name}' ({i}/{total_vars})")
+
       ok = _compare_variable_dtype_shape(old_ds, new_ds, var_name, findings)
       _compare_variable_encoding(old_ds, new_ds, var_name, findings)
       _compare_variable_attrs(old_ds, new_ds, var_name, findings)
