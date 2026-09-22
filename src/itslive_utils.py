@@ -28,7 +28,7 @@ from obstore.store import S3Store
 _NUM_AWS_COPY_RETRIES = 5
 
 # Number of seconds to sleep between 'aws s3 cp' retries
-_AWS_COPY_SLEEP_SECONDS = 60
+_AWS_COPY_SLEEP_SECONDS = 15
 
 # Metadata files that exist in the datacube root directory and each
 # data variable sub-directory.
@@ -98,10 +98,10 @@ def retry_decorator(
     can fail due to transient issues.
 
     Args:
-        max_retries (int): Number of retry attempts.
-        base_delay (float): Initial delay between retries.
-        backoff (float): Backoff multiplier between retries.
-        jitter (bool): Whether to add random jitter to the delay.
+    max_retries (int): Number of retry attempts.
+    base_delay (float): Initial delay between retries.
+    backoff (float): Backoff multiplier between retries.
+    jitter (bool): Whether to add random jitter to the delay.
 
     Usage:
         @retry(max_retries=3)
@@ -154,9 +154,10 @@ def to_serializable(obj: dict) -> dict:
     It converts tuples to lists  since JSON doesn't support tuples.
 
     Args:
-        obj (dict): Dictionary of ZarrChunk objects.
+    obj (dict): Dictionary of ZarrChunk objects.
+
     Returns:
-        dict: Dictionary with serialized ZarrChunk objects.
+    dict: Dictionary with serialized ZarrChunk objects.
     """
     output = {}
     for each_key, each_value in obj.items():
@@ -172,10 +173,10 @@ def bucket_cube_name_from_url(source_url: str) -> str:
     """Extract bucket name and file URL from the given datacube URL.
 
     Args:
-        source_url (str): AWS S3 URL of the datacube in Zarr format.
+    source_url (str): AWS S3 URL of the datacube in Zarr format.
 
     Returns:
-        str: Tuple of bucket name and file URL.
+    str: Tuple of bucket name and file URL.
     """
     # Get rid of 's3://' prefix
     source_url = source_url.replace('s3://', '')
@@ -191,10 +192,10 @@ def download_chunk(bucket_name, s3_path, each_chunk, local_path):
     """Helper function to download Zarr chunk from S3.
 
     Args:
-        bucket_name (str): Name of the S3 bucket.
-        s3_path (str): Path to the datacube or its variable in S3.
-        each_chunk (str): Key of the chunk to download.
-        local_path (str): Local path to save the downloaded chunk to.
+    bucket_name (str): Name of the S3 bucket.
+    s3_path (str): Path to the datacube or its variable in S3.
+    each_chunk (str): Key of the chunk to download.
+    local_path (str): Local path to save the downloaded chunk to.
     """
     # logging.info(f'Downloading {s3_key=} to {local_key}')
 
@@ -223,10 +224,10 @@ def backup_chunk(bucket, source_path, filename, target_path):
     written there, so there's nothing to back up or later restore.
 
     Args:
-        bucket (boto3.resources.factory.s3.Bucket): S3 bucket resource.
-        source_path (str): Path to the datacube or its variable in S3.
-        filename (str): Name of the file to copy.
-        target_path (str): Target path to copy the chunk to.
+    bucket (boto3.resources.factory.s3.Bucket): S3 bucket resource.
+    source_path (str): Path to the datacube or its variable in S3.
+    filename (str): Name of the file to copy.
+    target_path (str): Target path to copy the chunk to.
     """
     copy_source = {
         'Bucket': bucket.name,
@@ -250,12 +251,12 @@ def identify_datacube_latest_chunks(bucket_url: str):
     variables for the given datacube s3 URL.
 
     Args:
-        bucket_url (str): Name of the S3 bucket and full path to the
-            datacube in Zarr format. Must start with 's3://'.
+    bucket_url (str): Name of the S3 bucket and full path to the
+        datacube in Zarr format. Must start with 's3://'.
 
     Returns:
-        Map of data variable to the ranges for existing data chunks,
-        and the last chunk ranges for each data variable.
+    Map of data variable to the ranges for existing data chunks,
+    and the last chunk ranges for each data variable.
     """
     store = zarr.open_consolidated(
         store=bucket_url,
@@ -333,11 +334,11 @@ def backup_datacube_latest_chunks(
     variables from the given datacube s3 URL.
 
     Args:
-        bucket_url (str): s3 bucket path for the datacube to backup.
-        backup_url (str): s3 bucket path for the datacube to backup latest
-            Zarr chunks to.
-        num_threads (int): Number of threads to use for parallel processing.
-            Default is 32.
+    bucket_url (str): s3 bucket path for the datacube to backup.
+    backup_url (str): s3 bucket path for the datacube to backup latest
+        Zarr chunks to.
+    num_threads (int): Number of threads to use for parallel processing.
+        Default is 32.
 
     Returns:
         Map of data variable to the ranges for existing data chunks,
@@ -420,14 +421,14 @@ def shard_key_v3(
     (0, 3, 5) -> 'c/0/3/5' (see SHARD_KEY_PREFIX_V3/SHARD_KEY_SEPARATOR_V3).
 
     Args:
-        shard_indices: Tuple/list of per-dimension shard (or, for a
-            non-sharded v3 array, chunk) indices.
+    shard_indices: Tuple/list of per-dimension shard (or, for a
+        non-sharded v3 array, chunk) indices.
 
     Returns:
-        str: The store key for that shard, relative to the variable's
-            sub-directory (matching the relative keys
-            identify_datacube_latest_chunks/backup_datacube_latest_chunks
-            build for v2 via ".".join(...)).
+    str: The store key for that shard, relative to the variable's
+        sub-directory (matching the relative keys
+        identify_datacube_latest_chunks/backup_datacube_latest_chunks
+        build for v2 via ".".join(...)).
     """
     return sep.join([prefix] + [str(each) for each in shard_indices])
 
@@ -447,12 +448,12 @@ def identify_datacube_latest_shards(bucket_url: str):
     otherwise identical to identify_datacube_latest_chunks().
 
     Args:
-        bucket_url (str): Name of the S3 bucket and full path to the
-            datacube in Zarr v3 format. Must start with 's3://'.
+    bucket_url (str): Name of the S3 bucket and full path to the
+        datacube in Zarr v3 format. Must start with 's3://'.
 
     Returns:
-        Map of data variable to the ranges for existing shards (or chunks,
-        if unsharded), and the last shard ranges for each data variable.
+    Map of data variable to the ranges for existing shards (or chunks,
+    if unsharded), and the last shard ranges for each data variable.
     """
     store = zarr.open_consolidated(
         store=bucket_url,
@@ -478,7 +479,8 @@ def identify_datacube_latest_shards(bucket_url: str):
             # as it exists
             last_shard_map[var_name] = ZarrChunk([range(0, 1)], [range(0, 1)])
             logging.info(
-                f'No chunking for {var_name=}, setting last shard to {last_shard_map[var_name]}'
+                f'No chunking for {var_name=}, '
+                f'setting last shard to {last_shard_map[var_name]}'
             )
 
         else:
@@ -633,8 +635,18 @@ def get_min_lon_lat_max_lon_lat(coordinates: list):
     return (min_lon, min_lat, max_lon, max_lat)
 
 
+@timing_decorator
+@retry_decorator(
+    max_retries=_NUM_AWS_COPY_RETRIES,
+    base_delay=_AWS_COPY_SLEEP_SECONDS
+)
 def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool = True):
     """Copy file to/from aws s3 bucket.
+
+    Retrying (any failure, e.g. an AWS SlowDown error, is retried the same
+    way -- there's no way to reliably tell them apart from the CLI's exit
+    code alone) is handled by retry_decorator rather than a hand-rolled loop
+    here: up to _NUM_AWS_COPY_RETRIES attempts.
 
     Args:
     command_line (list): List tokens for the command-line to invoke.
@@ -642,59 +654,29 @@ def s3_copy_using_subprocess(command_line: list, env_copy: dict, is_quiet: bool 
     is_quiet (bool): Flag if using "quiet" mode to reduce output clutter. Default is True.
 
     Raises:
-        RuntimeError: Failure to copy the store if NUM_AWS_COPY_RETRIES attempts failed.
+        RuntimeError: Failure to copy the store if every attempt failed.
     """
     _quiet_flag = "--quiet"
 
     if is_quiet and _quiet_flag not in command_line:
         command_line.append(_quiet_flag)
 
-    logging.info(f'aws s3 command: {" ".join(command_line)}')
+    logging.info(f"Invoking: {' '.join(command_line)}")
 
-    file_is_copied = False
-    num_retries = 0
-    command_return = None
+    command_return = subprocess.run(
+        command_line,
+        env=env_copy,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT
+    )
 
-    while not file_is_copied and num_retries < _NUM_AWS_COPY_RETRIES:
-        logging.info(f"Attempt #{num_retries+1} to invoke: {' '.join(command_line)}")
-
-        command_return = subprocess.run(
-            command_line,
-            env=env_copy,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT
-        )
-
-        if command_return.returncode != 0:
-            # Report the whole stdout stream as one logging message
-            logging.warning(
-                f"Failed to invoke: {' '.join(command_line)} with "
-                f"returncode={command_return.returncode}: "
-                f"{command_return.stdout}"
-            )
-
-            num_retries += 1
-            # If failed due to AWS SlowDown error, retry
-            if num_retries < _NUM_AWS_COPY_RETRIES:
-                # Possible to have some other types of failures that are not related to AWS SlowDown,
-                # retry the copy for any kind of failure
-                # and _AWS_SLOW_DOWN_ERROR in command_return.stdout.decode('utf-8'):
-
-                # Sleep if it's not a last attempt to copy
-                time.sleep(_AWS_COPY_SLEEP_SECONDS)
-
-            else:
-                # Don't retry, trigger an exception
-                num_retries = _NUM_AWS_COPY_RETRIES
-
-        else:
-            file_is_copied = True
-
-    if not file_is_copied:
+    if command_return.returncode != 0:
+        # Report the whole stdout stream as one logging message; raising
+        # (rather than returning) is what lets retry_decorator retry this.
         raise RuntimeError(
             f"Failed to invoke {' '.join(command_line)} with "
-            f"command.returncode={command_return.returncode}"
+            f"returncode={command_return.returncode}: {command_return.stdout}"
         )
 
 
@@ -745,7 +727,7 @@ def add_five_points_to_polygon_side(polygon):
     4 polygon vertices.
 
     polygon: list of lists
-        List of polygon vertices.
+    List of polygon vertices.
     """
     fracs = [0.25, 0.5, 0.75]
     polylist = []  # closed ring of polygon points
