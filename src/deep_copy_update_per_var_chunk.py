@@ -458,10 +458,11 @@ def _find_incomplete_update(creation_progress):
    tuple of (int, int, _Progress, dict), or None
       (old_total_layers, new_total_layers, update_progress,
       recorded_update_config) for the one incomplete transition found, or
-      None if `updates/` doesn't exist yet, or every transition under it is
-      already marked complete (the expected steady state -- prune_var_markers()
-      deliberately keeps _SUCCESS + run_config.json forever, so completed
-      transitions accumulate over the store's lifetime).
+      None if `updates/` doesn't exist yet, or is empty (the expected
+      steady state -- a successful transition's directory is removed
+      entirely via remove_entirely() once it completes, rather than kept
+      around; only --keep-progress-markers leaves a completed transition's
+      directory, with its _SUCCESS marker, in place for this scan to skip).
 
    Raises
    ------
@@ -709,7 +710,7 @@ def deep_copy_update_per_var_chunk(
    if keep_progress_markers:
       logging.info(f'Keeping every progress marker under {update_progress.base}')
    else:
-      update_progress.prune_var_markers([utils.Coords.TIME] + vars_1d + vars_3d)
+      update_progress.remove_entirely([utils.Coords.TIME] + vars_1d + vars_3d)
 
    if keep_local_staging:
       logging.info(f'Keeping local staging directory {local_store}')

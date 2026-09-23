@@ -358,6 +358,31 @@ class _Progress:
          f'(kept {SUCCESS_MARKER} and {RUN_CONFIG_NAME})'
       )
 
+   def remove_entirely(self, var_names):
+      """Delete this progress base's contents in full -- unlike
+      prune_var_markers(), also removes run_config.json and _SUCCESS
+      itself, but only ever removes _SUCCESS LAST.
+
+      Only safe for a progress base that's never consulted again once
+      complete (e.g. deep_copy_update_per_var_chunk.py's per-transition
+      update_progress -- "already up to date" is decided by comparing the
+      store's live shape via get_current_num_layers(), not by anything
+      here). NOT what creation's top-level progress base should ever use --
+      prune_var_markers() alone keeps that one's _SUCCESS forever so a
+      rerun of a finished creation job can still short-circuit.
+
+      Ordering matters: if this gets interrupted partway, whatever is left
+      must still read as "complete" to is_complete() (which checks only
+      _SUCCESS), not "interrupted" -- otherwise a later
+      _find_incomplete_update() would treat already-correct, already-
+      uploaded data as needing a pointless redo just because its progress
+      markers were the ones that happened to get cleaned up first.
+      """
+      self.prune_var_markers(var_names)
+      _remove_prefix(self.s3, self._config_path())
+      _remove_prefix(self.s3, self._success_path())
+      logging.info(f'Removed {self.base} entirely')
+
 
 def _log_resume_or_fresh(s3, output_store):
    """Log whether this run is starting fresh or resuming a previously
