@@ -176,38 +176,6 @@ RADAR_ONLY_VARS = {Vars.m11, Vars.m12, Vars.vr, Vars.va}
 RADAR_GROUP_IDS = {sensors.SENTINEL1.id, sensors.NISAR.id}
 
 
-def split_time_vars_by_rank(cube, time_vars):
-   """Further split split_vars_by_time()'s time_vars into 3D (time,y,x) and
-   1D (time,) groups.
-
-   The two ranks take entirely different write paths here: 3D variables go
-   through _write_var_3d() (raw zarr writes, whole-chunk sized, radar-skip
-   aware) while 1D variables go through _write_var_1d() (xarray's
-   to_zarr(region=...), which they need for CF datetime/string encoding).
-   They also use different time-chunk sizes -- time_chunk vs time_chunk_1d.
-
-   Originally lived in deep_copy_cube_tiled.py, which needed the same split
-   for a different reason: 1D vars have no x/y dimension, so its spatial-tile
-   loop had to exclude them to avoid redundantly recompressing their single
-   (time_chunk_1d,)-sized chunk once per tile.
-
-   Parameters
-   ----------
-   cube : xr.Dataset
-      The virtual datacube.
-   time_vars : list of str
-      Output of deep_copy_cube.split_vars_by_time()'s first return value.
-
-   Returns
-   -------
-   tuple of (list of str, list of str)
-      (vars_3d, vars_1d) data variable names.
-   """
-   vars_3d = [v for v in time_vars if len(cube[v].dims) == 3]
-   vars_1d = [v for v in time_vars if len(cube[v].dims) != 3]
-   return vars_3d, vars_1d
-
-
 @itslive_utils.retry_decorator(max_retries=5)
 def _load_batch(cube, var_name, start, stop, num_load_workers=None):
    """Materialize one variable's [start:stop) time slice, retrying on any
