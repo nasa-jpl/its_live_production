@@ -55,6 +55,21 @@ run used --num-layers to deliberately cap below the source cube's true
 count at that time, layers between that cap and the real historical count
 are indistinguishable from genuinely new appended layers.
 
+The store's own declared shape (what get_current_num_layers() reads) is NOT
+a reliable signal of how much of an update actually finished, once an
+update has started: _prepare_array_for_update() resizes every time-indexed
+array to new_total_layers up front, before any new pixel data is written
+for any of them, and _upload_chunk() unconditionally re-uploads the *root*
+zarr.json (which carries every array's consolidated shape) after the very
+first chunk of ANY variable lands. So as soon as one variable's first chunk
+is uploaded, the store's consolidated metadata already claims
+new_total_layers for every array, including ones untouched so far this
+run. An interrupted attempt therefore leaves the store looking "already up
+to date" to a naive shape comparison, even though some variables' new-layer
+data was never written. _find_incomplete_update() is what lets a rerun
+detect (and finish, or repair) that instead of silently no-op'ing -- see
+its own docstring.
+
 Usage example:
 python src/deep_copy_update_per_var_chunk.py \
    --input-store my_virtual_cube.icechunk \
@@ -421,6 +436,77 @@ def _validate_update_config(recorded, current, update_progress):
       )
 
 
+def _find_incomplete_update(creation_progress):
+   """Scan `{creation_progress.base}/updates/` for a transition directory
+   left behind by an interrupted attempt -- one with a run_config.json but
+   no top-level _SUCCESS marker.
+
+   See this module's own docstring for why the store's declared shape can't
+   be trusted to tell "up to date" apart from "an update started and got
+   interrupted": once that's happened, this scan is the only reliable way
+   to find (and resume, from the recorded old_total_layers rather than the
+   corrupted live shape) the update that never finished.
+
+   Parameters
+   ----------
+   creation_progress : _Progress
+      Rooted at the creation run's own progress directory (NOT namespaced
+      by any transition).
+
+   Returns
+   -------
+   tuple of (int, int, _Progress, dict), or None
+      (old_total_layers, new_total_layers, update_progress,
+      recorded_update_config) for the one incomplete transition found, or
+      None if `updates/` doesn't exist yet, or every transition under it is
+      already marked complete (the expected steady state -- prune_var_markers()
+      deliberately keeps _SUCCESS + run_config.json forever, so completed
+      transitions accumulate over the store's lifetime).
+
+   Raises
+   ------
+   RuntimeError
+      If more than one incomplete transition is found -- at most one update
+      should ever be in flight at a time; more than that means something
+      odd happened and needs a human look, not a guess about which to
+      resume.
+   """
+   updates_root = f'{creation_progress.base}/updates'
+   if not creation_progress.s3.exists(updates_root):
+      return None
+
+   incomplete = []
+   for entry in creation_progress.s3.ls(updates_root):
+      name = os.path.basename(entry.rstrip('/'))
+      parts = name.split('_to_')
+      if len(parts) != 2 or not all(part.isdigit() for part in parts):
+         continue
+
+      candidate = _Progress(creation_progress.s3, f'{updates_root}/{name}')
+      if candidate.is_complete():
+         continue
+
+      config = candidate.read_config()
+      if config is None:
+         # write_config() hadn't landed yet either; nothing to resume from.
+         continue
+
+      incomplete.append((int(parts[0]), int(parts[1]), candidate, config))
+
+   if not incomplete:
+      return None
+
+   if len(incomplete) > 1:
+      found = [f'{old}_to_{new}' for old, new, _, _ in incomplete]
+      raise RuntimeError(
+         f'Found {len(incomplete)} incomplete update transitions under '
+         f'{updates_root}: {found}. At most one update should ever be in '
+         f'flight at a time -- investigate manually before rerunning.'
+      )
+
+   return incomplete[0]
+
+
 def deep_copy_update_per_var_chunk(
    input_store,
    output_store,
@@ -493,31 +579,60 @@ def deep_copy_update_per_var_chunk(
    time_chunk_1d = creation_config['time_chunk_1d']
    xy_shard_multiplier = creation_config['xy_shard_multiplier']
 
-   old_total_layers = get_current_num_layers(output_store)
-   logging.info(f'{output_store} currently has {old_total_layers} layers')
-
    cube = open_virtual_cube(input_store, bucket_prefix)
    new_total_layers = cube.sizes[utils.Coords.TIME]
    logging.info(f'Opened virtual cube {input_store}: {new_total_layers} layers')
 
-   if new_total_layers <= old_total_layers:
+   incomplete = _find_incomplete_update(creation_progress)
+   if incomplete is not None:
+      old_total_layers, target_total_layers, update_progress, recorded_update_config = incomplete
       logging.info(
-         f'{output_store} is already up to date '
-         f'({old_total_layers} layers, virtual cube has {new_total_layers})'
+         f'Found an incomplete update at {update_progress.base} '
+         f'({old_total_layers} -> {target_total_layers} layers) left by a '
+         f'previous interrupted attempt; resuming/repairing it before '
+         f'considering any further layers'
       )
-      return
-
-   update_progress = _Progress(
-      creation_progress.s3, f'{creation_progress.base}/updates/{old_total_layers}_to_{new_total_layers}'
-   )
-   current_update_config = _build_update_config(
-      output_store, old_total_layers, new_total_layers, creation_config
-   )
-   recorded_update_config = update_progress.read_config()
-   if recorded_update_config is None:
-      update_progress.write_config(current_update_config)
-   else:
+      if new_total_layers < target_total_layers:
+         raise RuntimeError(
+            f'The virtual cube now has only {new_total_layers} layer(s), '
+            f'fewer than the {target_total_layers} an interrupted update at '
+            f'{update_progress.base} was already targeting -- delete that '
+            f'directory and investigate before rerunning.'
+         )
+      if new_total_layers > target_total_layers:
+         logging.warning(
+            f'Virtual cube now has {new_total_layers} layers, more than '
+            f'the {target_total_layers} this interrupted update was '
+            f'targeting; finishing that transition first. Rerun this '
+            f'script afterward to pick up the remaining layers.'
+         )
+      new_total_layers = target_total_layers
+      current_update_config = _build_update_config(
+         output_store, old_total_layers, new_total_layers, creation_config
+      )
       _validate_update_config(recorded_update_config, current_update_config, update_progress)
+   else:
+      old_total_layers = get_current_num_layers(output_store)
+      logging.info(f'{output_store} currently has {old_total_layers} layers')
+
+      if new_total_layers <= old_total_layers:
+         logging.info(
+            f'{output_store} is already up to date '
+            f'({old_total_layers} layers, virtual cube has {new_total_layers})'
+         )
+         return
+
+      update_progress = _Progress(
+         creation_progress.s3, f'{creation_progress.base}/updates/{old_total_layers}_to_{new_total_layers}'
+      )
+      current_update_config = _build_update_config(
+         output_store, old_total_layers, new_total_layers, creation_config
+      )
+      recorded_update_config = update_progress.read_config()
+      if recorded_update_config is None:
+         update_progress.write_config(current_update_config)
+      else:
+         _validate_update_config(recorded_update_config, current_update_config, update_progress)
 
    time_vars, _ = split_vars_by_time(cube)
    vars_3d, vars_1d = split_time_vars_by_rank(cube, time_vars)
