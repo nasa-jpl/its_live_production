@@ -635,7 +635,6 @@ def get_min_lon_lat_max_lon_lat(coordinates: list):
     return (min_lon, min_lat, max_lon, max_lat)
 
 
-@timing_decorator
 @retry_decorator(
     max_retries=_NUM_AWS_COPY_RETRIES,
     base_delay=_AWS_COPY_SLEEP_SECONDS
