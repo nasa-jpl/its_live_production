@@ -1,89 +1,49 @@
 """
-EXPERIMENTAL variant of deep_copy_cube_per_var.py: instead of writing the
-whole store locally (or to --local-staging-dir) and uploading it all in one
-shot at the very end, this script uploads each variable's zarr chunk to its
-final S3 destination as soon as that one chunk is done -- so the S3 cube is a
-valid, browsable (if incomplete) store throughout the run, not just after it
-finishes.
+Deep-copy a virtual ITS_LIVE datacube to a real Zarr v3 store.
 
-Why: deep_copy_cube_per_var.py's --local-staging-dir already writes locally
-first and uploads once at the end (to dodge many small direct-to-S3 writes/
-rewrites of the same chunk). That's efficient, but it means the S3 store
-doesn't exist in any usable form until the whole run succeeds -- a crash near
-the end loses all of it, and there's no way to inspect progress mid-run. This
-script keeps the "write locally first" part (still needed to avoid direct-to-
-S3 partial-chunk rewrites) but syncs to S3 incrementally, one whole zarr
-chunk at a time, instead of once at the end.
+For an s3:// --output-store: uploads each variable's zarr chunk to S3 as
+soon as it's done, instead of writing the whole store locally and uploading
+once at the end -- so the S3 store stays valid/browsable throughout the run
+and a crash loses only the in-flight chunk. Supersedes
+deep_copy_cube_per_var.py's single-upload-at-the-end approach as the
+production creation script.
 
-Chunk-write granularity vs. copy granularity are deliberately different: the
-write sizing from deep_copy_cube_per_var.py is used internally (both 3D int
-and 3D float variables in half-time-chunk writes -- see
-INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS, and _write_var_3d_and_upload() for why
-3D variables bypass xarray's CF encoder), but the S3 copy only happens once
-every write making up a given whole zarr chunk has landed locally. A zarr
-chunk is atomic anyway, so there's no reason to sync a half-finished one.
+Per (variable, whole zarr chunk): write locally -> consolidate metadata ->
+copy that chunk's subtree (`{var}/c/{chunk_idx}/`, which covers every
+spatial shard regardless of --xy-shard-multiplier) + root zarr.json to S3 ->
+delete the local copy (safe -- chunk_index is never revisited) -> mark done
+if --progress-dir resumability is enabled. The S3 copy granularity (whole
+chunk) is coarser than the internal write granularity (see
+INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS) since a zarr chunk is atomic anyway.
+The store's skeleton (root + every array's zarr.json + coordinate/static
+data) is uploaded once up front so S3 always has valid metadata to resolve
+against, even before the first chunk lands.
 
-Sequence for each (variable, whole zarr chunk):
-1. Load+write the chunk into the local staging store (same as
-   deep_copy_cube_per_var.py).
-2. zarr.consolidate_metadata() the local store.
-3. Copy that chunk's new chunk/shard files (scoped to `{var}/c/{chunk_idx}/`
-   -- this correctly captures every spatial chunk/shard under it regardless
-   of --xy-shard-multiplier, since 'time' is always the first path segment
-   under 'c/') to S3.
-4. Copy the freshly consolidated root zarr.json to S3.
-5. Delete that chunk's local copy -- once it's on S3 there's no reason to
-   keep it on disk, and unlike deep_copy_cube_per_var.py's single-upload-at-
-   the-end approach, this script would otherwise need local disk for the
-   ENTIRE store rather than just one chunk at a time (the same RAM-shrinking
-   idea this whole per-variable design is built on, applied to disk).
-   Safe because chunk_index is never revisited once its upload succeeds --
-   see _upload_chunk()'s own docstring.
-6. Record that chunk as done, if --progress-dir enabled resumability (see
-   _Progress) -- last, so a marker is only ever written for a chunk whose
-   upload actually succeeded.
+For a local --output-store: writes straight into it instead -- no
+--local-staging-dir, no per-chunk upload/consolidate, no --progress-dir
+(resumability is S3-specific) -- there's no separate publish target to
+protect, so the whole point of this script's design doesn't apply; only the
+per-(variable, chunk) write loop itself is reused.
 
-Before any of that, the store's skeleton (root zarr.json + every array's own
-zarr.json + coordinate/static variable data -- none of which ever changes
-after the initial template write, since shape/dtype/chunks/encoding are all
-declared up front) is uploaded once, so S3 always has valid metadata to
-resolve any chunk path against, even before the first real chunk lands.
+Resumable when --progress-dir is given (s3:// output only) -- per-
+(variable,chunk) markers let a retry skip whatever a prior attempt
+finished, and the chunking parameters are recorded/re-checked so resuming
+with mismatched arguments fails loudly instead of silently corrupting the
+store. See deep_copy_cube_progress._Progress. Without --progress-dir this
+behaves exactly as before, including refusing to overwrite an existing
+--output-store.
 
-NOTE: re-consolidating and re-uploading the root zarr.json after every chunk
-is technically redundant here -- the store's schema never changes after the
-initial template write, so the very first consolidation is already complete
-and correct for the life of the run. Doing it again each time costs one tiny
-extra S3 PUT per chunk, which is cheap enough not to bother special-casing.
-
-Skipped (all-optical) chunks (see RADAR_ONLY_VARS) need no copy at all --
-nothing was written locally for them either, so there's nothing to sync.
-
-Resumable, when --progress-dir is given: every (variable, chunk) upload
-above also writes a tiny marker object there, plus a whole-variable marker
-once that variable's every chunk is resolved and a whole-store _SUCCESS
-marker once everything is. A retried run (e.g. after an AWS Batch spot
-termination) checks those first and skips whatever a prior attempt already
-finished instead of rebuilding the whole store. Markers live outside
---output-store on purpose -- the store is a published data product and has
-no business carrying this pipeline's bookkeeping -- and the parameters that
-give a chunk marker its meaning are recorded alongside them and re-checked
-on resume, so resuming with mismatched arguments (or against a cube whose
-granules shifted underneath) fails loudly instead of silently corrupting the
-store. See deep_copy_cube_progress._Progress and
-deep_copy_cube_per_var_chunk()'s own docstring.
-Without --progress-dir none of this is active and the script behaves exactly
-as it did before, including refusing to write over an existing output store.
-
-This is a test/benchmark script for comparing incremental-sync wall-clock and
-S3 request cost against deep_copy_cube_per_var.py's single-upload-at-the-end
-approach -- not yet a production replacement.
-
-Usage example:
+Usage examples:
 python src/deep_copy_cube_per_var_chunk.py \
    --input-store my_virtual_cube.icechunk \
    --output-store s3://its-live-data/path/to/my_deep_copy_cube.zarr \
    --local-staging-dir /local/scratch/my_deep_copy_cube.zarr \
    --progress-dir s3://its-live-data/path/to/deep_copy_progress
+
+# Local output (e.g. for dev/testing) -- writes directly, no staging:
+python src/deep_copy_cube_per_var_chunk.py \
+   --input-store my_virtual_cube.icechunk \
+   --output-store my_deep_copy_cube.zarr
 """
 import gc
 import logging
@@ -114,8 +74,8 @@ from deep_copy_cube import (
    build_encoding,
    _reset_write_encoding,
    resolve_output_store,
+   split_time_vars_by_rank
 )
-from deep_copy_cube_per_var import split_time_vars_by_rank
 from deep_copy_cube_progress import (
    SUCCESS_MARKER,
    _Progress,
@@ -136,46 +96,20 @@ logging.basicConfig(
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 
 
-# Number of equal sub-writes each whole zarr time-chunk is split into for a
-# 3D variable, by dtype. In *theory* every inner chunk spans the FULL
-# time_chunk extent (chunks are (time_chunk, xy_chunk, xy_chunk)), so
-# splitting a chunk's write into N pieces should cost N full-volume
-# compressions + N-1 full-volume decompressions regardless of piece size --
-# making N=1 (whole chunk) always fastest, with RAM as the only reason to
-# split.
-#
-# MEASURED (2026-09-16, in deep_copy_cube_per_var.py -- see
-# INT_CHUNK_SPLITS's comment there for the full writeup) this theory doesn't
-# hold at production scale: a whole-chunk (20000-layer) write of an int
-# variable (chip_size_height, no CF-encoder cost either way -- see
-# _fill_nan_in_place) took 632s, vs 268s total for the same 20000 layers as
-# two half-chunk (10000-layer) writes on the same run -- 2.4x SLOWER despite
-# strictly less write-side work by the theory above. RAM/swap was confirmed
-# clean throughout, so it isn't the RAM tradeoff this constant was designed
-# around -- something about a single, much bigger .load() call (dask
-# task-graph construction, or S3 request-pattern effects) dominates at this
-# scale instead. Root cause not yet isolated; INT_CHUNK_SPLITS is set
-# empirically (matching FLOAT_CHUNK_SPLITS) rather than by the theory above
-# until it is. Applied here too since this script shares _load_batch()'s
-# per-granule fetch mechanism with deep_copy_cube_per_var.py, where the
-# measurement was made.
-#
-# ATTN: re-benchmark before changing either value. If revisiting the RAM
-# arithmetic: peak per write is roughly (batch bytes) x ~2 (the extra ~1x
-# being the .load() fan-out a virtual/manifest-backed read pays); at the
-# production 512x512 grid and time_chunk=20000, a float32 whole chunk is
-# ~39 GiB (doesn't fit a 32 GB box) vs ~20 GiB halved -- that RAM ceiling is
-# still real and still why FLOAT_CHUNK_SPLITS can't drop to 1 on a 32 GB box.
+# Sub-writes per whole zarr time-chunk for a 3D variable, by dtype. MEASURED
+# (2026-09-16; see src/wiki/07_Deep_Copy_Time_Chunking_And_Write_
+# Amplification.md), not theoretical: write-amplification theory says N=1
+# (whole chunk) is always cheapest, but a whole-chunk int write measured
+# 2.4x SLOWER than two half-chunk writes at production scale (RAM/swap was
+# clean; root cause not isolated). FLOAT_CHUNK_SPLITS also can't drop to 1
+# on a 32 GB box regardless -- a float32 whole chunk at 512x512/
+# time_chunk=20000 is ~39 GiB. Re-benchmark before changing either value.
 INT_CHUNK_SPLITS = 2
 FLOAT_CHUNK_SPLITS = 2
 
-# Variables present ONLY in radar (Sentinel-1, NISAR) granules -- optical
-# (Landsat, Sentinel-2) granules carry all-missing placeholders for these
-# instead (see virtual_itslive_cube.py's _add_missing_m11_m12()/
-# _add_missing_vr_va()). M11/M12 are float32 and vr/va int16, so they split
-# their chunk writes differently (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS),
-# but all four are equally all-fill-value for every optical time range and so
-# equally eligible for the whole-chunk skip below.
+# Radar-only (Sentinel-1, NISAR) variables -- optical granules carry
+# all-missing placeholders instead (virtual_itslive_cube.py). Equally
+# eligible for the whole-chunk skip below on any all-optical time range.
 RADAR_ONLY_VARS = {Vars.m11, Vars.m12, Vars.vr, Vars.va}
 
 # Mission groups whose granules are radar (SAR).
@@ -184,36 +118,18 @@ RADAR_GROUP_IDS = {sensors.SENTINEL1.id, sensors.NISAR.id}
 
 @itslive_utils.retry_decorator(max_retries=5)
 def _load_batch(cube, var_name, start, stop, num_load_workers=None):
-   """Materialize one variable's [start:stop) time slice, retrying on any
-   exception.
+   """Materialize `var_name`'s [start:stop) time slice from `cube`, retrying
+   on any exception -- icechunk's s3_store() (unlike obstore.S3Store used
+   elsewhere in this pipeline) has no retry/backoff of its own.
 
-   This is the actual S3 fetch of the granule bytes a virtual chunk
-   references, via icechunk's own s3_store() -- which, unlike the
-   obstore.S3Store used elsewhere in this pipeline (see
-   virtual_itslive_cube_per_chunk.py's RETRY_CONFIG), has no configurable
-   retry/backoff of its own, so a transient network blip here would
-   otherwise fail the whole run outright.
-
-   Parameters
-   ----------
-   cube : xr.Dataset
-      The virtual datacube.
-   var_name : str
-      Name of the data variable to load.
-   start, stop : int
-      Time-slice bounds (see _write_var_3d_and_upload/_write_var_1d_and_upload).
-   num_load_workers : int, optional
-      Thread-pool size for this .load() call's dask threaded scheduler --
-      each granule in [start, stop) is one dask task (chunk size 1 along
-      'time' in the virtual cube), so this bounds how many granules get
-      fetched/decompressed concurrently. Passed straight through to
-      dask.compute() via xr.Dataset.load(**kwargs); None (the default)
-      leaves dask's own default in effect (CPU core count).
-
-   Returns
-   -------
-   xr.Dataset
-      The loaded (non-dask) batch for this variable and time slice.
+   Args:
+      cube (xr.Dataset): the virtual datacube.
+      var_name (str): variable to load.
+      start (int): first layer index to load.
+      stop (int): one past the last layer index to load.
+      num_load_workers (int): dask threaded-scheduler size for this
+         .load() call; each granule is one dask task. None leaves
+         dask's own default (CPU core count).
    """
    load_kwargs = {'scheduler': 'threads'}
    if num_load_workers is not None:
@@ -227,39 +143,24 @@ def _load_batch(cube, var_name, start, stop, num_load_workers=None):
 
 
 def _compute_radar_mask(cube, total_layers):
-   """Determine, for each of the cube's first `total_layers` layers, whether
-   that layer's granule is from a radar (SAR) mission -- the layers for
-   which RADAR_ONLY_VARS carry real data rather than an all-missing
-   placeholder.
+   """Classify each of `cube`'s first `total_layers` layers as radar or not.
 
-   Uses (mission_img1, satellite_img1) via the same
-   SensorExcludeFilter.map_sensor_to_group() classification already used
-   elsewhere in this codebase (sensorFilters.py), rather than inspecting
-   RADAR_ONLY_VARS's own virtual chunk manifests directly, on the assumption
-   that every granule this classifier maps to a radar mission group
-   genuinely carries M11/M12/vr/va (true today for Sentinel-1; NISAR is
-   included in RADAR_GROUP_IDS ahead of its planned addition to these
-   datacubes).
+   Classifies via SensorExcludeFilter.map_sensor_to_group() on
+   (mission_img1, satellite_img1) rather than inspecting the manifests
+   directly, on the assumption every radar-classified granule genuinely
+   carries M11/M12/vr/va (true for Sentinel-1; NISAR included in
+   RADAR_GROUP_IDS ahead of its planned addition). An unrecognized sensor
+   raises KeyError, left unhandled on purpose -- guessing "optical" would
+   silently skip real data.
 
-   map_sensor_to_group() raises KeyError for any (mission, satellite) pair
-   it doesn't recognize -- intentionally left unhandled here: an unknown
-   sensor value means we cannot classify that layer, and guessing wrong in
-   the "optical" direction would silently skip real data, so failing the
-   whole run is the correct behavior rather than a graceful fallback.
+   Args:
+      cube (xr.Dataset): the virtual datacube.
+      total_layers (int): number of leading layers to classify.
 
-   Parameters
-   ----------
-   cube : xr.Dataset
-      The virtual datacube.
-   total_layers : int
-      Number of layers to classify, from the start of 'time' (honors
-      --num-layers).
-
-   Returns
-   -------
-   np.ndarray
-      Boolean array of length total_layers; True where that layer's granule
-      is from a radar mission group (see RADAR_GROUP_IDS).
+   Returns:
+      np.ndarray of bool: True for each layer whose granule is a radar
+         (SAR) mission -- the layers for which RADAR_ONLY_VARS carries
+         real data rather than an all-missing placeholder.
    """
    sensor_info = cube[[ImgPairInfo.mission_img1, ImgPairInfo.satellite_img1]].isel(
       {utils.Coords.TIME: slice(0, total_layers)}
@@ -273,46 +174,27 @@ def _compute_radar_mask(cube, total_layers):
 
 
 def _fill_nan_in_place(values, fill_value):
-   """Replace NaN with `fill_value` in `values`, in place.
+   """Replace NaN in `values` with `fill_value` in place -- byte-identical to what
+   xarray's CF encoder (CFMaskCoder.encode) would write, but without its
+   allocations. On a region write xarray always re-derives encoding from
+   the store (_reset_write_encoding() has no effect there) and runs
+   `fillna` = `where(notnull(data), data, fill)`, allocating a full bool
+   mask + inverse + output copy on every write, for every variable that
+   declares a CF fill -- including int variables, where it's a no-op. For a
+   10000-layer float32 batch at 512x512 that's ~14.7 GiB of temporaries on
+   top of a 9.8 GiB batch: the actual cause of a real M11/M12 OOM (and, via
+   a forced-down batch size, a ~2x runtime regression). np.copyto with
+   `where=` allocates only the mask.
 
-   This reproduces exactly what xarray's CF encoder (CFMaskCoder.encode)
-   would do on write -- but in place, instead of allocating a whole extra
-   copy of the batch.
+   No-ops (nothing to substitute): int/uint batches loaded with
+   mask_and_scale=False can't contain NaN; fill_value=None means the
+   variable declares no CF fill (see deep_copy_cube.NO_FILL_VARS); a NaN
+   fill_value already matches.
 
-   Worth spelling out why this is done by hand rather than left to xarray.
-   On a region write into an existing store, xarray does NOT use the
-   batch's own encoding: backends/zarr.py replaces it wholesale with the
-   store's decoded encoding ("vars_with_encoding[vn].encoding =
-   existing_vars[vn].encoding"), so _reset_write_encoding() clearing the
-   batch's fill has no effect on this path -- the store's _FillValue is
-   re-injected and CFMaskCoder runs regardless. It then does
-   `data = fillna(data, fill_value)`, i.e. `where(notnull(data), data,
-   fill)`, which allocates a full bool mask, its inverse, AND a full-size
-   output copy. For a 10000-layer float32 batch at 512x512 that's ~14.7 GiB
-   of temporaries on top of a 9.8 GiB batch -- the actual cause of the
-   M11/M12 OOM, and (by forcing the batch size down, which multiplies
-   partial-chunk read-modify-write passes) of a ~2x runtime regression.
-   np.copyto with a boolean `where` allocates only the mask (~2.4 GiB for
-   that same batch) and mutates the buffer we're about to discard anyway.
-
-   Doing this here and writing the array with the raw zarr API keeps the
-   on-disk result byte-identical to what xarray would have written -- this
-   is purely an allocation/CPU optimization, not a format change.
-
-   No-ops when there's nothing to do: an int/uint batch loaded with
-   mask_and_scale=False cannot contain NaN at all (xarray's own fillna is
-   pure waste there -- it still allocates all three temporaries), a
-   fill_value of None means the variable declares no CF fill (see
-   deep_copy_cube.NO_FILL_VARS), and a NaN fill_value already matches NaN
-   in the data.
-
-   Parameters
-   ----------
-   values : np.ndarray
-      The batch's raw values, mutated in place.
-   fill_value : scalar or None
-      The variable's CF fill value as declared in the output store (see
-      build_encoding()); None if it declares none.
+   Args:
+      values (np.ndarray): array to patch in place.
+      fill_value (float): CF fill to substitute for NaN; None for a
+         variable with no CF fill.
    """
    if fill_value is None or values.dtype.kind != 'f':
       return
@@ -324,39 +206,24 @@ def _fill_nan_in_place(values, fill_value):
 
 
 def _upload_chunk(local_store, output_store, var_name, chunk_index):
-   """Consolidate the local store's metadata, sync one finished zarr chunk
-   (plus the refreshed root zarr.json) to its final S3 destination, then
-   delete that chunk's local copy.
+   """Consolidate `local_store`'s local metadata, sync one finished zarr
+   chunk (data + refreshed root zarr.json) from `local_store` to
+   `output_store`, then delete the local copy.
 
-   `{var_name}/c/{chunk_index}` captures every spatial chunk/shard under that
-   time-chunk regardless of --xy-shard-multiplier, since 'time' is always the
-   first path segment under 'c/'. For a 1D ('time',) variable the same path
-   points at a plain FILE instead of a directory -- there's no y/x axis to
-   put anything beneath it -- so the copy (and the delete afterward) both
-   check os.path.isdir() and dispatch to the file-shaped or directory-shaped
-   operation accordingly; `aws s3 cp --recursive` errors out (returncode 2)
-   on a file source.
+   `{var_name}/c/{chunk_index}` covers every spatial shard under that
+   time-chunk regardless of --xy-shard-multiplier ('time' is always first
+   under 'c/'); for a 1D variable the same path is a plain file instead of a
+   directory, so the copy/delete both branch on os.path.isdir()
+   (`aws s3 cp --recursive` errors on a file source). Delete is safe:
+   chunk_index is never revisited by any caller, and _s3_copy() raises
+   (rather than returning) on total failure, so a failed upload always
+   leaves its local chunk in place to retry from.
 
-   The delete is safe because this chunk_index is never revisited: every
-   caller's outer loop advances chunk_index monotonically and never writes
-   into an already-uploaded chunk again (see this function's callers). It's
-   also safe with respect to metadata: consolidate_metadata() only reads/
-   bundles the small zarr.json documents scattered through the store, never
-   chunk payload bytes, so removing a chunk's data files doesn't perturb any
-   later consolidation. Deleting only happens after _s3_copy() returns
-   normally -- it raises (rather than returning) if every retry failed, so a
-   failed upload always leaves its local chunk in place to retry from.
-
-   Parameters
-   ----------
-   local_store : str
-      Local path of the staging store.
-   output_store : str
-      Final s3:// destination.
-   var_name : str
-      Name of the variable whose chunk just finished.
-   chunk_index : int
-      Index of the finished chunk along 'time'.
+   Args:
+      local_store (str): local staging store path.
+      output_store (str): s3:// destination to sync the chunk to.
+      var_name (str): variable the chunk belongs to.
+      chunk_index (int): index of the zarr chunk along time.
    """
    zarr.consolidate_metadata(local_store)
 
@@ -385,100 +252,46 @@ def _write_var_3d_and_upload(
    fill_value=None, is_radar=None, num_load_workers=None, progress=None,
    start_layer=0
 ):
-   """Write one 3D (time, y, x) data variable into the local staging store,
-   in half-chunk-sized pieces (see INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS),
-   using the raw zarr array API rather than xr.Dataset.to_zarr() --
-   uploading each whole zarr chunk to S3 as soon as it's complete locally.
+   """Write one 3D (time,y,x) variable in half-chunk pieces via the raw
+   zarr array API (not to_zarr()/the CF encoder), uploading each whole
+   zarr chunk from `local_store` to `output_store` as soon as it's locally
+   complete. Neither optimization changes a byte on disk -- see
+   INT_CHUNK_SPLITS and _fill_nan_in_place(): half-chunk writes (measured
+   faster than whole-chunk even for ints, despite write-amplification
+   theory saying otherwise) and raw writes (skips the CF encoder's
+   ~1.5x-batch allocation; safe since the template already fixed
+   shape/dtype/chunks/fill_value -- only pixels are left to place).
 
-   Two deliberate departures from the obvious xarray implementation, both
-   purely for speed/RAM -- neither changes a single byte on disk:
+   Raises ValueError if dims aren't (time,y,x) -- refuses to transpose
+   rather than silently allocate a full extra batch copy.
 
-   1. Half-chunk writes for both dtypes. Every inner chunk spans the full
-      time_chunk extent, so in theory splitting a chunk's write into N
-      pieces costs N full-volume compressions + N-1 full-volume
-      decompressions no matter how small the pieces are (see src/wiki/
-      07_Deep_Copy_Time_Chunking_And_Write_Amplification.md), making a
-      single whole-chunk write (N=1) the cheapest by that model. Measured
-      (2026-09-16, in deep_copy_cube_per_var.py) that this doesn't hold for
-      int variables at production scale -- see INT_CHUNK_SPLITS's own
-      comment -- so both dtypes are kept at N=2 empirically rather than N=1
-      for ints as the write-amplification model alone would suggest.
-   2. Raw zarr writes. to_zarr(region=...) re-derives encoding from the
-      store and runs the CF encoder, which allocates ~1.5x the batch in
-      temporaries for every variable that declares a fill -- including int
-      variables, where the transform is provably a no-op (see
-      _fill_nan_in_place). Writing the array directly skips that; the
-      NaN->sentinel substitution the encoder would have done is applied in
-      place instead. Safe because the template already declared this array's
-      full shape/dtype/chunks/shards/compressors/fill_value/attrs, so
-      there's nothing left for xarray to negotiate -- only pixels to place.
-
-   The S3 sync still happens only once a whole zarr chunk is done locally,
-   never mid-chunk: a zarr chunk is atomic, so there's no value in syncing a
-   half-written one.
-
-   For var_name in RADAR_ONLY_VARS, each whole zarr chunk is checked against
-   `is_radar` first: if none of its layers are radar granules the chunk is
-   genuinely all-missing (see RADAR_ONLY_VARS's comment) and is skipped
-   entirely -- no load, no write, no upload. The template never wrote it
-   either (mode='w', compute=False defers all pixel data), so it stays
-   absent on disk and reads fall back to the array's fill_value, which
-   build_encoding() sets to match the variable's real CF fill -- identical
-   to what a written, all-optical chunk would return.
-
-   Parameters
-   ----------
-   cube : xr.Dataset
-      The virtual datacube.
-   local_store : str
-      Local path of the staging store (already templated with full
-      shape/dtype/chunks -- see deep_copy_cube_per_var_chunk).
-   output_store : str
-      Final s3:// destination each chunk gets uploaded to as soon as it's
-      done.
-   var_name : str
-      Name of the 3D data variable to write.
-   chunk_size : int
-      Size of the underlying zarr time-chunk for this variable (time_chunk).
-   total_layers : int
-      Total number of layers to write (honors --num-layers).
-   fill_value : scalar, optional
-      The variable's CF fill value as declared in the output store, used for
-      the in-place NaN substitution (see _fill_nan_in_place). None if it
-      declares no fill.
-   is_radar : np.ndarray, optional
-      Boolean array of length total_layers, True where that layer is a
-      radar granule (see _compute_radar_mask). Only consulted when
-      var_name is in RADAR_ONLY_VARS; pass None to disable the skip.
-   num_load_workers : int, optional
-      Passed straight through to _load_batch()'s dask thread-pool size.
-      None (the default) leaves dask's own default in effect.
-   progress : _Progress, optional
-      If given, enables resumability: this variable's own `_SUCCESS` marker
-      is checked first (skip the whole function if it's already there), then
-      each chunk's `{chunk_index}.done` marker is checked before doing that
-      chunk's work and written right after it's resolved (either uploaded,
-      or legitimately radar-skipped). None (the default) disables all of
-      this -- every chunk is always (re)done, no markers are read or
-      written.
-   start_layer : int, optional
-      First layer to actually write. 0 (the default) reproduces every
-      existing code path exactly -- the outer chunk loop still starts at
-      chunk 0 and every chunk is written in full. A nonzero value (used by
-      deep_copy_update_per_var_chunk.py) starts the outer loop at that
-      layer's own chunk instead of chunk 0, and narrows that one boundary
-      chunk's write (and radar-skip check) to `[start_layer, chunk_stop)`
-      instead of the whole chunk, so an already-written prefix is never
-      rewritten. Every chunk after the boundary one is unaffected -- its
-      `write_start` still equals its `chunk_start`.
-
-   Raises
-   ------
-   ValueError
-      If the variable's dimension order isn't (time, y, x). Transposing to
-      match would silently allocate a full extra copy of the batch -- the
-      exact cost this function exists to avoid -- and the order should
-      always match, since the store was templated from this same cube.
+   Args:
+      cube (xr.Dataset): the virtual datacube `var_name` is read from.
+      local_store (str): local staging store path.
+      output_store (str): destination each finished chunk is uploaded to;
+         if equal to `local_store` (a local `output_store`), no upload
+         happens since `local_store` already IS the final destination.
+      var_name (str): the 3D variable to write.
+      chunk_size (int): zarr chunk size along time.
+      total_layers (int): number of leading layers to write.
+      fill_value (float): CF fill substituted for NaN before the raw
+         write (see _fill_nan_in_place()); None for a variable with no
+         CF fill.
+      is_radar (np.ndarray): per-layer radar/optical mask; for a
+         RADAR_ONLY_VARS variable, a whole chunk with no True layers is
+         skipped entirely (never written by the template either, so it
+         reads back as fill_value). None disables the skip.
+      num_load_workers (int): forwarded to each batch's _load_batch()
+         call.
+      progress (_Progress): enables resumability -- this variable's own
+         marker is checked first, then each chunk's, before doing that
+         chunk's work.
+      start_layer (int): used by deep_copy_update_per_var_chunk.py -- the
+         outer chunk loop starts at start_layer's own chunk instead of
+         chunk 0, and only that one boundary chunk's write/radar-check
+         is narrowed to [start_layer, chunk_stop); every other chunk is
+         unaffected. 0 (the default) reproduces the original code path
+         exactly.
    """
    expected_dims = (utils.Coords.TIME, utils.Coords.Y, utils.Coords.X)
    if cube[var_name].dims != expected_dims:
@@ -489,7 +302,9 @@ def _write_var_3d_and_upload(
       )
 
    if progress is not None and progress.var_is_done(var_name):
-      logging.info(f'{var_name}: already fully processed in a previous attempt, skipping')
+      logging.info(
+         f'{var_name}: already fully processed in a previous attempt, skipping'
+      )
       return
 
    splits = FLOAT_CHUNK_SPLITS if cube[var_name].dtype.kind == 'f' else INT_CHUNK_SPLITS
@@ -499,9 +314,8 @@ def _write_var_3d_and_upload(
    num_skipped = 0
    num_resumed = 0
 
-   # Opened once per variable, not per write: every write below targets the
-   # same array, and the per-chunk consolidate_metadata() only rewrites the
-   # root zarr.json, never this array's own metadata or chunk paths.
+   # Safe to open once: consolidate_metadata() below only rewrites root
+   # zarr.json, never this array's own metadata.
    target = zarr.open_group(local_store, mode='r+', zarr_format=3)[var_name]
 
    first_chunk_start = (start_layer // chunk_size) * chunk_size
@@ -544,11 +358,12 @@ def _write_var_3d_and_upload(
          del batch
          gc.collect()
 
-      _upload_chunk(local_store, output_store, var_name, chunk_index)
-      logging.info(
-         f'Uploaded {var_name} chunk {chunk_start}:{chunk_stop} of '
-         f'{total_layers} to {output_store}'
-      )
+      if local_store != output_store:
+         _upload_chunk(local_store, output_store, var_name, chunk_index)
+         logging.info(
+            f'Uploaded {var_name} chunk {chunk_start}:{chunk_stop} of '
+            f'{total_layers} to {output_store}'
+         )
       if progress is not None:
          progress.mark_chunk_done(var_name, chunk_index)
 
@@ -572,61 +387,37 @@ def _write_var_1d_and_upload(
    cube, local_store, output_store, var_name, chunk_size, total_layers,
    num_load_workers=None, progress=None, start_layer=0
 ):
-   """Write one 1D ('time',) data variable into the local staging store, one
-   whole zarr time-chunk per region write, uploading each chunk to S3 as
-   soon as it's complete locally.
+   """Write one 1D (time,) variable via xarray's to_zarr(region=...), one
+   whole zarr chunk per write, uploading each from `local_store` to
+   `output_store` as soon as it's done.
 
-   Unlike _write_var_3d_and_upload(), this keeps xarray's to_zarr(region=...)
-   path and all of its CF encoding. 1D variables are ~262k times smaller per
-   layer than 3D ones (one value vs a 512x512 grid), so the encoder overhead
-   _write_var_3d_and_upload() goes out of its way to avoid is irrelevant here
-   -- while the encoding itself very much is not: this set includes datetime
-   variables needing CF time encoding (units/calendar/epoch offsets, see
-   src/wiki/) and string variables, neither of which can be written correctly
-   by dropping raw values into a zarr array.
+   Kept on the xarray/CF-encoding path deliberately, unlike
+   _write_var_3d_and_upload(): 1D variables are ~262k times smaller per
+   layer, so the encoder's cost is irrelevant, while its correctness
+   (datetime/string encoding) very much isn't. Written whole-chunk rather
+   than half: every 1D variable's dask chunking is a single chunk spanning
+   all layers, not one per granule, so there's no per-granule task-graph to
+   blow up and RAM is a non-issue regardless.
 
-   Written whole-chunk, unlike _write_var_3d_and_upload()'s half-chunk 3D
-   writes: 1D variables are baked directly into the virtual cube rather than
-   referenced through per-granule manifest arrays (confirmed -- every 1D
-   variable's dask chunking is a single chunk spanning all layers, not one
-   per granule), so there is no per-granule task-graph to blow up at scale,
-   and RAM is a non-issue regardless -- even the largest 1D variable
-   (granule_url, a 2048-byte string) at the full time_chunk_1d=200000 span is
-   only ~410 MiB.
-
-   Parameters
-   ----------
-   cube : xr.Dataset
-      The virtual datacube.
-   local_store : str
-      Local path of the staging store.
-   output_store : str
-      Final s3:// destination each chunk gets uploaded to as soon as it's
-      done.
-   var_name : str
-      Name of the 1D data variable to write.
-   chunk_size : int
-      Size of the underlying zarr time-chunk for this variable
-      (time_chunk_1d). Each write covers this many layers.
-   total_layers : int
-      Total number of layers to write (honors --num-layers).
-   num_load_workers : int, optional
-      Passed straight through to _load_batch()'s dask thread-pool size.
-      None (the default) leaves dask's own default in effect.
-   progress : _Progress, optional
-      If given, enables resumability -- see _write_var_3d_and_upload()'s
-      `progress` parameter doc for the exact marker-check/write behavior;
-      this function follows the same shape (variable-level marker checked
-      first, then per-chunk markers). None (the default) disables it.
-   start_layer : int, optional
-      First layer to actually write -- see _write_var_3d_and_upload()'s
-      `start_layer` parameter doc; the same semantics apply here (the outer
-      chunk loop starts at that layer's own chunk, and that one boundary
-      chunk's write is narrowed to `[start_layer, chunk_stop)`). 0 (the
-      default) reproduces every existing code path exactly.
+   Args:
+      cube (xr.Dataset): the virtual datacube `var_name` is read from.
+      local_store (str): local staging store path.
+      output_store (str): destination each finished chunk is uploaded to;
+         if equal to `local_store` (a local `output_store`), no upload
+         happens since `local_store` already IS the final destination.
+      var_name (str): the 1D variable to write.
+      chunk_size (int): zarr chunk size along time.
+      total_layers (int): number of leading layers to write.
+      num_load_workers (int): same semantics as
+         _write_var_3d_and_upload()'s.
+      progress (_Progress): same semantics as
+         _write_var_3d_and_upload()'s.
+      start_layer (int): same semantics as _write_var_3d_and_upload()'s.
    """
    if progress is not None and progress.var_is_done(var_name):
-      logging.info(f'{var_name}: already fully processed in a previous attempt, skipping')
+      logging.info(
+         f'{var_name}: already fully processed in a previous attempt, skipping'
+      )
       return
 
    num_chunks = 0
@@ -664,11 +455,12 @@ def _write_var_1d_and_upload(
       del batch
       gc.collect()
 
-      _upload_chunk(local_store, output_store, var_name, chunk_index)
-      logging.info(
-         f'Uploaded {var_name} chunk {chunk_start}:{chunk_stop} of '
-         f'{total_layers} to {output_store}'
-      )
+      if local_store != output_store:
+         _upload_chunk(local_store, output_store, var_name, chunk_index)
+         logging.info(
+            f'Uploaded {var_name} chunk {chunk_start}:{chunk_stop} of '
+            f'{total_layers} to {output_store}'
+         )
       if progress is not None:
          progress.mark_chunk_done(var_name, chunk_index)
 
@@ -697,87 +489,67 @@ def deep_copy_cube_per_var_chunk(
    progress_dir=None,
    keep_progress_markers=False
 ):
-   """Materialize a virtual datacube into a real zarr v3 datacube on S3, one
-   data variable at a time, uploading each whole zarr chunk to S3 as soon as
-   it's done rather than uploading the whole store once at the end -- see
-   this module's docstring for the rationale and tradeoffs.
+   """Materialize `input_store` into a real zarr v3 datacube at
+   `output_store`. For an s3:// `output_store`, uploads each whole zarr
+   chunk to S3 as soon as it's done (see this module's docstring). For a
+   local `output_store`, writes straight into it instead -- no staging dir,
+   no per-chunk upload -- since there's no separate publish target to keep
+   valid mid-run.
 
-   Unlike deep_copy_cube_per_var.py, --output-store must be an s3:// path and
-   --local-staging-dir is required: every write always lands locally first,
-   then gets synced to S3 chunk by chunk.
+   Resumable when `progress_dir` is given (s3:// output only -- resumability
+   relies on S3-specific existence checks that don't apply to a local
+   store). Without it, behaves exactly as before resumability existed,
+   including refusing to overwrite an existing output store. Fresh-vs-resume
+   is auto-detected from the markers themselves, since an AWS Batch retry
+   resubmits the identical command line; a completed prior attempt
+   short-circuits immediately, an interrupted one skips only what it already
+   finished. The parameters that give a chunk marker its meaning are
+   recorded and re-checked on resume, so a mismatch fails loudly instead of
+   silently corrupting the store -- see deep_copy_cube_progress._Progress.
 
-   Resumable across retries when `progress_dir` is given (and only then --
-   without it this behaves exactly as it did before resumability existed,
-   including refusing to write over an existing output store). Whether a
-   given run is a fresh start or a resume is then auto-detected from the
-   markers themselves; no flag distinguishes the two, since an AWS Batch
-   retry resubmits the identical command line. If a fully completed prior
-   attempt left a `_SUCCESS` marker, this returns immediately without even
-   opening `input_store`. Otherwise every (variable, chunk) a prior
-   interrupted attempt already finished is skipped -- no load, no write, no
-   upload -- and everything else is (re)done, which is always safe because
-   every write here is idempotent. Unlike the pure "trust the arguments"
-   version of this design, the parameters that give a chunk marker its
-   meaning are recorded and re-checked on resume, so a mismatch fails loudly
-   instead of silently corrupting the store -- see
-   deep_copy_cube_progress._Progress and _Progress.validate_config() for
-   the mechanics and for how a changed input cube is handled.
-
-   Parameters
-   ----------
-   input_store : str
-      Path to the virtual cube's icechunk repository (s3:// or local).
-   output_store : str
-      s3:// URL to write the deep-copy zarr store to.
-   bucket_prefix : str
-      S3 URL prefix the virtual chunk container resolves granule references
-      against (see deep_copy_cube.open_virtual_cube).
-   time_chunk : int
-      Chunk size along 'time' for 3D variables.
-   xy_chunk : int
-      Chunk size along 'x'/'y' for 3D variables.
-   time_chunk_1d : int
-      Chunk size for 1D ('time',) variables.
-   xy_shard_multiplier : int
-      Must be >= 1; 1 (the default) leaves the store unsharded. See
-      deep_copy_cube.XY_SHARD_MULTIPLIER for the recommended value to pass
-      explicitly.
-   local_staging_dir : str
-      Local directory every write lands in before being synced to
-      `output_store` chunk by chunk. Required.
-   keep_local_staging : bool
-      If True, keep `local_staging_dir` after a successful run instead of
-      removing it.
-   num_layers : int
-      If > 0, only materialize the first `num_layers` layers of the virtual
-      cube. 0 (the default) processes every layer.
-   num_load_workers : int, optional
-      Thread-pool size for each _load_batch() .load() call -- each granule
-      in a batch is one dask task (chunk size 1 along 'time' in the virtual
-      cube), so this bounds how many granules get fetched/decompressed
-      concurrently. None (the default) leaves dask's own default in effect
-      (CPU core count).
-   progress_dir : str, optional
-      s3:// directory to keep this run's progress markers in, enabling
-      resumability. Deliberately separate from `output_store` so the
-      published cube carries none of this bookkeeping; markers go under
-      `{progress_dir}/{output store name}/`, so one shared directory can
-      serve a whole batch of cubes. None (the default) disables
-      resumability entirely: no markers are read or written, and
-      `output_store` is subject to the usual refuse-to-overwrite guard.
-   keep_progress_markers : bool
-      If True, keep every per-variable/per-chunk marker after a successful
-      run instead of pruning them down to just `_SUCCESS` and
-      `run_config.json`. Useful for inspecting after the fact which chunks
-      were radar-skipped vs. written; ignored when `progress_dir` is None.
+   Args:
+      input_store (str): virtual datacube (icechunk repo) to read.
+      output_store (str): destination for the deep-copy store (s3:// or
+         local).
+      bucket_prefix (str): S3 prefix `input_store`'s granule references
+         are resolved against.
+      time_chunk (int): zarr chunk size along time for 3D variables.
+      xy_chunk (int): zarr chunk size along x/y for 3D variables.
+      time_chunk_1d (int): zarr chunk size along time for 1D variables.
+      xy_shard_multiplier (int): inner chunks per shard per spatial
+         axis; 1 disables sharding.
+      local_staging_dir (str): local directory writes land in before
+         syncing to `output_store`. Only valid (and required) when
+         `output_store` is s3://; must be unset for a local `output_store`.
+      keep_local_staging (bool): keep `local_staging_dir` after a
+         successful run instead of deleting it.
+      num_layers (int): cap on how many layers to process; 0 means all.
+      num_load_workers (int): sizes each batch's load thread-pool (see
+         _load_batch()).
+      progress_dir (str): s3:// directory for resumability progress
+         markers; None disables resumability. Requires an s3:// `output_store`.
+      keep_progress_markers (bool): keep the progress markers around
+         after a successful run instead of pruning them.
    """
-   if not output_store.startswith(utils.S3_PREFIX):
+   is_s3_output = output_store.startswith(utils.S3_PREFIX)
+
+   if local_staging_dir and not is_s3_output:
       raise ValueError(
-         f"--output-store must be an s3:// path for this script, got {output_store}"
+         "--local-staging-dir only applies when --output-store is an s3:// "
+         f"path, got {output_store}"
       )
 
-   if not local_staging_dir:
-      raise ValueError("--local-staging-dir is required for this script")
+   if is_s3_output and not local_staging_dir:
+      raise ValueError(
+         "--local-staging-dir is required when --output-store is an s3:// path"
+      )
+
+   if progress_dir and not is_s3_output:
+      raise ValueError(
+         "--progress-dir requires an s3:// --output-store -- resumability "
+         "relies on S3-specific existence checks (see _log_resume_or_fresh) "
+         f"that don't apply to a local store, got --output-store={output_store}"
+      )
 
    if progress_dir and not progress_dir.startswith(utils.S3_PREFIX):
       raise ValueError(
@@ -842,9 +614,7 @@ def deep_copy_cube_per_var_chunk(
       f'({time_chunk} layers/write)'
    )
 
-   # Computed once and reused for every RADAR_ONLY_VARS variable (M11, M12,
-   # vr, va): they all share the same missing-ness (all-optical time ranges),
-   # so there's no need to re-derive it per variable.
+   # Shared across every RADAR_ONLY_VARS variable -- same missing-ness.
    is_radar = _compute_radar_mask(cube, total_layers)
    logging.info(
       f'{np.count_nonzero(is_radar)} of {total_layers} layers are radar '
@@ -858,34 +628,23 @@ def deep_copy_cube_per_var_chunk(
 
    cube.attrs[CubeFormat.date_updated] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
 
-   # With resumability on, an already-populated output store is the expected
-   # state a retry finds, so the strict refuse-to-overwrite guard would break
-   # exactly the case it's meant to protect; without it, keep that guard
-   # intact (the pre-resumability behavior).
+   # With resumability on, a retry finding an already-populated store is
+   # expected, not an error -- the strict refuse-to-overwrite guard would
+   # break exactly the case it's meant to protect.
    if progress is not None:
       _log_resume_or_fresh(progress.s3, output_store)
    else:
       resolve_output_store(output_store)
 
-   local_store = resolve_output_store(local_staging_dir)
+   local_store = resolve_output_store(local_staging_dir) if local_staging_dir else output_store
 
-   # Template: declare every variable's shape/dtype/chunks/encoding up
-   # front. compute=False defers writing pixel data for every dask-backed
-   # variable; 'time'/'x'/'y' coordinates are eagerly-loaded index variables
-   # regardless of chunks=, so they get written for real by this call --
-   # needed before any region write below. mode='r+' (used by every later
-   # write) requires every variable to already exist, so this template must
-   # declare all of them (time_vars + static_vars) up front, sliced to
-   # total_layers along 'time' to honor --num-layers.
-   #
-   # safe_chunks=False: the virtual cube's own per-granule dask chunking
-   # (chunk size 1 along 'time') doesn't match encoding's much larger
-   # time_chunk, which xarray's dask-parallel-write safety check flags as
-   # unsafe. That check exists to prevent multiple dask workers racing on the
-   # same zarr chunk during a real parallel write -- it doesn't apply here
-   # since compute=False never executes the write at all, only declares
-   # metadata; the actual pixel data is written later, per (variable,
-   # time-chunk), from already-.load()-ed (non-dask) batches.
+   # compute=False defers pixel writes for dask-backed variables (time/x/y
+   # coords are always written for real here); mode='r+' below requires
+   # every variable already declared, hence templating all of them up
+   # front. safe_chunks=False: the virtual cube's per-granule (chunk=1)
+   # dask chunking doesn't match encoding's larger time_chunk, which
+   # xarray's parallel-write safety check would otherwise flag -- moot here
+   # since compute=False never executes the write, only declares metadata.
    template = xr.merge([
       cube[time_vars].isel({utils.Coords.TIME: slice(0, total_layers)}),
       cube[static_vars]
@@ -902,32 +661,25 @@ def deep_copy_cube_per_var_chunk(
    )
    logging.info(f'Created local template store at {local_store}')
 
-   # template holds a lazy (ManifestArray/dask-backed) reference to every
-   # time_var across the full total_layers extent -- no pixel data, but the
-   # chunk-manifest/task-graph bookkeeping for that many variables x layers
-   # is non-trivial, and nothing below needs template again (later code
-   # re-derives batches from `cube` directly), so free it now rather than
-   # let it linger for the rest of the run.
+   # template's chunk-manifest bookkeeping is non-trivial and unused below
+   # (later code re-derives batches from `cube` directly) -- free it now.
    del template
    gc.collect()
 
-   # Static 2D (y,x) vars: written once, full extent, no per-variable
-   # chunking -- they have no 'time' dimension to chunk over.
    static_batch = cube[static_vars].load()
    _reset_write_encoding(static_batch)
    static_batch.to_zarr(local_store, mode='r+', zarr_format=3, consolidated=False)
    logging.info(f'Wrote {len(static_vars)} static variable(s) to {local_store}')
 
-   # Upload the store's skeleton (root zarr.json + every array's own
-   # zarr.json + coordinate/static variable data) once, up front. None of
-   # this changes again after this point -- shape/dtype/chunks/encoding are
-   # all fixed by the template call above -- but S3 needs it in place before
-   # any per-chunk data lands, so any reader hitting the store mid-run
-   # always finds valid metadata (unwritten chunks fall back to fill_value,
-   # same as skipped RADAR_ONLY_VARS chunks).
-   zarr.consolidate_metadata(local_store)
-   _s3_copy(local_store, output_store)
-   logging.info(f'Uploaded store skeleton to {output_store}')
+   if is_s3_output:
+      # Skeleton (root+array zarr.json + coord/static data) never changes
+      # again, but S3 needs it before any chunk lands so a mid-run reader
+      # always finds valid metadata (unwritten chunks read as fill_value).
+      # Not needed for a local output_store: it's already the final store,
+      # consolidated once at the end instead (see below).
+      zarr.consolidate_metadata(local_store)
+      _s3_copy(local_store, output_store)
+      logging.info(f'Uploaded store skeleton to {output_store}')
 
    for var_name in vars_1d:
       _write_var_1d_and_upload(
@@ -936,15 +688,19 @@ def deep_copy_cube_per_var_chunk(
       )
 
    for var_name in vars_3d:
-      # The CF fill this variable's array was templated with -- only floats
-      # get one under build_encoding()'s convention (ints use the separate
-      # 'missing_value' key, and raw ints can't be NaN anyway, so
-      # _fill_nan_in_place has nothing to do for them).
+      # Only floats get a CF fill under build_encoding()'s convention
+      # (ints use 'missing_value'; _fill_nan_in_place() no-ops for them).
       _write_var_3d_and_upload(
          cube, local_store, output_store, var_name, time_chunk, total_layers,
          encoding.get(var_name, {}).get(utils.OutputFormat.fill_value),
          is_radar, num_load_workers, progress
       )
+
+   if not is_s3_output:
+      # Local output skipped the per-chunk consolidate _upload_chunk() would
+      # otherwise have done -- do it once now that every write is in.
+      zarr.consolidate_metadata(local_store)
+      logging.info(f'Consolidated metadata at {local_store}')
 
    if progress is not None:
       # Marked complete BEFORE pruning, so an interrupted prune still leaves
@@ -957,11 +713,12 @@ def deep_copy_cube_per_var_chunk(
       else:
          progress.prune_var_markers(vars_1d + vars_3d)
 
-   if keep_local_staging:
-      logging.info(f'Keeping local staging directory {local_store}')
-   else:
-      logging.info(f'Removing local staging directory {local_store}')
-      shutil.rmtree(local_store)
+   if local_staging_dir:
+      if keep_local_staging:
+         logging.info(f'Keeping local staging directory {local_store}')
+      else:
+         logging.info(f'Removing local staging directory {local_store}')
+         shutil.rmtree(local_store)
 
    logging.info(f'Done: deep-copied {total_layers} layers to {output_store}')
 
@@ -973,12 +730,12 @@ if __name__ == '__main__':
 
    parser = argparse.ArgumentParser(
       description="""
-      EXPERIMENTAL: materialize a virtual ITS_LIVE datacube (icechunk repo
-      built by virtual_itslive_cube_per_chunk.py) into a real Zarr v3
-      datacube on S3, one data variable at a time, uploading each whole zarr
-      chunk to S3 as soon as it's written locally -- instead of
-      deep_copy_cube_per_var.py's single upload at the very end. See this
-      module's docstring for the rationale.
+      Materialize a virtual ITS_LIVE datacube (icechunk repo built by
+      virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube. For
+      an s3:// --output-store, uploads each whole zarr chunk to S3 as soon
+      as it's written locally. For a local --output-store, writes directly
+      into it instead (no staging, no per-chunk upload). See this module's
+      docstring for the rationale.
 
       Usage example:
       python src/deep_copy_cube_per_var_chunk.py \
@@ -986,6 +743,11 @@ if __name__ == '__main__':
          --output-store s3://its-live-data/path/to/my_deep_copy_cube.zarr \
          --local-staging-dir /local/scratch/my_deep_copy_cube.zarr \
          --progress-dir s3://its-live-data/path/to/deep_copy_progress
+
+      # Local output (e.g. for dev/testing) -- writes directly, no staging:
+      python src/deep_copy_cube_per_var_chunk.py \
+         --input-store my_virtual_cube.icechunk \
+         --output-store my_deep_copy_cube.zarr
       """,
       formatter_class=argparse.RawDescriptionHelpFormatter
    )
@@ -999,7 +761,9 @@ if __name__ == '__main__':
       '--output-store',
       type=str,
       required=True,
-      help='s3:// URL to write the deep-copy Zarr v3 store to.'
+      help='Path to write the deep-copy Zarr v3 store to (s3:// or local). '
+         'A local path writes directly, without --local-staging-dir or '
+         '--progress-dir (see those flags\' help).'
    )
    parser.add_argument(
       '--bucket',
@@ -1039,9 +803,11 @@ if __name__ == '__main__':
    parser.add_argument(
       '--local-staging-dir',
       type=str,
-      required=True,
+      default=None,
       help='Local directory every write lands in before being synced to '
-         '--output-store one whole zarr chunk at a time. Required.'
+         '--output-store one whole zarr chunk at a time. Required when '
+         '--output-store is s3://; must be omitted for a local '
+         '--output-store, which is written to directly.'
    )
    parser.add_argument(
       '--keep-local-staging',
@@ -1078,7 +844,8 @@ if __name__ == '__main__':
          '{--progress-dir}/{output store name}/, so one shared directory '
          'can serve a whole batch of cubes. Unset (the default) disables '
          'resumability and restores the usual refuse-to-overwrite guard on '
-         '--output-store.'
+         '--output-store. Requires an s3:// --output-store -- not supported '
+         'for a local one.'
    )
    parser.add_argument(
       '--keep-progress-markers',

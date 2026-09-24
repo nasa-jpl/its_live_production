@@ -1,9 +1,12 @@
 """
 Materialize a virtual ITS_LIVE datacube (icechunk repo, built by
 virtual_itslive_cube_per_chunk.py) into a real Zarr v3 datacube whose data
-variables are physically copied out of the referenced granules, chunked the
-same way itscube.py chunks a regular datacube (TIME_CHUNK_VALUE,
-X_Y_CHUNK_VALUE, TIME_CHUNK_VALUE_1D).
+variables and correspondign attributes are physically copied out of the
+referenced granules, and chunked the same way we used to chunk Zarr v2
+datacubes (TIME_CHUNK_VALUE, X_Y_CHUNK_VALUE, TIME_CHUNK_VALUE_1D).
+
+This is a a new pipeline that replaces itscube.py's Zarr v2 datacube
+generation.
 """
 from datetime import datetime
 import logging
@@ -36,86 +39,48 @@ import warnings
 from zarr.errors import UnstableSpecificationWarning
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 
-# Values below match ITSCube's current defaults in itscube.py, kept as local
-# constants rather than importing ITSCube: this virtual-cube -> deep-copy
-# pipeline is meant to eventually replace itscube.py's regular datacube
-# generation entirely, so it should not depend on it.
-
-# Granules are written to the file in chunks to avoid out of memory issues.
-# Number of granules to write to the file at a time.
-# Default value is optimized for the EC2 instance with 32Gb of RAM.
+# Default batch size, tuned for a 32GB-RAM EC2 instance.
 NUM_GRANULES_TO_WRITE = 2000
 
-# Chunking to apply when writing datacube to the Zarr store for 3-d variables.
-# X_Y_CHUNK_VALUE=8 (rather than itscube.py's 10) divides both production
-# grid sizes evenly (512px @ 120m -> 64 chunks/side, 256px @ 240m -> 32
-# chunks/side, for the 61.44km chunk-aligned catalog), since 512 and 256 are
-# powers of 2 -- no partial trailing chunk on either grid. With
-# XY_SHARD_MULTIPLIER=4 those per-side chunk counts also divide evenly into
-# shards (64/4=16 and 32/4=8 shards/side respectively).
+# X_Y_CHUNK_VALUE=8 (vs itscube.py's 10): divides production grid size
+# of 512px@120m evenly with no ragged trailing chunk, and those
+# per-side chunk counts also divide evenly into XY_SHARD_MULTIPLIER shards.
 TIME_CHUNK_VALUE = 20000
+
+# Also imported by virtual_itslive_cube_per_chunk.py, so the virtual-cube
+# writer and this deep-copy pipeline can't drift out of sync on the 1-D
+# 'time' chunk size (see that module's set_1d_time_chunk_encoding()).
+TIME_CHUNK_VALUE_1D = 200000
 X_Y_CHUNK_VALUE = 8
 
-# Chunking to apply to 1-D data variables when writing datacube to the
-# Zarr store
-TIME_CHUNK_VALUE_1D = 200000
 
-# Recommended number of X_Y_CHUNK_VALUE-sized inner chunks to group into one
-# shard file, per spatial axis, for sharded 3D (time,y,x) variables. 4 groups
-# chunks into 32x32px shards -- on the 61.44km chunk-aligned production grid
-# (512px @ 120m / 256px @ 240m) with X_Y_CHUNK_VALUE=8, that divides both
-# grids evenly (16 and 8 shards/side, from 64 and 32 chunks/side
-# respectively), cutting per-variable object count 16x (4,096 chunks -> 256
-# shards on the 512px grid) while keeping worst-case shard rewrite size in
-# the tens-of-MB range.
-#
-# NOT wired as the implicit default for build_encoding()/deep_copy_cube()'s
-# xy_shard_multiplier parameter (that defaults to 1, i.e. sharding off), so
-# the most basic no-args call stays unsharded. Pass this value explicitly via
-# --xy-shard-multiplier to enable sharding.
-#
-# A shard's extent along 'time' is always exactly one inner chunk's times
-# extent -- see build_encoding() -- so this constant only ever affects
-# spatial shard size, never how many time-chunks get grouped together
-# (grouping across time would force a shard rewrite that touches historical,
-# already-finalized time periods on every future append, defeating
-# incremental updates).
+# Recommended xy_shard_multiplier for 3D variables: 64x64px shards, dividing
+# 120 production grid evenly, cutting object count 64x per variable. The
+# --xy-shard-multiplier CLI flag defaults to this; build_encoding()/
+# deep_copy_cube() themselves still default to 1 (off) for direct callers
+# that don't pass it explicitly. A shard's 'time' extent is always exactly
+# one chunk (never grouped across time), since grouping across time would
+# force rewriting historical, already-finalized shards on every future
+# append.
 XY_SHARD_MULTIPLIER = 8
 
-# Compressor for the deep-copy zarr v3 store. Same cname/clevel/shuffle as
-# itscube.py's `zarr.Blosc` compressor; that class was removed from
-# zarr-python 3.x (this pipeline's zarr version), so zarr.codecs.BloscCodec is
-# used here instead. V3 arrays require the plural 'compressors' encoding key
-# (a list of codecs) rather than v2's singular 'compressor' key.
+# zarr.Blosc (itscube.py's compressor) was removed in zarr-python 3.x; same
+# cname/clevel/shuffle via BloscCodec instead. V3 uses the plural
+# 'compressors' key (a list), not v2's singular 'compressor'.
 COMPRESSOR = BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')
 COMPRESSOR_KEY = 'compressors'
 
-# Variables whose virtual-cube attrs carry no _FillValue/missing_value at all
-# -- utils.get_data_var_binary_attr() (the helper that synthesizes these two
-# in virtual_itslive_cube.py's build_virtual_cube()) only uses its
-# missing_value parameter as a fallback *data* value, never as an attached
-# fill attribute -- but itscube.py hardcodes a fill for them regardless (see
-# Vars.intMissingValue in itscube_types.py). Applied in build_encoding() only
-# when the variable's own attrs have no fill at all, matching itscube.py's
-# convention instead of silently omitting the fill.
+# Variables whose virtual-cube attrs carry no fill at all, but which
+# itscube.py hardcodes a fill for regardless (see Vars.intMissingValue).
 MISSING_VALUE_OVERRIDES = {
    Vars.ascending_img1: utils.Missing.u8value,
    Vars.ascending_img2: utils.Missing.u8value,
 }
 
-# Variables itscube.py encodes with dtype only, no _FillValue/missing_value
-# at all (see itscube.py's encoding_settings blocks for ImgPairInfo.date_dt/
-# roi_valid_percentage, and Vars.flag_stable_shift/stable_count_slow/
-# stable_count_mask -- none of the latter three appear in
-# Vars.intMissingValue). Every granule always carries a real value for these
-# (date_dt and roi_valid_percentage are computed per pair, never absent; the
-# stable-surface counts/flag are always populated even when zero), so a fill
-# value would be meaningless -- unlike M11/M12/MISSING_VALUE_OVERRIDES above,
-# which cover variables that genuinely can be missing. build_encoding() skips
-# fill assignment entirely for these, even overriding a fill inherited from
-# the virtual cube's attrs/encoding (e.g. date_dt/roi_valid_percentage
-# inherit a granule-native _FillValue=NaN in attrs that itscube.py never
-# honors for this dtype-only convention).
+# Variables that encode with dtype only, no fill at all -- every
+# granule always carries a real value for these, so a fill would be
+# meaningless. build_encoding() must override any fill these inherit from
+# the virtual cube's attrs/encoding (e.g. a granule-native _FillValue=NaN).
 NO_FILL_VARS = {
    ImgPairInfo.date_dt,
    ImgPairInfo.roi_valid_percentage,
@@ -125,36 +90,42 @@ NO_FILL_VARS = {
 }
 
 
+def split_time_vars_by_rank(cube, time_vars):
+   """Split into 3D (time,y,x) and 1D (time,) groups -- callers take
+   different write paths per rank (raw zarr writes vs to_zarr(region=...)
+   for CF datetime/string encoding) and use different time-chunk sizes
+   (time_chunk vs time_chunk_1d).
+
+   Args:
+      cube (xr.Dataset): the virtual datacube time_vars belongs to.
+      time_vars (list of str): variable names, from split_vars_by_time().
+   """
+   vars_3d = [v for v in time_vars if len(cube[v].dims) == 3]
+   vars_1d = [v for v in time_vars if len(cube[v].dims) != 3]
+
+   return vars_3d, vars_1d
+
+
 @itslive_utils.retry_decorator(max_retries=5)
 def open_virtual_cube(store_path, bucket_prefix):
-   """Open a virtual datacube's icechunk repository read-only.
+   """Open an icechunk repository read-only, resolving its virtual chunk
+   references.
 
-   Retries up to 5 times on any exception: icechunk's own s3_store() (used
-   for the virtual chunk container below) has no configurable retry/backoff
-   of its own, unlike the granule-reading obstore.S3Store elsewhere in this
-   pipeline (see virtual_itslive_cube_per_chunk.py's RETRY_CONFIG) -- a
-   transient network blip while resolving repo/manifest metadata would
-   otherwise fail this outright.
+   retry_decorator: unlike the granule-reading obstore.S3Store elsewhere in
+   this pipeline, icechunk's own s3_store() has no built-in retry/backoff,
+   so a transient blip resolving repo/manifest metadata would otherwise fail
+   outright.
 
-   Parameters
-   ----------
-   store_path : str
-      Path to the icechunk repository (s3:// or local).
-   bucket_prefix : str
-      S3 URL prefix (e.g. 's3://its-live-data/') that the virtual chunk
-      container resolves references against. Read anonymously, matching
-      virtual_itslive_cube_per_chunk.py.
-
-   Returns
-   -------
-   xr.Dataset
-      The virtual cube, with data variables backed by ManifestArray chunk
-      references (no pixel data loaded yet). The 'time' dimension is left
-      as-is -- no renaming to 'mid_date'.
+   Args:
+      store_path (str): icechunk repository path (s3:// or local).
+      bucket_prefix (str): S3 URL prefix the virtual chunk container
+         resolves granule references against.
    """
    config = ic.RepositoryConfig.default()
    config.set_virtual_chunk_container(
-      ic.VirtualChunkContainer(bucket_prefix, ic.s3_store(region="us-west-2", anonymous=True))
+      ic.VirtualChunkContainer(
+         bucket_prefix, ic.s3_store(region="us-west-2", anonymous=True)
+      )
    )
    credentials = ic.containers_credentials(
       {bucket_prefix: ic.s3_credentials(anonymous=True)}
@@ -167,6 +138,7 @@ def open_virtual_cube(store_path, bucket_prefix):
          prefix=s3_parts[1] if len(s3_parts) > 1 else '',
          region="us-west-2"
       )
+
    else:
       storage = ic.local_filesystem_storage(store_path)
 
@@ -176,19 +148,11 @@ def open_virtual_cube(store_path, bucket_prefix):
       authorize_virtual_chunk_access=credentials,
    )
 
-   # mask_and_scale=False preserves the granules' raw on-disk dtypes (int16
-   # stays int16 rather than being CF-decoded to float32 with NaN fills), so
-   # the deep copy materializes the same dtypes the virtual cube references
-   # instead of doubling storage/memory with a float32 promotion. Matches
-   # virtual_itslive_cube_per_chunk_update.py's reads.
-   #
-   # zarr_format=3, not 2: icechunk repositories are natively Zarr V3
-   # (zarr.json metadata, no .zgroup/.zarray) -- forcing zarr_format=2 here
-   # makes zarr-python look for V2-only markers that don't exist in an
-   # icechunk store and fails with GroupNotFoundError. This is unrelated to
-   # this pipeline's *output* store format (see deep_copy_cube()'s to_zarr
-   # calls below, which correctly write a real, non-icechunk store at
-   # zarr_format=2).
+   # mask_and_scale=False preserves granules' raw dtypes (int16 stays int16
+   # instead of being CF-decoded to float32+NaN), avoiding a storage-doubling
+   # promotion. zarr_format=3 because icechunk repos are natively V3 --
+   # forcing 2 makes zarr-python look for nonexistent V2 markers and raises
+   # GroupNotFoundError.
    return xr.open_zarr(
       repo.readonly_session("main").store,
       consolidated=False,
@@ -198,84 +162,48 @@ def open_virtual_cube(store_path, bucket_prefix):
 
 
 def split_vars_by_time(cube):
-   """Split the cube's data variables into per-layer ('time'-indexed) and
-   static (cube-level, no 'time' dimension) variables.
+   """Split data variables into per-layer ('time'-indexed) vs static
+   (cube-level, e.g. 'mapping'/'landice'/'floatingice' -- added once at
+   creation, never appended to).
 
-   Static variables are things like 'mapping', 'landice', 'floatingice' --
-   added once at cube creation (see src/wiki/02_Implementation_Details.md,
-   "Ice Mask Variables") and never appended to on updates.
+   Args:
+      cube (xr.Dataset): the virtual datacube.
 
-   Parameters
-   ----------
-   cube : xr.Dataset
-      The virtual datacube.
-
-   Returns
-   -------
-   tuple of (list of str, list of str)
-      (time_vars, static_vars) data variable names.
+   Returns:
+      tuple of (list of str, list of str): (time_vars, static_vars).
    """
    time_vars = [v for v in cube.data_vars if utils.Coords.TIME in cube[v].dims]
    static_vars = [v for v in cube.data_vars if utils.Coords.TIME not in cube[v].dims]
+
    return time_vars, static_vars
 
 
 def build_encoding(
-   cube, time_chunk, xy_chunk, time_chunk_1d,
-   xy_shard_multiplier=1
+   cube, time_chunk, xy_chunk, time_chunk_1d, xy_shard_multiplier=1
 ):
-   """Build the zarr v3 encoding dict for the deep-copy store.
+   """Build the zarr v3 encoding dict for `cube`'s deep-copy store: chunking +
+   compressor per variable, plus fill value under itscube.py's convention
+   (int/uint -> 'missing_value', float -> '_FillValue' -- xarray assumes
+   float if '_FillValue' is set on an int variable). Verified a float
+   '_FillValue' still masks correctly on read despite being a base64
+   zarr.json attribute rather than the array-level fill_value.
 
-   Sets chunking + compressor per variable, plus the fill value under the
-   itscube.py convention (see itscube.py's encoding block, ~lines 2246-2313):
-   integer / unsigned-integer variables use the 'missing_value' attribute,
-   floating point variables use '_FillValue'. (xarray ignores a requested int
-   dtype and assumes float if '_FillValue' is set on an int variable, so ints
-   must use 'missing_value'.) dtypes themselves are already correct on the
-   virtual cube and are left untouched. Verified (Aug 2026) that a float's
-   '_FillValue' masks correctly on read under v3's default
-   use_zarr_fill_value_as_mask behavior, even though it's stored as a
-   base64-encoded attribute in zarr.json rather than the array-level
-   fill_value (a cosmetic xarray-serialization artifact, not a masking bug).
+   Time-chunk sizes are always the full fixed value, never capped to the
+   cube's current layer count: a zarr chunk grid is fixed at creation and
+   can't widen on a later append, so capping now would wall in a too-small
+   chunk size forever once the cube grows via deep_copy_update.py.
 
-   Chunking follows itscube.py's scheme, except time-chunk sizes are always
-   the full fixed value rather than capped at the cube's current layer
-   count: a Zarr array's chunk grid is fixed at creation and can't be
-   widened on a later append, so capping at however many layers the cube
-   happens to have right now would wall in a too-small chunk size forever
-   once a cube grows past it via deep_copy_update.py.
-   - 3D (time, y, x) variables: (time_chunk, xy_chunk, xy_chunk)
-   - 1D (time,) variables and the 'time' coordinate itself: (time_chunk_1d,)
-   - static 2D (y, x) variables (landice/floatingice): full extent
-   - x/y coordinates: full extent
-   - 0-d variables (mapping): no chunk encoding
+   Args:
+      cube (xr.Dataset): the virtual datacube.
+      time_chunk (int): 'time' chunk size for 3D (time,y,x) variables.
+      xy_chunk (int): 'x'/'y' chunk size for 3D variables.
+      time_chunk_1d (int): 'time' chunk size for 1D (time,) variables and
+         the 'time' coordinate itself.
+      xy_shard_multiplier (int): must be >= 1; 1 (default) omits 'shards'
+         entirely (unsharded) -- see XY_SHARD_MULTIPLIER for the
+         recommended explicit value.
 
-   Parameters
-   ----------
-   cube : xr.Dataset
-      The virtual datacube. Opened with mask_and_scale=False, so each
-      variable's granule-inherited fill value sits in its attrs (as
-      '_FillValue'); this function reads it from there and re-keys it into the
-      write encoding. _strip_fill_attrs() then clears it from attrs so the fill
-      lives only in the encoding dict (a fill present in both attrs and
-      encoding collides in to_zarr's CF encoder).
-   time_chunk : int
-      Chunk size along 'time' for 3D variables.
-   xy_chunk : int
-      Chunk size along 'x'/'y' for 3D variables.
-   time_chunk_1d : int
-      Chunk size for 1D ('time',) variables.
-   xy_shard_multiplier : int
-      Number of xy_chunk-sized inner chunks grouped into one shard per
-      spatial axis, for 3D (time,y,x) variables only. Must be >= 1; 1 (the
-      default) omits the 'shards' encoding key entirely (unsharded). See
-      XY_SHARD_MULTIPLIER for the recommended value to pass explicitly.
-      Raises ValueError if < 1.
-
-   Returns
-   -------
-   dict
-      Per-variable/coordinate encoding dict for xr.Dataset.to_zarr().
+   Returns: encoding dictionary.
    """
    if xy_shard_multiplier < 1:
       raise ValueError(
@@ -290,32 +218,20 @@ def build_encoding(
          encoding[coord_name] = {
             'chunks': (cube.sizes[coord_name],),
             COMPRESSOR_KEY: [COMPRESSOR],
-            # Suppress xarray's default _FillValue=NaN on these float
-            # coordinates (they have no missing values). itscube.py avoids
-            # this combination due to an old xarray bug where _FillValue=None
-            # alongside 'chunks' encoding broke the write; verified fixed in
-            # the xarray/zarr versions this pipeline uses (August 2026).
-            # Verified clean (no stray attrs) under zarr v3 too.
+            # Suppress xarray's default _FillValue=NaN (no missing values on
+            # these coords) and the separate zarr-level array fill_value
+            # (zarr v3 requires one; null it explicitly rather than take
+            # zarr's dtype default).
             utils.OutputFormat.fill_value: None,
-            # The zarr-level array fill_value (required by the zarr v3 spec,
-            # separate from the CF _FillValue attribute above -- see
-            # utils.Missing.fill_value) has no meaningful role for these
-            # coordinates and would otherwise default per dtype; nulled out
-            # explicitly rather than left to whatever xarray/zarr picks.
             utils.Missing.fill_value: None,
          }
 
-   # The 'time' coordinate needs an explicit chunk size too: left unset, it
-   # falls back to zarr's auto-chunker for a dimension that's appended across
-   # batches, which came out as chunks=(1,) -- one chunk PER LAYER.
-   # xr.open_zarr() eagerly loads dimension coordinates (time/x/y) to build
-   # their pandas index on open, so chunks=(1,) meant one S3 GET per layer
-   # just to open the cube (measured: ~35,000 GETs, ~167s of open time on a
-   # real cube) -- independent of consolidated metadata, which only covers
-   # metadata reads, never chunk data. Fixed to time_chunk_1d (not the
-   # cube's current total_layers) so it stays a single chunk for as long as
-   # possible as the cube grows via later appends -- same reasoning as the
-   # other 1D (time,) variables (see the chunking-scheme note above).
+   # 'time' needs an explicit chunk size: left unset, zarr's auto-chunker
+   # picks chunks=(1,) for an appended dimension -- one S3 GET per layer just
+   # to open the cube (measured: ~35,000 GETs, ~167s on a real cube), since
+   # xr.open_zarr() eagerly loads dimension coordinates. time_chunk_1d (not
+   # the cube's current total_layers) keeps it a single chunk as long as
+   # possible across later appends.
    if utils.Coords.TIME in cube.coords:
       encoding[utils.Coords.TIME] = {
          'chunks': (time_chunk_1d,),
@@ -345,32 +261,20 @@ def build_encoding(
       var_encoding = {
          'chunks': chunks,
          COMPRESSOR_KEY: [COMPRESSOR],
-         # Default for variables that end up with no CF fill computed below
-         # (e.g. string vars, or NO_FILL_VARS) -- zarr v3 requires this
-         # zarr-level array fill_value field (separate from the CF
-         # _FillValue/missing_value attribute -- see utils.Missing.fill_value)
-         # to hold a real, dtype-valid value regardless of whether it's set
-         # to None or left unset, so this has no effect beyond letting
-         # zarr/xarray compute their own dtype-zero default. Overridden below
-         # to match the real CF fill wherever one is computed, so the
-         # zarr-level sentinel is meaningful rather than an unrelated default.
+         # Placeholder zarr-level fill_value; overridden below wherever a
+         # real CF fill is computed, so it's a meaningful sentinel rather
+         # than zarr's arbitrary dtype-zero default.
          utils.Missing.fill_value: None,
       }
 
       if is_3d and xy_shard_multiplier > 1:
-         # Shard's 'time' extent is pinned to exactly one inner chunk's time
-         # extent -- never group multiple time-chunks into one shard (see
-         # XY_SHARD_MULTIPLIER). Only x/y are grouped, by xy_shard_multiplier
-         # inner chunks per axis.
+         # Shard's 'time' extent is always one inner chunk -- see
+         # XY_SHARD_MULTIPLIER; only x/y get grouped.
          xy_shard_size = xy_chunk * xy_shard_multiplier
          var_encoding['shards'] = (chunks[0], xy_shard_size, xy_shard_size)
 
-         # The XY_SHARD_MULTIPLIER divisibility argument only holds for the
-         # chunk-aligned production grids (512px/256px). On any other grid a
-         # spatial extent not divisible by the shard size leaves a ragged,
-         # partially-filled trailing shard -- valid in Zarr v3, and the write
-         # stays correct, but it wastes space and undercuts the object-count
-         # reduction sharding is meant to buy. Warn rather than fail.
+         # Divides evenly only on the chunk-aligned production grids; warn
+         # (don't fail) on a ragged trailing shard elsewhere.
          for spatial_dim in dims[1:]:
             dim_size = cube.sizes[spatial_dim]
             if dim_size % xy_shard_size:
@@ -382,61 +286,38 @@ def build_encoding(
                )
 
       if var_name in NO_FILL_VARS:
-         # Always-valid variable (see NO_FILL_VARS) -- omit any fill
-         # entirely, ignoring whatever the virtual cube's attrs/encoding
-         # inherited from the granule. For float dtypes this must be an
-         # explicit fill_value=None, not just an absent key: without it,
-         # xarray/zarr's own default re-introduces _FillValue=NaN on write
-         # (same reasoning as the x/y coordinate fill_value=None above) --
-         # verified via a real write, where an absent key alone still left
-         # NaN baked into date_dt/roi_valid_percentage. Int/uint dtypes
-         # don't get this unwanted default, so no override is needed there.
+         # Float dtypes need an explicit fill_value=None override -- an
+         # absent key still lets xarray/zarr re-inject _FillValue=NaN on
+         # write (verified). Int/uint don't get that default.
          if var.dtype.kind == 'f':
             var_encoding[utils.OutputFormat.fill_value] = None
          encoding[var_name] = var_encoding
          continue
 
-      # Re-key the granule-inherited fill (in attrs due to mask_and_scale=False)
-      # into the write encoding: 'missing_value' for int/uint, '_FillValue' for
-      # float. datetime ('M') / string ('U') variables carry no numeric fill.
+      # Re-key the granule-inherited fill (in attrs, since mask_and_scale=False)
+      # into the write encoding: 'missing_value' for int/uint, '_FillValue'
+      # for float.
       fill = var.attrs.get(
          utils.OutputFormat.fill_value, var.attrs.get(utils.Missing.name)
       )
       if fill is None and var.dtype.kind in ('i', 'u', 'f'):
-         # Not a CF _FillValue/missing_value *attribute* (e.g. M11/M12: real
-         # granules never set one on these), but the zarr-level array
-         # metadata fill still surfaces as var.encoding['fill_value'] --
-         # verified (Sep 2026) against a real virtual cube, where M11/M12's
-         # attrs are empty of any fill but their encoding carries
-         # fill_value=NaN. Fall back to it before giving up. Restricted to
-         # numeric dtypes: string ('U') variables' encoding fill is '' (the
-         # empty-string sentinel, not a missing numeric fill), which would
-         # otherwise reach the np.isnan() check below and raise a TypeError.
+         # M11/M12: no CF fill attribute, but the zarr-level array fill
+         # still surfaces as var.encoding['fill_value'] (verified). Numeric
+         # dtypes only -- a string var's encoding fill is '', which would
+         # crash the np.isnan() check below.
          fill = var.encoding.get(utils.Missing.fill_value)
       if fill is None:
-         # No inherited fill at all, from attrs or encoding (e.g.
-         # ascending_img1/img2 -- see MISSING_VALUE_OVERRIDES); None here if
-         # the variable genuinely has none (itscube.py agrees, e.g.
-         # flag_stable_shift).
+         # Genuinely no fill anywhere (e.g. ascending_img1/img2 -- see
+         # MISSING_VALUE_OVERRIDES).
          fill = MISSING_VALUE_OVERRIDES.get(var_name)
       elif np.isnan(fill):
-         # Some granule-native float variables (M11/M12) carry no explicit
-         # missing-value fill and default to NaN on the source granule.
-         # itscube.py never trusts that and always hardcodes the standard
-         # ITS_LIVE numeric fill for these (see itscube.py's "new_v_vars"
-         # encoding block, ~lines 2296-2313); match that convention here
-         # instead of writing NaN into a freshly materialized store.
+         # M11/M12-style variables default to NaN on the source granule;
+         # itscube.py always hardcodes the standard ITS_LIVE fill instead.
          fill = utils.Missing.value
 
       if fill is not None:
-         # Also mirror the same value into the zarr-level array fill_value
-         # (separate from the CF attribute keys above -- see
-         # utils.Missing.fill_value): zarr v3 requires this field to hold a
-         # real, dtype-valid value regardless -- passing/omitting None just
-         # makes zarr compute its own dtype-zero default (e.g. 0 for int,
-         # which is a real, meaningful value here), not a true "unset".
-         # Setting it to match the CF fill instead makes it a real sentinel
-         # rather than an unrelated, potentially misleading default.
+         # Mirror into the zarr-level array fill_value too (a real sentinel,
+         # not zarr's arbitrary dtype-zero default).
          if var.dtype.kind in ('i', 'u'):
             var_encoding[utils.Missing.name] = var.dtype.type(fill)
             var_encoding[utils.Missing.fill_value] = var.dtype.type(fill)
@@ -450,33 +331,19 @@ def build_encoding(
 
 
 def _reset_write_encoding(ds):
-   """Clear inherited fill attrs and inherited .encoding from every variable
-   of a batch in place, so build_encoding()'s explicit dict is the sole
-   source of truth for the write.
+   """Clear each variable's inherited fill attrs and .encoding in place, so
+   build_encoding()'s explicit dict is the sole source of truth.
 
-   Opening the virtual cube with mask_and_scale=False (to preserve int dtypes)
-   leaves the granule-inherited fill in each variable's attrs, while the zarr
-   backend also carries a fill in encoding; to_zarr's CF encoder then refuses
-   to reconcile the two ("Key '_FillValue' already exists in attrs..."). Once
-   build_encoding() has captured the fill into the write encoding, clearing
-   the attrs copy here makes that encoding the single source of truth. Also
-   clears coordinate fills (x/y/time inherit a spurious '_FillValue' too).
+   mask_and_scale=False leaves a granule-inherited fill in attrs while zarr
+   also carries one in .encoding; to_zarr's CF encoder refuses to reconcile
+   both ("Key '_FillValue' already exists in attrs..."). Each variable's
+   .encoding also still carries the *source* granules' chunking/compression
+   pipeline, which to_zarr() would otherwise merge in and fight with
+   build_encoding()'s chosen settings for this store.
 
-   Separately, each variable's own .encoding (populated when the virtual cube
-   was opened at zarr_format=3) still carries the full V3 pipeline --
-   'serializer', 'compressors', 'filters', 'shards', 'dtype',
-   'preferred_chunks', 'fill_value' -- inherited from how the *source*
-   granules happen to be chunked/compressed. to_zarr() merges that inherited
-   encoding with the explicit `encoding=` dict passed to it, so those stale
-   values would otherwise survive the merge and fight with
-   build_encoding()'s deliberately-chosen chunking/compression for this
-   store. Clearing .encoding entirely removes that leftover pipeline so only
-   build_encoding()'s dict applies.
-
-   Parameters
-   ----------
-   ds : xr.Dataset
-      A batch about to be written; mutated in place.
+   Args:
+      ds (xr.Dataset): dataset whose variables get their fill attrs and
+         encoding cleared in place.
    """
    for var in ds.variables:
       ds[var].attrs.pop(utils.OutputFormat.fill_value, None)
@@ -485,26 +352,13 @@ def _reset_write_encoding(ds):
 
 
 def resolve_output_store(output_store):
-   """Prepare the output location for a fresh zarr v3 store write.
+   """Prepare a fresh zarr v3 store write location: remove a pre-existing
+   local directory, but refuse an existing s3:// path outright -- there's
+   no single directory to remove, so silently overwriting risks leaving
+   orphaned chunks from a differently-shaped previous store.
 
-   For a local path, remove any pre-existing directory first (mirrors
-   ITSCube.init_output_store). For an s3:// path, refuse to proceed if
-   something already exists there (mirrors ITSCube.exists()) -- unlike the
-   local case, there's no single directory to just remove, so silently
-   writing over an existing S3 store risks leaving orphaned chunks from a
-   differently-shaped previous store. Authenticated write access is expected
-   to come from the ambient AWS credential chain (not anonymous, unlike the
-   *input* virtual chunk container).
-
-   Parameters
-   ----------
-   output_store : str
-      Local path or s3:// URL for the deep-copy zarr v3 store.
-
-   Returns
-   -------
-   str
-      The (possibly cleaned-up) output store path.
+   Args:
+      output_store (str): local path or s3:// URL to prepare.
    """
    if output_store.startswith(utils.S3_PREFIX):
       s3_path = output_store.replace(utils.S3_PREFIX, '', 1)
@@ -523,28 +377,23 @@ def resolve_output_store(output_store):
    return output_store
 
 
-def upload_local_staging_dir(local_staging_dir, output_store, keep_local_staging):
-   """Upload a local zarr store to its final S3 destination in one shot, then
-   remove the local copy.
+def upload_local_staging_dir(
+   local_staging_dir, output_store, keep_local_staging
+):
+   """Upload a local zarr store to S3 in one recursive `aws s3 cp`, then
+   remove the local copy unless kept -- avoids the interleaved per-batch S3
+   writes (and repeated partial rewrites of small chunks) that direct-to-S3
+   writing incurs.
 
-   Uses the AWS CLI (via itslive_utils.s3_copy_using_subprocess), matching
-   the "write locally, then upload" convention already used elsewhere in this
-   codebase (e.g. tools/fix_datacubes_v2_restore_m11_m12_add_new_vars.py) --
-   a single recursive `aws s3 cp` uploads each chunk file exactly once,
-   instead of the interleaved per-batch S3 writes (and repeated partial
-   rewrites of the same small chunks) that direct-to-S3 writing incurs.
-
-   Parameters
-   ----------
-   local_staging_dir : str
-      Local directory the deep-copy store was written to.
-   output_store : str
-      Final s3:// destination for the deep-copy store.
-   keep_local_staging : bool
-      If False (default), remove `local_staging_dir` after a successful
-      upload.
+   Args:
+      local_staging_dir (str): local directory to upload.
+      output_store (str): s3:// destination.
+      keep_local_staging (bool): if True, keep local_staging_dir after
+         upload instead of deleting it.
    """
-   logging.info(f'Uploading local staging directory {local_staging_dir} to {output_store}')
+   logging.info(
+      f'Uploading local staging directory {local_staging_dir} to {output_store}'
+   )
 
    command_line = [
       "aws", "s3", "cp", "--recursive",
@@ -556,6 +405,7 @@ def upload_local_staging_dir(local_staging_dir, output_store, keep_local_staging
 
    if keep_local_staging:
       logging.info(f'Keeping local staging directory {local_staging_dir}')
+
    else:
       logging.info(f'Removing local staging directory {local_staging_dir}')
       shutil.rmtree(local_staging_dir)
@@ -577,41 +427,25 @@ def deep_copy_cube(
    """Materialize a virtual datacube into a real zarr v3 datacube, batched
    along 'time' to bound memory use.
 
-   Parameters
-   ----------
-   input_store : str
-      Path to the virtual cube's icechunk repository (s3:// or local).
-   output_store : str
-      Path to write the deep-copy zarr store to (s3:// or local).
-   bucket_prefix : str
-      S3 URL prefix the virtual chunk container resolves granule references
-      against (see open_virtual_cube).
-   batch_size : int
-      Number of layers to materialize and write per batch.
-   time_chunk : int
-      Chunk size along 'time' for 3D variables.
-   xy_chunk : int
-      Chunk size along 'x'/'y' for 3D variables.
-   time_chunk_1d : int
-      Chunk size for 1D ('time',) variables.
-   xy_shard_multiplier : int
-      Must be >= 1; 1 (the default) leaves the store unsharded (see
-      build_encoding/XY_SHARD_MULTIPLIER for the recommended value to pass
-      explicitly). Raises ValueError if < 1.
-   local_staging_dir : str, optional
-      If set, `output_store` must be an s3:// path. All batches are written
-      to this local directory first, and the whole store is uploaded to
-      `output_store` with a single `aws s3 cp --recursive` after the last
-      batch, instead of writing every batch directly to S3. Local writes
-      avoid per-request network latency and the repeated partial rewrites
-      of small zarr chunks that direct-to-S3 batched writes incur.
-   keep_local_staging : bool
-      If True, keep `local_staging_dir` after a successful upload instead of
-      removing it. Ignored if `local_staging_dir` is not set.
-   num_layers : int
-      If > 0, only materialize the first `num_layers` layers of the virtual
-      cube (e.g. for benchmarking on a bounded subset of a large production
-      cube) instead of all of them. 0 (the default) processes every layer.
+   Args:
+      input_store (str): virtual cube icechunk repository path (s3:// or
+         local).
+      output_store (str): destination zarr v3 store (s3:// or local).
+      bucket_prefix (str): S3 URL prefix the virtual chunk container
+         resolves granule references against (see open_virtual_cube()).
+      batch_size (int): number of 'time' layers materialized/written per
+         batch.
+      time_chunk (int): forwarded to build_encoding().
+      xy_chunk (int): forwarded to build_encoding().
+      time_chunk_1d (int): forwarded to build_encoding().
+      xy_shard_multiplier (int): forwarded to build_encoding().
+      local_staging_dir (str, optional): if given (requires an s3://
+         `output_store`), writes every batch locally and uploads the whole
+         store in one shot at the end -- see upload_local_staging_dir().
+      keep_local_staging (bool): keep local_staging_dir after upload
+         instead of deleting it.
+      num_layers (int): caps how many layers to process, e.g. for
+         benchmarking on a bounded subset; 0 (default) processes all.
    """
    if local_staging_dir and not output_store.startswith(utils.S3_PREFIX):
       raise ValueError(
@@ -628,9 +462,6 @@ def deep_copy_cube(
       total_layers = num_layers
 
    if total_layers == 0:
-      # Should never happen in practice -- virtual cubes are guaranteed to
-      # have at least one layer -- but log clearly rather than silently
-      # writing nothing if it ever does.
       logging.info(f'{input_store} has no layers, nothing to deep-copy')
       return
 
@@ -642,15 +473,11 @@ def deep_copy_cube(
 
    cube.attrs[CubeFormat.date_updated] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
 
-   # Fail fast if the final S3 destination already exists, even when staging
-   # locally first -- otherwise that check would only happen after every
-   # batch has already been materialized and written locally.
+   # Fail fast on an existing S3 destination even when staging locally, so
+   # the check doesn't wait until after every batch is already written.
    resolve_output_store(output_store)
 
-   # Batches are written to write_target; local_staging_dir (when set) is
-   # cleaned up here the same way resolve_output_store cleans up a local
-   # output_store, so a pre-existing staging directory from a failed prior
-   # run doesn't get silently merged into.
+   # Also cleans up a stale local_staging_dir left by a failed prior run.
    write_target = resolve_output_store(local_staging_dir) if local_staging_dir else output_store
 
    for batch_num, start in enumerate(range(0, total_layers, batch_size)):
@@ -660,17 +487,11 @@ def deep_copy_cube(
       batch = cube[time_vars].isel({utils.Coords.TIME: slice(start, stop)})
 
       if batch_num == 0:
-         # Static cube-level variables (landice/floatingice/mapping) are
-         # written once, with the first batch: to_zarr's append_dim requires
-         # every variable in the dataset to carry the append dimension, so
-         # they can't be included in later batches.
+         # Static vars written once here: to_zarr's append_dim requires
+         # every variable to carry it, so they can't appear in later batches.
          batch = xr.merge([batch, cube[static_vars]])
 
       batch = batch.load()
-
-      # Clear fill attrs so the fill lives only in the write encoding (see
-      # _reset_write_encoding); required on every batch, including appends, since
-      # the CF-encoder collision would otherwise fire on each write.
       _reset_write_encoding(batch)
 
       if batch_num == 0:
@@ -691,10 +512,8 @@ def deep_copy_cube(
 
       logging.info(f'Wrote layers {start}:{stop} of {total_layers} to {write_target}')
 
-   # Consolidate metadata once, after all batches are written, instead of
-   # re-consolidating (a full-store metadata rescan/rewrite) on every batch --
-   # matches itscube.py's convention of a consolidated output store, without
-   # the redundant per-batch cost.
+   # Once at the end, not per batch -- avoids a full metadata rescan/rewrite
+   # on every append.
    zarr.consolidate_metadata(write_target)
    logging.info(f'Consolidated metadata at {write_target}')
 
@@ -719,20 +538,6 @@ if __name__ == '__main__':
       python src/deep_copy_cube.py \
          --input-store my_virtual_cube.icechunk \
          --output-store my_deep_copy_cube.zarr
-
-      # Write a store with sharded 3D variables (--xy-shard-multiplier 4 is
-      # the recommended production value, see XY_SHARD_MULTIPLIER):
-      python src/deep_copy_cube.py \
-         --input-store my_virtual_cube.icechunk \
-         --output-store my_deep_copy_cube.zarr \
-         --xy-shard-multiplier 4
-
-      # Stage locally, then upload the whole store to S3 in one shot
-      # (much faster than writing directly to S3 batch-by-batch):
-      python src/deep_copy_cube.py \
-         --input-store my_virtual_cube.icechunk \
-         --output-store s3://its-live-data/path/to/my_deep_copy_cube.zarr \
-         --local-staging-dir /local/scratch/my_deep_copy_cube.zarr
       """,
       formatter_class=argparse.RawDescriptionHelpFormatter
    )
@@ -782,11 +587,10 @@ if __name__ == '__main__':
    parser.add_argument(
       '--xy-shard-multiplier',
       type=int,
-      default=1,
+      default=XY_SHARD_MULTIPLIER,
       help='Number of --xy-chunk-value-sized inner chunks grouped into one '
-         'shard per spatial axis, for 3D (time,y,x) variables. A value of 1 '
-         f'(the default) disables sharding. Recommended value once sharding '
-         f'is enabled: {XY_SHARD_MULTIPLIER} [%(default)d].'
+         'shard per spatial axis, for 3D (time,y,x) variables [%(default)d]. '
+         'A value of 1 disables sharding.'
    )
    parser.add_argument(
       '--local-staging-dir',
