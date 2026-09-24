@@ -225,10 +225,25 @@ def _upload_chunk(local_store, output_store, var_name, chunk_index):
       var_name (str): variable the chunk belongs to.
       chunk_index (int): index of the zarr chunk along time.
    """
-   zarr.consolidate_metadata(local_store)
-
    chunk_dir = f'{var_name}/c/{chunk_index}'
    local_chunk_path = os.path.join(local_store, chunk_dir)
+
+   if not os.path.exists(local_chunk_path):
+      # zarr's write_empty_chunks=False (the zarr-python default) silently
+      # skips writing a chunk whose values all equal the array's fill_value
+      # -- e.g. an all-optical time range for a radar-only derived variable
+      # like M11_dr_to_vr_factor/M12_dr_to_vr_factor (1D, so not covered by
+      # RADAR_ONLY_VARS's whole-chunk skip, which only guards the 3D write
+      # path). Nothing was written locally, so there's nothing to sync --
+      # it already reads back as fill_value via the template's metadata.
+      logging.info(
+         f'{chunk_dir}: not written locally (all-fill chunk skipped by '
+         'zarr write_empty_chunks) -- nothing to upload'
+      )
+      return
+
+   zarr.consolidate_metadata(local_store)
+
    chunk_is_dir = os.path.isdir(local_chunk_path)
    _s3_copy(
       local_chunk_path,
