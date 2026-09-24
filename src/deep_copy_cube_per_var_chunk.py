@@ -17,7 +17,11 @@ chunk) is coarser than the internal write granularity (see
 INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS) since a zarr chunk is atomic anyway.
 The store's skeleton (root + every array's zarr.json + coordinate/static
 data) is uploaded once up front so S3 always has valid metadata to resolve
-against, even before the first chunk lands.
+against, even before the first chunk lands -- genuinely once, not just
+once-per-attempt: with --progress-dir, its own marker (skeleton_is_done())
+stops a resume from re-deriving and re-uploading it (and, with it, `time`'s
+CF encoding) on top of what every already-uploaded chunk has depended on
+staying put since.
 
 For a local --output-store: writes straight into it instead -- no
 --local-staging-dir, no per-chunk upload/consolidate, no --progress-dir
@@ -26,12 +30,12 @@ protect, so the whole point of this script's design doesn't apply; only the
 per-(variable, chunk) write loop itself is reused.
 
 Resumable when --progress-dir is given (s3:// output only) -- per-
-(variable,chunk) markers let a retry skip whatever a prior attempt
-finished, and the chunking parameters are recorded/re-checked so resuming
-with mismatched arguments fails loudly instead of silently corrupting the
-store. See deep_copy_cube_progress._Progress. Without --progress-dir this
-behaves exactly as before, including refusing to overwrite an existing
---output-store.
+(variable,chunk) markers and a skeleton marker let a retry skip whatever a
+prior attempt finished, and the chunking parameters are recorded/re-checked
+so resuming with mismatched arguments fails loudly instead of silently
+corrupting the store. See deep_copy_cube_progress._Progress. Without
+--progress-dir this behaves exactly as before, including refusing to
+overwrite an existing --output-store.
 
 Usage examples:
 python src/deep_copy_cube_per_var_chunk.py \
@@ -57,7 +61,7 @@ from datetime import datetime
 import numpy as np
 import xarray as xr
 import zarr
-from zarr.errors import UnstableSpecificationWarning
+from zarr.errors import UnstableSpecificationWarning, ZarrUserWarning
 
 import itslive_utils
 import sensors
@@ -94,6 +98,13 @@ logging.basicConfig(
 # Suppress Zarr V3 unstable string dtype warnings, same rationale as
 # deep_copy_cube.py.
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
+
+# Consolidated metadata isn't part of the Zarr V3 spec yet, but every store
+# here is written zarr_format=3, consolidated=True deliberately (fast
+# single-request opens); the warning fires on every consolidate/open (this
+# module's _upload_chunk() alone calls consolidate_metadata() once per
+# chunk) and adds nothing actionable.
+warnings.filterwarnings('ignore', category=ZarrUserWarning, message='Consolidated metadata')
 
 
 # Sub-writes per whole zarr time-chunk for a 3D variable, by dtype. MEASURED
@@ -676,6 +687,26 @@ def deep_copy_cube_per_var_chunk(
    )
    logging.info(f'Created local template store at {local_store}')
 
+   # mid_date is microsecond-uniquified by construction (see the input
+   # cube's own 'time' attrs) -- any duplicate here means some position
+   # never actually got a real value (zarr's raw int fill decodes back to
+   # a real-looking date once CF-interpreted, silently). Read raw ints via
+   # zarr directly rather than through xr.open_zarr, to avoid re-triggering
+   # CF datetime decoding. Checked every attempt, not gated by the skeleton
+   # marker below -- a corrupted write must never be silently republished
+   # or marked done.
+   written_time = zarr.open_group(local_store, mode='r', zarr_format=3)[utils.Coords.TIME][:]
+   num_unique_time = np.unique(written_time).size
+   if num_unique_time != total_layers:
+      raise RuntimeError(
+         f"{local_store}'s '{utils.Coords.TIME}' coordinate has "
+         f'{total_layers - num_unique_time} duplicate value(s) after '
+         f'materializing locally out of {total_layers} -- mid_date is '
+         f'microsecond-uniquified and should never collide. Refusing to '
+         f'upload or mark the skeleton done; some positions were likely '
+         f'never actually written.'
+      )
+
    # template's chunk-manifest bookkeeping is non-trivial and unused below
    # (later code re-derives batches from `cube` directly) -- free it now.
    del template
@@ -692,9 +723,25 @@ def deep_copy_cube_per_var_chunk(
       # always finds valid metadata (unwritten chunks read as fill_value).
       # Not needed for a local output_store: it's already the final store,
       # consolidated once at the end instead (see below).
-      zarr.consolidate_metadata(local_store)
-      _s3_copy(local_store, output_store)
-      logging.info(f'Uploaded store skeleton to {output_store}')
+      #
+      # Gated on the skeleton marker, not just is_s3_output: items above
+      # just rebuilt local_store from scratch this attempt (it may be a
+      # fresh EC2 instance), but if a prior attempt already fully uploaded
+      # this exact skeleton, redoing it here would re-derive and overwrite
+      # time/x/y coordinate data that every chunk upload since has depended
+      # on staying put. Without --progress-dir there's no resumability
+      # concept, so always upload, as before.
+      if progress is not None and progress.skeleton_is_done():
+         logging.info(
+            f'Skeleton already uploaded to {output_store} by a prior '
+            'attempt -- skipping re-upload'
+         )
+      else:
+         zarr.consolidate_metadata(local_store)
+         _s3_copy(local_store, output_store)
+         logging.info(f'Uploaded store skeleton to {output_store}')
+         if progress is not None:
+            progress.mark_skeleton_done()
 
    for var_name in vars_1d:
       _write_var_1d_and_upload(

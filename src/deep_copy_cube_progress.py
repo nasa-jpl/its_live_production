@@ -22,6 +22,12 @@ import utils
 SUCCESS_MARKER = '_SUCCESS'
 RUN_CONFIG_NAME = 'run_config.json'
 
+# Namespaces the one-time skeleton upload's own done marker (see
+# _skeleton_success_path()) -- plays var_name's role in that path, but is
+# never itself a real cube variable name, so prune_var_markers() never
+# touches it.
+SKELETON_NAME = 'skeleton'
+
 # Every write needs this ACL (see ~20 other scripts in this repo) since the
 # job often runs under a non-bucket-owner account. Threaded through
 # s3_additional_kwargs because markers go via s3fs's put_object, not the AWS
@@ -119,11 +125,12 @@ class _Progress:
    whole batch; validate_config() cross-checks output_store too, so a
    collision fails loudly instead of silently skipping work.
 
-   Three marker levels, checked cheapest-first: {base}/_SUCCESS (whole run
+   Four marker levels, checked cheapest-first: {base}/_SUCCESS (whole run
    done), {base}/{var}/_SUCCESS (one variable done -- skips its per-chunk
    checks), {base}/{var}/{chunk}.done (one chunk done, including a
-   legitimate radar-skip). Plus {base}/run_config.json (see
-   validate_config()).
+   legitimate radar-skip), {base}/skeleton/_SUCCESS (the one-time skeleton
+   upload done -- see _skeleton_success_path()). Plus {base}/run_config.json
+   (see validate_config()).
 
    Completion is always an explicit marker, never inferred from which chunk
    objects exist on S3: a killed sharded-chunk upload can leave some shards
@@ -173,6 +180,18 @@ class _Progress:
       """
       return f'{self.base}/{var_name}/{SUCCESS_MARKER}'
 
+   def _skeleton_success_path(self):
+      """Returns:
+         str: path of the skeleton upload's own done marker -- same shape
+            as _var_success_path() but for the one-time skeleton upload
+            (root zarr.json + time/x/y coordinate data + static variables)
+            rather than a named variable. 'skeleton' plays var_name's role
+            here, and is never itself a real cube variable name, so
+            prune_var_markers() -- which only ever receives vars_1d +
+            vars_3d -- can never collide with or remove it.
+      """
+      return f'{self.base}/{SKELETON_NAME}/{SUCCESS_MARKER}'
+
    def _chunk_path(self, var_name, chunk_index):
       """Args:
          var_name (str): variable name.
@@ -208,6 +227,18 @@ class _Progress:
          var_name (str): variable name.
       """
       _write_marker(self.s3, self._var_success_path(var_name))
+
+   def skeleton_is_done(self):
+      """Returns:
+         bool: True if the store's skeleton (root + every array's zarr.json
+            + coordinate/static data) was already fully uploaded to S3 by a
+            prior attempt.
+      """
+      return _marker_exists(self.s3, self._skeleton_success_path())
+
+   def mark_skeleton_done(self):
+      """Marks the skeleton upload as done."""
+      _write_marker(self.s3, self._skeleton_success_path())
 
    def chunk_is_done(self, var_name, chunk_index):
       """Args:

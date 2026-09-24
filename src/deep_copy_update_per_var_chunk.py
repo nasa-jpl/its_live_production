@@ -52,7 +52,7 @@ from datetime import datetime
 
 import zarr
 from xarray.coding.times import encode_cf_datetime
-from zarr.errors import UnstableSpecificationWarning
+from zarr.errors import UnstableSpecificationWarning, ZarrUserWarning
 
 import itslive_utils
 import utils
@@ -83,6 +83,12 @@ logging.basicConfig(
 # Suppress Zarr V3 unstable string dtype warnings, same rationale as
 # deep_copy_cube.py.
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
+
+# Consolidated metadata isn't part of the Zarr V3 spec yet, but every store
+# here is written zarr_format=3, consolidated=True deliberately (fast
+# single-request opens); the warning fires on every consolidate/open and
+# adds nothing actionable.
+warnings.filterwarnings('ignore', category=ZarrUserWarning, message='Consolidated metadata')
 
 
 def _download_store_skeleton(output_store, local_store):

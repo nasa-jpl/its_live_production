@@ -36,8 +36,14 @@ logging.basicConfig(
 # Suppress Zarr V3 unstable string dtype warnings for fixed-length UTF32
 # dtypes, same rationale as virtual_itslive_cube_per_chunk.py.
 import warnings
-from zarr.errors import UnstableSpecificationWarning
+from zarr.errors import UnstableSpecificationWarning, ZarrUserWarning
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
+
+# Consolidated metadata isn't part of the Zarr V3 spec yet, but every store
+# here is written zarr_format=3, consolidated=True deliberately (fast
+# single-request opens); the warning fires on every consolidate/open and
+# adds nothing actionable.
+warnings.filterwarnings('ignore', category=ZarrUserWarning, message='Consolidated metadata')
 
 # Default batch size, tuned for a 32GB-RAM EC2 instance.
 NUM_GRANULES_TO_WRITE = 2000
