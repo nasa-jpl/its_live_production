@@ -41,11 +41,14 @@ Checks performed, per data variable/coordinate array in the store:
    never legitimate and is the direct fingerprint of an interrupted upload.
    A fully ABSENT chunk is graded by how confidently its legitimacy can be
    verified:
-   - RADAR_ONLY_VARS (M11/M12/vr/va): cross-checked against
-     mission_img1/satellite_img1 using the exact same classification
-     deep_copy_cube_per_var(_chunk).py's radar-skip uses (see
-     deep_copy_cube_per_var.RADAR_ONLY_VARS/RADAR_GROUP_IDS) -- reported as
-     INFO (verified legitimate) or ERROR (verified NOT legitimate).
+   - RADAR_ONLY_VARS (M11/M12/vr/va), their derived variants (e.g.
+     vr_error_slow, va_stable_shift_mask, M11_dr_to_vr_factor), and
+     EXTRA_RADAR_ONLY_VARS (ascending_img1/ascending_img2 -- see
+     _is_radar_only()): cross-checked against mission_img1/satellite_img1
+     using the exact same classification deep_copy_cube_per_var(_chunk).py's
+     radar-skip uses (see deep_copy_cube_per_var.RADAR_ONLY_VARS/
+     RADAR_GROUP_IDS) -- reported as INFO (verified legitimate) or ERROR
+     (verified NOT legitimate).
    - every other variable: reported as a WARNING, not an ERROR -- zarr's
      write_empty_chunks=False default (the global default as of zarr-
      python 3.x, see zarr/core/config.py) never writes a chunk whose real
@@ -88,7 +91,7 @@ import itslive_utils
 import utils
 from itscube_types import ImgPairInfo, Vars
 from sensorFilters import SensorExcludeFilter
-from deep_copy_cube_per_var import RADAR_ONLY_VARS, RADAR_GROUP_IDS
+from deep_copy_cube_per_var_chunk import RADAR_ONLY_VARS, RADAR_GROUP_IDS
 
 logging.basicConfig(
    level=logging.INFO,
@@ -109,6 +112,29 @@ def _find(fs, path):
    variable with no chunks written yet, or a legitimately fully-skipped
    RADAR_ONLY_VARS chunk), not a failure to distinguish from a real one."""
    return fs.find(path)
+
+
+# Radar-only variables that aren't a vr/va/M11/M12 derivative -- flight
+# direction ('ascending') only exists in a granule's img_pair_info for a
+# radar (SAR) mission (see itscube_types.ImgPairInfo's 'Attributes for
+# radar granules' grouping); optical granules carry the 255 missing_value
+# placeholder instead, same as RADAR_ONLY_VARS.
+EXTRA_RADAR_ONLY_VARS = {Vars.ascending_img1, Vars.ascending_img2}
+
+
+def _is_radar_only(var_name):
+   """True if `var_name` is RADAR_ONLY_VARS itself, a derived variant of
+   one (e.g. 'vr_error_slow', 'va_stable_shift_mask', 'M11_dr_to_vr_factor')
+   -- these carry real data only for radar granules too, since they're
+   attributes/derivatives of a radar-only base variable (see itscube.py's
+   new_v_vars / virtual_itslive_cube.py's _extract_velocity_attributes) --
+   or in EXTRA_RADAR_ONLY_VARS."""
+   if var_name in EXTRA_RADAR_ONLY_VARS:
+      return True
+   return any(
+      var_name == base or var_name.startswith(f'{base}_')
+      for base in RADAR_ONLY_VARS
+   )
 
 
 def _storage_chunk_shape(array):
@@ -169,7 +195,7 @@ def _check_chunk_completeness(fs, base, var_name, array, is_radar, radar_status,
       return
 
    actual = _actual_indices(fs, base, var_name)
-   is_radar_var = var_name in RADAR_ONLY_VARS
+   is_radar_var = _is_radar_only(var_name)
 
    # Group both expected and actual indices by their leading index -- that's
    # the only axis this pipeline's skip/partial-upload logic ever operates
@@ -208,56 +234,44 @@ def _check_chunk_completeness(fs, base, var_name, array, is_radar, radar_status,
       if len(missing) < len(expected_set):
          _add(
             findings, 'ERROR', var_name,
-            f'{leading_dim}-chunk {time_idx}: PARTIALLY written -- '
-            f'{len(missing)} of {len(expected_set)} expected chunk '
-            f'object(s) missing (e.g. {sorted(missing)[:5]}). This is '
-            f'never legitimate under this pipeline\'s write path and is '
-            f'the fingerprint of an interrupted upload.'
+            f'{leading_dim}-chunk {time_idx}: PARTIAL '
+            f'({len(missing)}/{len(expected_set)} objects missing) -- '
+            f'interrupted upload.'
          )
          continue
 
-      # Fully missing for this time_idx: only legitimate for RADAR_ONLY_VARS,
-      # and only when genuinely all-optical over this chunk's time range.
+      # Fully missing for this time_idx: only legitimate for radar-only vars
+      # (RADAR_ONLY_VARS and their derivatives, see _is_radar_only()), and
+      # only when genuinely all-optical over this chunk's time range.
       chunk_size = chunk_shape[0]
       start, stop = time_idx * chunk_size, min((time_idx + 1) * chunk_size, shape[0])
 
       if not is_radar_var:
          _add(
             findings, 'WARNING', var_name,
-            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) is entirely '
-            f'missing. {var_name} has no application-level skip mechanism '
-            f'(not in RADAR_ONLY_VARS), but this may still be legitimate: '
-            f"zarr's write_empty_chunks=False default (see zarr/core/"
-            f'config.py) never writes a chunk whose real data is uniformly '
-            f"equal to this array's declared fill_value "
-            f'({array.metadata.fill_value!r}). Whether that is actually '
-            f'plausible depends on whether {var_name}\'s real values could '
-            f'legitimately equal that fill_value everywhere in this chunk '
-            f'-- this script has no source data to confirm either way, so '
-            f'this is a WARNING, not an ERROR, either way.'
+            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) missing -- '
+            f'not a radar-only var; plausibly all-fill '
+            f'(fill_value={array.metadata.fill_value!r}), unverified.'
          )
       elif radar_status != 'ok':
          _add(
             findings, 'WARNING', var_name,
-            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) is entirely '
-            f'missing; {var_name} is in RADAR_ONLY_VARS so this MAY be a '
-            f'legitimate all-optical skip, but this could not be verified '
-            f'({radar_status}).'
+            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) missing -- '
+            f'radar-only var, could not verify (mission/satellite_img1: '
+            f'{radar_status}).'
          )
       elif not is_radar[start:stop].any():
          _add(
             findings, 'INFO', var_name,
-            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) is entirely '
-            f'missing -- verified legitimate (no radar granules in this '
-            f'range).'
+            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) missing -- '
+            f'verified: no radar granules in range.'
          )
       else:
          _add(
             findings, 'ERROR', var_name,
-            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) is entirely '
-            f'missing, but this range contains '
+            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) missing but '
             f'{int(np.count_nonzero(is_radar[start:stop]))} radar granule(s) '
-            f'that {var_name} should carry real data for.'
+            f'in range expect real data.'
          )
 
 
