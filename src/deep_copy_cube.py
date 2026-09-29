@@ -383,6 +383,29 @@ def resolve_output_store(output_store):
    return output_store
 
 
+def validate_local_staging_dir(local_staging_dir):
+   """Reject an s3:// --local-staging-dir. Staging must be a real local
+   filesystem path: the per-chunk upload locates each finished chunk with
+   os.path.exists() (see deep_copy_cube_per_var_chunk._upload_chunk()),
+   which is never true for an s3:// path -- so an s3:// staging dir would
+   make every chunk look like one zarr's write_empty_chunks legitimately
+   skipped. Nothing raises, every chunk is marked done, and the run
+   publishes a skeleton-only store marked complete, which a Batch retry
+   then reports as "nothing to do".
+
+   Args:
+      local_staging_dir (str): the staging path to validate; None/empty is
+         accepted here (whether it's required at all is the caller's rule).
+   """
+   if local_staging_dir and local_staging_dir.startswith(utils.S3_PREFIX):
+      raise ValueError(
+         f"--local-staging-dir must be a local filesystem path, not an "
+         f"s3:// URL, got {local_staging_dir}. Writes are staged locally "
+         f"and copied to --output-store one whole zarr chunk at a time; an "
+         f"s3:// staging path would silently publish an empty store."
+      )
+
+
 def upload_local_staging_dir(
    local_staging_dir, output_store, keep_local_staging
 ):
