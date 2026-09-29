@@ -78,7 +78,8 @@ from deep_copy_cube import (
    build_encoding,
    _reset_write_encoding,
    resolve_output_store,
-   split_time_vars_by_rank
+   split_time_vars_by_rank,
+   validate_local_staging_dir
 )
 from deep_copy_cube_progress import (
    SUCCESS_MARKER,
@@ -340,9 +341,20 @@ def _write_var_3d_and_upload(
    num_skipped = 0
    num_resumed = 0
 
+   # use_consolidated=False is load-bearing, not defensive. The update
+   # caller (deep_copy_update_per_var_chunk.py) resize()s this array after
+   # downloading a skeleton whose root zarr.json carries creation's
+   # consolidated block, and zarr prefers that block over the array's own
+   # (correctly resized) zarr.json -- so a consolidated open reports the
+   # PRE-resize shape and every append past it is a SILENT no-op: no
+   # exception, chunk still marked done, layers read back as fill value.
+   # Reproduced by utils/check_stale_consolidated_metadata.py.
+   #
    # Safe to open once: consolidate_metadata() below only rewrites root
    # zarr.json, never this array's own metadata.
-   target = zarr.open_group(local_store, mode='r+', zarr_format=3)[var_name]
+   target = zarr.open_group(
+      local_store, mode='r+', zarr_format=3, use_consolidated=False
+   )[var_name]
 
    first_chunk_start = (start_layer // chunk_size) * chunk_size
    for chunk_start in range(first_chunk_start, total_layers, chunk_size):
@@ -569,6 +581,8 @@ def deep_copy_cube_per_var_chunk(
       raise ValueError(
          "--local-staging-dir is required when --output-store is an s3:// path"
       )
+
+   validate_local_staging_dir(local_staging_dir)
 
    if progress_dir and not is_s3_output:
       raise ValueError(
@@ -869,7 +883,8 @@ if __name__ == '__main__':
       help='Local directory every write lands in before being synced to '
          '--output-store one whole zarr chunk at a time. Required when '
          '--output-store is s3://; must be omitted for a local '
-         '--output-store, which is written to directly.'
+         '--output-store, which is written to directly. Must be a real '
+         'local filesystem path -- an s3:// value is rejected.'
    )
    parser.add_argument(
       '--keep-local-staging',
