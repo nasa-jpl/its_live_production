@@ -50,6 +50,7 @@ python src/deep_copy_cube_per_var_chunk.py \
    --output-store my_deep_copy_cube.zarr
 """
 import gc
+import glob
 import logging
 import os
 import shutil
@@ -127,6 +128,23 @@ RADAR_ONLY_VARS = {Vars.m11, Vars.m12, Vars.vr, Vars.va}
 
 # Mission groups whose granules are radar (SAR).
 RADAR_GROUP_IDS = {sensors.SENTINEL1.id, sensors.NISAR.id}
+
+
+def _cleanup_local_zarr_stores():
+   """Remove every top-level *.zarr entry in the current working directory.
+
+   Guards against a reused EC2 instance (e.g. after a spot termination or
+   crash mid-run): resolve_output_store() only clears the exact path this
+   run is about to write to, so a store left behind by a *different* prior
+   job (different name) would otherwise just sit there consuming disk
+   across runs.
+   """
+   for path in glob.glob('*.zarr'):
+      logging.info(f'Removing pre-existing local zarr store {path}')
+      if os.path.isdir(path):
+         shutil.rmtree(path)
+      else:
+         os.remove(path)
 
 
 @itslive_utils.retry_decorator(max_retries=5)
@@ -570,6 +588,8 @@ def deep_copy_cube_per_var_chunk(
       keep_progress_markers (bool): keep the progress markers around
          after a successful run instead of pruning them.
    """
+   _cleanup_local_zarr_stores()
+
    is_s3_output = output_store.startswith(utils.S3_PREFIX)
 
    if local_staging_dir and not is_s3_output:
