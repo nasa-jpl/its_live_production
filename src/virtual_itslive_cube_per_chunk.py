@@ -1,14 +1,11 @@
 """
-Build a virtual ITS_LIVE datacube restricted to a bounding box that is
-*smaller* than the granules' combined extent. Such virtual datacube corresponds
-to a single chunk of 512x512 pixels which are (chunk) co-aligned with all
-ITS_LIVE granules.
+Build a virtual ITS_LIVE datacube restricted to a bounding box smaller than
+the granules' combined extent -- one 512x512-pixel chunk, co-aligned with
+every ITS_LIVE granule.
 
-After cropping, each granule is handed to the existing
-virtual_itslive_cube.py:build_virtual_cube(), which mosaics the chunk-aligned
-cropped grids onto a shared grid and stacks them on time. This reuses all of
-the existing padding / combine_by_coords / img_pair_info-handling logic
-unchanged.
+Each cropped granule is handed to virtual_itslive_cube.py's
+build_virtual_cube(), reusing its padding / combine_by_coords /
+img_pair_info-handling logic unchanged.
 """
 import boto3
 from dateutil.parser import parse
@@ -32,6 +29,7 @@ from virtual_itslive_cube import (
    _get_manifestarray_chunks,
    build_virtual_cube,
 )
+from deep_copy_cube import TIME_CHUNK_VALUE_1D
 
 from virtualizarr.manifests import ManifestArray
 from virtualizarr.manifests.utils import copy_and_replace_metadata
@@ -61,11 +59,9 @@ logging.basicConfig(
    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# Suppress Zarr V3 unstable string dtype warnings
-# These are informational - string specs are being finalized in Zarr V3.
-# Zarr V3 has no stable spec for the fixed-length UTF32 dtype (<U2, <U3, etc.)
-# Must filter by category (the message text is "... does not have a Zarr V3
-# specification ...", which never contains the class name).
+# Suppress informational warnings for fixed-length UTF32 dtypes (<U2, <U3,
+# etc.) -- no stable Zarr V3 spec yet. Filter by category, not message text
+# (the message never names the class).
 import warnings
 from zarr.errors import UnstableSpecificationWarning
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
@@ -77,13 +73,10 @@ PIXEL_SIZE_HALF = PIXEL_SIZE / 2
 # Number of threads for parallel processing
 MAX_AWS_CONNECTIONS = 8
 
-# obstore retry/backoff config for the S3Store used to read granules. Widens
-# obstore's defaults (max_retries=10, retry_timeout=3min, max_backoff=15s) to
-# ride out multi-minute S3 503 "SlowDown" throttling bursts observed when many
-# jobs start their granule-loading burst within the same 1-2 minutes. Safe to
-# push retry_timeout past the doc's 5-minute credential-expiry caveat since
-# these are anonymous (skip_signature=True) requests with no credentials to
-# expire.
+# Widens obstore's S3Store defaults (max_retries=10, retry_timeout=3min,
+# max_backoff=15s) to ride out multi-minute S3 503 "SlowDown" bursts from
+# many jobs starting at once. Safe past the 5-minute credential-expiry
+# caveat since these requests are anonymous (skip_signature=True).
 RETRY_CONFIG = {
    'max_retries': 20,
    'retry_timeout': timedelta(minutes=5),
@@ -99,20 +92,6 @@ RETRY_CONFIG = {
 # is reported.
 PROGRESS_LOG_INTERVAL = 100
 
-# Chunk size to declare for the cube's 1-D (time,) data variables (the real,
-# synthesized arrays -- e.g. granule_url, acquisition_date_img1, the
-# *_error/*_stable_shift attrs -- not the 3D (time,y,x) variables, whose
-# per-granule ManifestArray chunk size is physically fixed at 1 and cannot be
-# widened; see np.concatenate's handling of ManifestArrays in
-# virtual_itslive_cube.py, which only ever changes shape, never chunks).
-# Without an explicit encoding, xarray/icechunk defaults to one chunk
-# spanning however many granules were in the very first written batch --
-# and a Zarr array's chunk grid is fixed at creation and can't change on
-# later appends, so a small first batch would otherwise wall in a tiny,
-# permanent chunk size for the rest of a large run. Matches
-# deep_copy_cube.py's TIME_CHUNK_VALUE_1D.
-TIME_CHUNK_VALUE_1D = 200000
-
 # String representation of longitude/latitude projection
 LON_LAT_PROJECTION = 'EPSG:4326'
 
@@ -127,39 +106,27 @@ P000_SUFFIX = 'P000.nc'
 
 
 def skipped_granules_path(cube_store):
-   """Get path to skipped granules JSON file for a given cube store.
+   """Path to the skipped-granules JSON sidecar for `cube_store`.
 
-   Parameters
-   ----------
-   cube_store : str
-      Path to icechunk repository (S3 or local).
+   Args:
+      cube_store (str): icechunk repository path (S3 or local).
 
-   Returns
-   -------
-   str
-      Path to skipped granules JSON file.
+   Returns: sidecar JSON path.
    """
    return cube_store.rstrip('/').rstrip('.icechunk') + '_skippedGranules.json'
 
 
 def save_skipped_granules(cube_store, skipped_granules):
-   """Save skipped granules list to JSON file.
+   """Write the skipped-granules JSON sidecar, normalizing every URL to
+   https:// form (de-duplicated) so the same granule can't appear twice
+   under different string forms. Shared with
+   virtual_itslive_cube_per_chunk_update.py so both scripts write this file
+   the same way.
 
-   Normalizes every URL to https:// form (and de-duplicates) before writing,
-   so the file is consistently formatted regardless of whether the caller's
-   in-memory set happened to hold s3://, https://, or a mix of both -- the
-   same granule shouldn't appear twice under two different string forms.
-   Shared between this script (fresh-cube creation) and
-   virtual_itslive_cube_per_chunk_update.py (cube updates), so both write the
-   skipped-granules JSON the same way.
-
-   Parameters
-   ----------
-   cube_store : str
-      Path to icechunk repository (S3 or local).
-   skipped_granules : list of str
-      List of skipped granule URLs, in s3:// form, https:// form, or a mix
-      of both.
+   Args:
+      cube_store (str): icechunk repository path (S3 or local).
+      skipped_granules (list of str): skipped granule URLs, in s3://,
+         https://, or a mix of both.
    """
    skipped_path = skipped_granules_path(cube_store)
    is_s3 = skipped_path.startswith('s3://')
@@ -190,40 +157,20 @@ def save_skipped_granules(cube_store, skipped_granules):
 
 
 def crop_manifestarray(marr, starts, stops):
-   """Chunk-aligned crop: return a new ManifestArray referencing only the
-   chunks needed to cover element range [starts[i], stops[i]) on each axis.
+   """Chunk-aligned crop to only the chunks covering [starts[i], stops[i])
+   per axis -- mirror image of virtual_itslive_cube.py's
+   `pad_manifestarray`. Only chunk references move, no pixel data is read.
+   Raises ValueError if starts/stops are malformed or not chunk-aligned.
 
-   This is the mirror image of `pad_manifestarray` in virtual_itslive_cube.py:
-   instead of placing a granule's ManifestArray into a larger grid (nodata
-   elsewhere), we slice it down to only the chunks that cover the target bbox.
-   Only chunk references are dropped/kept -- no pixel data is read.
+   Args:
+      marr (ManifestArray): array to crop.
+      starts (sequence of int): per-axis start index; must be a multiple of
+         that axis' chunk size.
+      stops (sequence of int): per-axis exclusive end index; must be a
+         multiple of the chunk size, except it may equal the axis length to
+         reach the array's (legitimately partial) last chunk.
 
-   Parameters
-   ----------
-   marr : ManifestArray
-      The array to crop. Only its chunk references are read/moved; no pixel
-      data is accessed.
-   starts : sequence of int
-      Per-axis element indices where the crop region starts. Each value must
-      be a multiple of that axis' chunk size.
-   stops : sequence of int
-      Per-axis element indices where the crop region ends (exclusive). Each
-      value must be a multiple of that axis' chunk size, except it may equal
-      the axis length to reach the array's edge (where the last chunk is
-      legitimately partial).
-
-   Returns
-   -------
-   ManifestArray
-      A new ManifestArray with the same dtype and chunk structure as `marr`,
-      but containing only the chunk references needed to cover the specified
-      element ranges. The returned array's shape reflects the cropped region.
-
-   Raises
-   ------
-   ValueError
-      If starts/stops have wrong dimensionality, contain invalid ranges, or
-      are not aligned to chunk boundaries.
+   Returns: cropped ManifestArray, same dtype/chunk structure as `marr`.
    """
    shape = marr.shape
    chunks = _get_manifestarray_chunks(marr)
@@ -283,29 +230,21 @@ _BUCKET_PREFIX = 's3://its-live-data/'
 
 
 def _compute_allfill_chunk_length(chunk_shape, np_dtype, zarr_dtype, fill_value, codecs):
-   """Compute the encoded length of an all-fill chunk.
+   """Encoded byte length of an all-fill chunk -- a reference length used to
+   short-circuit `_cropped_var_has_valid_data`: a chunk whose encoded length
+   differs from this CANNOT be all-fill, so its S3 read + decode can be
+   skipped.
 
-   This reference length allows short-circuiting: if a chunk's encoded length
-   differs from allfill_chunk_len, it CANNOT be all-fill (must contain valid data),
-   so we can skip the expensive S3 read + decode.
+   Args:
+      chunk_shape (tuple): shape of the chunk.
+      np_dtype (numpy.dtype): dtype to build the fill array with (from
+         `ManifestArray.dtype`).
+      zarr_dtype (zarr dtype): dtype for the encode `ArraySpec` (from
+         `metadata.dtype`).
+      fill_value (scalar): fill value for the array.
+      codecs (list): zarr codec pipeline.
 
-   Parameters
-   ----------
-   chunk_shape : tuple
-      Shape of the chunk.
-   np_dtype : numpy.dtype
-      Numpy data type used to build the fill array (from `ManifestArray.dtype`).
-   zarr_dtype : zarr dtype
-      Zarr data type for the encode `ArraySpec` (from `metadata.dtype`).
-   fill_value : scalar
-      Fill value for the array.
-   codecs : list
-      Zarr codec pipeline.
-
-   Returns
-   -------
-   int
-      The encoded byte length of an all-fill chunk.
+   Returns: encoded byte length (int) of an all-fill chunk.
    """
    fill_chunk = np.full(chunk_shape, fill_value, dtype=np_dtype)
    prototype = default_buffer_prototype()
@@ -322,39 +261,24 @@ def _compute_allfill_chunk_length(chunk_shape, np_dtype, zarr_dtype, fill_value,
 
 
 def _cropped_var_has_valid_data(marr, netcdf_store, allfill_chunk_len):
-   """Return True if a cropped ManifestArray references any non-fill data.
+   """True if a cropped ManifestArray references any non-fill data.
 
-   Reads ONLY the chunk bytes the manifest references (a single 512x512 chunk
-   for a chunk-aligned tile) via S3 byte-range GETs and decodes them through the
-   array's own zarr codec pipeline -- instead of downloading the entire granule
-   NetCDF just to inspect one window. It also reuses the virtual dataset already
-   opened in load_granules, so the granule file is never opened a second time.
+   Reads only the referenced chunk bytes via S3 byte-range GETs + the
+   array's own zarr codec, instead of downloading the whole granule.
+   "Valid" means any element differs from the fill value (equivalent to the
+   old `np.isnan(cf_decoded_v).all()` test, since v is int16 and
+   `_FillValue` is its only NaN source). Missing chunks read as fill and
+   are skipped. Short-circuits to True without decoding if a chunk's
+   encoded length differs from `allfill_chunk_len` (can't be all-fill).
 
-   A chunk counts as "valid" if any element differs from the fill value. This
-   matches the previous test `np.isnan(cf_decoded_v).all()`: v is stored as
-   int16 whose only NaN-producing value on CF-decode is `_FillValue`, so
-   "all fill" is exactly "all NaN after decode". Missing chunks (empty path)
-   read back as fill and are skipped.
+   Args:
+      marr (ManifestArray): already cropped to the target window.
+      netcdf_store (obstore.store.S3Store): store to fetch chunk bytes from.
+      allfill_chunk_len (int): pre-computed encoded length of an all-fill
+         chunk, passed down from build_virtual_cube_subset() to avoid
+         recomputing per granule.
 
-   Performance optimization: before reading a chunk from S3, checks if its
-   encoded length differs from the reference all-fill chunk length. If so,
-   the chunk MUST contain valid data (short-circuit to True without decode).
-
-   Parameters
-   ----------
-   marr : ManifestArray
-      A ManifestArray already cropped to the target window (e.g. v cropped via
-      crop_manifestarray).
-   netcdf_store : obstore.store.S3Store
-      Object store used to fetch the referenced chunk byte ranges.
-   allfill_chunk_len : int
-      Pre-computed encoded byte length of an all-fill chunk. Passed down from
-      build_virtual_cube_subset() to avoid recomputing for every granule.
-
-   Returns
-   -------
-   bool
-      True if any referenced chunk contains a non-fill value.
+   Returns: bool -- True if any referenced chunk has a non-fill value.
    """
    metadata = marr.metadata
    fill = metadata.fill_value
@@ -383,21 +307,11 @@ def _cropped_var_has_valid_data(marr, netcdf_store, allfill_chunk_len):
          # Missing chunk -> reads back as fill, no valid data contributed
          continue
 
-      # Length-based short-circuit: if encoded length differs from all-fill
-      # reference, this chunk MUST contain valid data (no S3 read needed).
-      # This assumes 'v' uses the same chunk size, dtype, fill value, and
-      # codec configuration across ALL granules feeding this cube (see the
-      # comment at allfill_chunk_len's computation in
-      # build_virtual_cube_subset). If that ever doesn't hold -- e.g. a
-      # differently-encoded granule from a mission/processing-version not
-      # covered by that assumption -- a genuinely all-fill chunk in it could
-      # encode to a different byte length than this reference, and this
-      # short-circuit would incorrectly return True (treat it as having
-      # valid data) instead of falling through to the decode-and-compare
-      # check below. That's a safe-direction failure (an extra near-empty
-      # layer kept, not real data silently dropped), but it means this
-      # optimization is only as safe as that cross-granule uniformity
-      # assumption.
+      # Assumes 'v' shares chunk size/dtype/fill/codec across all granules
+      # (see allfill_chunk_len's computation in build_virtual_cube_subset).
+      # If a differently-encoded granule ever violates that, an all-fill
+      # chunk there could get a false "has data" positive -- safe-direction
+      # (an extra near-empty layer kept, not real data dropped).
       if length != allfill_chunk_len:
          return True
 
@@ -416,29 +330,19 @@ def _cropped_var_has_valid_data(marr, netcdf_store, allfill_chunk_len):
 
 
 def bbox_to_chunk_aligned_indices(coord, step, chunk_size, bbox_lo, bbox_hi):
-   """Map a target coordinate range [bbox_lo, bbox_hi] onto chunk-grid-aligned
-   element indices [start, stop) into `coord`.
+   """Map [bbox_lo, bbox_hi] onto chunk-grid-aligned element indices
+   [start, stop) into `coord`.
 
-   Parameters
-   ----------
-   coord : numpy.ndarray
-      A regularly-spaced 1-D coordinate vector (e.g., x or y coordinates).
-   step : float
-      Spacing between coordinate values. May be negative for descending axes
-      (e.g., y-axis).
-   chunk_size : int
-      Size of chunks along this dimension in elements.
-   bbox_lo : float
-      Lower bound of the target coordinate range.
-   bbox_hi : float
-      Upper bound of the target coordinate range.
+   Args:
+      coord (numpy.ndarray): regularly-spaced 1-D coordinate vector (x or y).
+      step (float): spacing between coordinate values; may be negative for
+         a descending axis (e.g. y).
+      chunk_size (int): chunk size along this dimension, in elements.
+      bbox_lo (float): lower bound of the target range.
+      bbox_hi (float): upper bound of the target range.
 
-   Returns
-   -------
-   tuple of (int, int) or None
-      A tuple (start, stop) of chunk-aligned element indices into `coord`,
-      where `stop` is exclusive. Returns None if the bbox doesn't overlap
-      `coord` at all.
+   Returns: (start, stop) chunk-aligned indices into `coord`, `stop`
+      exclusive, or None if the bbox doesn't overlap `coord` at all.
    """
    n = len(coord)
    p0 = (bbox_lo - coord[0]) / step
@@ -459,33 +363,22 @@ def bbox_to_chunk_aligned_indices(coord, step, chunk_size, bbox_lo, bbox_hi):
 
 
 def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store, allfill_chunk_len):
-   """Crop one virtual dataset (real x/y coords, virtual ManifestArray data
-   vars) to the chunk-grid-aligned window covering `bbox`.
+   """Crop one granule's virtual dataset to the chunk-grid-aligned window
+   covering `bbox`.
 
-   Parameters
-   ----------
-   vds : xr.Dataset
-      A single granule's virtual dataset, as returned by
-      `open_virtual_dataset` (x/y/time loaded, data vars virtual).
-   bbox : (xmin, xmax, ymin, ymax)
-      Target region in the dataset's native x/y units. These are adjusted
-      for the cell centers based on the datacube bounding polygon which is
-      for the cell corners.
-   netcdf_store: obstore.store.S3Store
-      Object store to access granule data from.
-   allfill_chunk_len : int
-      Pre-computed encoded byte length of an all-fill chunk for the 'v'
-      variable. Used to short-circuit the valid-data check when a chunk's
-      length differs from this reference.
+   Args:
+      vds (xr.Dataset): one granule's virtual dataset (x/y/time loaded, data
+         vars virtual), as returned by `open_virtual_dataset`.
+      bbox (xmin, xmax, ymin, ymax): target region in native x/y units,
+         adjusted to cell centers (the bounding polygon is at cell corners).
+      netcdf_store (obstore.store.S3Store): store to read granule data from.
+      allfill_chunk_len (int): pre-computed encoded length of an all-fill
+         'v' chunk, for the valid-data short-circuit.
 
-   Returns
-   -------
-   tuple of (xr.Dataset or None, str)
-      A tuple containing:
-      - The cropped dataset with chunk-aligned spatial bounds, or None if
+   Returns:
+      tuple of (xr.Dataset or None, str): the cropped dataset, or None if
       this granule doesn't overlap `bbox` or has no valid data in the
-      overlap region.
-      - The granule URL string from the dataset's attributes.
+      overlap; and the granule URL.
    """
    xmin, xmax, ymin, ymax = bbox
    x = vds["x"].values
@@ -580,32 +473,21 @@ def crop_virtual_dataset_to_bbox(vds, bbox, netcdf_store, allfill_chunk_len):
 
 
 def _assert_identical_grids(cropped, bbox):
-   """Verify every cropped granule landed on exactly the same x/y grid.
+   """Fail loudly if any cropped granule landed on a different x/y grid than
+   the first.
 
-   Granules are guaranteed to share a common chunk grid (same posting,
-   same chunk boundaries), so chunk-aligned cropping to the same `bbox`
-   should produce *identical* x/y coordinate arrays across granules -- not
-   merely overlapping ones needing a pad-to-common-grid step. If that's
-   ever violated (e.g. an unexpectedly offset granule), fail loudly here
-   rather than silently letting `pad_manifestarray` paper over it.
+   Granules share a common chunk grid (same posting, same chunk boundaries),
+   so chunk-aligned cropping to the same `bbox` should produce *identical*
+   x/y coordinates across granules -- not merely overlapping ones needing a
+   pad-to-common-grid step. Raises ValueError (rather than letting
+   `pad_manifestarray` silently paper over it) if that's ever violated, e.g.
+   by an unexpectedly offset granule.
 
-   Parameters
-   ----------
-   cropped : list of xr.Dataset
-      List of cropped virtual datasets. Must have at least one element.
-   bbox : tuple
-      The bounding box (xmin, xmax, ymin, ymax) used for cropping, included
-      in error messages for debugging.
-
-   Raises
-   ------
-   ValueError
-      If any cropped granule has different x or y coordinates than the first
-      granule in the list.
-
-   Returns
-   -------
-   None
+   Args:
+      cropped (list of xr.Dataset): cropped virtual datasets; at least one
+         element.
+      bbox (tuple): the (xmin, xmax, ymin, ymax) bbox used for cropping,
+         included in error messages for debugging.
    """
    ref_vds = cropped[0]
    ref_x = ref_vds["x"].values
@@ -635,41 +517,28 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    """Build a virtual datacube restricted to `bbox`, smaller than the
    granules' combined extent.
 
-   Each granule's ManifestArrays are first cropped (chunk-aligned) to the
-   window overlapping `bbox`; granules with no overlap are dropped entirely.
-   Since granules are guaranteed to share a common chunk grid, the cropped
-   granules are then checked to have landed on an identical x/y grid (a
-   hard failure if not) before being mosaicked via `build_virtual_cube`
-   -- which stacks them on time and reuses its existing dtype/attr/
-   img_pair_info handling.
+   Each granule's ManifestArrays are cropped (chunk-aligned) to the window
+   overlapping `bbox`; non-overlapping granules are dropped. Since granules
+   share a common chunk grid, the cropped granules are then required to land
+   on an identical x/y grid (`_assert_identical_grids`, ValueError if not)
+   before being mosaicked via `build_virtual_cube`, which stacks them on
+   time and reuses its dtype/attr/img_pair_info handling.
 
-   Parameters
-   ----------
-   vds_list : list of xr.Dataset
-      Virtual datasets for each granule (as passed to `build_virtual_cube`).
-      Each dataset should have 'x', 'y', 'time' coordinates and virtual
-      ManifestArray data variables.
-   bbox : tuple of (float, float, float, float)
-      Target region in the granules' shared x/y units, specified as
-      (xmin, xmax, ymin, ymax).
-   netcdf_store : obstore.store.S3Store
-      S3 object store instance for accessing granule data to check for
-      valid data within the overlap region.
+   Args:
+      vds_list (list of xr.Dataset): per-granule virtual datasets, as passed
+         to `build_virtual_cube` -- 'x'/'y'/'time' coordinates, virtual
+         ManifestArray data variables.
+      bbox (tuple of float): target region in the granules' shared x/y
+         units, as (xmin, xmax, ymin, ymax).
+      netcdf_store (obstore.store.S3Store): object store used to check for
+         valid data within the overlap region.
 
-   Returns
-   -------
-   tuple of (xr.Dataset or None, str or None, list of str)
-      A tuple containing:
-      - The virtual datacube with all cropped granules stacked along the
-      time dimension, or None if no granule had valid data in the bbox.
-      - The autorift parameter file path, or None if no cube was built.
-      - List of URLs for granules that were skipped (no overlap or no valid
-      data in overlap region).
-
-   Raises
-   ------
-   ValueError
-      If cropped granules don't share identical x/y grids.
+   Returns:
+      tuple of (xr.Dataset or None, str or None, list of str): the cube with
+      all cropped granules stacked on time (None if no granule had valid
+      data in the bbox); the autorift parameter file path (None if no cube
+      was built); and the URLs of skipped granules (no overlap, or no valid
+      data in the overlap region).
    """
    if not vds_list:
       logging.info("vds_list is empty -- no granules to build a cube from; no cube built")
@@ -679,12 +548,9 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    cropped = []
    skipped_granules = []
 
-   # Compute reference all-fill chunk length once for all granules.
-   # All ITS_LIVE granules share the same chunk size (512×512), dtype (int16),
-   # fill value (-32767), and codec configuration for the 'v' variable, so
-   # allfill_chunk_len is identical across all granules. Computing it once here avoids
-   # repeating the encode operation (which requires creating and encoding a
-   # full 512×512 array) for every granule.
+   # All granules share 'v's chunk size/dtype/fill/codec, so this reference
+   # length is the same for every granule -- compute it once here instead
+   # of re-encoding a full 512x512 array per granule.
    sample_v = vds_list[0].data_vars[Vars.v]
    sample_marr = sample_v.data
    allfill_chunk_len = _compute_allfill_chunk_length(
@@ -696,27 +562,16 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    )
    logging.debug(f'Computed reference all-fill chunk length: {allfill_chunk_len} bytes')
 
-   # Threads ("threading"), not processes: cropping is S3-I/O-bound work whose
-   # per-granule path is now pure obstore range reads + numpy manifest slicing +
-   # zarr codec decode (no h5py) after the manifest-based valid-data check, so
-   # there is no thread-unsafe library on this path and no GIL-bound compute to
-   # contend on. Threads also avoid pickling each granule's ManifestArray-bearing
-   # dataset to a worker process and the cropped dataset back again.
-   #
-   # Hand joblib the whole list (no manual batching) so the n_jobs-sized pool
-   # stays continuously saturated -- a manual batch barrier would make every
-   # batch wait on its slowest granule. return_as="generator_unordered" yields
-   # each result as soon as it completes (as-completed), so progress advances
-   # smoothly even under skewed granule durations; the ordered generator would
-   # stall behind a slow early granule (head-of-line blocking). Arrival order is
-   # irrelevant: build_virtual_cube stacks layers by the time coordinate.
+   # Threads, not processes: cropping is pure obstore range reads + numpy
+   # slicing + zarr decode (no h5py), so nothing here is thread-unsafe or
+   # GIL-bound, and threads avoid pickling ManifestArray datasets to/from a
+   # worker process. return_as="generator_unordered" yields each result as
+   # it completes, so a slow granule doesn't stall the rest (arrival order
+   # doesn't matter -- build_virtual_cube stacks by time coordinate).
    with parallel_config(
       backend='threading',
       n_jobs=MAX_AWS_CONNECTIONS
    ):
-      # This returns a lazy generator immediately -- no cropping has run yet.
-      # The tasks execute as the loop below pulls from result_stream, each
-      # result yielded the moment its task finishes.
       result_stream = Parallel(return_as="generator_unordered")(
          delayed(crop_virtual_dataset_to_bbox)(each_vds, bbox, netcdf_store, allfill_chunk_len)
          for each_vds in vds_list
@@ -760,31 +615,21 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
 
 
 def _granule_exists(granule_url, store, bucket_prefix):
-   """Check whether a granule actually exists in S3, via a cheap HEAD request.
+   """Cheap HEAD check for whether `granule_url` exists in S3.
 
-   Temporary bypass for a known searchAPI/catalog bug where some returned
-   granule URLs don't correspond to any real S3 object (to be fixed by the
-   catalog developer). Runs *before* the much more expensive
-   `open_virtual_dataset()` call in `read_virtual_dataset`, so a missing
-   granule never reaches -- and never triggers -- that function's
-   intentional fail-fast error handling. A granule that exists but fails to
-   open for some other reason still hits that fail-fast path unchanged.
+   Temporary bypass for a known searchAPI/catalog bug returning URLs with
+   no real S3 object. Runs before the far more expensive
+   `open_virtual_dataset()` in `read_virtual_dataset`, so a missing granule
+   never triggers that function's fail-fast handling; any other open
+   failure still does.
 
-   Parameters
-   ----------
-   granule_url : str
-      Full s3:// URL to the granule.
-   store : obstore.store.S3Store
-      Object store for the granules bucket.
-   bucket_prefix : str
-      s3:// URL prefix (with trailing slash) to strip from `granule_url` to
-      get the bucket-relative key `store` expects.
+   Args:
+      granule_url (str): full s3:// URL to the granule.
+      store (obstore.store.S3Store): object store for the granules bucket.
+      bucket_prefix (str): s3:// prefix stripped from `granule_url` to get
+         the bucket-relative key.
 
-   Returns
-   -------
-   bool
-      True if the object exists, False on a 404 (`FileNotFoundError`,
-      confirmed to be what `obstore.head()` raises for a missing key).
+   Returns: bool -- False only on a 404 (`FileNotFoundError`).
    """
    key = granule_url.replace(bucket_prefix, '')
    try:
@@ -795,46 +640,37 @@ def _granule_exists(granule_url, store, bucket_prefix):
 
 
 def _check_granule_exists(granule_url, store, bucket_prefix):
-   """Parallel-map wrapper around `_granule_exists` that pairs the result
-   with its URL, since `Parallel(return_as="generator_unordered")` yields
-   results out of input order (mirrors `crop_virtual_dataset_to_bbox`'s
-   `(result, url)` return convention for the same reason).
+   """Parallel-map wrapper pairing `_granule_exists`'s result with its URL,
+   since `Parallel(return_as="generator_unordered")` yields out of order
+   (mirrors `crop_virtual_dataset_to_bbox`'s `(result, url)` convention for
+   the same reason).
 
-   Returns
-   -------
-   tuple of (str, bool)
-      (granule_url, exists)
+   Args:
+      granule_url (str): granule URL to check.
+      store (obstore.store.S3Store): object store for the granules bucket.
+      bucket_prefix (str): s3:// URL prefix stripped to get the
+         bucket-relative key.
+
+   Returns: (granule_url, exists) tuple of (str, bool).
    """
    return granule_url, _granule_exists(granule_url, store, bucket_prefix)
 
 
 def read_virtual_dataset(granule_url, parser, registry):
-   """Read granule into virtual dataset.
+   """Read one granule into a virtual dataset. Raises RuntimeError
+   immediately on failure -- a granule that can't be opened (bad input list,
+   broken S3 access, etc.) signals a problem worth stopping the run for, not
+   one to silently paper over (see `load_granules`).
 
-   Raises immediately on failure (see `load_granules`): a granule that can't
-   be opened signals a problem worth stopping the run for (bad input list,
-   broken S3 access, etc.) rather than one to silently paper over.
+   Args:
+      granule_url (str): S3 URL to the granule file.
+      parser (virtualizarr.parsers.HDFParser): parser for reading
+         HDF/NetCDF as a virtual dataset.
+      registry (obspec_utils.registry.ObjectStoreRegistry): maps URL
+         prefixes to object stores for chunk access.
 
-   Parameters
-   ----------
-   granule_url : str
-      S3 URL to the granule file (e.g., 's3://its-live-data/path/to/granule.nc').
-   parser : virtualizarr.parsers.HDFParser
-      Parser instance for reading HDF/NetCDF files as virtual datasets.
-   registry : obspec_utils.registry.ObjectStoreRegistry
-      Registry mapping URL prefixes to object store instances for chunk access.
-
-   Returns
-   -------
-   xr.Dataset
-      Virtual dataset with 'time', 'y', 'x' coordinates loaded into memory
-      and data variables as ManifestArrays (chunk references only). The dataset
-      includes 'granule_url' and 'granule_path' in its attributes.
-
-   Raises
-   ------
-   RuntimeError
-      If the granule cannot be opened as a virtual dataset.
+   Returns: xr.Dataset with 'time'/'y'/'x' loaded, data variables as
+      ManifestArrays, and 'granule_url'/'granule_path' set in attrs.
    """
    try:
       v = vz.open_virtual_dataset(
@@ -856,57 +692,37 @@ def read_virtual_dataset(granule_url, parser, registry):
 
 
 def load_granules(granules, bucket):
-   """Load granules into virtual datasets using parallel processing.
+   """Load granules into virtual datasets in parallel (ManifestArray data
+   vars, no pixel data loaded).
 
-   Reads multiple granule files in parallel, converting each into a virtual
-   dataset with coordinate data loaded and data variables as ManifestArrays
-   (chunk references only, no pixel data loaded).
+   First HEAD-checks each granule (`_granule_exists`'s searchAPI/catalog-bug
+   bypass) and drops any that are genuinely missing (404) before calling
+   `read_virtual_dataset`, so a missing granule never reaches -- and never
+   triggers -- that function's fail-fast RuntimeError. Any other open
+   failure still propagates and aborts the whole run.
 
-   Parameters
-   ----------
-   granules : list of str
-      List of S3 URLs or paths to granule files to load.
-   bucket : str
-      AWS S3 bucket URL (e.g., 's3://its-live-data') that stores the granules.
+   Args:
+      granules (list of str): S3 URLs or paths to granule files.
+      bucket (str): S3 bucket URL storing the granules.
 
-   Returns
-   -------
-   tuple of (list of xr.Dataset, list of str)
-      - List of virtual datasets, one per granule that exists in S3. Order is
-      not guaranteed to match the input (results are collected as-completed);
-      downstream stacking keys off the time coordinate, not list position.
-      Each dataset has 'time', 'y', 'x' coordinates loaded and data variables
-      as ManifestArrays.
-      - List of granule URLs from `granules` that don't exist in S3 (see
-      `_granule_exists` -- a temporary bypass for a known searchAPI/catalog
-      bug), so the caller can record them in the persistent skipped-granules
-      JSON.
-
-   Raises
-   ------
-   RuntimeError
-      Propagated from `read_virtual_dataset` on the first *existing* granule
-      that still fails to open -- aborts the whole run rather than skipping
-      it. Unaffected by the missing-granule bypass above: only genuinely
-      missing (404) granules are skipped, any other failure still fails fast.
+   Returns:
+      tuple of (list of xr.Dataset, list of str): virtual datasets (order
+      not guaranteed to match input -- collected as-completed; downstream
+      stacking keys off the time coordinate, not list position), and the
+      subset of `granules` that don't exist in S3, for the caller to record
+      in the persistent skipped-granules JSON.
    """
    store = obstore.store.from_url(
       bucket, region="us-west-2", skip_signature=True, retry_config=RETRY_CONFIG,
    )
    registry = ObjectStoreRegistry({bucket: store})
-   # Keep 'mapping' (don't drop it): it's loaded as a small 0-dim variable in
-   # read_virtual_dataset so build_virtual_cube can recover its projection attrs
-   # to synthesize the cube's CF grid-mapping variable.
+   # Keep 'mapping': loaded as a small 0-dim variable so build_virtual_cube
+   # can recover its projection attrs for the cube's CF grid-mapping var.
    parser = HDFParser()
 
-   # Temporary bypass for a known searchAPI/catalog bug where some returned
-   # granule URLs don't correspond to any real S3 object: check existence
-   # (cheap HEAD request) before attempting the much more expensive
-   # open_virtual_dataset() below, so a missing granule never reaches -- and
-   # never triggers -- read_virtual_dataset's intentional fail-fast error
-   # handling. Threads ("threading"), not processes: same reasoning as the
-   # cropping pass in build_virtual_cube_subset (pure I/O, thread-safe, no
-   # GIL-bound compute).
+   # HEAD-check existence before the much more expensive open_virtual_dataset()
+   # below (see _granule_exists). Threads, not processes: same reasoning as
+   # the cropping pass in build_virtual_cube_subset.
    bucket_prefix = bucket.rstrip('/') + '/'
    existing_granules = []
    missing_granules = []
@@ -928,26 +744,16 @@ def load_granules(granules, bucket):
 
    vds_list = []
 
-   # Processes ("loky"), not threads: opening a granule as a virtual dataset
-   # goes through HDF parsing whose thread-safety is not guaranteed, so keep it
-   # in separate worker processes. (The crop pass in build_virtual_cube_subset
-   # is h5py-free and uses threads instead.)
-   #
-   # Hand joblib the whole list (no manual batching) so the n_jobs-sized pool
-   # stays continuously saturated; return_as="generator_unordered" yields each
-   # result as soon as it completes (as-completed progress, no head-of-line
-   # stall behind a slow granule) and throttles dispatch to pre_dispatch
-   # (~2*n_jobs), so a million granules don't all get queued at once. Arrival
-   # order does not matter: downstream cropping/stacking keys off the time
-   # coordinate, not list position.
+   # Processes ("loky"), not threads: HDF parsing's thread-safety isn't
+   # guaranteed (unlike the h5py-free crop pass in build_virtual_cube_subset).
+   # return_as="generator_unordered" gives as-completed progress and throttles
+   # dispatch (~2*n_jobs) so huge granule lists don't all queue at once;
+   # arrival order doesn't matter since downstream keys off time, not position.
    total = len(granules)
    with parallel_config(
       backend='loky',
       n_jobs=MAX_AWS_CONNECTIONS
    ):
-      # This returns a lazy generator immediately -- no granule is opened yet.
-      # The tasks execute as the loop below pulls from result_stream, each
-      # result yielded the moment its task finishes.
       result_stream = Parallel(return_as="generator_unordered")(
          delayed(read_virtual_dataset)(each_file, parser, registry)
          for each_file in granules
@@ -963,26 +769,20 @@ def load_granules(granules, bucket):
 
 
 # ---------------------------------------------------------------------------
-# Functions for appending new granules to a pre-existing icechunk repo,
-# merged from virtual_itslive_cube_per_chunk_update.py. This lets __main__
-# auto-detect whether --output-store already exists and append to it instead
-# of always creating fresh -- e.g. so a job killed mid-run by an S3 503 storm
-# can be safely re-submitted with the same arguments.
+# Append-to-existing-repo functions (merged from
+# virtual_itslive_cube_per_chunk_update.py): lets __main__ auto-detect an
+# existing --output-store and append instead of recreating, so a job killed
+# mid-run can be safely re-submitted with the same arguments.
 # ---------------------------------------------------------------------------
 
 def _build_output_storage(store_path):
-   """Build the icechunk `Storage` object for `store_path`.
+   """Build the icechunk `Storage` handle for `store_path`.
 
-   Parameters
-   ----------
-   store_path : str
-      Path to the icechunk repository (s3:// URL or local path).
+   Args:
+      store_path (str): icechunk repository path (s3:// URL or local).
 
-   Returns
-   -------
-   icechunk.Storage
-      Storage handle for `store_path`, usable with `ic.Repository.exists`,
-      `.open`, or `.create`.
+   Returns: icechunk.Storage, usable with `ic.Repository.exists`/`.open`/
+      `.create`.
    """
    if store_path.startswith(utils.S3_PREFIX):
       s3_parts = store_path.replace(utils.S3_PREFIX, '').split('/', 1)
@@ -996,27 +796,22 @@ def _build_output_storage(store_path):
 
 
 def open_repo_for_append(store_path, url_prefix):
-   """Open a pre-existing icechunk repository to append new granules to it.
+   """Open a pre-existing icechunk repository to append new granules to.
 
-   Mirrors the RepositoryConfig/credentials setup __main__ uses when
-   creating a fresh repo (StorageSettings for stronger recovery from
-   transient S3 failures, anonymous virtual-chunk-container credentials for
-   the granules bucket), but opens rather than creates.
+   Mirrors __main__'s RepositoryConfig/credentials setup for a fresh repo
+   (StorageSettings for stronger recovery from transient S3 failures,
+   anonymous virtual-chunk-container credentials for the granules bucket),
+   but opens rather than creates.
 
-   Parameters
-   ----------
-   store_path : str
-      Path to the icechunk repository (s3:// URL or local path).
-   url_prefix : str
-      s3:// URL prefix (with trailing slash) for the granules bucket, used
-      to authorize anonymous virtual-chunk access.
+   Args:
+      store_path (str): icechunk repository path (s3:// URL or local).
+      url_prefix (str): s3:// URL prefix (trailing slash) for the granules
+         bucket, used to authorize anonymous virtual-chunk access.
 
-   Returns
-   -------
-   tuple of (ic.Repository, xr.Dataset)
-      The opened repository and its current datacube. The cube is read with
-      mask_and_scale=False (raw on-disk dtypes), matching every other cube
-      read in this file.
+   Returns:
+      tuple of (ic.Repository, xr.Dataset): the opened repository and its
+      current datacube, read with mask_and_scale=False (raw on-disk dtypes,
+      matching every other cube read in this file).
    """
    config = ic.RepositoryConfig.default()
 
@@ -1055,23 +850,13 @@ def open_repo_for_append(store_path, url_prefix):
 
 
 def load_skipped_granules(cube_store):
-   """Load previously skipped granules from a cube's persistent JSON file.
+   """Load a cube's persistent skipped-granules JSON. Raises RuntimeError
+   if no such file exists yet at `cube_store`'s expected path.
 
-   Parameters
-   ----------
-   cube_store : str
-      Path to icechunk repository (S3 or local).
+   Args:
+      cube_store (str): icechunk repository path (S3 or local).
 
-   Returns
-   -------
-   set of str
-      Set of skipped granule URLs (normalized to s3:// form).
-
-   Raises
-   ------
-   RuntimeError
-      If no skipped-granules JSON exists yet at `cube_store`'s expected
-      path.
+   Returns: set of skipped granule URLs, normalized to s3:// form.
    """
    skipped_path = skipped_granules_path(cube_store)
    is_s3 = skipped_path.startswith(utils.S3_PREFIX)
@@ -1113,15 +898,11 @@ def load_skipped_granules(cube_store):
 def get_existing_granule_urls(cube):
    """Extract existing granule URLs from a datacube.
 
-   Parameters
-   ----------
-   cube : xr.Dataset
-      The virtual datacube.
+   Args:
+      cube (xr.Dataset): the virtual datacube.
 
-   Returns
-   -------
-   set of str
-      Set of granule URLs already in the cube (normalized to s3:// form).
+   Returns: set of granule URLs already in the cube, normalized to s3://
+      form.
    """
    urls = set(str(u).replace(HTTPS_URL, S3_URL) for u in cube[Vars.url].values)
    logging.info(f'Found {len(urls)} existing granules in cube')
@@ -1130,35 +911,25 @@ def get_existing_granule_urls(cube):
 
 
 def _filter_processed_granules(urls, skipped, existing, num_p000_skipped):
-   """Filter out granules already committed to the cube or previously
-   skipped, when appending new granules to a pre-existing icechunk repo.
+   """Drop granules already committed to the cube or previously skipped,
+   when appending new granules to a pre-existing icechunk repo. P000
+   granules are not filtered here -- __main__ already excludes them from
+   `urls` before this is ever called.
 
-   P000 granules are not filtered here -- __main__ already excludes them
-   from `urls` before this is ever called, for both the create and append
-   paths.
+   Args:
+      urls (list of str): candidate granule URLs (s3:// form), sorted
+         chronologically.
+      skipped (set of str): previously skipped granule URLs (s3:// form).
+      existing (set of str): granule URLs already in the cube (s3:// form).
+      num_p000_skipped (int): P000 granules already excluded from `urls`,
+         for the log line only.
 
-   Parameters
-   ----------
-   urls : list of str
-      Candidate granule URLs (s3:// form), already sorted chronologically.
-   skipped : set of str
-      Previously skipped granule URLs (s3:// form).
-   existing : set of str
-      Granule URLs already present in the existing cube (s3:// form).
-   num_p000_skipped: int
-      Number of P000 granules that were excluded from the list of granules
-   to process.
-
-   Returns
-   -------
-   tuple of (list of str, list of str)
-      - Filtered list of new granules still to process, in the same order
-      as `urls`.
-      - The subset of `urls` that were previously skipped (redundant with
-      `skipped`, but returned so the caller can merge like-for-like). Does
-      NOT include granules dropped because they're already in `existing`
-      -- those are successfully-processed granules, not skipped ones, and
-      must never be written to the persistent skipped-granules record.
+   Returns:
+      tuple of (list of str, list of str): remaining granules to process
+      (`urls` order); and the subset of `urls` found in `skipped` (excludes
+      granules dropped for being `existing` -- those are successfully
+      processed, not skipped, and must never reach the skipped-granules
+      record).
    """
    remaining = []
    already_skipped = []
@@ -1181,30 +952,20 @@ def _filter_processed_granules(urls, skipped, existing, num_p000_skipped):
 
 
 def set_1d_time_chunk_encoding(cube, chunk_size):
-   """Set an explicit 'chunks' encoding on every 1-D (time,) variable of
-   a virtual cube -- both data variables and the 'time' coordinate itself --
-   overriding xarray/icechunk's default of one chunk spanning the whole
-   write (see TIME_CHUNK_VALUE_1D).
+   """Set an explicit 'chunks' encoding on every 1-D (time,) variable and
+   the 'time' coordinate, overriding xarray/icechunk's default of one chunk
+   spanning the whole write (see TIME_CHUNK_VALUE_1D). Must run before the
+   cube's first write -- a Zarr chunk grid is fixed at creation.
 
-   Must be called before the cube's first write -- the one that creates the
-   icechunk repo -- since a Zarr array's chunk grid is fixed at creation and
-   can't change on later appends; this only needs to run once per cube.
+   Iterates cube.variables (not just data_vars) so 'time' gets the same
+   treatment; the 3D ManifestArray variables (chunk fixed at 1, see
+   virtual_itslive_cube.py's np.concatenate handling) and 'x'/'y' don't
+   match the (TIME,) filter and are left alone.
 
-   Only touches real (non-ManifestArray) 1-D (time,) variables/coordinates,
-   via cube.variables (data_vars + coords) rather than just cube.data_vars,
-   so the 'time' coordinate gets the same fixed chunk size instead of
-   silently keeping xarray's default. The 3D (time,y,x) variables are
-   virtual references whose time-chunk size is physically fixed at 1 (see
-   virtual_itslive_cube.py's ManifestArray np.concatenate handling) and must
-   not be touched here; 'x'/'y' (dims=('x',)/('y',), chunked at the tile's
-   512-pixel size) don't match the (TIME,) filter and are left untouched.
-
-   Parameters
-   ----------
-   cube : xr.Dataset
-      The virtual cube about to be written (first batch only).
-   chunk_size : int
-      Chunk size along 'time' to set on every 1-D variable/coordinate.
+   Args:
+      cube (xr.Dataset): the virtual cube about to be written (first batch
+         only).
+      chunk_size (int): 'time' chunk size to set.
    """
    for var_name in cube.variables:
       var = cube[var_name]
@@ -1354,13 +1115,10 @@ if __name__ == "__main__":
 
    MAX_AWS_CONNECTIONS = args.threads
 
-   # Not Darwin-only anymore: the resource_tracker's own subprocess is
-   # launched via a fresh `sys.executable` invocation (not fork()), so it
-   # re-reads PYTHONWARNINGS from the environment at its own startup
-   # regardless of platform -- and on a large multi-batch run this same
-   # "resource_tracker: There appear to be N leaked folder objects to clean
-   # up at shutdown" UserWarning (benign/self-remediating -- the message
-   # itself says it cleans them up) has now been observed on Linux too, not
+   # Not Darwin-only: resource_tracker's subprocess launches via a fresh
+   # `sys.executable` (not fork()), re-reading PYTHONWARNINGS at its own
+   # startup regardless of platform -- so this benign, self-remediating
+   # "leaked folder objects" UserWarning has been observed on Linux too, not
    # just macOS's original semaphore-tracker noise.
    os.environ.setdefault(
       "PYTHONWARNINGS",
@@ -1443,21 +1201,17 @@ if __name__ == "__main__":
       )
       logging.info(f'Got {len(granules)} granules from searchAPI')
 
-   # If testing and want to process only a subset of granules. Truncate
-   # *before* filtering P000 granules below, so --num-granules reflects a
-   # slice of the raw candidate list (matching what a user would expect when
-   # asking for "the first N granules"), and the "Processing" count logged
-   # after P000 filtering can come out lower than N if any of that slice
-   # turned out to be P000.
+   # Truncate *before* P000 filtering below, so --num-granules reflects a
+   # slice of the raw candidate list ("the first N granules") -- the later
+   # "Processing" count can come out lower than N if any of that slice is
+   # P000.
    if args.num_granules > 0:
       num_granules = args.num_granules
       granules = granules[:num_granules]
 
-   # P000 granules never have usable data; exclude them from processing but
-   # still record them in the skipped-granules JSON below (merged into
-   # skipped_granules after build_virtual_cube_subset), so the persistent
-   # record reflects every granule that was considered and passed over.
-   # P000 granules have original "https://"" url
+   # P000 granules never have usable data; exclude from processing but still
+   # record in the persistent skipped-granules JSON below (merged in after
+   # build_virtual_cube_subset). P000 URLs are in original "https://" form.
    p000_granules = [each for each in granules if each.endswith(P000_SUFFIX)]
 
    # The rest of the granules have "s3://"" url
@@ -1469,10 +1223,9 @@ if __name__ == "__main__":
    if p000_granules:
       logging.info(f"Excluding {len(p000_granules)} P000 granules")
 
-   # Sort chronologically by mid_date parsed from each filename -- no granule
-   # is opened for this, so it's cheap even for very large granule counts.
-   # This both gives the cube's layers a sensible time order and lets the
-   # batches below be processed (and appended to the cube) in time order.
+   # Sort chronologically by mid_date parsed from each filename (cheap --
+   # no granule is opened) so both the cube's layers and the batches below
+   # come out in time order.
    granules = sorted(granules, key=utils.extract_mid_date_from_url)
 
    logging.info(f"Processing {len(granules)} granules")
@@ -1491,10 +1244,10 @@ if __name__ == "__main__":
    # never handed to any batch, so seed with those up front.
    skipped_granules = list(p000_granules)
 
-   # Detect whether the target icechunk repo already exists so this run
-   # appends new granules to it instead of recreating it from scratch --
-   # lets the same job be safely re-submitted (e.g. after a transient S3
-   # throttling failure) without clobbering progress already committed.
+   # Detect whether the target repo already exists, so this run appends
+   # instead of recreating from scratch -- lets a job be safely re-submitted
+   # (e.g. after a transient S3 throttling failure) without clobbering
+   # already-committed progress.
    repo_exists = ic.Repository.exists(_build_output_storage(store_path))
 
    # None until either an existing repo is opened below, or the first batch
@@ -1580,12 +1333,10 @@ if __name__ == "__main__":
          "batch_size": len(batch_granules),
       }
 
-      # Remove granule specific attributes (may already be absent if
-      # combine_attrs="drop_conflicts" dropped it due to differing values
-      # across granules). Applied to every batch, not just the one that
-      # creates the repo: combine_attrs re-derives cube.attrs fresh per
-      # batch, so a later append batch whose granules happen to agree on
-      # this value would otherwise re-introduce it into the committed cube.
+      # Clear granule-specific attrs on every batch (not just the repo-
+      # creating one): combine_attrs re-derives cube.attrs fresh per batch,
+      # so a later batch whose granules happen to agree on a value would
+      # otherwise re-introduce it into the committed cube.
       cube.attrs.clear()
 
       if repo is None:
@@ -1720,24 +1471,17 @@ if __name__ == "__main__":
             }
 
          # Fix the 1D (time,) data variables' write chunk size to the fixed
-         # TIME_CHUNK_VALUE_1D, not whatever this first batch's size happens
-         # to be -- leaves room to grow on later appends (see
-         # TIME_CHUNK_VALUE_1D's module comment).
+         # TIME_CHUNK_VALUE_1D (imported from deep_copy_cube.py, see its
+         # module comment), not whatever this first batch's size happens to
+         # be -- leaves room to grow on later appends.
          set_1d_time_chunk_encoding(cube, TIME_CHUNK_VALUE_1D)
 
-         # Fix the 'time' coordinate's CF units/dtype at creation too: like
-         # the chunk size above, a Zarr array's units/dtype are baked in when
-         # the store is created and reused verbatim by every later append.
-         # Without an explicit encoding here, xarray infers units from
-         # whichever granules happen to be in the batch that creates the
-         # store, which can land on the coarse 'days since 1970-01-01' +
-         # int64 default -- silently fine for that batch, but any later
-         # batch whose mid_date carries a sub-day time-of-day (the norm for
-         # ITS_LIVE) can't be represented in whole days, forcing a lossy
-         # int64->float64 fallback with a UserWarning on every such append.
-         # Seconds-since-GPS-epoch as float64 losslessly represents mid_date's
-         # full resolution up front, so no batch is ever forced through that
-         # fallback.
+         # Fix 'time's CF units/dtype at creation too -- baked in like the
+         # chunk size above. Left unset, xarray may infer 'days since
+         # 1970-01-01' + int64 from whichever batch creates the store, which
+         # can't hold mid_date's sub-day time-of-day (the ITS_LIVE norm) and
+         # forces a lossy, warning-per-append int64->float64 fallback on
+         # later batches. Seconds-since-GPS-epoch float64 avoids that.
          cube['time'].encoding[utils.Units.name] = utils.Units.gps_epoch_date
          cube['time'].encoding[utils.Units.calendar_name] = utils.Units.proleptic_gregorian
          cube['time'].encoding[utils.OutputFormat.dtype] = 'float64'
@@ -1792,15 +1536,12 @@ if __name__ == "__main__":
    logging.info(f'Total runtime: {elapsed_time:.1f}s ({elapsed_time/60:.2f} min)')
    logging.info('Done')
 
-   # Not Darwin-only anymore: the same "Error in sys.excepthook" /
-   # "Original exception was:" crash (both bodies blank -- traceback/sys
-   # are already partially torn down by the time it tries to print) has now
-   # been observed on Linux too, on a large multi-batch (170k-granule) run
-   # with -t 16 on a 4 vCPU instance. All commits/writes are already durable
-   # by this point (see 'Done' logged above), so unconditionally shutting
-   # down the executor and bypassing Python's normal (racy) interpreter
-   # finalization is safe on any platform, not just macOS's original
-   # GDAL/PROJ/loky atexit-ordering case.
+   # Not Darwin-only: the same "Error in sys.excepthook" crash (traceback/sys
+   # already partially torn down) has also been observed on Linux, on a
+   # large multi-batch run. All commits/writes are already durable by this
+   # point ('Done' logged above), so unconditionally shutting down the
+   # executor and skipping Python's normal (racy) interpreter finalization
+   # is safe on any platform.
    get_reusable_executor().shutdown(wait=True, kill_workers=True)
    time.sleep(0.5)  # let resource_tracker's unregister messages land
    os._exit(0)
