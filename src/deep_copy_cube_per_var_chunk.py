@@ -69,6 +69,7 @@ import utils
 from itscube_types import CubeFormat, ImgPairInfo, Vars
 from sensorFilters import SensorExcludeFilter
 from deep_copy_cube import (
+   ROOT_METADATA_FILE,
    TIME_CHUNK_VALUE,
    X_Y_CHUNK_VALUE,
    TIME_CHUNK_VALUE_1D,
@@ -263,8 +264,8 @@ def _upload_chunk(local_store, output_store, var_name, chunk_index):
       recursive=chunk_is_dir
    )
    _s3_copy(
-      os.path.join(local_store, 'zarr.json'),
-      f'{output_store.rstrip("/")}/zarr.json',
+      os.path.join(local_store, ROOT_METADATA_FILE),
+      f'{output_store.rstrip("/")}/{ROOT_METADATA_FILE}',
       recursive=False
    )
 

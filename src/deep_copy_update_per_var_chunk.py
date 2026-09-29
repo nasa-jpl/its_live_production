@@ -58,6 +58,7 @@ import itslive_utils
 import utils
 from itscube_types import CubeFormat
 from deep_copy_cube import (
+   ROOT_METADATA_FILE,
    open_virtual_cube,
    split_vars_by_time,
    build_encoding,
@@ -119,8 +120,11 @@ def _upload_var_metadata(local_store, output_store, var_name):
       output_store (str): final store path.
       var_name (str): variable (or 'time') whose array was just resized.
    """
-   var_meta_path = os.path.join(local_store, var_name, 'zarr.json')
-   _s3_copy_file(var_meta_path, f'{output_store.rstrip("/")}/{var_name}/zarr.json')
+   var_meta_path = os.path.join(local_store, var_name, ROOT_METADATA_FILE)
+   _s3_copy_file(
+      var_meta_path,
+      f'{output_store.rstrip("/")}/{var_name}/{ROOT_METADATA_FILE}'
+   )
 
 
 def _s3_copy_file(local_path, s3_path):
@@ -603,6 +607,31 @@ def deep_copy_update_per_var_chunk(
          is_radar, num_load_workers, update_progress,
          start_layer=old_total_layers
       )
+
+   # DEFENSIVE ONLY -- not closing a known hole. Every reachable path above
+   # already leaves S3's root current: _upload_chunk() consolidates and
+   # re-uploads it alongside each chunk, and 'time', the NO_FILL_VARS group
+   # (see deep_copy_cube.py) and the string variables all carry real values
+   # for every layer, so at least one of them always writes a real chunk.
+   # What this removes is the *dependence* on that -- which variables happen
+   # to declare fills, and therefore which chunks zarr's write_empty_chunks
+   # may legitimately skip, is not something this function should have to
+   # reason about to guarantee its own final metadata.
+   #
+   # Before mark_complete(), not after: the marker asserts the durable S3
+   # state is good, so everything it attests to must already be durable. A
+   # kill in between would otherwise leave _SUCCESS next to a stale root,
+   # and _find_incomplete_update() skips completed transitions -- nothing
+   # would ever repair it.
+   #
+   # Also makes the root attrs set above (date_updated) reach S3 on a resumed
+   # attempt that finds every variable already done and so uploads no chunk.
+   zarr.consolidate_metadata(local_store)
+   _s3_copy_file(
+      os.path.join(local_store, ROOT_METADATA_FILE),
+      f'{output_store.rstrip("/")}/{ROOT_METADATA_FILE}'
+   )
+   logging.info(f'Uploaded consolidated root metadata to {output_store}')
 
    update_progress.mark_complete()
    logging.info(f'Marked update complete ({update_progress.base}/{SUCCESS_MARKER})')

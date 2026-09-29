@@ -76,6 +76,14 @@ XY_SHARD_MULTIPLIER = 8
 COMPRESSOR = BloscCodec(cname="lz4", clevel=1, shuffle='bitshuffle')
 COMPRESSOR_KEY = 'compressors'
 
+# Zarr v3's per-node metadata filename -- the store root's copy is what
+# carries consolidated metadata, and each array has its own alongside its
+# 'c/' chunk grid. Shared so the several places that upload/copy these by
+# path (deep_copy_cube_per_var_chunk._upload_chunk(),
+# deep_copy_update_per_var_chunk._upload_var_metadata() and its root upload)
+# can't drift apart from each other.
+ROOT_METADATA_FILE = 'zarr.json'
+
 # Variables whose virtual-cube attrs carry no fill at all, but which
 # itscube.py hardcodes a fill for regardless (see Vars.intMissingValue).
 MISSING_VALUE_OVERRIDES = {
