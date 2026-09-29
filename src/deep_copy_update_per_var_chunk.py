@@ -62,7 +62,8 @@ from deep_copy_cube import (
    split_vars_by_time,
    build_encoding,
    resolve_output_store,
-   split_time_vars_by_rank
+   split_time_vars_by_rank,
+   validate_local_staging_dir
 )
 from deep_copy_cube_per_var_chunk import (
    _compute_radar_mask,
@@ -192,7 +193,17 @@ def _prepare_array_for_update(
          1D/'time', (y_size, x_size) for a 3D variable.
       is_dir (bool): see _download_boundary_chunk_if_present().
    """
-   group = zarr.open_group(local_store, mode='r+', zarr_format=3)
+   # use_consolidated=False: the skeleton just downloaded carries creation's
+   # consolidated block, which zarr prefers over each array's own zarr.json.
+   # Resizing through that stale view would compute the new shape from the
+   # pre-resize one -- harmless while this only ever grows to an absolute
+   # target, but the same staleness silently swallows the appends that
+   # follow (see _write_time_coord_and_upload() and
+   # deep_copy_cube_per_var_chunk._write_var_3d_and_upload()), so never read
+   # shape through it anywhere on this path.
+   group = zarr.open_group(
+      local_store, mode='r+', zarr_format=3, use_consolidated=False
+   )
    array = group[var_name]
    array.resize((new_total_layers,) + extra_dims_sizes)
    _upload_var_metadata(local_store, output_store, var_name)
@@ -239,9 +250,14 @@ def _write_time_coord_and_upload(
       return
 
    time_values = cube[var_name].values
-   target = zarr.open_group(local_store, mode='r+', zarr_format=3)[var_name]
-   units = target.attrs['units']
-   calendar = target.attrs['calendar']
+   # use_consolidated=False: see _prepare_array_for_update() -- a
+   # consolidated open here reports 'time's pre-resize length, making the
+   # append below a silent no-op.
+   target = zarr.open_group(
+      local_store, mode='r+', zarr_format=3, use_consolidated=False
+   )[var_name]
+   units = target.attrs[utils.Units.name]
+   calendar = target.attrs[utils.Units.calendar_name]
 
    num_chunks = 0
    num_resumed = 0
@@ -440,6 +456,8 @@ def deep_copy_update_per_var_chunk(
          f"parameters, got {progress_dir!r}"
       )
 
+   validate_local_staging_dir(local_staging_dir)
+
    verify_output_store_exists(output_store)
 
    creation_progress = _Progress.create(progress_dir, output_store)
@@ -559,6 +577,15 @@ def deep_copy_update_per_var_chunk(
          old_total_layers, new_total_layers, (y_size, x_size), is_dir=True
       )
 
+   # Rebuild the root's consolidated block from the freshly-resized array
+   # metadata. Every write path below already passes use_consolidated=False,
+   # so this isn't what makes them correct -- it stops the *store* from
+   # carrying a root that contradicts its own arrays (any reader opening it
+   # mid-update, and any future code here that forgets the flag, would
+   # otherwise see the pre-resize shapes).
+   zarr.consolidate_metadata(local_store)
+   logging.info(f'Re-consolidated {local_store} metadata after resizing every array')
+
    _write_time_coord_and_upload(
       cube, local_store, output_store, time_chunk_1d, new_total_layers,
       old_total_layers, update_progress
@@ -654,7 +681,8 @@ if __name__ == '__main__':
       required=True,
       help='Local directory the store\'s metadata skeleton is downloaded '
          'into, and every write lands in, before being synced back to '
-         '--output-store. Required.'
+         '--output-store. Required. Must be a real local filesystem path -- '
+         'an s3:// value is rejected.'
    )
    parser.add_argument(
       '--keep-local-staging',
