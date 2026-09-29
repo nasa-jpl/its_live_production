@@ -42,7 +42,7 @@ warnings.filterwarnings('ignore', category=DeprecationWarning, module='pyogrio')
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import utils
-from itscube_types import Vars
+from itscube_types import ImgPairInfo, Vars
 import deep_copy_cube as dcc
 
 
@@ -71,6 +71,88 @@ def synthetic_cube():
         },
         coords={'time': time, 'y': y, 'x': x},
     )
+
+
+@pytest.fixture
+def fill_value_edge_case_cube():
+    """Synthetic cube isolating the two fill-value edge cases build_encoding()
+    must handle beyond a plain attrs-carried fill:
+
+    - M11-shaped (`Vars.m11`): real granules never set a CF _FillValue/
+      missing_value *attribute* on M11/M12, but the zarr-level array
+      metadata fill still surfaces as var.encoding['fill_value'] (as NaN).
+      build_encoding() must fall back to it and override the NaN to
+      utils.Missing.value, not leave the variable fill-less.
+    - NO_FILL_VARS-shaped, one float (`ImgPairInfo.date_dt`) and one uint
+      (`Vars.stable_count_slow`): variables that are always populated and
+      must end up with NO fill at all, even though each inherits one --
+      the float one from attrs (mimicking date_dt's granule-native
+      _FillValue=NaN), the uint one from encoding (mimicking
+      stable_count_slow's zarr-level fill=0).
+    """
+    time = np.array(
+        ['2020-01-01', '2020-01-02', '2020-01-03'], dtype='datetime64[ns]'
+    )
+    y = np.arange(20, dtype='float64')
+    x = np.arange(30, dtype='float64')
+
+    ds = xr.Dataset(
+        data_vars={
+            Vars.m11: (('time', 'y', 'x'), np.zeros((3, 20, 30), dtype='float32')),
+            ImgPairInfo.date_dt: (('time',), np.zeros(3, dtype='float32')),
+            Vars.stable_count_slow: (('time',), np.zeros(3, dtype='uint32')),
+        },
+        coords={'time': time, 'y': y, 'x': x},
+    )
+
+    ds[Vars.m11].encoding[utils.Missing.fill_value] = np.float32(np.nan)
+    ds[ImgPairInfo.date_dt].attrs[utils.OutputFormat.fill_value] = np.nan
+    ds[Vars.stable_count_slow].encoding[utils.Missing.fill_value] = np.uint32(0)
+
+    return ds
+
+
+class TestBuildEncodingFillValueEdgeCases:
+    """Covers the two fill-value edge cases in build_encoding() that a plain
+    attrs-carried fill (already covered by the integration test
+    test_deep_copy_fill_value_convention) doesn't exercise -- see
+    fill_value_edge_case_cube."""
+
+    def test_encoding_only_nan_fill_overridden_to_missing_value(
+        self, fill_value_edge_case_cube
+    ):
+        # M11-shaped: no attrs fill, only an inherited encoding NaN fill --
+        # must fall back to it and override NaN to the standard sentinel.
+        encoding = dcc.build_encoding(
+            fill_value_edge_case_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
+        )
+
+        assert encoding[Vars.m11][utils.OutputFormat.fill_value] == \
+            np.float32(utils.Missing.value)
+
+    def test_no_fill_vars_float_gets_explicit_none(self, fill_value_edge_case_cube):
+        # date_dt-shaped: inherits _FillValue=NaN in attrs, but NO_FILL_VARS
+        # membership must still force fill_value=None explicitly -- omitting
+        # the key alone would leave xarray/zarr's own default to
+        # re-introduce NaN on write for a float dtype.
+        encoding = dcc.build_encoding(
+            fill_value_edge_case_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
+        )
+
+        assert utils.OutputFormat.fill_value in encoding[ImgPairInfo.date_dt]
+        assert encoding[ImgPairInfo.date_dt][utils.OutputFormat.fill_value] is None
+
+    def test_no_fill_vars_uint_gets_no_fill_key_at_all(self, fill_value_edge_case_cube):
+        # stable_count_slow-shaped: inherits fill=0 in encoding, but
+        # NO_FILL_VARS membership must suppress it entirely -- unlike the
+        # float case, no explicit None override is needed for uint dtypes
+        # (they don't get an unwanted default fill on write).
+        encoding = dcc.build_encoding(
+            fill_value_edge_case_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
+        )
+
+        assert utils.Missing.name not in encoding[Vars.stable_count_slow]
+        assert utils.OutputFormat.fill_value not in encoding[Vars.stable_count_slow]
 
 
 class TestDeepCopyCubeHelpers:
@@ -231,6 +313,22 @@ class TestDeepCopyCubeLocalStaging:
                 time_chunk_1d=200000,
                 local_staging_dir=str(tmp_path / "staging"),
             )
+
+    def test_validate_rejects_s3_staging_dir(self):
+        # An s3:// staging dir is the one bad value that passes every other
+        # guard: the per-chunk upload finds each finished chunk with
+        # os.path.exists(), never true for an s3:// path, so every chunk
+        # would look like one zarr's write_empty_chunks legitimately skipped
+        # -- publishing a skeleton-only store marked complete, silently.
+        with pytest.raises(ValueError, match="must be a local filesystem path"):
+            dcc.validate_local_staging_dir("s3://its-live-data/scratch/cube.zarr")
+
+    def test_validate_accepts_local_and_unset_staging_dir(self, tmp_path):
+        # Returns None on the happy path; whether staging is required at all
+        # is the caller's rule, so None/empty must pass through untouched.
+        assert dcc.validate_local_staging_dir(str(tmp_path / "staging")) is None
+        assert dcc.validate_local_staging_dir(None) is None
+        assert dcc.validate_local_staging_dir("") is None
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +582,43 @@ class TestDeepCopyCubeIntegration:
         for coord in (utils.Coords.X, utils.Coords.Y):
             assert utils.OutputFormat.fill_value not in raw[coord].attrs, \
                 f"{coord} coordinate should not carry a '{utils.OutputFormat.fill_value}' attribute"
+
+    @pytest.mark.order(6)
+    def test_deep_copy_fill_value_edge_cases(self, deep_copy_cube_path):
+        """Two fill-value edge cases beyond the general int/float convention
+        checked by test_deep_copy_fill_value_convention:
+        - M11/M12: real granules carry no CF _FillValue/missing_value
+          attribute on these at all (only a zarr-level array metadata fill),
+          which build_encoding() must fall back to and override from NaN to
+          the standard sentinel -- not leave fill-less.
+        - NO_FILL_VARS (date_dt/roi_valid_percentage/stable_count_slow/
+          stable_count_stationary/stable_shift_flag): always-populated
+          variables that must end up with NO fill at all, matching
+          itscube.py's dtype-only encoding for these, even though the
+          source virtual cube inherits one from the granule (date_dt/
+          roi_valid_percentage) or the zarr-level metadata (the
+          stable_count/flag variables).
+        """
+        raw = xr.open_zarr(
+            str(deep_copy_cube_path), zarr_format=3, consolidated=True,
+            mask_and_scale=False
+        )
+
+        for m_var in (Vars.m11, Vars.m12):
+            assert m_var in raw.data_vars, f"{m_var} missing from deep copy"
+            assert raw[m_var].dtype.kind == 'f'
+            assert utils.OutputFormat.fill_value in raw[m_var].attrs, \
+                f"{m_var} must carry a '{utils.OutputFormat.fill_value}' attribute"
+            assert raw[m_var].attrs[utils.OutputFormat.fill_value] == utils.Missing.value, \
+                f"{m_var} fill must be the standard sentinel, not a raw NaN"
+
+        for no_fill_var in dcc.NO_FILL_VARS:
+            assert no_fill_var in raw.variables, f"{no_fill_var} missing from deep copy"
+            var = raw[no_fill_var]
+            assert utils.OutputFormat.fill_value not in var.attrs, \
+                f"{no_fill_var} must NOT carry a '{utils.OutputFormat.fill_value}' attribute"
+            assert utils.Missing.name not in var.attrs, \
+                f"{no_fill_var} must NOT carry a '{utils.Missing.name}' attribute"
 
     @pytest.mark.order(7)
     def test_deep_copy_variable_set_matches_source(self, deep_copy_cube_path, virtual_cube_path):
