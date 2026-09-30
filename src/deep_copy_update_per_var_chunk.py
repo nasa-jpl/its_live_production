@@ -67,6 +67,7 @@ from deep_copy_cube import (
    validate_local_staging_dir
 )
 from deep_copy_cube_per_var_chunk import (
+   _cleanup_local_zarr_stores,
    _compute_radar_mask,
    _upload_chunk,
    _write_var_3d_and_upload,
@@ -452,6 +453,8 @@ def deep_copy_update_per_var_chunk(
       keep_progress_markers (bool): keep this update's own progress
          markers instead of removing them on success.
    """
+   _cleanup_local_zarr_stores()
+
    if not progress_dir or not progress_dir.startswith(utils.S3_PREFIX):
       raise ValueError(
          f"--progress-dir must be an s3:// path recorded by the creation "
