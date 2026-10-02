@@ -51,6 +51,7 @@ python src/deep_copy_cube_per_var_chunk.py \
 """
 import gc
 import glob
+import json
 import logging
 import os
 import shutil
@@ -234,6 +235,53 @@ def _fill_nan_in_place(values, fill_value):
       return
 
    np.copyto(values, fill_value, where=np.isnan(values))
+
+
+def _log_duplicate_time_granules(cube, written_time, duplicate_time_granules_file=None):
+   """Log the granule URL and decoded datetime for every position sharing a
+   duplicated raw 'time' value, so a duplicate-time RuntimeError can be
+   diagnosed without re-deriving positions by hand.
+
+   Indexes `cube` (not `written_time`) for the URL/decoded datetime:
+   position order is identical between the two (both cover the same
+   leading total_layers slice) and `cube`'s own 'time' is CF-decoded,
+   unlike `written_time`, which the caller reads raw on purpose.
+
+   Args:
+      cube (xr.Dataset): the virtual datacube `written_time`'s positions
+         index into.
+      written_time (np.ndarray): raw (CF-undecoded) 'time' values read
+         back from the local store.
+      duplicate_time_granules_file (str): if given, also write every
+         duplicated raw time value and its colliding granule URLs to this
+         path as JSON ({str(raw time value): [granule url, ...]}). None
+         skips the write.
+   """
+   values, counts = np.unique(written_time, return_counts=True)
+   dup_values = values[counts > 1]
+
+   duplicates = {}
+   for dup_value in dup_values:
+      positions = np.nonzero(written_time == dup_value)[0]
+      decoded_times = cube[utils.Coords.TIME].values[positions]
+      urls = cube[Vars.url].values[positions]
+
+      details = '; '.join(
+         f'position {pos}: {url!r} (decoded time {decoded_time})'
+         for pos, decoded_time, url in zip(positions, decoded_times, urls)
+      )
+      logging.error(f'Duplicate raw time value {dup_value!r} -- {details}')
+
+      if duplicate_time_granules_file is not None:
+         duplicates[str(dup_value)] = [str(url) for url in urls]
+
+   if duplicate_time_granules_file is not None:
+      with open(duplicate_time_granules_file, 'w') as fh:
+         json.dump(duplicates, fh, indent=2)
+      logging.info(
+         f'Wrote {len(duplicates)} duplicate time value(s) to '
+         f'{duplicate_time_granules_file}'
+      )
 
 
 def _upload_chunk(local_store, output_store, var_name, chunk_index):
@@ -544,7 +592,8 @@ def deep_copy_cube_per_var_chunk(
    num_layers=0,
    num_load_workers=None,
    progress_dir=None,
-   keep_progress_markers=False
+   keep_progress_markers=False,
+   save_duplicate_time_granules=False
 ):
    """Materialize `input_store` into a real zarr v3 datacube at
    `output_store`. For an s3:// `output_store`, uploads each whole zarr
@@ -587,6 +636,11 @@ def deep_copy_cube_per_var_chunk(
          markers; None disables resumability. Requires an s3:// `output_store`.
       keep_progress_markers (bool): keep the progress markers around
          after a successful run instead of pruning them.
+      save_duplicate_time_granules (bool): if True, also write every
+         duplicated raw time value and its colliding granule URLs to a
+         local JSON file (`{output_store}` basename with any trailing
+         '.zarr' dropped, plus '_duplicateTime.json') when the
+         duplicate-time-value check fails. False skips the write.
    """
    _cleanup_local_zarr_stores()
 
@@ -733,13 +787,22 @@ def deep_copy_cube_per_var_chunk(
    written_time = zarr.open_group(local_store, mode='r', zarr_format=3)[utils.Coords.TIME][:]
    num_unique_time = np.unique(written_time).size
    if num_unique_time != total_layers:
+      duplicate_time_granules_file = None
+      if save_duplicate_time_granules:
+         output_basename = os.path.basename(output_store.rstrip('/'))
+         if output_basename.endswith('.zarr'):
+            output_basename = output_basename[:-len('.zarr')]
+         duplicate_time_granules_file = f'{output_basename}_duplicateTime.json'
+
+      _log_duplicate_time_granules(cube, written_time, duplicate_time_granules_file)
       raise RuntimeError(
          f"{local_store}'s '{utils.Coords.TIME}' coordinate has "
          f'{total_layers - num_unique_time} duplicate value(s) after '
          f'materializing locally out of {total_layers} -- mid_date is '
          f'microsecond-uniquified and should never collide. Refusing to '
          f'upload or mark the skeleton done; some positions were likely '
-         f'never actually written.'
+         f'never actually written. See the logged duplicate-time details '
+         f'above for the specific granules involved.'
       )
 
    # template's chunk-manifest bookkeeping is non-trivial and unused below
@@ -923,7 +986,7 @@ if __name__ == '__main__':
    parser.add_argument(
       '--num-load-workers',
       type=int,
-      default=None,
+      default=32,
       help='Thread-pool size for each batch .load() call (each granule is '
          'one dask task, chunk size 1 along "time" in the virtual cube, so '
          'this bounds how many granules get fetched/decompressed '
@@ -954,6 +1017,16 @@ if __name__ == '__main__':
          'radar-skipped vs. written). No effect without --progress-dir '
          '[%(default)s].'
    )
+   parser.add_argument(
+      '--save-duplicate-time-granules',
+      action='store_true',
+      help='If given, also write every duplicated raw "time" value and its '
+         'colliding granule URLs as JSON ({time value: [granule url, '
+         '...]}), in addition to the logged detail, if the '
+         'duplicate-time-value check fails. Written locally to '
+         '--output-store\'s basename with any trailing ".zarr" dropped, '
+         'plus "_duplicateTime.json" [%(default)s].'
+   )
 
    args = parser.parse_args()
    logging.info(f'Command: {sys.argv}')
@@ -972,7 +1045,8 @@ if __name__ == '__main__':
       args.num_layers,
       args.num_load_workers,
       args.progress_dir,
-      args.keep_progress_markers
+      args.keep_progress_markers,
+      args.save_duplicate_time_granules
    )
 
    elapsed_time = time.time() - start_time
