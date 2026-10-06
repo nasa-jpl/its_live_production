@@ -911,10 +911,11 @@ def get_existing_granule_urls(cube):
 
 
 def _filter_processed_granules(urls, skipped, existing, num_p000_skipped):
-   """Drop granules already committed to the cube or previously skipped,
-   when appending new granules to a pre-existing icechunk repo. P000
-   granules are not filtered here -- __main__ already excludes them from
-   `urls` before this is ever called.
+   """Drop granules already committed to the cube (if any) or previously
+   skipped. `existing` is empty when no repo exists yet, so this also
+   covers the no-repo-but-sidecar-exists case. P000 granules are not
+   filtered here -- __main__ already excludes them from `urls` before
+   this is ever called.
 
    Args:
       urls (list of str): candidate granule URLs (s3:// form), sorted
@@ -1254,6 +1255,7 @@ if __name__ == "__main__":
    # that actually produces a cube creates one; every later batch with data
    # appends to it.
    repo = None
+   existing_urls = set()
 
    if repo_exists:
       repo, existing_cube = open_repo_for_append(store_path, url_prefix)
@@ -1261,15 +1263,21 @@ if __name__ == "__main__":
          f'Found existing cube with {len(existing_cube.time)} time layers '
          f'at {store_path}; appending new granules to it'
       )
-
-      try:
-         existing_skipped = load_skipped_granules(store_path)
-      except RuntimeError:
-         logging.info(f'No existing skipped-granules file yet for {store_path}')
-         existing_skipped = set()
-
       existing_urls = get_existing_granule_urls(existing_cube)
 
+   # Load any previously-recorded skipped granules even if the repo itself
+   # doesn't exist yet -- e.g. a prior run where every batch found no valid
+   # data in the bbox never created a repo, but still wrote the sidecar
+   # after each batch (see the "cube is None" branch below). Re-checking
+   # those granules' S3 existence/validity on this run would be pure wasted
+   # work, so exclude them regardless of repo_exists.
+   try:
+      existing_skipped = load_skipped_granules(store_path)
+   except RuntimeError:
+      logging.info(f'No existing skipped-granules file yet for {store_path}')
+      existing_skipped = set()
+
+   if existing_skipped or existing_urls:
       # Second return value (already-skipped granules re-found in this
       # run's candidate list) is always a subset of existing_skipped, so
       # unioning it in below would add nothing -- discarded here.
