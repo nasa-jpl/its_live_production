@@ -30,6 +30,11 @@ from virtual_itslive_cube import (
    build_virtual_cube,
 )
 from deep_copy_cube import TIME_CHUNK_VALUE_1D
+from time_collisions import (
+   assert_layers_kept,
+   existing_time_values,
+   uniquify_granule_times,
+)
 
 from virtualizarr.manifests import ManifestArray
 from virtualizarr.manifests.utils import copy_and_replace_metadata
@@ -513,7 +518,7 @@ def _assert_identical_grids(cropped, bbox):
          )
 
 
-def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
+def build_virtual_cube_subset(vds_list, bbox, netcdf_store, taken_time_values):
    """Build a virtual datacube restricted to `bbox`, smaller than the
    granules' combined extent.
 
@@ -524,6 +529,12 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
    before being mosaicked via `build_virtual_cube`, which stacks them on
    time and reuses its dtype/attr/img_pair_info handling.
 
+   Before stacking, every granule's time is made unique against
+   `taken_time_values` (see time_collisions.uniquify_granule_times): autoRIFT's
+   6-digit filename-hash jitter collides in practice, and combine_by_coords
+   silently keeps only one of any granules sharing a time. The stacked cube
+   is then checked to hold exactly one layer per granule, as a hard failure.
+
    Args:
       vds_list (list of xr.Dataset): per-granule virtual datasets, as passed
          to `build_virtual_cube` -- 'x'/'y'/'time' coordinates, virtual
@@ -532,6 +543,11 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
          units, as (xmin, xmax, ymin, ymax).
       netcdf_store (obstore.store.S3Store): object store used to check for
          valid data within the overlap region.
+      taken_time_values (set of float): encoded 'time' values (float64
+         seconds since GPS epoch, as stored) already claimed by the cube --
+         existing layers plus earlier batches of this run. Updated in place
+         with this batch's times, so the caller passes the same set to every
+         batch.
 
    Returns:
       tuple of (xr.Dataset or None, str or None, list of str): the cube with
@@ -608,10 +624,25 @@ def build_virtual_cube_subset(vds_list, bbox, netcdf_store):
 
    _assert_identical_grids(cropped, bbox)
 
+   # Must happen before build_virtual_cube: its combine_by_coords silently
+   # drops all but one of any granules sharing a time value. Ties resolve by
+   # granule URL, so the result doesn't depend on the unordered arrival
+   # order of the cropping pass above.
+   num_bumped = uniquify_granule_times(cropped, taken_time_values)
+   if num_bumped:
+      logging.info(f'Resolved {num_bumped} duplicate time value(s) in this batch')
+
    logging.info(f'Number of skipped granules: {len(skipped_granules)}')
    # All cropped granules are on identical grids (verified by _assert_identical_grids),
    # so skip the extend_coords() step in build_virtual_cube
-   return *build_virtual_cube(cropped, already_aligned=True), skipped_granules
+   cube, autorift_param_file = build_virtual_cube(cropped, already_aligned=True)
+
+   # Every granule must come out as its own layer -- a mismatch means a
+   # duplicate time slipped past uniquify_granule_times and a granule was
+   # silently dropped.
+   assert_layers_kept(cube, len(cropped), context=f'bbox {bbox}: ')
+
+   return cube, autorift_param_file, skipped_granules
 
 
 def _granule_exists(granule_url, store, bucket_prefix):
@@ -1257,6 +1288,14 @@ if __name__ == "__main__":
    repo = None
    existing_urls = set()
 
+   # Encoded 'time' values (as stored on disk) already claimed by the cube:
+   # seeded from the existing repo's layers when appending, then grown in
+   # place by every batch's build_virtual_cube_subset() call, so each new
+   # granule's time is unique against both committed layers and earlier
+   # batches of this run. Committed layers are never moved -- only new
+   # granules get bumped.
+   taken_time_values = set()
+
    if repo_exists:
       repo, existing_cube = open_repo_for_append(store_path, url_prefix)
       logging.info(
@@ -1264,6 +1303,13 @@ if __name__ == "__main__":
          f'at {store_path}; appending new granules to it'
       )
       existing_urls = get_existing_granule_urls(existing_cube)
+
+      # Raises if the existing cube already holds duplicates -- it predates
+      # the time-collision fix and must be regenerated from scratch, not
+      # appended to. Read raw from the repo, not from existing_cube's
+      # decoded times: decode/re-encode doesn't always round-trip to the
+      # stored float (see time_collisions.py).
+      taken_time_values = existing_time_values(repo.readonly_session("main").store)
 
    # Load any previously-recorded skipped granules even if the repo itself
    # doesn't exist yet -- e.g. a prior run where every batch found no valid
@@ -1319,7 +1365,7 @@ if __name__ == "__main__":
       logging.info(f'Batch {batch_num}/{num_batches}: parsed {len(vds_list)} datasets')
 
       cube, autorift_param_file, batch_skipped_granules = \
-         build_virtual_cube_subset(vds_list, bbox, netcdf_store)
+         build_virtual_cube_subset(vds_list, bbox, netcdf_store, taken_time_values)
 
       # Record granules build_virtual_cube_subset skipped for this batch, so
       # the persistent skipped-granules JSON reflects every granule that was
@@ -1536,6 +1582,14 @@ if __name__ == "__main__":
          mask_and_scale=False
       )
       logging.info(f"{cube_roundtrip=}")
+
+      # Belt and braces: every committed time must be unique, whatever path
+      # (create, append, resumed run) produced it.
+      if not cube_roundtrip.indexes[utils.Coords.TIME].is_unique:
+         raise RuntimeError(
+            f"{store_path} has duplicate '{utils.Coords.TIME}' values after "
+            "this run -- the time-collision fix did not hold"
+         )
 
    else:
       logging.info('No cube was created')
