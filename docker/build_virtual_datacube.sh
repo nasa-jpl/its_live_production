@@ -41,6 +41,7 @@ mkdir -p ${TEMP_STAGING_DIR}/env
 # Copy files to the staging area and build the PGE docker image
 cp -r ${WORKSPACE}/src/virtual_itslive_cube_per_chunk.py \
       ${WORKSPACE}/src/virtual_itslive_cube.py \
+      ${WORKSPACE}/src/deep_copy_cube.py \
       ${WORKSPACE}/src/time_collisions.py \
       ${WORKSPACE}/src/itslive_catalog_utils.py \
       ${WORKSPACE}/src/itslive_utils.py \
