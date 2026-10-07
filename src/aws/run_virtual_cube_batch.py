@@ -25,7 +25,7 @@ from itslive_mosaics_types import GeoJsonVars
 
 
 class VirtualDataCubeBatch:
-    """ 
+    """
     Class to manage Batch job submission for virtual datacube generation at AWS.
     """
     CLIENT = boto3.client('batch', region_name='us-west-2')
@@ -300,7 +300,7 @@ def parse_args():
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='datacube-spot-4vCPU-32GB',
+        default='its-live-deep-copy-queue',
         help="AWS Batch job queue to use for virtual datacube generation [%(default)s]."
     )
     parser.add_argument(
