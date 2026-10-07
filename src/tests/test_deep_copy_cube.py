@@ -188,6 +188,21 @@ class TestDeepCopyCubeHelpers:
 
         assert encoding[utils.Coords.TIME]['chunks'] == (200000,)
 
+    def test_build_encoding_time_coord_pins_units_calendar_dtype(self, synthetic_cube):
+        # Left unset, xarray's CF encoder derives units/dtype from this
+        # cube's own first 'time' value, so every deep-copy cube would get a
+        # different (epoch, dtype) pair instead of one shared convention.
+        # Must match the source virtual cube's own GPS-epoch/float64 scheme
+        # (utils.Units.gps_epoch_date) exactly.
+        encoding = dcc.build_encoding(
+            synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
+        )
+
+        time_encoding = encoding[utils.Coords.TIME]
+        assert time_encoding[utils.Units.name] == utils.Units.gps_epoch_date
+        assert time_encoding[utils.Units.calendar_name] == utils.Units.proleptic_gregorian
+        assert time_encoding[utils.OutputFormat.dtype] == 'float64'
+
     def test_build_encoding_static_var_full_extent(self, synthetic_cube):
         encoding = dcc.build_encoding(
             synthetic_cube, time_chunk=20000, xy_chunk=10, time_chunk_1d=200000
@@ -515,6 +530,13 @@ class TestDeepCopyCubeIntegration:
 
         assert cube['time'].encoding['chunks'] == expected_1d_chunks, \
             f"time chunks {cube['time'].encoding['chunks']} != expected {expected_1d_chunks}"
+
+        # 'time' units/calendar/dtype must be pinned to the GPS-epoch/
+        # float64 convention, not whatever xarray's CF encoder would have
+        # derived from this cube's own first time value.
+        assert cube['time'].encoding[utils.Units.name] == utils.Units.gps_epoch_date
+        assert cube['time'].encoding[utils.Units.calendar_name] == utils.Units.proleptic_gregorian
+        assert cube['time'].encoding[utils.OutputFormat.dtype] == 'float64'
 
         assert cube['x'].encoding['chunks'] == (cube.sizes['x'],), \
             "x coordinate should be chunked at full extent"

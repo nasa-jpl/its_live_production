@@ -45,6 +45,13 @@ Covers:
     run before open_virtual_cube() is called; a full run writes run_config
     plus every marker and prunes the per-variable ones unless asked not to;
     and without --progress-dir no markers are touched at all.
+- build_encoding()'s 'time' coordinate encoding: units/calendar/dtype are
+    pinned explicitly to the GPS-epoch/float64 convention, not left for
+    xarray's CF encoder to infer a different one per cube.
+- time_collisions.uniquify_granule_times(): catches not just exact duplicate
+    'time' values but any that alias to the identical on-disk float64 value
+    once CF-encoded (e.g. sub-ULP nanosecond-apart granules), and leaves
+    already-unique granules untouched.
 """
 import json
 import sys
@@ -60,6 +67,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import utils
 import deep_copy_cube_per_var_chunk as dcpvc
 import deep_copy_cube_progress as dcp
+import time_collisions as tc
 from itscube_types import ImgPairInfo, Vars
 
 
@@ -608,6 +616,19 @@ NUM_LAYERS = 4
 CUBE_Y_SIZE = 4
 CUBE_X_SIZE = 3
 
+# Realistic, day-spaced datetime values for _make_synthetic_virtual_cube()'s
+# 'time' coordinate (and every _recorded_config-style call below that must
+# agree with it bit-for-bit). np.arange(NUM_LAYERS).astype('datetime64[ns]')
+# sits only nanoseconds from the 1970 Unix epoch -- fine under the old
+# auto-inferred (cube-relative) time encoding, but once 'time' is pinned to
+# float64 seconds since the real (1980) GPS epoch, those nanosecond-level
+# gaps round away to the identical float64 value, making every layer look
+# like a duplicate. Not a bug in the pinned epoch -- real mid_dates are never
+# within nanoseconds of 1970 -- just unrealistic test data.
+SYNTHETIC_TIME_VALUES = (
+    np.datetime64('2020-01-01') + np.arange(NUM_LAYERS).astype('timedelta64[D]')
+).astype('datetime64[ns]')
+
 
 def _make_synthetic_virtual_cube():
     """Small xr.Dataset shaped like a real virtual cube -- one 3D
@@ -627,13 +648,13 @@ def _make_synthetic_virtual_cube():
                 ('time', 'y', 'x'), values.astype('int16'),
                 {'missing_value': np.int16(-1)}
             ),
-            'url': (('time',), np.array([f'granule_{i}.nc' for i in range(NUM_LAYERS)])),
+            Vars.url: (('time',), np.array([f'granule_{i}.nc' for i in range(NUM_LAYERS)])),
             ImgPairInfo.mission_img1: (('time',), np.array(['S'] * NUM_LAYERS)),
             ImgPairInfo.satellite_img1: (('time',), np.array(['2A'] * NUM_LAYERS)),
             'landice': (('y', 'x'), np.ones((CUBE_Y_SIZE, CUBE_X_SIZE), dtype='uint8')),
         },
         coords={
-            utils.Coords.TIME: np.arange(NUM_LAYERS).astype('datetime64[ns]'),
+            utils.Coords.TIME: SYNTHETIC_TIME_VALUES,
             utils.Coords.Y: np.arange(CUBE_Y_SIZE, dtype='float64'),
             utils.Coords.X: np.arange(CUBE_X_SIZE, dtype='float64'),
         },
@@ -738,7 +759,7 @@ class TestDeepCopyCubePerVarChunkResumability:
         assert f'{BASE}/skeleton/_SUCCESS' in local_only_run.paths
         assert f'{BASE}/vx/_SUCCESS' in local_only_run.paths
         assert f'{BASE}/vx/0.done' in local_only_run.paths
-        assert f'{BASE}/url/_SUCCESS' in local_only_run.paths
+        assert f'{BASE}/{Vars.url}/_SUCCESS' in local_only_run.paths
 
     def test_no_progress_dir_writes_no_markers(self, tmp_path, local_only_run, monkeypatch):
         # Without --progress-dir the strict refuse-to-overwrite guard is used
@@ -785,7 +806,7 @@ class TestDeepCopyCubePerVarChunkResumability:
             {'time_chunk': 2, 'xy_chunk': 4, 'time_chunk_1d': 2,
              'xy_shard_multiplier': 1, 'num_layers': 0},
             NUM_LAYERS,
-            np.arange(NUM_LAYERS).astype('datetime64[ns]')
+            SYNTHETIC_TIME_VALUES
         )
         fake_fs = _FakeFS(existing={f'{BASE}/skeleton/_SUCCESS'})
         fake_fs.write_json(f'{BASE}/{dcp.RUN_CONFIG_NAME}', recorded)
@@ -797,7 +818,7 @@ class TestDeepCopyCubePerVarChunkResumability:
         # Chunk-level work for not-yet-done vars/chunks still proceeds
         # normally -- only the skeleton re-upload is skipped.
         assert f'{BASE}/vx/_SUCCESS' in fake_fs.paths
-        assert f'{BASE}/url/_SUCCESS' in fake_fs.paths
+        assert f'{BASE}/{Vars.url}/_SUCCESS' in fake_fs.paths
         assert f'{BASE}/skeleton/_SUCCESS' in fake_fs.paths
 
     def test_duplicate_time_values_raise_before_any_upload(self, tmp_path, monkeypatch):
@@ -834,9 +855,9 @@ class TestDeepCopyCubePerVarChunkResumability:
             {'time_chunk': 2, 'xy_chunk': 4, 'time_chunk_1d': 2,
              'xy_shard_multiplier': 1, 'num_layers': 0},
             NUM_LAYERS,
-            np.arange(NUM_LAYERS).astype('datetime64[ns]')
+            SYNTHETIC_TIME_VALUES
         )
-        fake_fs = _FakeFS(existing={f'{BASE}/vx/0.done', f'{BASE}/url/_SUCCESS'})
+        fake_fs = _FakeFS(existing={f'{BASE}/vx/0.done', f'{BASE}/{Vars.url}/_SUCCESS'})
         fake_fs.write_json(f'{BASE}/{dcp.RUN_CONFIG_NAME}', recorded)
         _install_local_only_run(monkeypatch, fake_fs)
 
@@ -849,13 +870,14 @@ class TestDeepCopyCubePerVarChunkResumability:
         _run(tmp_path, progress_dir=PROGRESS_DIR, keep_progress_markers=True)
 
         # NUM_LAYERS=4 with time_chunk=2 gives vx chunks 0 and 1. vx chunk 0
-        # was already marked, so only chunk 1 may be re-uploaded, and 'url'
-        # (marked fully done) must be untouched entirely. The cube's other 1D
-        # variables were never marked, so they're expected in `uploaded` --
-        # assert on what must/must not appear rather than the exact list.
+        # was already marked, so only chunk 1 may be re-uploaded, and
+        # Vars.url (marked fully done) must be untouched entirely. The
+        # cube's other 1D variables were never marked, so they're expected
+        # in `uploaded` -- assert on what must/must not appear rather than
+        # the exact list.
         assert ('vx', 1) in uploaded
         assert ('vx', 0) not in uploaded
-        assert not [entry for entry in uploaded if entry[0] == 'url']
+        assert not [entry for entry in uploaded if entry[0] == Vars.url]
         assert f'{BASE}/_SUCCESS' in fake_fs.paths
 
     def test_resume_with_mismatched_chunk_size_raises(self, tmp_path, monkeypatch):
@@ -864,7 +886,7 @@ class TestDeepCopyCubePerVarChunkResumability:
             {'time_chunk': 2, 'xy_chunk': 4, 'time_chunk_1d': 2,
              'xy_shard_multiplier': 1, 'num_layers': 0},
             NUM_LAYERS,
-            np.arange(NUM_LAYERS).astype('datetime64[ns]')
+            SYNTHETIC_TIME_VALUES
         )
         fake_fs = _FakeFS()
         fake_fs.write_json(f'{BASE}/{dcp.RUN_CONFIG_NAME}', recorded)
@@ -885,6 +907,89 @@ class TestDeepCopyCubePerVarChunkResumability:
         # defeats the purpose.
         with pytest.raises(ValueError, match='must be an s3:// path'):
             _run(tmp_path, progress_dir=str(tmp_path / 'progress'))
+
+
+# ---------------------------------------------------------------------------
+# 'time' coordinate encoding: build_encoding() must pin units/calendar/
+# dtype explicitly, not leave them for xarray's CF encoder to infer.
+# ---------------------------------------------------------------------------
+
+class TestTimeCoordinateEncoding:
+
+    def test_units_calendar_dtype_are_pinned(self, tmp_path, local_only_run):
+        # Regression: left unset, xarray derives a reference datetime from
+        # this cube's own first 'time' value and whatever dtype that
+        # happens to produce, instead of one shared convention -- so every
+        # deep-copy cube would get a different (epoch, dtype) pair. Must
+        # match the source virtual cube's own GPS-epoch/float64 scheme
+        # (utils.Units.gps_epoch_date) exactly.
+        _run(tmp_path, progress_dir=PROGRESS_DIR, keep_local_staging=True)
+
+        time_array = zarr.open_group(
+            str(tmp_path / 'local.zarr'), mode='r', zarr_format=3
+        )[utils.Coords.TIME]
+
+        assert time_array.attrs[utils.Units.name] == utils.Units.gps_epoch_date
+        assert time_array.attrs[utils.Units.calendar_name] == utils.Units.proleptic_gregorian
+        assert time_array.dtype == np.dtype('float64')
+
+
+# ---------------------------------------------------------------------------
+# time_collisions.uniquify_granule_times(): the collision space it must
+# catch is bigger than exact datetime64 equality -- any two times that alias
+# to the identical on-disk float64 value once CF-encoded collide too.
+# ---------------------------------------------------------------------------
+
+class TestTimeCollisionsDeduplication:
+
+    def test_sub_ulp_nanosecond_offsets_in_2018_are_deduplicated(self):
+        # At 2018's magnitude (~1.2e9 seconds since the 1980 GPS epoch),
+        # float64's precision floor is ~238ns -- granules whose true
+        # mid_dates differ by only a few nanoseconds alias to the SAME
+        # stored value despite not being literally equal datetime64 values.
+        # Granules 0-3 (1-3ns apart) collide; granule 4 (500ns apart, above
+        # the ULP) does not.
+        base = np.datetime64('2018-06-15T12:00:00.000000000')
+        offsets_ns = [0, 1, 2, 3, 500]
+        times = np.array(
+            [base + np.timedelta64(o, 'ns') for o in offsets_ns], dtype='datetime64[ns]'
+        )
+        urls = [f'granule_{i}.nc' for i in range(len(offsets_ns))]
+
+        encoded_before = tc.encode_time_values(times)
+        assert len(set(encoded_before.tolist())) < len(offsets_ns), (
+            'premise of this test no longer holds -- these offsets no '
+            'longer alias to the same float64 value at this magnitude'
+        )
+
+        datasets = [
+            xr.Dataset(
+                {'v': (('time',), [1])},
+                coords={'time': ('time', [t])},
+                attrs={'granule_url': u},
+            )
+            for u, t in zip(urls, times)
+        ]
+
+        taken = set()
+        num_bumped = tc.uniquify_granule_times(datasets, taken)
+
+        # granules 1-3 collide with granule 0's aliased value; granule 4
+        # never collides, so only 3 of the 5 need moving.
+        assert num_bumped == 3
+        assert datasets[0]['time'].values[0] == times[0]
+        assert datasets[4]['time'].values[0] == times[4]
+
+        final_times = np.array(
+            [ds['time'].values[0] for ds in datasets], dtype='datetime64[ns]'
+        )
+        final_encoded = tc.encode_time_values(final_times)
+
+        # Every granule now has a distinct, stable on-disk encoding, and it
+        # matches exactly what was validated during resolution -- no drift
+        # between the value checked and the value a real re-encode produces.
+        assert len(set(final_encoded.tolist())) == len(offsets_ns)
+        assert set(final_encoded.tolist()) == taken
 
 
 if __name__ == "__main__":

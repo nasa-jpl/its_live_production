@@ -680,6 +680,47 @@ class TestDeepCopyUpdatePerVarChunk:
         # per-variable/per-chunk markers.
         assert not any(p.startswith(f'{update_base}/') for p in fake_fs.paths)
 
+    def test_uploads_consolidated_root_before_marking_complete(self, tmp_path, monkeypatch):
+        # Defensive upload (see its comment in deep_copy_update_per_var_chunk):
+        # _upload_chunk() normally refreshes S3's root as a side effect of
+        # each chunk, so this stubs every write out entirely -- the one shape
+        # of run where no chunk is uploaded and nothing else would push the
+        # post-resize root. Ordering is the real property under test: the
+        # root must be durable BEFORE _SUCCESS claims the update finished,
+        # since _find_incomplete_update() skips completed transitions and so
+        # would never come back to repair it.
+        fake_fs = _FakeFS()
+        creation_base = f'{PROGRESS_DIR}/output.zarr'
+        fake_fs.write_json(f'{creation_base}/{dcp.RUN_CONFIG_NAME}', RECORDED_CREATION_CONFIG)
+        output_store = _build_minimal_output_store(tmp_path, old_total_layers=4)
+        _install_common_mocks(monkeypatch, fake_fs, new_total_layers=6)
+
+        events = []
+        monkeypatch.setattr(
+            dcp.itslive_utils, 's3_copy_using_subprocess',
+            lambda command_line, *a, **k: events.append(command_line[4])
+        )
+        real_mark_complete = dcp._Progress.mark_complete
+
+        def _recording_mark_complete(self):
+            events.append('mark_complete')
+            return real_mark_complete(self)
+
+        monkeypatch.setattr(dcp._Progress, 'mark_complete', _recording_mark_complete)
+        monkeypatch.setattr(ducpvc, '_prepare_array_for_update', lambda *a, **k: None)
+        monkeypatch.setattr(ducpvc, '_write_time_coord_and_upload', lambda *a, **k: None)
+        monkeypatch.setattr(ducpvc, '_write_var_1d_and_upload', lambda *a, **k: None)
+        monkeypatch.setattr(ducpvc, '_write_var_3d_and_upload', lambda *a, **k: None)
+
+        ducpvc.deep_copy_update_per_var_chunk(
+            input_store='unused', output_store=output_store, bucket_prefix='s3://unused/',
+            progress_dir=PROGRESS_DIR, local_staging_dir=str(tmp_path / 'local.zarr'),
+        )
+
+        root_dest = f'{output_store.rstrip("/")}/{ducpvc.ROOT_METADATA_FILE}'
+        assert root_dest in events, f'root metadata never uploaded; saw {events}'
+        assert events.index(root_dest) < events.index('mark_complete')
+
     def test_incomplete_update_raises_if_cube_shrank_below_its_target(self, tmp_path, monkeypatch):
         fake_fs = _FakeFS()
         creation_base = f'{PROGRESS_DIR}/output.zarr'

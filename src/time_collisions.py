@@ -39,7 +39,7 @@ import utils
 # append reuses it, so it's what every committed value was encoded with.
 TIME_UNITS = utils.Units.gps_epoch_date
 TIME_CALENDAR = utils.Units.proleptic_gregorian
-TIME_DTYPE = np.dtype('float64')
+TIME_DTYPE = np.dtype(utils.Coords.DTYPE[utils.Coords.TIME])
 
 # Size of each bump applied to a colliding time.
 STEP_US = 1

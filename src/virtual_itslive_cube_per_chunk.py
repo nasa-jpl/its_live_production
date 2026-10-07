@@ -1538,7 +1538,7 @@ if __name__ == "__main__":
          # later batches. Seconds-since-GPS-epoch float64 avoids that.
          cube['time'].encoding[utils.Units.name] = utils.Units.gps_epoch_date
          cube['time'].encoding[utils.Units.calendar_name] = utils.Units.proleptic_gregorian
-         cube['time'].encoding[utils.OutputFormat.dtype] = 'float64'
+         cube['time'].encoding[utils.OutputFormat.dtype] = utils.Coords.DTYPE[utils.Coords.TIME]
 
          session = repo.writable_session("main")
          cube_clean = _drop_nonfinite_attrs(cube)

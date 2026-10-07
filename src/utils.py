@@ -61,6 +61,14 @@ class CoordsInfo:
                   "grouped together for date_dt filtering",
    }
 
+   # dtype each coordinate is CF-encoded as on write -- paired with
+   # Units.gps_epoch_date/calendar_name for TIME (see
+   # virtual_itslive_cube_per_chunk.py, deep_copy_cube.py,
+   # time_collisions.py), so all three can't drift out of sync.
+   DTYPE = {
+      TIME: 'float64',
+   }
+
 Coords = CoordsInfo()
 
 
