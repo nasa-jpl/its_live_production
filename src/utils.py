@@ -62,11 +62,11 @@ class CoordsInfo:
    }
 
    # dtype each coordinate is CF-encoded as on write -- paired with
-   # Units.gps_epoch_date/calendar_name for TIME (see
+   # Units.ns_epoch_date/calendar_name for TIME (see
    # virtual_itslive_cube_per_chunk.py, deep_copy_cube.py,
    # time_collisions.py), so all three can't drift out of sync.
    DTYPE = {
-      TIME: 'float64',
+      TIME: 'int64',
    }
 
 Coords = CoordsInfo()
@@ -263,12 +263,16 @@ class UnitsInfo:
    # Attribute name for calendar in datetime-encoded data variables
    calendar_name: str = 'calendar'
 
-   # GPS epoch, used as the reference date for datetime-valued variables
-   # (the cube's 'time' coordinate and the img_pair_info-derived
-   # acquisition_date_img1/acquisition_date_img2/date_center variables) so
-   # they can be encoded as float64 seconds without any resolution loss --
-   # see virtual_itslive_cube_per_chunk.py and virtual_itslive_cube.py.
-   gps_epoch_date: str = 'seconds since 1980-01-06T00:00:00+00:00'
+   # Reference date (GPS epoch) for every datetime variable this codebase
+   # encodes: the cube's 'time' coordinate plus the img_pair_info-derived
+   # acquisition_date_img1/img2/date_center. int64 nanoseconds (see
+   # Coords.DTYPE), not float64 seconds -- float64 can't exactly hold both
+   # the ~10-digit seconds-since-epoch integer part and a microsecond
+   # fraction at once (~100-200ns rounding noise per round trip, confirmed
+   # Oct 2026), whereas int64 nanoseconds has no fractional part to lose
+   # and comfortably covers any realistic ITS_LIVE date (~292-year range,
+   # negative for pre-1980 dates).
+   ns_epoch_date: str = 'nanoseconds since 1980-01-06T00:00:00+00:00'
    proleptic_gregorian: str = 'proleptic_gregorian'
 
 Units = UnitsInfo()

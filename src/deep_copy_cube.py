@@ -228,16 +228,20 @@ def build_encoding(
    # units/calendar/dtype are pinned explicitly too: _reset_write_encoding()
    # wipes the source cube's own 'time' encoding before this dict is used, so
    # left unset, xarray infers a different (epoch, dtype) per cube from its
-   # own first time value. Pinned to the same GPS-epoch/float64 scheme the
-   # source virtual cube already uses (utils.Units.gps_epoch_date).
+   # own first time value. Pinned to the same nanoseconds-since-epoch/int64
+   # scheme the source virtual cube already uses (utils.Units.ns_epoch_date).
    if utils.Coords.TIME in cube.coords:
       encoding[utils.Coords.TIME] = {
          'chunks': (time_chunk_1d,),
          COMPRESSOR_KEY: [COMPRESSOR],
          utils.Missing.fill_value: None,
-         utils.Units.name: utils.Units.gps_epoch_date,
+         utils.Units.name: utils.Units.ns_epoch_date,
          utils.Units.calendar_name: utils.Units.proleptic_gregorian,
          utils.OutputFormat.dtype: utils.Coords.DTYPE[utils.Coords.TIME],
+         # Explicit None: xarray's CF encoder defaults a datetime
+         # variable's _FillValue to NaN, which can't cast to int64 --
+         # 'time' is never actually missing anyway.
+         utils.OutputFormat.fill_value: None,
       }
 
    for var_name in cube.data_vars:

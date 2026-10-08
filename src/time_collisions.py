@@ -1,30 +1,29 @@
 """
 Guarantee unique 'time' values across a virtual ITS_LIVE datacube.
 
-autoRIFT (hyp3_autorift/crop.py) makes each granule's time unique by adding a
-6-digit numeric hash of the filename as microseconds to the pair's mid-date.
-With only 10**6 possible jitters, granules that share a center second (e.g.
-Sentinel-2 tiles from one datatake, or symmetric pairs like (0,-8)/(+8,-16))
-collide by the birthday bound once enough of them exist -- observed in
-production. A duplicate time is not just cosmetic: xr.combine_by_coords
-silently keeps only one of two same-time granules in a batch, dropping the
-other from the cube without any error.
+autoRIFT makes each granule's time unique by adding a 6-digit numeric hash
+of the filename as microseconds to the pair's mid-date. With only 10**6
+possible jitters, granules sharing a center second (e.g. Sentinel-2 tiles
+from one datatake) collide by the birthday bound once enough exist --
+observed in production. Not just cosmetic: xr.combine_by_coords silently
+drops all but one same-time granule from a batch, with no error.
 
-Uniqueness can only be guaranteed where the full set of times is known, so
-it's resolved here, at cube-build time: a colliding granule is moved by +1 us
-at a time until it reaches a free slot. Times already committed to a cube are
-never moved, so append-only updates (and deep copies built from earlier
-snapshots) stay valid.
+Resolved here at cube-build time: a colliding granule is moved by +1us
+until it reaches a free slot. Times already committed to a cube are never
+moved, so append-only updates stay valid.
 
-Identity is the exact float64 'seconds since GPS epoch' value the cube stores
-on disk -- NOT the decoded datetime64. Measured: xarray's float64 decode is
-off by up to ~0.24 us, and re-encoding a decoded value reproduces the
-original float only ~94% of the time, so neither rounding decoded times to
-whole microseconds nor comparing granule-native floats is a stable identity.
-New granules are therefore compared via encode_time_values(), which applies
-the same CF encoder (same units/calendar/dtype) the cube's writer does --
-verified bit-identical to what to_zarr writes -- and existing layers via
-their raw stored values (existing_time_values()).
+Identity is the exact value the cube stores on disk, not a freshly-decoded
+datetime64 (see existing_time_values()'s raw zarr read) -- new granules are
+compared via encode_time_values() (the same CF encoder the writer uses,
+verified bit-identical to to_zarr's own output) and existing layers via
+their raw stored values. 'time' is int64 nanoseconds-since-epoch
+(Units.ns_epoch_date, lossless) as of Oct 2026; before that it was float64
+'seconds since GPS epoch' (off by up to ~0.24us on decode, with re-encoding
+reproducing the original float only ~94% of the time) -- a cube already
+committed under that old scheme keeps using it for every append.
+TIME_UNITS/TIME_DTYPE below reflect only the current convention, so
+existing_time_values()'s dtype check will raise for an older cube rather
+than silently miscomparing.
 """
 import logging
 
@@ -34,10 +33,10 @@ import zarr
 
 import utils
 
-# The cube's pinned 'time' encoding -- see the create path in
-# virtual_itslive_cube_per_chunk.py (cube['time'].encoding[...]). Every
-# append reuses it, so it's what every committed value was encoded with.
-TIME_UNITS = utils.Units.gps_epoch_date
+# The cube's pinned 'time' encoding (see virtual_itslive_cube_per_chunk.py's
+# create path) -- for a cube created after the Oct 2026 int64 migration
+# above; an older cube's on-disk dtype won't match.
+TIME_UNITS = utils.Units.ns_epoch_date
 TIME_CALENDAR = utils.Units.proleptic_gregorian
 TIME_DTYPE = np.dtype(utils.Coords.DTYPE[utils.Coords.TIME])
 
@@ -52,10 +51,10 @@ def encode_time_values(times):
       times (array-like of datetime64): decoded times.
 
    Returns:
-      np.ndarray of float64: seconds since the GPS epoch -- bit-identical to
-         the values to_zarr()/to_icechunk() write for the cube's 'time'
-         coordinate (xarray's encoder is elementwise, so this holds
-         regardless of which other times share a write).
+      np.ndarray of int64: nanoseconds since epoch (TIME_UNITS) -- bit-
+         identical to the values to_zarr()/to_icechunk() write for the
+         cube's 'time' coordinate (xarray's encoder is elementwise, so
+         this holds regardless of which other times share a write).
    """
    values, _, _ = xr.coding.times.encode_cf_datetime(
       np.asarray(times, dtype='datetime64[ns]'), TIME_UNITS, TIME_CALENDAR,
@@ -73,10 +72,11 @@ def _resolve(values, tie_break, taken, candidate):
    until it finds a value not in `taken`.
 
    Args:
-      values (np.ndarray of float64): each entry's own value.
+      values (np.ndarray of TIME_DTYPE): each entry's own value.
       tie_break (array-like of str): per-entry tie-breaker (granule URL).
-      taken (set of float): values already claimed; updated in place.
-      candidate (callable): (index, step count) -> float64 value to try.
+      taken (set of TIME_DTYPE-native Python scalar): values already
+         claimed; updated in place.
+      candidate (callable): (index, step count) -> TIME_DTYPE value to try.
 
    Returns:
       np.ndarray of int64: steps applied per entry (0 where unchanged).
@@ -92,10 +92,13 @@ def _resolve(values, tie_break, taken, candidate):
 
    steps = np.zeros(values.shape, dtype=np.int64)
    for i in np.lexsort((tie_break, values)):
-      value = float(values[i])
+      # .item(), not float(): TIME_DTYPE is int64 (~1.5e18 ns for a
+      # realistic date) -- float() would re-collapse distinct values at
+      # that magnitude, reintroducing the precision loss int64 avoids.
+      value = values[i].item()
       while value in taken:
          steps[i] += 1
-         value = float(candidate(i, steps[i]))
+         value = candidate(i, steps[i]).item()
       taken.add(value)
 
    return steps
@@ -106,16 +109,19 @@ def existing_time_values(store):
    must avoid.
 
    Read straight from zarr (not through xarray) so they're the exact
-   on-disk floats -- decoding and re-encoding doesn't always round-trip.
+   on-disk values (TIME_DTYPE) -- decode/re-encode doesn't always round-
+   trip under the pre-Oct-2026 float64 scheme (see module docstring), and
+   raw.tolist() avoids ever casting through float regardless.
 
    Args:
       store: zarr store holding the cube (e.g. an icechunk session store).
 
    Returns:
-      set of float. Raises RuntimeError if the cube already holds duplicate
-         times -- it was built before this fix (and likely also lost
-         granules to combine_by_coords), so it must be regenerated from
-         scratch; appending can't repair layers already committed.
+      set of TIME_DTYPE-native Python scalar. Raises RuntimeError if the
+         cube already holds duplicate times -- it was built before this
+         fix (and likely also lost granules to combine_by_coords), so it
+         must be regenerated from scratch; appending can't repair layers
+         already committed.
    """
    raw = zarr.open_group(store, mode='r', zarr_format=3, use_consolidated=False)[utils.Coords.TIME][:]
    if raw.dtype != TIME_DTYPE:
@@ -149,11 +155,11 @@ def uniquify_granule_times(datasets, taken, url_attr='granule_url'):
       datasets (list of xr.Dataset): single-layer granule datasets, each
          with a length-1 'time' coordinate and `url_attr` in its attrs.
          Entries whose time changes are replaced in the list.
-      taken (set of float): encoded time values already claimed -- layers
-         already committed to the cube (existing_time_values()) plus earlier
-         batches of this run. Updated in place with every value this call
-         assigns, so passing the same set across batches keeps the whole
-         cube unique.
+      taken (set of TIME_DTYPE-native Python scalar): encoded time values
+         already claimed -- layers already committed to the cube
+         (existing_time_values()) plus earlier batches of this run.
+         Updated in place with every value this call assigns, so passing
+         the same set across batches keeps the whole cube unique.
       url_attr (str): dataset attribute holding the granule URL, used as
          the deterministic tie-breaker.
 

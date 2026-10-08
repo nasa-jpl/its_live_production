@@ -1532,13 +1532,18 @@ if __name__ == "__main__":
 
          # Fix 'time's CF units/dtype at creation too -- baked in like the
          # chunk size above. Left unset, xarray may infer 'days since
-         # 1970-01-01' + int64 from whichever batch creates the store, which
-         # can't hold mid_date's sub-day time-of-day (the ITS_LIVE norm) and
-         # forces a lossy, warning-per-append int64->float64 fallback on
-         # later batches. Seconds-since-GPS-epoch float64 avoids that.
-         cube['time'].encoding[utils.Units.name] = utils.Units.gps_epoch_date
+         # 1970-01-01' + int64, which can't hold mid_date's sub-day time-
+         # of-day and forces a lossy fallback on a later append. int64
+         # nanoseconds since epoch (Units.ns_epoch_date) is lossless --
+         # see its docstring (previously float64, ~94% round-trip
+         # reproducibility, see time_collisions.py).
+         cube['time'].encoding[utils.Units.name] = utils.Units.ns_epoch_date
          cube['time'].encoding[utils.Units.calendar_name] = utils.Units.proleptic_gregorian
          cube['time'].encoding[utils.OutputFormat.dtype] = utils.Coords.DTYPE[utils.Coords.TIME]
+         # Explicit None: xarray's CF encoder defaults a datetime
+         # variable's _FillValue to NaN, which can't cast to int64 --
+         # 'time' is never actually missing anyway.
+         cube['time'].encoding[utils.OutputFormat.fill_value] = None
 
          session = repo.writable_session("main")
          cube_clean = _drop_nonfinite_attrs(cube)

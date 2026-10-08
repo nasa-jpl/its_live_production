@@ -822,19 +822,24 @@ def build_virtual_cube(vds_list, already_aligned=False):
                if attr_dtype is not None:
                   new_var_encoding[utils.OutputFormat.dtype] = attr_dtype
                if convert_to_date:
-                  # Explicit units/calendar/dtype instead of itscube.py's
-                  # bare 'days since 1970-01-01': these values carry a
-                  # sub-day time-of-day that 'days'+int64 can't represent,
-                  # and since a Zarr array's CF encoding is fixed at
-                  # creation and reused on every append (see
-                  # set_1d_time_chunk_encoding in
-                  # virtual_itslive_cube_per_chunk.py), an unset dtype risks
-                  # a later batch hitting xarray's lossy int64->float64
-                  # fallback warning. float64 seconds since GPS epoch
-                  # (matches the cube's 'time' coord) avoids that.
-                  new_var_encoding[utils.Units.name] = utils.Units.gps_epoch_date
+                  # Explicit units/calendar/dtype, not itscube.py's bare
+                  # 'days since 1970-01-01' (can't hold sub-day time-of-
+                  # day) or left unset (risks a later append's dtype
+                  # auto-inference overflowing -- see
+                  # set_1d_time_chunk_encoding in virtual_itslive_cube_
+                  # per_chunk.py). int64 nanoseconds since epoch
+                  # (Units.ns_epoch_date) is lossless -- unlike float64
+                  # seconds, which can't hold both the integer and
+                  # microsecond-fraction parts at once (~100-200ns noise
+                  # per round trip, confirmed Oct 2026) -- and its ~292-
+                  # year range covers any realistic ITS_LIVE date.
+                  new_var_encoding[utils.Units.name] = utils.Units.ns_epoch_date
                   new_var_encoding[utils.Units.calendar_name] = utils.Units.proleptic_gregorian
-                  new_var_encoding[utils.OutputFormat.dtype] = 'float64'
+                  new_var_encoding[utils.OutputFormat.dtype] = 'int64'
+                  # Explicit None: xarray's CF encoder defaults a datetime
+                  # variable's _FillValue to NaN, which can't cast to
+                  # int64 -- every granule has a real value here anyway.
+                  new_var_encoding[utils.OutputFormat.fill_value] = None
 
                new_vars[attr] = xr.Variable(
                   dims=(),
