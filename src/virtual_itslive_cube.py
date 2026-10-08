@@ -816,6 +816,15 @@ def build_virtual_cube(vds_list, already_aligned=False):
                   # Use fixed-length string dtype if defined, otherwise variable-length
                   value = np.array(value, dtype=ImgPairInfo.stringType.get(attr, np.dtypes.StringDType()))
 
+               if convert_to_date:
+                  # Must be datetime64[ns] to match the 'nanoseconds since'
+                  # units set below. pandas >= 3 turns a datetime object
+                  # into datetime64[us] instead, and xarray's encoder then
+                  # converts its 1ns unit to whole microseconds (= 0) and
+                  # floor-divides by it -- every value silently becomes the
+                  # int64 NaT sentinel on disk (pandas 3.0.5, Oct 2026).
+                  value = np.datetime64(value, 'ns')
+
                # Fix dtype/fill at creation (matching itscube.py's
                # combine_layers() convention) instead of inferring per-batch.
                new_var_encoding = {}
