@@ -79,10 +79,12 @@ python src/tools/validate_s3_cube.py \
 import argparse
 import itertools
 import logging
+import random
 import sys
 from math import ceil
 
 import numpy as np
+import pandas as pd
 import s3fs
 import xarray as xr
 import zarr
@@ -120,6 +122,38 @@ def _find(fs, path):
 # radar granules' grouping); optical granules carry the 255 missing_value
 # placeholder instead, same as RADAR_ONLY_VARS.
 EXTRA_RADAR_ONLY_VARS = {Vars.ascending_img1, Vars.ascending_img2}
+
+
+# Direct per-pixel copies of a granule data variable, present for every
+# granule regardless of sensor type.
+DIRECT_ARRAY_VARS = (
+   Vars.v, Vars.vx, Vars.vy, Vars.v_error,
+   Vars.chip_size_height, Vars.chip_size_width, Vars.interp_mask,
+)
+# Direct per-pixel copies that only exist for radar granules (see
+# RADAR_ONLY_VARS above).
+RADAR_ARRAY_VARS = (Vars.va, Vars.vr, Vars.m11, Vars.m12)
+
+# Attribute suffixes read off a vx/vy/va/vr granule variable that become
+# "{var}_{suffix}" scalar cube variables (see itscube.py's
+# process_v_attributes()). 'stable_shift' is handled separately since a NaN
+# granule value is expected to read back as 0 in the cube.
+V_ERROR_SUFFIXES = (
+   Vars.postfix.error, Vars.postfix.error_mask,
+   Vars.postfix.error_modeled, Vars.postfix.error_slow,
+)
+V_SHIFT_SUFFIXES = (Vars.postfix.stable_shift_mask, Vars.postfix.stable_shift_slow)
+
+# Tolerance for comparing CF-decoded (physical) float values between a
+# granule and the cube. Deliberately not exact equality: the cube's own
+# scale_factor/add_offset is allowed to legitimately differ from the source
+# granule's, so this check cares about the physical value being right, not
+# byte-for-byte encoding equality.
+ARRAY_RTOL = 1e-5
+ARRAY_ATOL = 1e-3
+SCALAR_RTOL = 1e-5
+SCALAR_ATOL = 1e-6
+
 
 
 def _is_radar_only(var_name):
@@ -447,8 +481,429 @@ def _check_shape_consistency(group, findings):
             )
 
 
-def validate_cube(cube_url):
+@itslive_utils.retry_decorator(max_retries=5)
+def _open_granule(granule_url, fs):
+   """Open one source granule from S3 exactly as ITSCube.read_s3_dataset()
+   does (see itscube.py) -- https:// URL -> s3:// path, h5netcdf, default
+   (CF-decoding) mask_and_scale. Loaded into memory so the file handle can
+   be closed before this returns."""
+   s3_path = granule_url.replace(utils.HTTP_PREFIX, utils.S3_PREFIX)
+   s3_path = s3_path.replace(utils.PATH_URL, '')
+   with fs.open(s3_path, mode='rb') as fhandle:
+      with xr.open_dataset(fhandle, engine=utils.NC_ENGINE) as granule_ds:
+         return granule_ds.load()
+
+
+def _crop_and_align_granule(granule_ds, cube_x, cube_y):
+   """Crop `granule_ds` to the cube's x/y footprint and reindex onto the
+   cube's exact x/y coordinate values, mirroring the bounding-box mask
+   ITSCube.preprocess_dataset() applies (itscube.py) before a granule's
+   data ever reaches a cube layer. Any cube pixel outside the granule's own
+   footprint reindexes to NaN here -- indistinguishable from (and handled
+   the same as) a pixel the granule itself reports as missing."""
+   x_min, x_max = float(cube_x.min()), float(cube_x.max())
+   y_min, y_max = float(cube_y.min()), float(cube_y.max())
+   mask = (
+      (granule_ds.x >= x_min) & (granule_ds.x <= x_max) &
+      (granule_ds.y >= y_min) & (granule_ds.y <= y_max)
+   )
+   return granule_ds.where(mask, drop=True).reindex(x=cube_x, y=cube_y)
+
+
+def _values_match(cube_val, granule_val, is_date=False):
+   """Compare one cube scalar against the granule value it was derived
+   from. Dates are compared as timestamps, exactly -- these are encoded
+   losslessly (int64 nanoseconds since epoch, utils.Units.ns_epoch_date),
+   so a real mismatch is the only thing that should trip this. Everything
+   else is compared numerically with a small tolerance (same cast function
+   applied to the same source value should be bit-identical, but
+   floor-level float32 round trips are tolerated) or, failing that, by
+   string representation."""
+   try:
+      if pd.isna(cube_val) and pd.isna(granule_val):
+         return True
+   except (TypeError, ValueError):
+      pass
+
+   if is_date:
+      try:
+         return pd.Timestamp(cube_val) == pd.Timestamp(granule_val)
+      except Exception:
+         return str(cube_val) == str(granule_val)
+
+   try:
+      return np.isclose(
+         float(cube_val), float(granule_val),
+         rtol=SCALAR_RTOL, atol=SCALAR_ATOL, equal_nan=True
+      )
+   except (TypeError, ValueError):
+      return str(cube_val) == str(granule_val)
+
+
+def _verify_array_vars(cube_decoded, granule_cropped, idx, var_names, findings):
+   """Compare decoded physical values of every array variable in
+   `var_names`, for layer `idx`, between the cube and the (already
+   cropped/aligned) granule. See ARRAY_RTOL/ARRAY_ATOL for why this
+   compares physical values with tolerance rather than raw encoded bytes."""
+   for var_name in var_names:
+      if var_name not in granule_cropped:
+         _add(
+            findings, 'WARNING', var_name,
+            f'layer {idx}: not present in source granule, skipped data check.'
+         )
+         continue
+
+      cube_arr = cube_decoded[var_name].values[idx, :, :]
+      granule_arr = granule_cropped[var_name].values[0, :, :]
+
+      mismatch = ~np.isclose(
+         cube_arr, granule_arr, rtol=ARRAY_RTOL, atol=ARRAY_ATOL, equal_nan=True
+      )
+      num_mismatch = int(np.count_nonzero(mismatch))
+      if num_mismatch:
+         abs_diff = np.abs(cube_arr[mismatch] - granule_arr[mismatch])
+         _add(
+            findings, 'ERROR', var_name,
+            f'layer {idx}: {num_mismatch}/{mismatch.size} pixel(s) differ '
+            f'from source granule (max abs diff={np.nanmax(abs_diff):.6g}).'
+         )
+
+
+def _verify_time_coordinate(ds, granule_ds, granule_url, idx, findings):
+   """Compare the cube's 'time' coordinate value for layer `idx` against
+   the source granule's own 'time' coordinate, exactly. The cube's 'time'
+   is the granule's own 'time' value carried through unchanged (see
+   virtual_itslive_cube.py's `coords={..., "time": vds["time"]}`) -- so
+   any difference here is a real bug, not encoding noise.
+
+   Args:
+      ds (xr.Dataset): the cube, opened with mask_and_scale=False (decode_
+         times still defaults to True, so 'time' is already datetime64).
+      granule_ds (xr.Dataset): the source granule, opened with default
+         (CF-decoding) options.
+      granule_url (str): source granule URL, for error reporting.
+      idx (int): cube layer index.
+      findings (list of dict): findings list to append to.
+   """
+   if utils.Coords.TIME not in granule_ds:
+      _add(
+         findings, 'WARNING', utils.Coords.TIME,
+         f"layer {idx}: granule has no '{utils.Coords.TIME}' coordinate, "
+         'cannot verify.'
+      )
+      return
+
+   granule_val = granule_ds[utils.Coords.TIME].values[0]
+   cube_val = ds[utils.Coords.TIME].values[idx]
+   if pd.Timestamp(cube_val) != pd.Timestamp(granule_val):
+      _add(
+         findings, 'ERROR', utils.Coords.TIME,
+         f'layer {idx}: cube value {cube_val!r} does not exactly match '
+         f'source granule value {granule_val!r} ({granule_url}).'
+      )
+
+
+def _verify_img_pair_info_vars(cube_decoded, granule_ds, granule_url, idx, findings):
+   """Compare the scalar variables promoted from the granule's
+   'img_pair_info' attributes (ImgPairInfo.all, plus the ascending_img1/2
+   binary flags and autoRIFT_software_version), re-using the exact
+   extraction helpers itscube.py itself calls (utils.get_data_var_attr /
+   utils.get_data_var_binary_attr) so this check can't drift from how the
+   cube was actually populated."""
+   for each in ImgPairInfo.all:
+      each_dtype = ImgPairInfo.allTypes.get(each)
+      is_date = each in ImgPairInfo.toDate
+      try:
+         granule_val = utils.get_data_var_attr(
+            granule_ds, granule_url, ImgPairInfo.name, each,
+            to_date=is_date, data_dtype=each_dtype
+         )
+      except Exception as exc:
+         _add(
+            findings, 'WARNING', each,
+            f'layer {idx}: could not read from source granule: {exc}'
+         )
+         continue
+
+      cube_val = cube_decoded[each].values[idx]
+      if not _values_match(cube_val, granule_val, is_date=is_date):
+         _add(
+            findings, 'ERROR', each,
+            f'layer {idx}: cube value {cube_val!r} does not match source '
+            f'granule value {granule_val!r} ({granule_url}).'
+         )
+
+   for flight_attr, cube_var in (
+      (ImgPairInfo.flight_direction_img1, Vars.ascending_img1),
+      (ImgPairInfo.flight_direction_img2, Vars.ascending_img2),
+   ):
+      granule_val = utils.get_data_var_binary_attr(
+         granule_ds, granule_url, ImgPairInfo.name, flight_attr,
+         ImgPairInfo.ascending, data_dtype=np.uint8,
+         missing_value=utils.Missing.u8value
+      )
+      # get_data_var_binary_attr() returns the raw 255 missing_value
+      # sentinel for every optical granule (no flight-direction attr --
+      # radar-only, see EXTRA_RADAR_ONLY_VARS); cube_decoded is CF-decoded,
+      # so the cube's own 255 _FillValue reads back as NaN. Normalize to
+      # match, or this flags as a false mismatch.
+      if granule_val == utils.Missing.u8value:
+         granule_val = np.nan
+      cube_val = cube_decoded[cube_var].values[idx]
+      if not _values_match(cube_val, granule_val):
+         _add(
+            findings, 'ERROR', cube_var,
+            f'layer {idx}: cube value {cube_val!r} does not match source '
+            f'granule value {granule_val!r} ({granule_url}).'
+         )
+
+   if Vars.autorift_software_version in granule_ds.attrs:
+      granule_val = granule_ds.attrs[Vars.autorift_software_version]
+      cube_val = cube_decoded[Vars.autorift_software_version].values[idx]
+      if not _values_match(cube_val, granule_val):
+         _add(
+            findings, 'ERROR', Vars.autorift_software_version,
+            f'layer {idx}: cube value {cube_val!r} does not match source '
+            f'granule value {granule_val!r} ({granule_url}).'
+         )
+
+
+def _verify_v_attribute_vars(cube_decoded, granule_ds, granule_url, idx, bases, findings):
+   """Compare the per-velocity-component scalar variables derived from
+   vx/vy/va/vr attributes (error/error_stationary/error_modeled/error_slow,
+   stable_shift/stable_shift_stationary/stable_shift_slow), mirroring
+   itscube.py's process_v_attributes()."""
+   for base in bases:
+      for suffix in V_ERROR_SUFFIXES + V_SHIFT_SUFFIXES:
+         cube_var = f'{base}_{suffix}'
+         if cube_var not in cube_decoded:
+            continue
+
+         granule_val = utils.get_data_var_attr(
+            granule_ds, granule_url, base, suffix, utils.Missing.value
+         )
+         cube_val = cube_decoded[cube_var].values[idx]
+         if not _values_match(cube_val, granule_val):
+            _add(
+               findings, 'ERROR', cube_var,
+               f'layer {idx}: cube value {cube_val!r} does not match source '
+               f'granule value {granule_val!r} ({granule_url}).'
+            )
+
+      # 'stable_shift' itself: a NaN granule value is expected to read back
+      # as 0 in the cube (see itscube.py's process_v_attributes()).
+      cube_var = f'{base}_{Vars.postfix.stable_shift}'
+      if cube_var in cube_decoded:
+         granule_val = utils.get_data_var_attr(
+            granule_ds, granule_url, base, Vars.postfix.stable_shift,
+            utils.Missing.value
+         )
+         if isinstance(granule_val, float) and np.isnan(granule_val):
+            granule_val = 0
+         cube_val = cube_decoded[cube_var].values[idx]
+         if not _values_match(cube_val, granule_val):
+            _add(
+               findings, 'ERROR', cube_var,
+               f'layer {idx}: cube value {cube_val!r} does not match source '
+               f'granule value {granule_val!r} ({granule_url}).'
+            )
+
+   # Shared-once attributes: captured from whichever of `bases` actually
+   # carries them on the granule (first hit wins), see itscube.py's
+   # process_v_attributes() "capture only once" loop.
+   for attr_name in (Vars.flag_stable_shift, Vars.stable_count_mask, Vars.stable_count_slow):
+      if attr_name not in cube_decoded:
+         continue
+
+      source_base = next(
+         (b for b in bases if b in granule_ds and attr_name in granule_ds[b].attrs),
+         None
+      )
+      if source_base is None:
+         continue
+
+      granule_val = utils.get_data_var_attr(
+         granule_ds, granule_url, source_base, attr_name, data_dtype=np.int32
+      )
+      cube_val = cube_decoded[attr_name].values[idx]
+      if not _values_match(cube_val, granule_val):
+         _add(
+            findings, 'ERROR', attr_name,
+            f'layer {idx}: cube value {cube_val!r} does not match source '
+            f'granule value {granule_val!r} ({granule_url}).'
+         )
+
+
+def _verify_m_attribute_vars(cube_decoded, granule_ds, granule_url, idx, findings):
+   """Compare M11/M12_dr_to_vr_factor, mirroring itscube.py's
+   process_m_attributes(). Radar-only -- callers should only invoke this for
+   a radar-sourced layer."""
+   for base in (Vars.m11, Vars.m12):
+      cube_var = f'{base}_{Vars.postfix.dr_to_vr_factor}'
+      if cube_var not in cube_decoded:
+         continue
+
+      granule_val = utils.get_data_var_attr(
+         granule_ds, granule_url, base, Vars.postfix.dr_to_vr_factor,
+         utils.Missing.byte
+      )
+      cube_val = cube_decoded[cube_var].values[idx]
+      if not _values_match(cube_val, granule_val):
+         _add(
+            findings, 'ERROR', cube_var,
+            f'layer {idx}: cube value {cube_val!r} does not match source '
+            f'granule value {granule_val!r} ({granule_url}).'
+         )
+
+
+def _sample_layers_by_sensor_type(total_layers, is_radar, radar_status, num_layers, seed, findings):
+   """Pick layers to verify, split evenly between radar and optical so a
+   flat random sample (radar is typically a small minority) can't quietly
+   skip radar-only variables (M11/M12/vr/va) entirely. `num_layers // 2` of
+   each class (minimum 1) when `is_radar` is trustworthy; falls back to one
+   flat random sample across every layer, with a WARNING, when it isn't.
+
+   Returns
+   -------
+   list of int
+      Sorted layer indices to verify.
+   """
+   rng = random.Random(seed)
+
+   if is_radar is None:
+      num_layers = min(num_layers, total_layers)
+      _add(
+         findings, 'WARNING', Vars.url,
+         f'sensor type unknown ({radar_status}) -- cannot stratify the '
+         'sample by radar/optical, falling back to one flat random sample '
+         'across every layer.'
+      )
+      logging.info(f'Verifying {num_layers} random layer(s) against source granules...')
+      return sorted(rng.sample(range(total_layers), k=num_layers))
+
+   radar_pool = np.flatnonzero(is_radar[:total_layers])
+   optical_pool = np.flatnonzero(~is_radar[:total_layers])
+   num_per_class = max(1, num_layers // 2)
+
+   num_radar = min(num_per_class, len(radar_pool))
+   num_optical = min(num_per_class, len(optical_pool))
+
+   if num_radar < num_per_class:
+      _add(
+         findings, 'WARNING', Vars.url,
+         f'only {len(radar_pool)} radar layer(s) in the cube -- sampling '
+         f'all of them instead of the requested {num_per_class}.'
+      )
+   if num_optical < num_per_class:
+      _add(
+         findings, 'WARNING', Vars.url,
+         f'only {len(optical_pool)} optical layer(s) in the cube -- '
+         f'sampling all of them instead of the requested {num_per_class}.'
+      )
+
+   logging.info(
+      f'Verifying {num_radar} random radar layer(s) and {num_optical} '
+      'random optical layer(s) against source granules...'
+   )
+   return sorted(
+      rng.sample(list(radar_pool), k=num_radar) +
+      rng.sample(list(optical_pool), k=num_optical)
+   )
+
+
+def _verify_random_layers(
+   cube_url, ds, is_radar, radar_status, num_layers, seed, findings
+):
+   """Pick `num_layers` random layers from the cube -- split evenly between
+   radar and optical (see _sample_layers_by_sensor_type()) -- and compare
+   every variable's value against the original source granule they were
+   deep-copied/extracted from (see Vars.url). This is the only check in this
+   module that reads pixel/attribute data rather than just structural
+   metadata -- expensive (one full granule S3 fetch per sampled layer), so
+   callers only reach this when explicitly requested via --verify-granule-data.
+   """
+   if Vars.url not in ds:
+      _add(
+         findings, 'WARNING', Vars.url,
+         'granule_url variable not present in store -- cannot verify '
+         'layers against source granules.'
+      )
+      return
+
+   total_layers = ds.sizes[utils.Coords.TIME]
+   layer_indices = _sample_layers_by_sensor_type(
+      total_layers, is_radar, radar_status, num_layers, seed, findings
+   )
+
+   cube_decoded = xr.open_dataset(
+      cube_url, engine='zarr', zarr_format=3, consolidated=True,
+      backend_kwargs={'storage_options': {'anon': True}}
+   )
+   cube_x = ds[utils.Coords.X]
+   cube_y = ds[utils.Coords.Y]
+   fs = s3fs.S3FileSystem(anon=True)
+
+   urls = ds[Vars.url].values
+   for idx in layer_indices:
+      granule_url = str(urls[idx])
+      if not granule_url:
+         _add(
+            findings, 'WARNING', Vars.url,
+            f'layer {idx}: empty granule_url, cannot verify.'
+         )
+         continue
+
+      try:
+         granule_ds = _open_granule(granule_url, fs)
+      except Exception as exc:
+         _add(
+            findings, 'WARNING', Vars.url,
+            f'layer {idx}: failed to open source granule {granule_url}: {exc}'
+         )
+         continue
+
+      with granule_ds:
+         granule_cropped = _crop_and_align_granule(granule_ds, cube_x, cube_y)
+
+         layer_is_radar = is_radar[idx] if is_radar is not None else None
+         array_vars = list(DIRECT_ARRAY_VARS)
+         v_bases = [Vars.vx, Vars.vy]
+         if layer_is_radar:
+            array_vars += list(RADAR_ARRAY_VARS)
+            v_bases += [Vars.va, Vars.vr]
+         elif layer_is_radar is None:
+            _add(
+               findings, 'WARNING', Vars.url,
+               f'layer {idx}: sensor type unknown ({radar_status}), only '
+               f'optical-common variables verified.'
+            )
+
+         _verify_array_vars(cube_decoded, granule_cropped, idx, array_vars, findings)
+         _verify_time_coordinate(ds, granule_ds, granule_url, idx, findings)
+         _verify_img_pair_info_vars(cube_decoded, granule_ds, granule_url, idx, findings)
+         _verify_v_attribute_vars(
+            cube_decoded, granule_ds, granule_url, idx, v_bases, findings
+         )
+         if layer_is_radar:
+            _verify_m_attribute_vars(cube_decoded, granule_ds, granule_url, idx, findings)
+
+   cube_decoded.close()
+
+
+def validate_cube(cube_url, verify_granule_data=False, num_random_layers=10, seed=None):
    """Run every check in this module's docstring against `cube_url`.
+
+   Parameters
+   ----------
+   verify_granule_data (bool): Also sample `num_random_layers` random
+      layers and compare every variable's value against the original
+      source granule (see _verify_random_layers()). Off by default -- it's
+      the only check here that reads pixel data, at the cost of one full
+      granule S3 fetch per sampled layer.
+   num_random_layers (int): Number of random layers to sample when
+      `verify_granule_data` is True.
+   seed: Seed for the random layer sample, for a reproducible re-run.
+      Default is None (a fresh random sample each run).
 
    Returns
    -------
@@ -486,6 +941,11 @@ def validate_cube(cube_url):
          fs, base, var_name, group[var_name], is_radar, radar_status, findings
       )
 
+   if verify_granule_data:
+      _verify_random_layers(
+         cube_url, ds, is_radar, radar_status, num_random_layers, seed, findings
+      )
+
    return findings
 
 
@@ -510,10 +970,41 @@ def main():
       help='Also print INFO-level findings (e.g. verified-legitimate '
          'radar skips) [%(default)s].'
    )
+   parser.add_argument(
+      '--verify-granule-data',
+      action='store_true',
+      help='Also sample --num-random-layers random layers and compare '
+         'every variable (optical and radar) against the original source '
+         'granule they were extracted from. Expensive -- fetches a full '
+         'granule per sampled layer -- so off by default [%(default)s].'
+   )
+   parser.add_argument(
+      '--num-random-layers',
+      type=int,
+      default=10,
+      help='Number of random layers to sample for --verify-granule-data, '
+         'split evenly between radar and optical (half of this value '
+         'sampled from each, so radar -- typically a small minority -- '
+         'always gets checked) when the cube\'s sensor type per layer can '
+         'be classified; falls back to one flat random sample across '
+         'every layer otherwise [%(default)s].'
+   )
+   parser.add_argument(
+      '--seed',
+      type=int,
+      default=None,
+      help='Seed for the --verify-granule-data random layer sample, for a '
+         'reproducible re-run. Default is an unseeded, fresh sample each run.'
+   )
    args = parser.parse_args()
 
    logging.info(f'Validating {args.cube_url}')
-   findings = validate_cube(args.cube_url)
+   findings = validate_cube(
+      args.cube_url,
+      verify_granule_data=args.verify_granule_data,
+      num_random_layers=args.num_random_layers,
+      seed=args.seed
+   )
    findings.sort(key=lambda f: (_level_rank(f['level']), f['variable']))
 
    counts = {'ERROR': 0, 'WARNING': 0, 'INFO': 0}
