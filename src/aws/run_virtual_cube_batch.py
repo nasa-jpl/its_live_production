@@ -140,6 +140,20 @@ class VirtualDataCubeBatch:
                     logging.info(f'Cube name: {cube_filename}')
 
                     # A way to run specific jobs only
+                    zarr_cube_filename = cube_filename.replace(
+                        utils.File.ext.icechunk,
+                        utils.File.ext.zarr
+                    )
+                    # If cube name is zarr filename
+                    # if len(BatchVars.CUBES_TO_GENERATE) and zarr_cube_filename not in BatchVars.CUBES_TO_GENERATE:
+                    #     logging.info("Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
+                    #     continue
+
+                    # if len(BatchVars.CUBES_TO_EXCLUDE) and zarr_cube_filename in BatchVars.CUBES_TO_EXCLUDE:
+                    #     logging.info("Skipping as provided in BatchVars.CUBES_TO_EXCLUDE")
+                    #     continue
+
+                    # If cube name is icechunk filename
                     if len(BatchVars.CUBES_TO_GENERATE) and cube_filename not in BatchVars.CUBES_TO_GENERATE:
                         logging.info("Skipping as not provided in BatchVars.CUBES_TO_GENERATE")
                         continue
@@ -184,9 +198,6 @@ class VirtualDataCubeBatch:
                             jobQueue=self.batch_queue,
                             jobDefinition=self.batch_job,
                             parameters=cube_params,
-                            retryStrategy={
-                                'attempts': 1
-                            },
                             timeout={
                                 # Change to 14 days to support very large cubes
                                 'attemptDurationSeconds': 1209600
@@ -292,7 +303,7 @@ def parse_args():
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='virtual-datacube-32Gb',
+        default='its-live-virtual-cube-job',
         help="AWS Batch job definition to use for virtual datacube generation"
         "[%(default)s]."
     )
@@ -300,7 +311,7 @@ def parse_args():
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='its-live-deep-copy-queue',
+        default='its-live-virtual-cube-queue-32Gb',
         help="AWS Batch job queue to use for virtual datacube generation [%(default)s]."
     )
     parser.add_argument(
