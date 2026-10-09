@@ -68,7 +68,7 @@ logging.basicConfig(
 # etc.) -- no stable Zarr V3 spec yet. Filter by category, not message text
 # (the message never names the class).
 import warnings
-from zarr.errors import UnstableSpecificationWarning
+from zarr.errors import GroupNotFoundError, UnstableSpecificationWarning
 warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 
 # Grid pixel size in meters
@@ -840,9 +840,15 @@ def open_repo_for_append(store_path, url_prefix):
          bucket, used to authorize anonymous virtual-chunk access.
 
    Returns:
-      tuple of (ic.Repository, xr.Dataset): the opened repository and its
-      current datacube, read with mask_and_scale=False (raw on-disk dtypes,
-      matching every other cube read in this file).
+      tuple of (ic.Repository, xr.Dataset or None): the opened repository
+      and its current datacube, read with mask_and_scale=False (raw on-disk
+      dtypes, matching every other cube read in this file). The cube is
+      None if the repo exists but holds no committed data yet -- e.g. a
+      prior run died between Repository.create() and its first commit,
+      leaving `main` pointing at icechunk's synthetic empty root snapshot.
+      The caller must then reuse the returned repo to run the from-scratch
+      creation path instead of calling Repository.create() again (which
+      would fail against an already-existing repo).
    """
    config = ic.RepositoryConfig.default()
 
@@ -870,12 +876,28 @@ def open_repo_for_append(store_path, url_prefix):
    # zarr_format=3, not 2: icechunk repos are natively Zarr V3 metadata;
    # forcing zarr_format=2 raises GroupNotFoundError (no .zgroup/.zarray
    # markers exist in an icechunk store).
-   cube = xr.open_zarr(
-      repo.readonly_session("main").store,
-      consolidated=False,
-      zarr_format=3,
-      mask_and_scale=False
-   )
+   try:
+      cube = xr.open_zarr(
+         repo.readonly_session("main").store,
+         consolidated=False,
+         zarr_format=3,
+         mask_and_scale=False
+      )
+   except GroupNotFoundError:
+      # Repository.create() ran and persisted the repo (so Repository.exists()
+      # is True), but no commit with a real Zarr group ever landed on top of
+      # its synthetic initial snapshot -- the prior run died in between (e.g.
+      # during ice-mask setup or the first batch's write). Not corruption:
+      # icechunk's own commit atomicity held, there's just nothing committed
+      # yet. Signal this with cube=None so the caller reuses this already-
+      # open `repo` to run the creation path from scratch.
+      logging.warning(
+         f'{store_path} exists but holds no committed cube yet (main is '
+         'still at its initial empty snapshot) -- a prior run likely died '
+         'between Repository.create() and its first commit; initializing '
+         'the cube from scratch using this already-open repository'
+      )
+      return repo, None
 
    return repo, cube
 
@@ -1288,6 +1310,12 @@ if __name__ == "__main__":
    repo = None
    existing_urls = set()
 
+   # True once a real commit (Zarr group, ice masks, data) exists on `main`
+   # -- distinct from `repo is not None`, since a repo can exist on storage
+   # with zero real commits (see open_repo_for_append's GroupNotFoundError
+   # handling). Drives the create-vs-append branch in the batch loop below.
+   cube_initialized = False
+
    # Encoded 'time' values (as stored on disk) already claimed by the cube:
    # seeded from the existing repo's layers when appending, then grown in
    # place by every batch's build_virtual_cube_subset() call, so each new
@@ -1298,18 +1326,26 @@ if __name__ == "__main__":
 
    if repo_exists:
       repo, existing_cube = open_repo_for_append(store_path, url_prefix)
-      logging.info(
-         f'Found existing cube with {len(existing_cube.time)} time layers '
-         f'at {store_path}; appending new granules to it'
-      )
-      existing_urls = get_existing_granule_urls(existing_cube)
 
-      # Raises if the existing cube already holds duplicates -- it predates
-      # the time-collision fix and must be regenerated from scratch, not
-      # appended to. Read raw from the repo, not from existing_cube's
-      # decoded times: decode/re-encode doesn't always round-trip to the
-      # stored float (see time_collisions.py).
-      taken_time_values = existing_time_values(repo.readonly_session("main").store)
+      if existing_cube is not None:
+         cube_initialized = True
+         logging.info(
+            f'Found existing cube with {len(existing_cube.time)} time layers '
+            f'at {store_path}; appending new granules to it'
+         )
+         existing_urls = get_existing_granule_urls(existing_cube)
+
+         # Raises if the existing cube already holds duplicates -- it predates
+         # the time-collision fix and must be regenerated from scratch, not
+         # appended to. Read raw from the repo, not from existing_cube's
+         # decoded times: decode/re-encode doesn't always round-trip to the
+         # stored float (see time_collisions.py).
+         taken_time_values = existing_time_values(repo.readonly_session("main").store)
+      # else: repo exists on storage but has no committed cube yet (see
+      # open_repo_for_append's GroupNotFoundError handling) -- `repo` is kept
+      # as this already-open handle, cube_initialized stays False, and the
+      # batch loop below runs the from-scratch creation path, skipping the
+      # now-redundant Repository.create() call.
 
    # Load any previously-recorded skipped granules even if the repo itself
    # doesn't exist yet -- e.g. a prior run where every batch found no valid
@@ -1393,9 +1429,11 @@ if __name__ == "__main__":
       # otherwise re-introduce it into the committed cube.
       cube.attrs.clear()
 
-      if repo is None:
+      if not cube_initialized:
          # First batch with data: set up cube-level attributes, ice masks,
-         # and create the icechunk repository.
+         # and create the icechunk repository (or, if `repo` is already
+         # open -- see the GroupNotFoundError handling above -- reuse it
+         # instead of creating).
          date_created = batch_job_id
 
          # Set all datacube attributes matching itscube.py
@@ -1451,34 +1489,43 @@ if __name__ == "__main__":
          skipped_json_path = skipped_granules_path(store_path)
          cube.attrs[SkippedGranules.name] = skipped_json_path
 
-         config = ic.RepositoryConfig.default()
+         if repo is None:
+            # Genuinely fresh repo (no prior Repository.create() call for
+            # this store_path): build config and create it.
+            config = ic.RepositoryConfig.default()
 
-         if is_s3_output:
-            # Configure storage settings for stronger recovery from transient
-            # S3 failures. Only works with S3 storage -- local filesystem
-            # storage doesn't set config.storage and will otherwise hit a
-            # "put_opts with opts.attributes not yet implemented" error.
-            config.storage = ic.StorageSettings(
-               unsafe_use_metadata=True,           # Enable metadata stamping for write-id recovery
-               unsafe_use_conditional_update=True  # Enable conditional PUTs to prevent conflicts
+            if is_s3_output:
+               # Configure storage settings for stronger recovery from transient
+               # S3 failures. Only works with S3 storage -- local filesystem
+               # storage doesn't set config.storage and will otherwise hit a
+               # "put_opts with opts.attributes not yet implemented" error.
+               config.storage = ic.StorageSettings(
+                  unsafe_use_metadata=True,           # Enable metadata stamping for write-id recovery
+                  unsafe_use_conditional_update=True  # Enable conditional PUTs to prevent conflicts
+               )
+            else:
+               # Local filesystem storage: clear any stale directory left over
+               # from a previous non-repo run (repo_exists was already checked
+               # above and is False here, so there's nothing valid to preserve).
+               shutil.rmtree(store_path, ignore_errors=True)
+
+            config.set_virtual_chunk_container(
+               ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
             )
-         else:
-            # Local filesystem storage: clear any stale directory left over
-            # from a previous non-repo run (repo_exists was already checked
-            # above and is False here, so there's nothing valid to preserve).
-            shutil.rmtree(store_path, ignore_errors=True)
 
-         config.set_virtual_chunk_container(
-            ic.VirtualChunkContainer(url_prefix, ic.s3_store(region="us-west-2", anonymous=True))
-         )
-
-         repo = ic.Repository.create(
-            storage=_build_output_storage(store_path),
-            config=config,
-            authorize_virtual_chunk_access=ic.containers_credentials(
-               {url_prefix: ic.s3_credentials(anonymous=True)}
-            ),
-         )
+            repo = ic.Repository.create(
+               storage=_build_output_storage(store_path),
+               config=config,
+               authorize_virtual_chunk_access=ic.containers_credentials(
+                  {url_prefix: ic.s3_credentials(anonymous=True)}
+               ),
+            )
+         # else: `repo` is already an open handle on a repo that exists on
+         # storage but has no committed cube yet (open_repo_for_append's
+         # GroupNotFoundError case) -- its config/virtual-chunk-container
+         # were already set up when it was opened, so reuse it as-is
+         # instead of calling Repository.create() again (which would fail
+         # against an already-existing repo).
 
          # Add land/floating ice mask data variables, matching itscube.py's
          # combine_layers() (only added once, at cube creation -- the update
@@ -1554,6 +1601,7 @@ if __name__ == "__main__":
             f"{len(cube.time)} granules)",
             metadata=commit_metadata
          )
+         cube_initialized = True
          logging.info(f"Batch {batch_num}/{num_batches}: icechunk committed snapshot {snapshot_id=}")
 
       else:
@@ -1573,7 +1621,11 @@ if __name__ == "__main__":
       # on a later batch.
       save_skipped_granules(store_path, skipped_granules)
 
-   if repo is not None:
+   # cube_initialized, not `repo is not None`: `repo` can be a non-None but
+   # still-empty handle (open_repo_for_append's GroupNotFoundError case) if
+   # every batch in this run also found no valid data -- opening that
+   # store's main branch below would hit the same GroupNotFoundError.
+   if cube_initialized:
       if len(skipped_granules):
          logging.info(f'Skipped granules (first 10): \n{"\n".join(skipped_granules[:10])}')
 
