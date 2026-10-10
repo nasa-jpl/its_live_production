@@ -18,9 +18,12 @@ src/tools/add_url_to_datacube_definition.py uses to detect existing
 deep-copy cubes -- and checks the source icechunk repo actually exists
 before submitting a job for it.
 
-Before submitting, each source icechunk repo is opened read-only to read
-its layer count (same open_virtual_cube() deep_copy_cube_per_var_chunk.py
-itself uses once the job is running). Cubes whose layer count exceeds
+Before submitting, each source icechunk repo's layer count is read via
+deep_copy_cube.get_virtual_cube_num_layers() -- metadata-only (array shape),
+not a full xr.open_zarr() open like deep_copy_cube_per_var_chunk.py itself
+does once the job is running, since that eagerly loads every dimension
+coordinate and is measurably slower for no benefit here. Cubes whose layer
+count exceeds
 DeepCopyCubeBatch.NUM_LAYERS_64GB_THRESHOLD are routed to the 64Gb batch
 queue *and* its paired, larger-memory job definition instead of the
 default ones -- a job definition's container memory limit is enforced
@@ -38,10 +41,9 @@ from pathlib import Path
 import s3fs
 import sys
 
-from deep_copy_cube import open_virtual_cube
+from deep_copy_cube import get_virtual_cube_num_layers
 from itscube_types import BatchVars
 from itslive_mosaics_types import GeoJsonVars
-import utils
 from utils import File
 
 
@@ -112,8 +114,9 @@ class DeepCopyCubeBatch:
         return self.s3.exists(icechunk_s3_url), icechunk_s3_url
 
     def _pick_batch_resources(self, icechunk_s3_url: str):
-        """Open the source icechunk repo read-only and pick the batch queue
-        and job definition based on its layer count: the 64Gb pair if it
+        """Read the source icechunk repo's layer count (metadata only, no
+        xarray open -- see get_virtual_cube_num_layers()) and pick the
+        batch queue and job definition accordingly: the 64Gb pair if it
         exceeds NUM_LAYERS_64GB_THRESHOLD, the default pair otherwise. Both
         must change together -- a job definition's container memory limit
         is enforced regardless of which instance the queue places it on.
@@ -123,8 +126,7 @@ class DeepCopyCubeBatch:
         tuple of (str, str, int)
             (batch_queue, batch_job_definition, num_workers)
         """
-        cube = open_virtual_cube(icechunk_s3_url, self.bucket_prefix)
-        total_layers = cube.sizes[utils.Coords.TIME]
+        total_layers = get_virtual_cube_num_layers(icechunk_s3_url, self.bucket_prefix)
 
         queue, job_definition, num_workers = self.batch_queue, self.batch_job, \
             DeepCopyCubeBatch.NUM_LOAD_WORKERS

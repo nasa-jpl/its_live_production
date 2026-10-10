@@ -107,9 +107,11 @@ def split_time_vars_by_rank(cube, time_vars):
 
 
 @itslive_utils.retry_decorator(max_retries=5)
-def open_virtual_cube(store_path, bucket_prefix):
-   """Open an icechunk repository read-only, resolving its virtual chunk
-   references.
+def _open_icechunk_repo(store_path, bucket_prefix):
+   """Open an icechunk repository read-only and return its 'main' session's
+   zarr store, without resolving/decoding anything through xarray. Shared by
+   open_virtual_cube() and get_virtual_cube_num_layers() so both stay in
+   sync on storage/credentials setup.
 
    retry_decorator: icechunk's s3_store() has no built-in retry/backoff
    (unlike obstore.S3Store elsewhere), so a transient blip would otherwise
@@ -147,15 +149,51 @@ def open_virtual_cube(store_path, bucket_prefix):
       authorize_virtual_chunk_access=credentials,
    )
 
+   return repo.readonly_session("main").store
+
+
+def open_virtual_cube(store_path, bucket_prefix):
+   """Open an icechunk repository read-only, resolving its virtual chunk
+   references.
+
+   Args:
+      store_path (str): icechunk repository path (s3:// or local).
+      bucket_prefix (str): S3 URL prefix the virtual chunk container
+         resolves granule references against.
+   """
    # mask_and_scale=False keeps granules' raw dtypes (no int16->float32+NaN
    # promotion). zarr_format=3: icechunk repos are natively V3 -- forcing 2
    # raises GroupNotFoundError (no V2 markers exist).
    return xr.open_zarr(
-      repo.readonly_session("main").store,
+      _open_icechunk_repo(store_path, bucket_prefix),
       consolidated=False,
       zarr_format=3,
       mask_and_scale=False
    )
+
+
+def get_virtual_cube_num_layers(store_path, bucket_prefix):
+   """Read just the 'time' dimension's length from an icechunk repo's array
+   metadata, without open_virtual_cube()'s xr.open_zarr() overhead.
+
+   xr.open_zarr() eagerly loads every dimension coordinate ('time', 'x',
+   'y') to build pandas indexes on open (measured elsewhere in this
+   pipeline at 167s vs. ~6s for zarr.open_group() -- see
+   src/wiki/02_Implementation_Details.md's "time coordinate chunking"
+   section); reading an array's shape only touches its zarr.json metadata,
+   never chunk data, so it also never resolves virtual chunk references
+   (those live in the data chunk manifests, not array metadata).
+
+   Args:
+      store_path (str): icechunk repository path (s3:// or local).
+      bucket_prefix (str): S3 URL prefix the virtual chunk container
+         resolves granule references against.
+   """
+   group = zarr.open_group(
+      _open_icechunk_repo(store_path, bucket_prefix),
+      mode='r', zarr_format=3, use_consolidated=False
+   )
+   return group[utils.Coords.TIME].shape[0]
 
 
 def split_vars_by_time(cube):
