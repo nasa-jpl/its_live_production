@@ -46,6 +46,8 @@ import time
 import warnings
 from datetime import datetime
 
+import s3fs
+import xarray as xr
 import zarr
 from xarray.coding.times import encode_cf_datetime
 from zarr.errors import UnstableSpecificationWarning, ZarrUserWarning
@@ -69,7 +71,6 @@ from deep_copy_cube_per_var_chunk import (
    _write_var_3d_and_upload,
    _write_var_1d_and_upload,
 )
-from deep_copy_update import verify_output_store_exists, get_current_num_layers
 from deep_copy_cube_progress import _Progress, SUCCESS_MARKER
 
 logging.basicConfig(
@@ -88,6 +89,43 @@ warnings.filterwarnings('ignore', category=UnstableSpecificationWarning)
 # single-request opens); the warning fires on every consolidate/open and
 # adds nothing actionable.
 warnings.filterwarnings('ignore', category=ZarrUserWarning, message='Consolidated metadata')
+
+
+def verify_output_store_exists(output_store):
+   """Fail fast if the deep-copy store to update doesn't exist yet.
+
+   Args:
+      output_store (str): existing deep-copy zarr store to update (s3://
+         or local).
+   """
+   if output_store.startswith(utils.S3_PREFIX):
+      s3_path = output_store.replace(utils.S3_PREFIX, '', 1)
+      s3 = s3fs.S3FileSystem()
+
+      if not s3.exists(s3_path):
+         raise RuntimeError(
+            f"Output store {output_store} does not exist in S3; nothing to "
+            "update. Use deep_copy_cube_per_var_chunk.py to create it first."
+         )
+
+   elif not os.path.exists(output_store):
+      raise RuntimeError(
+         f"Output store {output_store} does not exist locally; nothing to "
+         "update. Use deep_copy_cube_per_var_chunk.py to create it first."
+      )
+
+
+def get_current_num_layers(output_store):
+   """Read the deep-copy store's current length along 'time'.
+
+   Args:
+      output_store (str): existing deep-copy zarr store (s3:// or local).
+
+   Returns:
+      int: current size of the 'time' dimension.
+   """
+   with xr.open_zarr(output_store, consolidated=True) as ds:
+      return ds.sizes[utils.Coords.TIME]
 
 
 def _download_store_skeleton(output_store, local_store):

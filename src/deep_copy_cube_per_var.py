@@ -111,6 +111,7 @@ from deep_copy_cube import (
    XY_SHARD_MULTIPLIER,
    open_virtual_cube,
    split_vars_by_time,
+   split_time_vars_by_rank,
    build_encoding,
    _reset_write_encoding,
    resolve_output_store,
