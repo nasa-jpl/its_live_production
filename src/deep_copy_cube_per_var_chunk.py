@@ -1,41 +1,36 @@
 """
 Deep-copy a virtual ITS_LIVE datacube to a real Zarr v3 store.
 
-For an s3:// --output-store: uploads each variable's zarr chunk to S3 as
-soon as it's done, instead of writing the whole store locally and uploading
-once at the end -- so the S3 store stays valid/browsable throughout the run
-and a crash loses only the in-flight chunk. Supersedes
-deep_copy_cube_per_var.py's single-upload-at-the-end approach as the
-production creation script.
-
-Per (variable, whole zarr chunk): write locally -> consolidate metadata ->
-copy that chunk's subtree (`{var}/c/{chunk_idx}/`, which covers every
-spatial shard regardless of --xy-shard-multiplier) + root zarr.json to S3 ->
-delete the local copy (safe -- chunk_index is never revisited) -> mark done
-if --progress-dir resumability is enabled. The S3 copy granularity (whole
+For an s3:// --output-store: uploads each variable's finished zarr chunk to
+S3 as soon as it's done (write locally -> consolidate metadata -> copy that
+chunk's subtree `{var}/c/{chunk_idx}/` -- covers every spatial shard
+regardless of --xy-shard-multiplier -- plus root zarr.json to S3 -> delete
+the local copy -> mark done if --progress-dir is set), instead of writing
+the whole store locally and uploading once at the end. Keeps the S3 store
+valid/browsable throughout the run, so a crash only loses the in-flight
+chunk. Supersedes deep_copy_cube_per_var.py's single-upload-at-the-end
+approach as the production creation script. The S3 copy granularity (whole
 chunk) is coarser than the internal write granularity (see
 INT_CHUNK_SPLITS/FLOAT_CHUNK_SPLITS) since a zarr chunk is atomic anyway.
 The store's skeleton (root + every array's zarr.json + coordinate/static
-data) is uploaded once up front so S3 always has valid metadata to resolve
-against, even before the first chunk lands -- genuinely once, not just
-once-per-attempt: with --progress-dir, its own marker (skeleton_is_done())
-stops a resume from re-deriving and re-uploading it (and, with it, `time`'s
-CF encoding) on top of what every already-uploaded chunk has depended on
-staying put since.
+data) is uploaded once up front, before any chunk lands, so S3 always has
+valid metadata to resolve against -- genuinely once, not once-per-attempt:
+with --progress-dir, its own marker (skeleton_is_done()) stops a resume
+from re-deriving and re-uploading it (and, with it, `time`'s CF encoding)
+on top of what every already-uploaded chunk has depended on staying put.
 
 For a local --output-store: writes straight into it instead -- no
 --local-staging-dir, no per-chunk upload/consolidate, no --progress-dir
 (resumability is S3-specific) -- there's no separate publish target to
-protect, so the whole point of this script's design doesn't apply; only the
-per-(variable, chunk) write loop itself is reused.
+protect; only the per-(variable, chunk) write loop itself is reused.
 
 Resumable when --progress-dir is given (s3:// output only) -- per-
-(variable,chunk) markers and a skeleton marker let a retry skip whatever a
-prior attempt finished, and the chunking parameters are recorded/re-checked
-so resuming with mismatched arguments fails loudly instead of silently
-corrupting the store. See deep_copy_cube_progress._Progress. Without
---progress-dir this behaves exactly as before, including refusing to
-overwrite an existing --output-store.
+(variable,chunk) and skeleton markers let a retry skip whatever a prior
+attempt finished, and the chunking parameters are recorded/re-checked so a
+mismatched resume fails loudly instead of silently corrupting the store.
+See deep_copy_cube_progress._Progress. Without --progress-dir this behaves
+exactly as before, including refusing to overwrite an existing
+--output-store.
 
 Usage examples:
 python src/deep_copy_cube_per_var_chunk.py \
@@ -112,13 +107,12 @@ warnings.filterwarnings('ignore', category=ZarrUserWarning, message='Consolidate
 
 
 # Sub-writes per whole zarr time-chunk for a 3D variable, by dtype. MEASURED
-# (2026-09-16; see src/wiki/07_Deep_Copy_Time_Chunking_And_Write_
-# Amplification.md), not theoretical: write-amplification theory says N=1
-# (whole chunk) is always cheapest, but a whole-chunk int write measured
-# 2.4x SLOWER than two half-chunk writes at production scale (RAM/swap was
-# clean; root cause not isolated). FLOAT_CHUNK_SPLITS also can't drop to 1
-# on a 32 GB box regardless -- a float32 whole chunk at 512x512/
-# time_chunk=20000 is ~39 GiB. Re-benchmark before changing either value.
+# (2026-09-16, see src/wiki/07_Deep_Copy_Time_Chunking_And_Write_
+# Amplification.md), not theoretical: a whole-chunk int write measured 2.4x
+# SLOWER than two half-chunk writes at production scale (RAM/swap was
+# clean; root cause not isolated). FLOAT_CHUNK_SPLITS can't drop to 1
+# regardless -- a float32 whole chunk at 512x512/time_chunk=20000 is ~39 GiB
+# on a 32 GB box. Re-benchmark before changing either value.
 INT_CHUNK_SPLITS = 2
 FLOAT_CHUNK_SPLITS = 2
 
@@ -178,12 +172,11 @@ def _compute_radar_mask(cube, total_layers):
    """Classify each of `cube`'s first `total_layers` layers as radar or not.
 
    Classifies via SensorExcludeFilter.map_sensor_to_group() on
-   (mission_img1, satellite_img1) rather than inspecting the manifests
-   directly, on the assumption every radar-classified granule genuinely
-   carries M11/M12/vr/va (true for Sentinel-1; NISAR included in
+   (mission_img1, satellite_img1), assuming every radar-classified granule
+   genuinely carries M11/M12/vr/va (true for Sentinel-1; NISAR included in
    RADAR_GROUP_IDS ahead of its planned addition). An unrecognized sensor
-   raises KeyError, left unhandled on purpose -- guessing "optical" would
-   silently skip real data.
+   raises KeyError on purpose -- guessing "optical" would silently skip
+   real data.
 
    Args:
       cube (xr.Dataset): the virtual datacube.
@@ -206,21 +199,19 @@ def _compute_radar_mask(cube, total_layers):
 
 
 def _fill_nan_in_place(values, fill_value):
-   """Replace NaN in `values` with `fill_value` in place -- byte-identical to what
-   xarray's CF encoder (CFMaskCoder.encode) would write, but without its
-   allocations. On a region write xarray always re-derives encoding from
-   the store (_reset_write_encoding() has no effect there) and runs
-   `fillna` = `where(notnull(data), data, fill)`, allocating a full bool
-   mask + inverse + output copy on every write, for every variable that
-   declares a CF fill -- including int variables, where it's a no-op. For a
-   10000-layer float32 batch at 512x512 that's ~14.7 GiB of temporaries on
-   top of a 9.8 GiB batch: the actual cause of a real M11/M12 OOM (and, via
-   a forced-down batch size, a ~2x runtime regression). np.copyto with
+   """Replace NaN in `values` with `fill_value` in place -- byte-identical to
+   xarray's CF encoder (CFMaskCoder.encode), but without its allocations. A
+   region write always re-derives encoding from the store
+   (_reset_write_encoding() has no effect there), so xarray's `fillna`
+   allocates a full bool mask + inverse + output copy on every write, for
+   every variable with a CF fill -- including ints, where it's a no-op. For
+   a 10000-layer float32 batch at 512x512 that's ~14.7 GiB of temporaries on
+   top of a 9.8 GiB batch: the real cause of a production M11/M12 OOM (and,
+   via a forced-down batch size, a ~2x runtime regression). np.copyto with
    `where=` allocates only the mask.
 
-   No-ops (nothing to substitute): int/uint batches loaded with
-   mask_and_scale=False can't contain NaN; fill_value=None means the
-   variable declares no CF fill (see deep_copy_cube.NO_FILL_VARS); a NaN
+   No-ops: int/uint batches (mask_and_scale=False) can't contain NaN;
+   fill_value=None means no CF fill (see deep_copy_cube.NO_FILL_VARS); a NaN
    fill_value already matches.
 
    Args:
@@ -291,12 +282,12 @@ def _upload_chunk(local_store, output_store, var_name, chunk_index):
 
    `{var_name}/c/{chunk_index}` covers every spatial shard under that
    time-chunk regardless of --xy-shard-multiplier ('time' is always first
-   under 'c/'); for a 1D variable the same path is a plain file instead of a
-   directory, so the copy/delete both branch on os.path.isdir()
-   (`aws s3 cp --recursive` errors on a file source). Delete is safe:
-   chunk_index is never revisited by any caller, and _s3_copy() raises
-   (rather than returning) on total failure, so a failed upload always
-   leaves its local chunk in place to retry from.
+   under 'c/'); for a 1D variable the same path is a plain file instead, so
+   copy/delete both branch on os.path.isdir() (`aws s3 cp --recursive`
+   errors on a file source). Delete is safe: chunk_index is never revisited
+   by any caller, and _s3_copy() raises (rather than returning) on total
+   failure, so a failed upload always leaves its local chunk in place to
+   retry from.
 
    Args:
       local_store (str): local staging store path.
@@ -408,14 +399,14 @@ def _write_var_3d_and_upload(
    num_skipped = 0
    num_resumed = 0
 
-   # use_consolidated=False is load-bearing, not defensive. The update
+   # use_consolidated=False is load-bearing, not defensive: the update
    # caller (deep_copy_update_per_var_chunk.py) resize()s this array after
-   # downloading a skeleton whose root zarr.json carries creation's
-   # consolidated block, and zarr prefers that block over the array's own
-   # (correctly resized) zarr.json -- so a consolidated open reports the
-   # PRE-resize shape and every append past it is a SILENT no-op: no
-   # exception, chunk still marked done, layers read back as fill value.
-   # Reproduced by utils/check_stale_consolidated_metadata.py.
+   # downloading a skeleton whose root zarr.json still carries creation's
+   # consolidated block, which zarr prefers over the array's own (correctly
+   # resized) one -- a consolidated open would report the PRE-resize shape,
+   # making every append past it a SILENT no-op (no exception, chunk marked
+   # done, layers read back as fill value). Reproduced by
+   # utils/check_stale_consolidated_metadata.py.
    #
    # Safe to open once: consolidate_metadata() below only rewrites root
    # zarr.json, never this array's own metadata.
@@ -498,11 +489,11 @@ def _write_var_1d_and_upload(
 
    Kept on the xarray/CF-encoding path deliberately, unlike
    _write_var_3d_and_upload(): 1D variables are ~262k times smaller per
-   layer, so the encoder's cost is irrelevant, while its correctness
-   (datetime/string encoding) very much isn't. Written whole-chunk rather
-   than half: every 1D variable's dask chunking is a single chunk spanning
-   all layers, not one per granule, so there's no per-granule task-graph to
-   blow up and RAM is a non-issue regardless.
+   layer, so the encoder's cost is irrelevant while its correctness
+   (datetime/string encoding) isn't. Written whole-chunk, not half: every
+   1D variable's dask chunking is a single chunk spanning all layers, so
+   there's no per-granule task-graph to blow up and RAM is a non-issue
+   regardless.
 
    Args:
       cube (xr.Dataset): the virtual datacube `var_name` is read from.
@@ -597,21 +588,21 @@ def deep_copy_cube_per_var_chunk(
 ):
    """Materialize `input_store` into a real zarr v3 datacube at
    `output_store`. For an s3:// `output_store`, uploads each whole zarr
-   chunk to S3 as soon as it's done (see this module's docstring). For a
-   local `output_store`, writes straight into it instead -- no staging dir,
-   no per-chunk upload -- since there's no separate publish target to keep
-   valid mid-run.
+   chunk to S3 as soon as it's done (see module docstring); for a local
+   `output_store`, writes straight into it -- no staging dir, no per-chunk
+   upload -- since there's no separate publish target to keep valid mid-run.
 
    Resumable when `progress_dir` is given (s3:// output only -- resumability
    relies on S3-specific existence checks that don't apply to a local
-   store). Without it, behaves exactly as before resumability existed,
-   including refusing to overwrite an existing output store. Fresh-vs-resume
-   is auto-detected from the markers themselves, since an AWS Batch retry
-   resubmits the identical command line; a completed prior attempt
-   short-circuits immediately, an interrupted one skips only what it already
-   finished. The parameters that give a chunk marker its meaning are
-   recorded and re-checked on resume, so a mismatch fails loudly instead of
-   silently corrupting the store -- see deep_copy_cube_progress._Progress.
+   store). Fresh-vs-resume is auto-detected from the markers themselves,
+   since an AWS Batch retry resubmits the identical command line: a
+   completed prior attempt short-circuits immediately, an interrupted one
+   skips only what it already finished. Chunk markers' defining parameters
+   are recorded and re-checked on resume, so a mismatch fails loudly
+   instead of silently corrupting the store -- see
+   deep_copy_cube_progress._Progress. Without `progress_dir`, behaves
+   exactly as before resumability existed, including refusing to overwrite
+   an existing output store.
 
    Args:
       input_store (str): virtual datacube (icechunk repo) to read.
@@ -818,17 +809,17 @@ def deep_copy_cube_per_var_chunk(
    if is_s3_output:
       # Skeleton (root+array zarr.json + coord/static data) never changes
       # again, but S3 needs it before any chunk lands so a mid-run reader
-      # always finds valid metadata (unwritten chunks read as fill_value).
-      # Not needed for a local output_store: it's already the final store,
+      # finds valid metadata (unwritten chunks read as fill_value). Not
+      # needed for a local output_store -- already the final store,
       # consolidated once at the end instead (see below).
       #
-      # Gated on the skeleton marker, not just is_s3_output: items above
-      # just rebuilt local_store from scratch this attempt (it may be a
-      # fresh EC2 instance), but if a prior attempt already fully uploaded
-      # this exact skeleton, redoing it here would re-derive and overwrite
-      # time/x/y coordinate data that every chunk upload since has depended
-      # on staying put. Without --progress-dir there's no resumability
-      # concept, so always upload, as before.
+      # Gated on the skeleton marker, not just is_s3_output: local_store was
+      # just rebuilt from scratch this attempt (may be a fresh EC2
+      # instance), but if a prior attempt already uploaded this exact
+      # skeleton, redoing it would overwrite time/x/y coordinate data every
+      # chunk upload since has depended on staying put. Without
+      # --progress-dir there's no resumability concept, so always upload,
+      # as before.
       if progress is not None and progress.skeleton_is_done():
          logging.info(
             f'Skeleton already uploaded to {output_store} by a prior '

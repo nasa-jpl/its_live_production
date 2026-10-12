@@ -1,39 +1,35 @@
 """
 Update an existing deep-copy datacube (deep_copy_cube_per_var_chunk.py) with
 new layers appended to its source virtual cube. Layers are matched by
-position: everything at index >= the store's current 'time' length is
-treated as new, assuming the virtual cube is only ever appended to (matching
+position: index >= the store's current 'time' length is new, assuming the
+virtual cube is append-only (matches
 virtual_itslive_cube_per_chunk_update.py's own model). Known limitation: if
-the creation run capped layers below the source's true count at the time
-(--num-layers), that gap is indistinguishable from a real append.
+the creation run capped layers below the source's true count (--num-layers),
+that gap looks like a real append.
 
 No separate backup step: deep_copy_cube_per_var_chunk.py already uploads one
-whole zarr time-chunk at a time, so a failed chunk write just leaves its
-`.done` marker unset and a retry redoes only that chunk -- the old S3 chunk
-is never overwritten until its replacement fully lands.
+whole zarr time-chunk at a time, so a failed write just leaves its `.done`
+marker unset -- a retry redoes only that chunk, and the old S3 chunk is
+never overwritten until its replacement fully lands.
 
---progress-dir must be the SAME directory the creation run used: this update
-reads that run's recorded chunking parameters from its run_config.json
-(they can't be supplied directly -- they must match the build exactly), and
-keeps its own progress markers in a sub-path namespaced by the (old, new)
-layer-count transition.
+--progress-dir must be the SAME directory the creation run used: this
+update reads its recorded chunking parameters from run_config.json (they
+can't be supplied directly) and keeps its own progress markers in a
+sub-path namespaced by the (old, new) layer-count transition.
 
 Every time-indexed array is resized to the new layer count up front, in one
-pass, before any chunk is (re)written -- mirrors creation's own atomicity of
-declaring full shape before any pixel data (resize() is metadata-only, so
-cheap and safe to re-run). If the old length wasn't an exact multiple of the
-chunk size, the boundary chunk's real bytes are merged in from S3 first --
-otherwise resizing would expose zarr's on-disk fill-value padding of that
-ragged chunk as if it were legitimate old data (see
-_prepare_array_for_update()).
+pass, before any chunk is (re)written -- mirrors creation's own atomicity
+(resize() is metadata-only, cheap to re-run). If the old length wasn't an
+exact multiple of the chunk size, the boundary chunk's real bytes are
+merged in from S3 first, so resizing doesn't expose zarr's fill-value
+padding as legitimate old data (see _prepare_array_for_update()).
 
-The store's own declared shape is NOT a reliable "is it done" signal once an
-update has started: _upload_chunk() re-uploads the *root* zarr.json (which
-carries every array's shape) after the very first chunk of ANY variable
-lands, so the store looks fully updated the moment one variable starts,
-regardless of the rest. _find_incomplete_update() detects an interrupted
-attempt and resumes it from its recorded old_total_layers instead of
-trusting that shape.
+The store's declared shape is NOT a reliable "done" signal once an update
+starts: _upload_chunk() re-uploads the root zarr.json (every array's shape)
+after the first chunk of ANY variable lands, so the store looks fully
+updated the moment one variable starts. _find_incomplete_update() detects
+an interrupted attempt and resumes from its recorded old_total_layers
+instead of trusting that shape.
 
 Usage example:
 python src/deep_copy_update_per_var_chunk.py \
@@ -198,13 +194,13 @@ def _prepare_array_for_update(
          1D/'time', (y_size, x_size) for a 3D variable.
       is_dir (bool): see _download_boundary_chunk_if_present().
    """
-   # use_consolidated=False: the skeleton just downloaded carries creation's
-   # consolidated block, which zarr prefers over each array's own zarr.json.
-   # Resizing through that stale view would compute the new shape from the
-   # pre-resize one -- harmless while this only ever grows to an absolute
-   # target, but the same staleness silently swallows the appends that
-   # follow (see _write_time_coord_and_upload() and
-   # deep_copy_cube_per_var_chunk._write_var_3d_and_upload()), so never read
+   # use_consolidated=False: the downloaded skeleton carries creation's
+   # stale consolidated block, which zarr prefers over each array's own
+   # zarr.json -- resizing through it would compute the new shape from the
+   # pre-resize one. Harmless here (only ever grows to an absolute target),
+   # but the same staleness silently swallows later appends (see
+   # _write_time_coord_and_upload() and
+   # deep_copy_cube_per_var_chunk._write_var_3d_and_upload()); never read
    # shape through it anywhere on this path.
    group = zarr.open_group(
       local_store, mode='r+', zarr_format=3, use_consolidated=False
@@ -230,12 +226,11 @@ def _write_time_coord_and_upload(
    _write_var_1d_and_upload(), but for 'time' itself.
 
    Can't reuse _write_var_1d_and_upload(): its _load_batch() drops 'time'
-   from the selection (correct for real data variables, but drops the very
-   value being written for var_name='time'), and a region write of a
-   coordinate-only Dataset is a silent no-op in xarray's zarr backend
-   (verified). Instead writes CF-encoded values directly via the zarr array
-   API, matching what to_zarr()'s own encoder would have produced -- 'time'
-   is always eagerly loaded already, so there's no S3 batch to fetch.
+   from the selection, and a region write of a coordinate-only Dataset is a
+   silent no-op in xarray's zarr backend (verified). Writes CF-encoded
+   values directly via the zarr array API instead, matching to_zarr()'s own
+   encoder -- 'time' is always eagerly loaded already, so there's no S3
+   batch to fetch.
 
    Args:
       cube (xr.Dataset): the virtual datacube.
@@ -367,8 +362,8 @@ def _validate_update_config(recorded, current, update_progress):
 def _find_incomplete_update(creation_progress):
    """Scan {creation_progress.base}/updates/ for a transition directory left
    by an interrupted attempt (has run_config.json but no _SUCCESS) -- see
-   module docstring for why the store's own shape can't be trusted to tell
-   "done" apart from "interrupted".
+   module docstring for why the store's shape alone can't tell "done" from
+   "interrupted".
 
    Raises RuntimeError if more than one incomplete transition is found --
    at most one update should ever be in flight at a time.
@@ -381,9 +376,8 @@ def _find_incomplete_update(creation_progress):
       tuple of (int, int, _Progress, dict) or None: (old_total_layers,
          new_total_layers, update_progress, recorded_update_config) for the
          one incomplete transition found, or None if updates/ is missing or
-         empty (the normal case: a completed transition's directory is
-         removed entirely via remove_entirely() rather than kept around,
-         unless --keep-progress-markers was used).
+         empty (the normal case -- a completed transition's directory is
+         removed via remove_entirely() unless --keep-progress-markers).
    """
    updates_root = f'{creation_progress.base}/updates'
    if not creation_progress.s3.exists(updates_root):
@@ -612,23 +606,21 @@ def deep_copy_update_per_var_chunk(
       )
 
    # DEFENSIVE ONLY -- not closing a known hole. Every reachable path above
-   # already leaves S3's root current: _upload_chunk() consolidates and
-   # re-uploads it alongside each chunk, and 'time', the NO_FILL_VARS group
-   # (see deep_copy_cube.py) and the string variables all carry real values
-   # for every layer, so at least one of them always writes a real chunk.
-   # What this removes is the *dependence* on that -- which variables happen
-   # to declare fills, and therefore which chunks zarr's write_empty_chunks
-   # may legitimately skip, is not something this function should have to
-   # reason about to guarantee its own final metadata.
+   # already leaves S3's root current (_upload_chunk() re-uploads it with
+   # each chunk; 'time', NO_FILL_VARS (deep_copy_cube.py), and the string
+   # variables always write a real chunk for every layer). This just
+   # removes the *dependence* on that -- which variables happen to declare
+   # fills, and so which chunks write_empty_chunks may skip, shouldn't be
+   # something this function has to reason about to guarantee its own
+   # final metadata.
    #
-   # Before mark_complete(), not after: the marker asserts the durable S3
-   # state is good, so everything it attests to must already be durable. A
-   # kill in between would otherwise leave _SUCCESS next to a stale root,
-   # and _find_incomplete_update() skips completed transitions -- nothing
-   # would ever repair it.
+   # Before mark_complete(), not after: the marker asserts durable S3 state
+   # is good, so it must already be durable. A kill in between would leave
+   # _SUCCESS next to a stale root with no way to repair it --
+   # _find_incomplete_update() skips completed transitions.
    #
-   # Also makes the root attrs set above (date_updated) reach S3 on a resumed
-   # attempt that finds every variable already done and so uploads no chunk.
+   # Also lands the root attrs set above (date_updated) on a resumed attempt
+   # that finds every variable already done and uploads no chunk.
    zarr.consolidate_metadata(local_store)
    _s3_copy_file(
       os.path.join(local_store, ROOT_METADATA_FILE),

@@ -119,25 +119,23 @@ def _s3_copy(local_path, s3_path, recursive=True):
 
 class _Progress:
    """Tracks which (variable, chunk) work is already done, keyed under
-   --progress-dir (deliberately outside the cube's own zarr store -- a
-   published data product shouldn't carry pipeline bookkeeping). `base` is
-   namespaced by the output store's name so one --progress-dir can serve a
-   whole batch; validate_config() cross-checks output_store too, so a
-   collision fails loudly instead of silently skipping work.
+   --progress-dir (kept outside the cube's own zarr store -- a published
+   data product shouldn't carry pipeline bookkeeping). `base` is namespaced
+   by the output store's name so one --progress-dir can serve a whole
+   batch; validate_config() cross-checks output_store too, so a collision
+   fails loudly instead of silently skipping work.
 
    Four marker levels, checked cheapest-first: {base}/_SUCCESS (whole run
-   done), {base}/{var}/_SUCCESS (one variable done -- skips its per-chunk
-   checks), {base}/{var}/{chunk}.done (one chunk done, including a
-   legitimate radar-skip), {base}/skeleton/_SUCCESS (the one-time skeleton
-   upload done -- see _skeleton_success_path()). Plus {base}/run_config.json
+   done), {base}/{var}/_SUCCESS (variable done), {base}/{var}/{chunk}.done
+   (one chunk done, including a legitimate radar-skip), {base}/skeleton/
+   _SUCCESS (one-time skeleton upload done). Plus {base}/run_config.json
    (see validate_config()).
 
    Completion is always an explicit marker, never inferred from which chunk
    objects exist on S3: a killed sharded-chunk upload can leave some shards
    written and others missing, and zarr fills a missing shard with
-   fill_value rather than erroring -- inferring "done" from partial state
-   would ship corrupt data. A missing marker only costs a safe (idempotent)
-   redo; a false "done" would be dangerous.
+   fill_value rather than erroring, so a false "done" would ship corrupt
+   data -- a missing marker only costs a safe, idempotent redo.
 
    No locking: concurrent attempts against the same --progress-dir are
    benign (last writer wins) but must not share --local-staging-dir.
@@ -283,17 +281,17 @@ class _Progress:
       """Reconcile this attempt's config against the recorded one.
 
       Chunk markers are keyed only on (var_name, chunk_index), meaningless
-      without the parameters that define what a chunk_index covers -- so
-      any _CONFIG_SHAPE_KEYS mismatch is a hard failure (otherwise the
-      skeleton re-upload would silently pair old chunks with a new grid).
+      without the parameters defining what a chunk_index covers -- any
+      _CONFIG_SHAPE_KEYS mismatch is a hard failure (otherwise a skeleton
+      re-upload would silently pair old chunks with a new grid).
 
       A grown input cube (more granules ingested since the first attempt)
       isn't an operator mistake, so it's clamped to the recorded
-      total_layers (logged) instead of failed; a shrunk cube hard-fails
-      (the declared shape could never be filled). Recorded first/last
-      'time' are also re-checked: granules are ordered by mid_date, so an
-      *inserted* (not appended) granule would shift chunks without
-      changing the count, which clamping alone wouldn't catch.
+      total_layers (logged); a shrunk cube hard-fails (the declared shape
+      could never be filled). Recorded first/last 'time' are also
+      re-checked -- granules are ordered by mid_date, so an *inserted* (not
+      appended) granule would shift chunks without changing the count,
+      which clamping alone wouldn't catch.
 
       Args:
          recorded (dict): the first attempt's config, from read_config().
@@ -412,21 +410,20 @@ class _Progress:
       )
 
    def remove_entirely(self, var_names):
-      """Delete this progress base in full. Unlike prune_var_markers()
-      alone, this also removes run_config.json and _SUCCESS, but only ever
-      removes _SUCCESS LAST, so an attempt killed mid-cleanup still reads as
-      complete (is_complete() checks only _SUCCESS) instead of triggering a
-      pointless redo of already-correct data.
+      """Delete this progress base in full -- unlike prune_var_markers()
+      alone, also removes run_config.json and _SUCCESS, but removes
+      _SUCCESS LAST so an attempt killed mid-cleanup still reads as
+      complete instead of triggering a pointless redo of correct data.
+
+      Only safe for a base never consulted again once complete (e.g. an
+      update transition, decided by the store's live shape, not a marker)
+      -- NOT creation's top-level base, which relies on
+      prune_var_markers() keeping _SUCCESS forever so a rerun can
+      short-circuit.
 
       Args:
          var_names (list of str): passed through to prune_var_markers() for
             the per-variable part.
-
-      Only safe for a base never consulted again once complete (e.g. an
-      update transition, where "up to date" is decided by the store's live
-      shape, not a marker) -- NOT creation's top-level base, which relies
-      on prune_var_markers() keeping _SUCCESS forever so a rerun can
-      short-circuit.
       """
       self.prune_var_markers(var_names)
       _remove_prefix(self.s3, self._config_path())
@@ -436,15 +433,14 @@ class _Progress:
 
 def _log_resume_or_fresh(s3, output_store):
    """Log fresh-vs-resuming, based on whether the output store already has
-   content.
+   content. Used instead of deep_copy_cube.resolve_output_store()'s strict
+   S3 guard when resumability is on: after a spot termination, Batch
+   resubmits the same command, so existing partial content is expected,
+   not a mistake.
 
    Args:
       s3 (s3fs.S3FileSystem): filesystem to check.
       output_store (str): the cube store to check.
-
-   Used instead of deep_copy_cube.resolve_output_store()'s strict S3 guard
-   when resumability is on: after a spot termination, Batch resubmits the
-   same command, so existing partial content is expected, not a mistake.
    """
    s3_path = output_store.replace(utils.S3_PREFIX, '', 1)
    if _marker_exists(s3, s3_path):

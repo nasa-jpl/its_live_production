@@ -174,15 +174,10 @@ def open_virtual_cube(store_path, bucket_prefix):
 
 def get_virtual_cube_num_layers(store_path, bucket_prefix):
    """Read just the 'time' dimension's length from an icechunk repo's array
-   metadata, without open_virtual_cube()'s xr.open_zarr() overhead.
-
-   xr.open_zarr() eagerly loads every dimension coordinate ('time', 'x',
-   'y') to build pandas indexes on open (measured elsewhere in this
-   pipeline at 167s vs. ~6s for zarr.open_group() -- see
-   src/wiki/02_Implementation_Details.md's "time coordinate chunking"
-   section); reading an array's shape only touches its zarr.json metadata,
-   never chunk data, so it also never resolves virtual chunk references
-   (those live in the data chunk manifests, not array metadata).
+   metadata -- unlike open_virtual_cube(), skips xr.open_zarr()'s eager
+   dimension-coordinate load (measured 167s vs. ~6s for zarr.open_group(),
+   see src/wiki/02_Implementation_Details.md) and never resolves virtual
+   chunk references (those live in data chunk manifests, not metadata).
 
    Args:
       store_path (str): icechunk repository path (s3:// or local).
@@ -258,16 +253,14 @@ def build_encoding(
             utils.Missing.fill_value: None,
          }
 
-   # 'time' needs an explicit chunk size: left unset, zarr's auto-chunker
-   # picks chunks=(1,) for an appended dim -- one S3 GET per layer just to
-   # open the cube (measured: ~35,000 GETs, ~167s). time_chunk_1d (not the
-   # cube's current size) keeps it one chunk as long as possible on appends.
+   # Explicit chunk size: left unset, zarr's auto-chunker picks chunks=(1,)
+   # for an appended dim -- ~35,000 S3 GETs just to open the cube (measured,
+   # ~167s). time_chunk_1d keeps it one chunk as long as possible on appends.
    #
-   # units/calendar/dtype are pinned explicitly too: _reset_write_encoding()
-   # wipes the source cube's own 'time' encoding before this dict is used, so
-   # left unset, xarray infers a different (epoch, dtype) per cube from its
-   # own first time value. Pinned to the same nanoseconds-since-epoch/int64
-   # scheme the source virtual cube already uses (utils.Units.ns_epoch_date).
+   # units/calendar/dtype pinned too: _reset_write_encoding() wipes the
+   # source cube's own 'time' encoding, so left unset xarray would infer a
+   # different (epoch, dtype) per cube. Pinned to the same scheme the source
+   # virtual cube already uses (utils.Units.ns_epoch_date).
    if utils.Coords.TIME in cube.coords:
       encoding[utils.Coords.TIME] = {
          'chunks': (time_chunk_1d,),
