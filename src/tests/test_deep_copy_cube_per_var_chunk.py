@@ -46,12 +46,13 @@ Covers:
     plus every marker and prunes the per-variable ones unless asked not to;
     and without --progress-dir no markers are touched at all.
 - build_encoding()'s 'time' coordinate encoding: units/calendar/dtype are
-    pinned explicitly to the GPS-epoch/float64 convention, not left for
-    xarray's CF encoder to infer a different one per cube.
-- time_collisions.uniquify_granule_times(): catches not just exact duplicate
-    'time' values but any that alias to the identical on-disk float64 value
-    once CF-encoded (e.g. sub-ULP nanosecond-apart granules), and leaves
-    already-unique granules untouched.
+    pinned explicitly to the nanoseconds-since-epoch/int64 convention, not
+    left for xarray's CF encoder to infer a different one per cube.
+- time_collisions.uniquify_granule_times(): catches exact duplicate 'time'
+    values (e.g. autoRIFT filename-hash jitter colliding) and leaves
+    already-unique granules untouched; distinct nanosecond-level times no
+    longer alias to the same on-disk value since the Oct 2026 int64
+    migration (see test_distinct_nanosecond_times_no_longer_alias()).
 """
 import json
 import sys
@@ -917,50 +918,56 @@ class TestDeepCopyCubePerVarChunkResumability:
 class TestTimeCoordinateEncoding:
 
     def test_units_calendar_dtype_are_pinned(self, tmp_path, local_only_run):
-        # Regression: left unset, xarray derives a reference datetime from
-        # this cube's own first 'time' value and whatever dtype that
-        # happens to produce, instead of one shared convention -- so every
-        # deep-copy cube would get a different (epoch, dtype) pair. Must
-        # match the source virtual cube's own GPS-epoch/float64 scheme
-        # (utils.Units.gps_epoch_date) exactly.
+        # Regression: left unset, xarray derives a different (epoch,
+        # dtype) pair per cube from its own first 'time' value. Must match
+        # the source virtual cube's ns_epoch_date/int64 scheme exactly.
         _run(tmp_path, progress_dir=PROGRESS_DIR, keep_local_staging=True)
 
         time_array = zarr.open_group(
             str(tmp_path / 'local.zarr'), mode='r', zarr_format=3
         )[utils.Coords.TIME]
 
-        assert time_array.attrs[utils.Units.name] == utils.Units.gps_epoch_date
+        assert time_array.attrs[utils.Units.name] == utils.Units.ns_epoch_date
         assert time_array.attrs[utils.Units.calendar_name] == utils.Units.proleptic_gregorian
-        assert time_array.dtype == np.dtype('float64')
+        assert time_array.dtype == np.dtype('int64')
 
 
 # ---------------------------------------------------------------------------
-# time_collisions.uniquify_granule_times(): the collision space it must
-# catch is bigger than exact datetime64 equality -- any two times that alias
-# to the identical on-disk float64 value once CF-encoded collide too.
+# time_collisions.uniquify_granule_times(): resolves genuine duplicate
+# 'time' values (e.g. autoRIFT's filename-hash jitter colliding by the
+# birthday bound -- see time_collisions.py's module docstring). Before the
+# Oct 2026 ns_epoch_date migration, float64 also aliased distinct
+# nanosecond-level values together -- guarded against regressing below.
 # ---------------------------------------------------------------------------
 
 class TestTimeCollisionsDeduplication:
 
-    def test_sub_ulp_nanosecond_offsets_in_2018_are_deduplicated(self):
-        # At 2018's magnitude (~1.2e9 seconds since the 1980 GPS epoch),
-        # float64's precision floor is ~238ns -- granules whose true
-        # mid_dates differ by only a few nanoseconds alias to the SAME
-        # stored value despite not being literally equal datetime64 values.
-        # Granules 0-3 (1-3ns apart) collide; granule 4 (500ns apart, above
-        # the ULP) does not.
+    def test_distinct_nanosecond_times_no_longer_alias(self):
+        # Regression for the float64 -> int64 ns_epoch_date migration: at
+        # 2018's magnitude, float64's ~238ns precision floor aliased
+        # granules whose true mid_dates differed by only a few ns to the
+        # same stored value. int64 has no such floor.
         base = np.datetime64('2018-06-15T12:00:00.000000000')
         offsets_ns = [0, 1, 2, 3, 500]
         times = np.array(
             [base + np.timedelta64(o, 'ns') for o in offsets_ns], dtype='datetime64[ns]'
         )
-        urls = [f'granule_{i}.nc' for i in range(len(offsets_ns))]
 
-        encoded_before = tc.encode_time_values(times)
-        assert len(set(encoded_before.tolist())) < len(offsets_ns), (
-            'premise of this test no longer holds -- these offsets no '
-            'longer alias to the same float64 value at this magnitude'
+        encoded = tc.encode_time_values(times)
+        assert len(set(encoded.tolist())) == len(offsets_ns), (
+            'distinct nanosecond-level times aliased to the same on-disk '
+            'value -- int64 ns-epoch encoding should never do this'
         )
+
+    def test_genuine_duplicate_times_are_deduplicated(self):
+        # The real-world collision this module resolves: two granules
+        # sharing the exact same mid_date, independent of any encoding-
+        # precision concern. A third, distinct granule stays untouched.
+        base = np.datetime64('2018-06-15T12:00:00.000000000')
+        times = np.array(
+            [base, base, base + np.timedelta64(500, 'ns')], dtype='datetime64[ns]'
+        )
+        urls = [f'granule_{i}.nc' for i in range(len(times))]
 
         datasets = [
             xr.Dataset(
@@ -974,11 +981,11 @@ class TestTimeCollisionsDeduplication:
         taken = set()
         num_bumped = tc.uniquify_granule_times(datasets, taken)
 
-        # granules 1-3 collide with granule 0's aliased value; granule 4
-        # never collides, so only 3 of the 5 need moving.
-        assert num_bumped == 3
+        # granule 1 collides with granule 0's exact duplicate; granule 2
+        # never collides, so only 1 of the 3 needs moving.
+        assert num_bumped == 1
         assert datasets[0]['time'].values[0] == times[0]
-        assert datasets[4]['time'].values[0] == times[4]
+        assert datasets[2]['time'].values[0] == times[2]
 
         final_times = np.array(
             [ds['time'].values[0] for ds in datasets], dtype='datetime64[ns]'
@@ -988,7 +995,7 @@ class TestTimeCollisionsDeduplication:
         # Every granule now has a distinct, stable on-disk encoding, and it
         # matches exactly what was validated during resolution -- no drift
         # between the value checked and the value a real re-encode produces.
-        assert len(set(final_encoded.tolist())) == len(offsets_ns)
+        assert len(set(final_encoded.tolist())) == len(times)
         assert set(final_encoded.tolist()) == taken
 
 
