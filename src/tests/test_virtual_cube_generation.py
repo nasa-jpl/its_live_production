@@ -868,9 +868,9 @@ class TestVirtualCubeValuesAgainstGranule:
     own callers).
     """
 
-    # Epoch used by every GPS-epoch-encoded (time,) variable in the virtual
-    # cube -- see utils.Units.gps_epoch_date / set_1d_time_chunk_encoding.
-    GPS_EPOCH = pd.Timestamp('1980-01-06T00:00:00')
+    # Epoch for acquisition_date_img1/acquisition_date_img2/date_center --
+    # see utils.Units.ns_epoch_date.
+    NS_EPOCH = pd.Timestamp('1980-01-06T00:00:00')
 
     @pytest.fixture(scope="class")
     def raw_cube(self, virtual_cube_path):
@@ -900,15 +900,14 @@ class TestVirtualCubeValuesAgainstGranule:
         with s3.open(granule_url, mode='rb') as fhandle:
             return xr.open_dataset(fhandle, engine=utils.NC_ENGINE).load()
 
-    def _decode_gps_seconds(self, seconds):
-        """Convert a GPS-epoch-seconds value (this cube's on-disk time
-        encoding) back to a pandas Timestamp for comparison.
+    def _decode_ns_epoch(self, nanoseconds):
+        """Convert a NS_EPOCH-relative nanoseconds value (acquisition_date_
+        img1/img2/date_center's on-disk encoding) to a pandas Timestamp.
 
         Inputs:
-        seconds (float): Number of seconds since GPS_EPOCH, as stored
-                      on disk for a (time,) GPS-epoch-encoded variable.
+        nanoseconds (int): Number of nanoseconds since NS_EPOCH.
         """
-        return self.GPS_EPOCH + pd.to_timedelta(float(seconds), unit='s')
+        return self.NS_EPOCH + pd.to_timedelta(int(nanoseconds), unit='ns')
 
     def _check_img_pair_info(self, cube, ds, t_idx, granule_url):
         """Compare every ImgPairInfo attribute (dates, ascending flags,
@@ -934,7 +933,7 @@ class TestVirtualCubeValuesAgainstGranule:
                 if expected_ts.tzinfo is not None:
                     expected_ts = expected_ts.tz_localize(None)
 
-                actual_ts = self._decode_gps_seconds(cube[attr].values[t_idx])
+                actual_ts = self._decode_ns_epoch(cube[attr].values[t_idx])
                 delta = abs((actual_ts - expected_ts).total_seconds())
                 assert delta < 1e-3, (
                     f"{attr} mismatch for {granule_url}: "
@@ -1223,6 +1222,51 @@ class TestBuildVirtualCubeSingleGranule:
             f"\nVerified {len(checked_vars)} scalar attribute variables "
             f"have 'time' dimension for a single-granule cube"
         )
+
+
+class TestBuildVirtualCubeDateResolution:
+    """Regression test for acquisition_date_img1/img2/date_center coming out
+    all-NaT on disk (Oct 2026). pandas >= 3 infers datetime64[us] from the
+    datetime that utils.parse_time() returns, and xarray's CF encoder
+    silently maps [us] values to the int64 NaT sentinel under the cube's
+    'nanoseconds since' units. Fixed in build_virtual_cube() by pinning the
+    value to datetime64[ns].
+    """
+
+    def test_date_variables_encode_without_nat(self, granules_file, monkeypatch):
+        """Simulates pandas >= 3's [us] inference regardless of the installed
+        pandas version, so this catches the bug on either."""
+        real_get_data_var_attr = utils.get_data_var_attr
+
+        def get_data_var_attr_as_us(*args, **kwargs):
+            value = real_get_data_var_attr(*args, **kwargs)
+            if kwargs.get('to_date'):
+                value = np.datetime64(value, 'us')
+            return value
+
+        monkeypatch.setattr(utils, 'get_data_var_attr', get_data_var_attr_as_us)
+
+        with open(granules_file) as f:
+            granules = json.load(f)
+
+        real_url = granules[0].replace(HTTPS_URL, S3_URL)
+        vds_list, missing_granules = load_granules([real_url], "s3://its-live-data")
+        assert missing_granules == [], f"Unexpected missing granules: {missing_granules}"
+
+        cube, _ = build_virtual_cube(vds_list)
+
+        nat_sentinel = np.iinfo(np.int64).min
+        for var_name in ImgPairInfo.toDate:
+            var = cube[var_name].variable
+            assert var.dtype == np.dtype('datetime64[ns]'), (
+                f"{var_name} should be datetime64[ns], got {var.dtype}"
+            )
+
+            encoded = xr.conventions.encode_cf_variable(var)
+            assert encoded.dtype == np.int64
+            assert not np.any(encoded.values == nat_sentinel), (
+                f"{var_name} encodes to the NaT sentinel: {encoded.values}"
+            )
 
 
 class TestLoadGranulesMissingBypass:
