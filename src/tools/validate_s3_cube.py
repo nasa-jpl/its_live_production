@@ -32,15 +32,18 @@ Checks performed, per data variable/coordinate array in the store:
    (ERROR).
 4. Storage-chunk completeness: for every array with a non-empty chunk grid,
    every expected chunk index (computed from the array's own shape and
-   effective storage-chunk shape -- shards, if sharded, else chunks) must be
-   either FULLY present (every leaf object under it written) or fully
-   ABSENT. A PARTIALLY present chunk (some but not all of its expected leaf
-   objects) is always an ERROR, for any variable -- zarr's
-   write_empty_chunks=False default (see below) either omits a chunk
-   entirely or writes it whole, never partially, so a partial chunk is
-   never legitimate and is the direct fingerprint of an interrupted upload.
-   A fully ABSENT chunk is graded by how confidently its legitimacy can be
-   verified:
+   effective storage-chunk shape -- shards, if sharded, else chunks) is
+   grouped by its leading (time) index, and each group's set of present vs.
+   missing spatial (y, x) sub-chunks is graded for legitimacy -- NOT simply
+   "all present is OK, anything else is corruption". zarr's
+   write_empty_chunks=False default (see below) decides per INDIVIDUAL
+   shard, independently, whether that exact (time, y, x) box is uniformly
+   fill -- so within the same time range it's entirely normal for some
+   spatial sub-chunks to be written and others not (nodata corners,
+   cube-footprint edges, a radar swath narrower than the full grid), with
+   no correlation to whether an upload was interrupted. A group's missing
+   sub-chunks (whether some or all of the group) are graded by how
+   confidently their legitimacy can be verified:
    - RADAR_ONLY_VARS (M11/M12/vr/va), their derived variants (e.g.
      vr_error_slow, va_stable_shift_mask, M11_dr_to_vr_factor), and
      EXTRA_RADAR_ONLY_VARS (ascending_img1/ascending_img2 -- see
@@ -265,47 +268,69 @@ def _check_chunk_completeness(fs, base, var_name, array, is_radar, radar_status,
       if not missing:
          continue
 
-      if len(missing) < len(expected_set):
-         _add(
-            findings, 'ERROR', var_name,
-            f'{leading_dim}-chunk {time_idx}: PARTIAL '
-            f'({len(missing)}/{len(expected_set)} objects missing) -- '
-            f'interrupted upload.'
-         )
-         continue
-
-      # Fully missing for this time_idx: only legitimate for radar-only vars
-      # (RADAR_ONLY_VARS and their derivatives, see _is_radar_only()), and
-      # only when genuinely all-optical over this chunk's time range.
+      # A missing chunk object means zarr's write_empty_chunks=False skipped
+      # that exact (time, y, x) storage unit because every element in it was
+      # fill -- decided per INDIVIDUAL shard, not once for the whole
+      # time_idx's spatial grid. So some spatial sub-chunks of a time_idx
+      # being absent while sibling ones are present is a normal, expected
+      # geographic/sensor pattern (nodata corners, cube-footprint edges, a
+      # radar swath narrower than the full grid) -- not, by itself, evidence
+      # of an interrupted upload. Fully-missing and partially-missing go
+      # through the same legitimacy check below (keyed on whether this
+      # time_idx's range contains any radar granule at all) rather than
+      # being treated as different severity classes.
+      all_missing = len(missing) == len(expected_set)
       chunk_size = chunk_shape[0]
       start, stop = time_idx * chunk_size, min((time_idx + 1) * chunk_size, shape[0])
+      coverage = f'{len(missing)}/{len(expected_set)} spatial sub-chunk(s)'
 
       if not is_radar_var:
          _add(
             findings, 'WARNING', var_name,
-            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) missing -- '
-            f'not a radar-only var; plausibly all-fill '
-            f'(fill_value={array.metadata.fill_value!r}), unverified.'
+            f'{leading_dim}-chunk {time_idx} ({start}:{stop}): {coverage} '
+            f'missing -- not a radar-only var; plausibly all-fill in those '
+            f'sub-regions (fill_value={array.metadata.fill_value!r}), unverified.'
          )
       elif radar_status != 'ok':
          _add(
             findings, 'WARNING', var_name,
-            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) missing -- '
-            f'radar-only var, could not verify (mission/satellite_img1: '
-            f'{radar_status}).'
+            f'{leading_dim}-chunk {time_idx} ({start}:{stop}): {coverage} '
+            f'missing -- radar-only var, could not verify (mission/'
+            f'satellite_img1: {radar_status}).'
          )
       elif not is_radar[start:stop].any():
-         _add(
-            findings, 'INFO', var_name,
-            f'{leading_dim}-chunk {time_idx} ({start}:{stop}) missing -- '
-            f'verified: no radar granules in range.'
-         )
-      else:
+         if all_missing:
+            _add(
+               findings, 'INFO', var_name,
+               f'{leading_dim}-chunk {time_idx} ({start}:{stop}) missing -- '
+               f'verified: no radar granules in range.'
+            )
+         else:
+            # No radar granule classified anywhere in this time range, yet
+            # some spatial sub-chunks DO have data -- contradicts the
+            # radar-only premise for this variable, worth a look.
+            _add(
+               findings, 'ERROR', var_name,
+               f'{leading_dim}-chunk {time_idx} ({start}:{stop}): {coverage} '
+               f'missing, but {len(expected_set) - len(missing)} sub-chunk(s) '
+               f'ARE present despite no radar granules classified in this '
+               f'range -- unexpected.'
+            )
+      elif all_missing:
          _add(
             findings, 'ERROR', var_name,
             f'{leading_dim}-chunk {time_idx} ({start}:{stop}) missing but '
             f'{int(np.count_nonzero(is_radar[start:stop]))} radar granule(s) '
             f'in range expect real data.'
+         )
+      else:
+         _add(
+            findings, 'INFO', var_name,
+            f'{leading_dim}-chunk {time_idx} ({start}:{stop}): {coverage} '
+            f'missing -- plausibly legitimate: {int(np.count_nonzero(is_radar[start:stop]))} '
+            f'radar granule(s) in range, but their swath footprint likely '
+            f'does not cover every spatial sub-chunk; unverified at the '
+            f'per-pixel level.'
          )
 
 
@@ -553,7 +578,7 @@ def _verify_array_vars(cube_decoded, granule_cropped, idx, var_names, findings):
          )
          continue
 
-      cube_arr = cube_decoded[var_name].values[idx, :, :]
+      cube_arr = cube_decoded[var_name].isel({utils.Coords.TIME: idx}).values
       granule_arr = granule_cropped[var_name].values[0, :, :]
 
       mismatch = ~np.isclose(
