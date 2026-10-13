@@ -25,7 +25,7 @@ import logging
 import s3fs
 
 from itslive_mosaics_types import GeoJsonVars
-from utils import File
+from utils import Coords, File
 
 
 def _join_s3_url(location: str, filename: str) -> str:
@@ -55,7 +55,7 @@ class DataCubeGlobalDefinition:
     S3_PREFIX = 's3://its-live-data'
 
     # Flat S3 directory that holds deep-copy (Zarr) datacubes, e.g.
-    # 's3://its-live-data/test-space/virtual-cubes/zarr/forMark/'.
+    # 's3://its-live-data/datacubes/timeseries/v2.2/'.
     ZARR_CUBES_LOCATION = None
 
     # Flat S3 directory that holds virtual (icechunk) datacube repos, e.g.
@@ -97,18 +97,18 @@ class DataCubeGlobalDefinition:
 
         # Zarr v3 stores embed consolidated metadata directly in the root
         # zarr.json (no separate .zmetadata file) -- read granule count from
-        # the 'mid_date' array's shape there.
+        # the 'time' dimension coordinate's shape there (Coords.TIME).
         granule_count = None
         with self.s3.open(f"{zarr_s3_url}/zarr.json", 'r') as fh:
             root_meta = json.load(fh)
 
-        mid_date_meta = root_meta.get('consolidated_metadata', {}) \
-            .get('metadata', {}).get('mid_date')
-        if mid_date_meta:
-            granule_count = mid_date_meta['shape'][0]
+        consolidated = root_meta.get('consolidated_metadata', {}).get('metadata', {})
+        time_var_meta = consolidated.get(Coords.TIME)
+        if time_var_meta:
+            granule_count = time_var_meta['shape'][0]
         else:
             logging.warning(
-                f"{zarr_s3_url}/zarr.json has no consolidated 'mid_date' "
+                f"{zarr_s3_url}/zarr.json has no consolidated '{Coords.TIME}' "
                 "metadata; cannot determine granule count"
             )
 
@@ -272,9 +272,9 @@ if __name__ == '__main__':
         '--zarrCubesLocation',
         type=str,
         action='store',
-        required=True,
-        help="Flat S3 directory that holds deep-copy (Zarr) datacubes, e.g. "
-                "'s3://its-live-data/test-space/virtual-cubes/zarr/forMark/'."
+        default='s3://its-live-data/datacubes/timeseries/v2.2/',
+        help="Flat S3 directory that holds deep-copy (Zarr) datacubes "
+                "[%(default)s]"
     )
     parser.add_argument(
         '--icechunkCubesLocation',
