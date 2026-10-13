@@ -32,6 +32,31 @@ See deep_copy_cube_progress._Progress. Without --progress-dir this behaves
 exactly as before, including refusing to overwrite an existing
 --output-store.
 
+Update path: when --progress-dir is given and already marks --output-store
+complete, the same command line instead appends any layers the virtual
+cube has gained since creation -- no separate update script or extra CLI
+flags. New layers are matched by position: index >= the store's current
+'time' length is new, assuming the virtual cube is append-only (matches
+virtual_itslive_cube_per_chunk_update.py's own model). There's no separate
+backup step: each whole zarr time-chunk is still uploaded one at a time, so
+a failed write just leaves its `.done` marker unset -- a retry redoes only
+that chunk, and the old S3 chunk is never overwritten until its replacement
+fully lands. Every time-indexed array is resized to the new layer count up
+front, in one pass, before any chunk is (re)written, mirroring creation's
+own atomicity; if the old length wasn't an exact multiple of the chunk
+size, the boundary chunk's real bytes are merged in from S3 first, so
+resizing doesn't expose zarr's fill-value padding as legitimate old data
+(see _prepare_array_for_update()). The store's declared shape is NOT a
+reliable "done" signal once an update starts: _upload_chunk() re-uploads
+the root zarr.json (every array's shape) after the first chunk of ANY
+variable lands, so the store looks fully updated the moment one variable
+starts -- _find_incomplete_update() detects an interrupted attempt and
+resumes from its recorded old_total_layers instead of trusting that shape.
+Every array open on this path passes use_consolidated=False for the same
+reason: a stale consolidated root block (left over from creation, or from
+an update's own first chunk) would otherwise report a pre-resize shape and
+make a later append a silent no-op.
+
 Usage examples:
 python src/deep_copy_cube_per_var_chunk.py \
    --input-store my_virtual_cube.icechunk \
@@ -56,8 +81,10 @@ import warnings
 from datetime import datetime
 
 import numpy as np
+import s3fs
 import xarray as xr
 import zarr
+from xarray.coding.times import encode_cf_datetime
 from zarr.errors import UnstableSpecificationWarning, ZarrUserWarning
 
 import itslive_utils
@@ -371,7 +398,7 @@ def _write_var_3d_and_upload(
       progress (_Progress): enables resumability -- this variable's own
          marker is checked first, then each chunk's, before doing that
          chunk's work.
-      start_layer (int): used by deep_copy_update_per_var_chunk.py -- the
+      start_layer (int): used by _update_existing_cube() -- the
          outer chunk loop starts at start_layer's own chunk instead of
          chunk 0, and only that one boundary chunk's write/radar-check
          is narrowed to [start_layer, chunk_stop); every other chunk is
@@ -400,7 +427,7 @@ def _write_var_3d_and_upload(
    num_resumed = 0
 
    # use_consolidated=False is load-bearing, not defensive: the update
-   # caller (deep_copy_update_per_var_chunk.py) resize()s this array after
+   # caller (_update_existing_cube()) resize()s this array after
    # downloading a skeleton whose root zarr.json still carries creation's
    # consolidated block, which zarr prefers over the array's own (correctly
    # resized) one -- a consolidated open would report the PRE-resize shape,
@@ -570,6 +597,574 @@ def _write_var_1d_and_upload(
       progress.mark_var_done(var_name)
 
 
+def verify_output_store_exists(output_store):
+   """Fail fast if the deep-copy store to update doesn't exist yet.
+
+   Args:
+      output_store (str): existing deep-copy zarr store to update (s3://
+         or local).
+   """
+   if output_store.startswith(utils.S3_PREFIX):
+      s3_path = output_store.replace(utils.S3_PREFIX, '', 1)
+      s3 = s3fs.S3FileSystem()
+
+      if not s3.exists(s3_path):
+         raise RuntimeError(
+            f"Output store {output_store} does not exist in S3; nothing to "
+            "update. Run this script without --progress-dir pointed at an "
+            "already-complete run to create it first."
+         )
+
+   elif not os.path.exists(output_store):
+      raise RuntimeError(
+         f"Output store {output_store} does not exist locally; nothing to "
+         "update."
+      )
+
+
+def get_current_num_layers(output_store):
+   """Read the deep-copy store's current length along 'time'.
+
+   Args:
+      output_store (str): existing deep-copy zarr store (s3:// or local).
+
+   Returns:
+      int: current size of the 'time' dimension.
+   """
+   with xr.open_zarr(output_store, consolidated=True) as ds:
+      return ds.sizes[utils.Coords.TIME]
+
+
+def _download_store_skeleton(output_store, local_store):
+   """Download output_store's metadata skeleton (every zarr.json, no
+   chunk/shard payloads) into local_store, so later steps have something to
+   open in 'r+' mode before any pixel data is staged.
+
+   Args:
+      output_store (str): existing s3:// deep-copy store to update.
+      local_store (str): local directory to download the skeleton into.
+   """
+   command_line = [
+      "aws", "s3", "cp", "--recursive",
+      output_store, local_store,
+      "--exclude", "*/c/*",
+   ]
+   itslive_utils.s3_copy_using_subprocess(command_line, os.environ.copy())
+
+
+def _upload_var_metadata(local_store, output_store, var_name):
+   """Re-upload one variable's (or 'time's) own zarr.json -- unlike
+   creation, this update's resize() changes it (the 'shape' field), and
+   _upload_chunk() only ever re-uploads the *root* zarr.json.
+
+   Args:
+      local_store (str): staging store path.
+      output_store (str): final store path.
+      var_name (str): variable (or 'time') whose array was just resized.
+   """
+   var_meta_path = os.path.join(local_store, var_name, ROOT_METADATA_FILE)
+   _s3_copy_file(
+      var_meta_path,
+      f'{output_store.rstrip("/")}/{var_name}/{ROOT_METADATA_FILE}'
+   )
+
+
+def _s3_copy_file(local_path, s3_path):
+   """Upload a single file to S3 (retried, ACL-setting AWS CLI), matching
+   deep_copy_cube_progress._s3_copy()'s mechanism -- reimplemented here so
+   this module doesn't depend on its internal helper name.
+
+   Args:
+      local_path (str): source file.
+      s3_path (str): destination s3:// URL.
+   """
+   command_line = [
+      "aws", "s3", "cp", local_path, s3_path,
+      "--acl", "bucket-owner-full-control"
+   ]
+   itslive_utils.s3_copy_using_subprocess(command_line, os.environ.copy())
+
+
+def _download_boundary_chunk_if_present(s3, output_store, local_store, var_name, chunk_index, is_dir):
+   """Download one variable's boundary time-chunk from S3 into local
+   staging, if present -- mirrors _upload_chunk()'s path scheme in reverse.
+   Absence is legitimate (e.g. a RADAR_ONLY_VARS chunk the creation run
+   radar-skipped), not an error: the old portion already reads as
+   fill-value and will continue to once resized.
+
+   Args:
+      s3 (s3fs.S3FileSystem): used only to check existence.
+      output_store (str): final store path.
+      local_store (str): staging store path.
+      var_name (str): variable name, or 'time'.
+      chunk_index (int): this boundary chunk's index along 'time'.
+      is_dir (bool): True for a 3D variable's chunk (a directory of spatial
+         shards), False for a 1D/'time' chunk (a single file).
+   """
+   chunk_dir = f'{var_name}/c/{chunk_index}'
+   s3_chunk_path = f'{output_store.rstrip("/")}/{chunk_dir}'
+
+   if not s3.exists(s3_chunk_path):
+      logging.info(f'{s3_chunk_path} does not exist (never written); nothing to merge')
+      return
+
+   local_chunk_path = os.path.join(local_store, chunk_dir)
+   command_line = ["aws", "s3", "cp"]
+   if is_dir:
+      command_line.append("--recursive")
+   command_line += [s3_chunk_path, local_chunk_path]
+   itslive_utils.s3_copy_using_subprocess(command_line, os.environ.copy())
+   logging.info(f'Merged existing boundary chunk {s3_chunk_path} into {local_chunk_path}')
+
+
+def _prepare_array_for_update(
+   s3, output_store, local_store, var_name, chunk_size, old_total_layers,
+   new_total_layers, extra_dims_sizes, is_dir
+):
+   """Resize one time-indexed array to new_total_layers, re-upload its
+   metadata, and -- if old_total_layers wasn't an exact multiple of
+   chunk_size -- merge in the existing boundary chunk's real data first
+   (see module docstring).
+
+   Args:
+      s3 (s3fs.S3FileSystem): used only to check existence.
+      output_store (str): final store path.
+      local_store (str): staging store path.
+      var_name (str): variable name, or 'time'.
+      chunk_size (int): this array's 'time' chunk size (time_chunk for a 3D
+         variable, time_chunk_1d for a 1D one or 'time').
+      old_total_layers (int): store's layer count before this update.
+      new_total_layers (int): store's layer count after this update.
+      extra_dims_sizes (tuple[int]): array's dims after 'time' -- () for
+         1D/'time', (y_size, x_size) for a 3D variable.
+      is_dir (bool): see _download_boundary_chunk_if_present().
+   """
+   # use_consolidated=False: the downloaded skeleton carries creation's
+   # stale consolidated block, which zarr prefers over each array's own
+   # zarr.json -- resizing through it would compute the new shape from the
+   # pre-resize one. Harmless here (only ever grows to an absolute target),
+   # but the same staleness silently swallows later appends (see
+   # _write_time_coord_and_upload() and _write_var_3d_and_upload() above);
+   # never read shape through it anywhere on this path.
+   group = zarr.open_group(
+      local_store, mode='r+', zarr_format=3, use_consolidated=False
+   )
+   array = group[var_name]
+   array.resize((new_total_layers,) + extra_dims_sizes)
+   _upload_var_metadata(local_store, output_store, var_name)
+   logging.info(f'Resized {var_name} to {new_total_layers} layers and re-uploaded its metadata')
+
+   if old_total_layers % chunk_size != 0:
+      boundary_chunk_index = old_total_layers // chunk_size
+      _download_boundary_chunk_if_present(
+         s3, output_store, local_store, var_name, boundary_chunk_index, is_dir
+      )
+
+
+def _write_time_coord_and_upload(
+   cube, local_store, output_store, chunk_size, total_layers,
+   start_layer=0, progress=None
+):
+   """Write newly appended 'time' values into local staging, uploading each
+   chunk to S3 as soon as it's done -- same resumable shape as
+   _write_var_1d_and_upload(), but for 'time' itself.
+
+   Can't reuse _write_var_1d_and_upload(): its _load_batch() drops 'time'
+   from the selection, and a region write of a coordinate-only Dataset is a
+   silent no-op in xarray's zarr backend (verified). Writes CF-encoded
+   values directly via the zarr array API instead, matching to_zarr()'s own
+   encoder -- 'time' is always eagerly loaded already, so there's no S3
+   batch to fetch.
+
+   Args:
+      cube (xr.Dataset): the virtual datacube.
+      local_store (str): staging store path.
+      output_store (str): final store path.
+      chunk_size (int): 'time' chunk size (time_chunk_1d).
+      total_layers (int): store's new total length.
+      start_layer (int): first layer to actually (re)write -- same
+         semantics as _write_var_3d_and_upload()'s parameter of the same
+         name; 0 writes every chunk from scratch.
+      progress (_Progress, optional): enables resumability.
+   """
+   var_name = utils.Coords.TIME
+   if progress is not None and progress.var_is_done(var_name):
+      logging.info(f'{var_name}: already fully processed in a previous attempt, skipping')
+      return
+
+   time_values = cube[var_name].values
+   # use_consolidated=False: see _prepare_array_for_update() -- a
+   # consolidated open here reports 'time's pre-resize length, making the
+   # append below a silent no-op.
+   target = zarr.open_group(
+      local_store, mode='r+', zarr_format=3, use_consolidated=False
+   )[var_name]
+   units = target.attrs[utils.Units.name]
+   calendar = target.attrs[utils.Units.calendar_name]
+
+   num_chunks = 0
+   num_resumed = 0
+
+   first_chunk_start = (start_layer // chunk_size) * chunk_size
+   for chunk_start in range(first_chunk_start, total_layers, chunk_size):
+      chunk_stop = min(chunk_start + chunk_size, total_layers)
+      chunk_index = chunk_start // chunk_size
+      write_start = max(chunk_start, start_layer)
+      num_chunks += 1
+
+      if progress is not None and progress.chunk_is_done(var_name, chunk_index):
+         logging.info(
+            f'Skipping {var_name} chunk {chunk_start}:{chunk_stop} of '
+            f'{total_layers} (already done in a previous attempt)'
+         )
+         num_resumed += 1
+         continue
+
+      encoded, _, _ = encode_cf_datetime(
+         time_values[write_start:chunk_stop], units=units, calendar=calendar
+      )
+      target[write_start:chunk_stop] = encoded
+      logging.info(f'Wrote {var_name} layers {write_start}:{chunk_stop} of {total_layers} to {local_store}')
+
+      _upload_chunk(local_store, output_store, var_name, chunk_index)
+      logging.info(
+         f'Uploaded {var_name} chunk {chunk_start}:{chunk_stop} of '
+         f'{total_layers} to {output_store}'
+      )
+      if progress is not None:
+         progress.mark_chunk_done(var_name, chunk_index)
+
+   if num_resumed:
+      logging.info(
+         f'{var_name}: resumed past {num_resumed} of {num_chunks} chunk(s) '
+         '(already done in a previous attempt)'
+      )
+
+   if progress is not None:
+      progress.mark_var_done(var_name)
+
+
+_UPDATE_CONFIG_KEYS = (
+   'output_store', 'old_total_layers', 'new_total_layers',
+   'time_chunk', 'xy_chunk', 'time_chunk_1d', 'xy_shard_multiplier',
+)
+
+
+def _build_update_config(output_store, old_total_layers, new_total_layers, creation_config):
+   """Assemble this update transition's config dict, for validate/write.
+
+   Args:
+      output_store (str): existing s3:// deep-copy store to update.
+      old_total_layers (int): store's layer count before this update.
+      new_total_layers (int): store's layer count after this update.
+      creation_config (dict): creation run's own recorded chunking params.
+   """
+   return {
+      'output_store': output_store,
+      'old_total_layers': old_total_layers,
+      'new_total_layers': new_total_layers,
+      'time_chunk': creation_config['time_chunk'],
+      'xy_chunk': creation_config['xy_chunk'],
+      'time_chunk_1d': creation_config['time_chunk_1d'],
+      'xy_shard_multiplier': creation_config['xy_shard_multiplier'],
+   }
+
+
+def _validate_update_config(recorded, current, update_progress):
+   """Hard-fail on any mismatch between this attempt's config and a prior
+   attempt's recorded one for the same (old_total_layers, new_total_layers)
+   transition. Unlike creation's validate_config(), there's no grow/shrink/
+   clamp case here: old/new_total_layers are baked into update_progress's
+   own base path, so any mismatch at all means the markers underneath no
+   longer mean what they claim.
+
+   Args:
+      recorded (dict): prior attempt's persisted config.
+      current (dict): this attempt's config, from _build_update_config().
+      update_progress (_Progress): used only to name the config path in
+         the error message.
+   """
+   mismatched = [
+      (key, recorded.get(key), current.get(key))
+      for key in _UPDATE_CONFIG_KEYS
+      if recorded.get(key) != current.get(key)
+   ]
+   if mismatched:
+      details = '\n'.join(
+         f'  {key}: recorded {r!r}, this attempt {c!r}' for key, r, c in mismatched
+      )
+      raise RuntimeError(
+         f"This update attempt's parameters disagree with those a prior "
+         f"attempt recorded at {update_progress._config_path()} for the "
+         f"same layer range:\n{details}\n"
+         f"Delete {update_progress.base} to restart this update range from "
+         f"scratch, or investigate why the parameters differ."
+      )
+
+
+def _find_incomplete_update(creation_progress):
+   """Scan {creation_progress.base}/updates/ for a transition directory left
+   by an interrupted attempt (has run_config.json but no _SUCCESS) -- see
+   module docstring for why the store's shape alone can't tell "done" from
+   "interrupted".
+
+   Raises RuntimeError if more than one incomplete transition is found --
+   at most one update should ever be in flight at a time.
+
+   Args:
+      creation_progress (_Progress): rooted at the creation run's own
+         progress directory (not namespaced by any transition).
+
+   Returns:
+      tuple of (int, int, _Progress, dict) or None: (old_total_layers,
+         new_total_layers, update_progress, recorded_update_config) for the
+         one incomplete transition found, or None if updates/ is missing or
+         empty (the normal case -- a completed transition's directory is
+         removed via remove_entirely() unless --keep-progress-markers).
+   """
+   updates_root = f'{creation_progress.base}/updates'
+   if not creation_progress.s3.exists(updates_root):
+      return None
+
+   incomplete = []
+   for entry in creation_progress.s3.ls(updates_root):
+      name = os.path.basename(entry.rstrip('/'))
+      parts = name.split('_to_')
+      if len(parts) != 2 or not all(part.isdigit() for part in parts):
+         continue
+
+      candidate = _Progress(creation_progress.s3, f'{updates_root}/{name}')
+      if candidate.is_complete():
+         continue
+
+      config = candidate.read_config()
+      if config is None:
+         # write_config() hadn't landed yet either; nothing to resume from.
+         continue
+
+      incomplete.append((int(parts[0]), int(parts[1]), candidate, config))
+
+   if not incomplete:
+      return None
+
+   if len(incomplete) > 1:
+      found = [f'{old}_to_{new}' for old, new, _, _ in incomplete]
+      raise RuntimeError(
+         f'Found {len(incomplete)} incomplete update transitions under '
+         f'{updates_root}: {found}. At most one update should ever be in '
+         f'flight at a time -- investigate manually before rerunning.'
+      )
+
+   return incomplete[0]
+
+
+def _update_existing_cube(
+   input_store, output_store, bucket_prefix, progress, local_staging_dir,
+   num_load_workers=None, keep_progress_markers=False
+):
+   """Append any layers new to the virtual cube onto an existing, fully
+   created deep-copy store, resumably and without a separate backup step
+   (see module docstring's update-path paragraph).
+
+   Args:
+      input_store (str): virtual cube's icechunk repo (s3:// or local).
+      output_store (str): existing deep-copy store to update.
+      bucket_prefix (str): S3 prefix the virtual cube's granule references
+         resolve against.
+      progress (_Progress): the creation run's own progress object -- this
+         update's chunking parameters are read from its recorded
+         run_config.json, and its own progress markers live in a sub-path
+         underneath it.
+      local_staging_dir (str): local directory for the skeleton download
+         and every write, before syncing back to output_store.
+      num_load_workers (int, optional): thread-pool size per batch
+         .load() call (None leaves dask's own default).
+      keep_progress_markers (bool): keep this update's own progress
+         markers instead of removing them on success.
+   """
+   verify_output_store_exists(output_store)
+
+   creation_config = progress.read_config()
+   if creation_config is None:
+      raise RuntimeError(
+         f'No run_config.json found at {progress._config_path()} -- the '
+         f'creation run for {output_store} must have used --progress-dir '
+         f'for this update to know the original chunking parameters '
+         f'(time_chunk, xy_chunk, time_chunk_1d, xy_shard_multiplier).'
+      )
+
+   time_chunk = creation_config['time_chunk']
+   xy_chunk = creation_config['xy_chunk']
+   time_chunk_1d = creation_config['time_chunk_1d']
+   xy_shard_multiplier = creation_config['xy_shard_multiplier']
+
+   cube = open_virtual_cube(input_store, bucket_prefix)
+   new_total_layers = cube.sizes[utils.Coords.TIME]
+   logging.info(f'Opened virtual cube {input_store}: {new_total_layers} layers')
+
+   incomplete = _find_incomplete_update(progress)
+   if incomplete is not None:
+      old_total_layers, target_total_layers, update_progress, recorded_update_config = incomplete
+      logging.info(
+         f'Found an incomplete update at {update_progress.base} '
+         f'({old_total_layers} -> {target_total_layers} layers) left by a '
+         f'previous interrupted attempt; resuming/repairing it before '
+         f'considering any further layers'
+      )
+      if new_total_layers < target_total_layers:
+         raise RuntimeError(
+            f'The virtual cube now has only {new_total_layers} layer(s), '
+            f'fewer than the {target_total_layers} an interrupted update at '
+            f'{update_progress.base} was already targeting -- delete that '
+            f'directory and investigate before rerunning.'
+         )
+      if new_total_layers > target_total_layers:
+         logging.warning(
+            f'Virtual cube now has {new_total_layers} layers, more than '
+            f'the {target_total_layers} this interrupted update was '
+            f'targeting; finishing that transition first. Rerun this '
+            f'script afterward to pick up the remaining layers.'
+         )
+      new_total_layers = target_total_layers
+      current_update_config = _build_update_config(
+         output_store, old_total_layers, new_total_layers, creation_config
+      )
+      _validate_update_config(recorded_update_config, current_update_config, update_progress)
+   else:
+      old_total_layers = get_current_num_layers(output_store)
+      logging.info(f'{output_store} currently has {old_total_layers} layers')
+
+      if new_total_layers <= old_total_layers:
+         logging.info(
+            f'{output_store} is already up to date '
+            f'({old_total_layers} layers, virtual cube has {new_total_layers})'
+         )
+         return
+
+      update_progress = _Progress(
+         progress.s3, f'{progress.base}/updates/{old_total_layers}_to_{new_total_layers}'
+      )
+      current_update_config = _build_update_config(
+         output_store, old_total_layers, new_total_layers, creation_config
+      )
+      recorded_update_config = update_progress.read_config()
+      if recorded_update_config is None:
+         update_progress.write_config(current_update_config)
+      else:
+         _validate_update_config(recorded_update_config, current_update_config, update_progress)
+
+   time_vars, _ = split_vars_by_time(cube)
+   vars_3d, vars_1d = split_time_vars_by_rank(cube, time_vars)
+   logging.info(
+      f"Updating {len(vars_1d)} 1D variable(s), {len(vars_3d)} 3D "
+      f"variable(s), and the '{utils.Coords.TIME}' coordinate from "
+      f'{old_total_layers} to {new_total_layers} layers'
+   )
+
+   is_radar = _compute_radar_mask(cube, new_total_layers)
+   encoding = build_encoding(cube, time_chunk, xy_chunk, time_chunk_1d, xy_shard_multiplier)
+
+   cube.attrs[CubeFormat.date_updated] = datetime.now().strftime('%d-%b-%Y %H:%M:%S')
+
+   local_store = resolve_output_store(local_staging_dir)
+   _download_store_skeleton(output_store, local_store)
+   logging.info(f'Downloaded metadata skeleton from {output_store} to {local_store}')
+
+   # Set directly rather than via to_zarr(): region writes never touch
+   # root-group attrs (verified). _upload_chunk() re-uploads the root
+   # zarr.json on the very first chunk below regardless.
+   zarr.open_group(local_store, mode='r+', zarr_format=3).attrs[CubeFormat.date_updated] = (
+      cube.attrs[CubeFormat.date_updated]
+   )
+
+   y_size = cube.sizes[utils.Coords.Y]
+   x_size = cube.sizes[utils.Coords.X]
+
+   # Resize/merge every time-indexed array up front, before any chunk is
+   # rewritten -- mirrors creation's atomicity, minimizing the window where
+   # arrays disagree on 'time' length.
+   _prepare_array_for_update(
+      progress.s3, output_store, local_store, utils.Coords.TIME, time_chunk_1d,
+      old_total_layers, new_total_layers, (), is_dir=False
+   )
+   for var_name in vars_1d:
+      _prepare_array_for_update(
+         progress.s3, output_store, local_store, var_name, time_chunk_1d,
+         old_total_layers, new_total_layers, (), is_dir=False
+      )
+   for var_name in vars_3d:
+      _prepare_array_for_update(
+         progress.s3, output_store, local_store, var_name, time_chunk,
+         old_total_layers, new_total_layers, (y_size, x_size), is_dir=True
+      )
+
+   # Rebuild the root's consolidated block from the freshly-resized array
+   # metadata. Every write path below already passes use_consolidated=False,
+   # so this isn't what makes them correct -- it stops the *store* from
+   # carrying a root that contradicts its own arrays (any reader opening it
+   # mid-update, and any future code here that forgets the flag, would
+   # otherwise see the pre-resize shapes).
+   zarr.consolidate_metadata(local_store)
+   logging.info(f'Re-consolidated {local_store} metadata after resizing every array')
+
+   _write_time_coord_and_upload(
+      cube, local_store, output_store, time_chunk_1d, new_total_layers,
+      old_total_layers, update_progress
+   )
+   for var_name in vars_1d:
+      _write_var_1d_and_upload(
+         cube, local_store, output_store, var_name, time_chunk_1d,
+         new_total_layers, num_load_workers, update_progress,
+         start_layer=old_total_layers
+      )
+   for var_name in vars_3d:
+      _write_var_3d_and_upload(
+         cube, local_store, output_store, var_name, time_chunk, new_total_layers,
+         encoding.get(var_name, {}).get(utils.OutputFormat.fill_value),
+         is_radar, num_load_workers, update_progress,
+         start_layer=old_total_layers
+      )
+
+   # DEFENSIVE ONLY -- not closing a known hole. Every reachable path above
+   # already leaves S3's root current (_upload_chunk() re-uploads it with
+   # each chunk; 'time', NO_FILL_VARS (deep_copy_cube.py), and the string
+   # variables always write a real chunk for every layer). This just
+   # removes the *dependence* on that -- which variables happen to declare
+   # fills, and so which chunks write_empty_chunks may skip, shouldn't be
+   # something this function has to reason about to guarantee its own
+   # final metadata.
+   #
+   # Before mark_complete(), not after: the marker asserts durable S3 state
+   # is good, so it must already be durable. A kill in between would leave
+   # _SUCCESS next to a stale root with no way to repair it --
+   # _find_incomplete_update() skips completed transitions.
+   #
+   # Also lands the root attrs set above (date_updated) on a resumed attempt
+   # that finds every variable already done and uploads no chunk.
+   zarr.consolidate_metadata(local_store)
+   _s3_copy_file(
+      os.path.join(local_store, ROOT_METADATA_FILE),
+      f'{output_store.rstrip("/")}/{ROOT_METADATA_FILE}'
+   )
+   logging.info(f'Uploaded consolidated root metadata to {output_store}')
+
+   update_progress.mark_complete()
+   logging.info(f'Marked update complete ({update_progress.base}/{SUCCESS_MARKER})')
+
+   if keep_progress_markers:
+      logging.info(f'Keeping every progress marker under {update_progress.base}')
+   else:
+      update_progress.remove_entirely([utils.Coords.TIME] + vars_1d + vars_3d)
+
+   logging.info(f'Removing local staging directory {local_store}')
+   shutil.rmtree(local_store)
+
+   logging.info(
+      f'Done: updated {output_store} from {old_total_layers} to '
+      f'{new_total_layers} layers'
+   )
+
+
 def deep_copy_cube_per_var_chunk(
    input_store,
    output_store,
@@ -579,7 +1174,6 @@ def deep_copy_cube_per_var_chunk(
    time_chunk_1d,
    xy_shard_multiplier=1,
    local_staging_dir=None,
-   keep_local_staging=False,
    num_layers=0,
    num_load_workers=None,
    progress_dir=None,
@@ -604,6 +1198,14 @@ def deep_copy_cube_per_var_chunk(
    exactly as before resumability existed, including refusing to overwrite
    an existing output store.
 
+   If `progress_dir` already marks `output_store` complete, dispatches to
+   `_update_existing_cube()` instead of recreating anything -- appends any
+   layers the virtual cube has gained since creation (see module docstring's
+   update-path paragraph). `time_chunk`/`xy_chunk`/`time_chunk_1d`/
+   `xy_shard_multiplier`/`num_layers`/`save_duplicate_time_granules` are
+   ignored on that path; chunking is re-derived from the creation run's own
+   recorded config and every new layer is always processed.
+
    Args:
       input_store (str): virtual datacube (icechunk repo) to read.
       output_store (str): destination for the deep-copy store (s3:// or
@@ -618,8 +1220,6 @@ def deep_copy_cube_per_var_chunk(
       local_staging_dir (str): local directory writes land in before
          syncing to `output_store`. Only valid (and required) when
          `output_store` is s3://; must be unset for a local `output_store`.
-      keep_local_staging (bool): keep `local_staging_dir` after a
-         successful run instead of deleting it.
       num_layers (int): cap on how many layers to process; 0 means all.
       num_load_workers (int): sizes each batch's load thread-pool (see
          _load_batch()).
@@ -668,7 +1268,24 @@ def deep_copy_cube_per_var_chunk(
    if progress is not None and progress.is_complete():
       logging.info(
          f'{output_store} is already marked complete '
-         f'({progress.base}/{SUCCESS_MARKER}); nothing to do'
+         f'({progress.base}/{SUCCESS_MARKER}); checking for new layers to append'
+      )
+      if (
+         time_chunk != TIME_CHUNK_VALUE or xy_chunk != X_Y_CHUNK_VALUE
+         or time_chunk_1d != TIME_CHUNK_VALUE_1D
+         or xy_shard_multiplier != XY_SHARD_MULTIPLIER
+         or num_layers != 0 or save_duplicate_time_granules
+      ):
+         logging.info(
+            '--time-chunk-value/--xy-chunk-value/--time-chunk-value-1d/'
+            '--xy-shard-multiplier/--num-layers/--save-duplicate-time-granules '
+            'are creation-only and ignored for an update -- chunking is '
+            "re-derived from the creation run's recorded run_config.json, "
+            'and every new layer is always processed'
+         )
+      _update_existing_cube(
+         input_store, output_store, bucket_prefix, progress,
+         local_staging_dir, num_load_workers, keep_progress_markers,
       )
       return
 
@@ -865,11 +1482,8 @@ def deep_copy_cube_per_var_chunk(
          progress.prune_var_markers(vars_1d + vars_3d)
 
    if local_staging_dir:
-      if keep_local_staging:
-         logging.info(f'Keeping local staging directory {local_store}')
-      else:
-         logging.info(f'Removing local staging directory {local_store}')
-         shutil.rmtree(local_store)
+      logging.info(f'Removing local staging directory {local_store}')
+      shutil.rmtree(local_store)
 
    logging.info(f'Done: deep-copied {total_layers} layers to {output_store}')
 
@@ -887,6 +1501,12 @@ if __name__ == '__main__':
       as it's written locally. For a local --output-store, writes directly
       into it instead (no staging, no per-chunk upload). See this module's
       docstring for the rationale.
+
+      If --progress-dir already marks --output-store complete, the same
+      command line instead appends any layers the virtual cube has gained
+      since creation -- no separate update script or extra flags needed.
+      See this module's docstring for the update path's rationale and
+      resumability model.
 
       Usage example:
       python src/deep_copy_cube_per_var_chunk.py \
@@ -962,12 +1582,6 @@ if __name__ == '__main__':
          'local filesystem path -- an s3:// value is rejected.'
    )
    parser.add_argument(
-      '--keep-local-staging',
-      action='store_true',
-      help='Keep --local-staging-dir after a successful run instead of '
-         'deleting it [%(default)s].'
-   )
-   parser.add_argument(
       '-n', '--num-layers',
       type=int,
       default=0,
@@ -997,7 +1611,9 @@ if __name__ == '__main__':
          'can serve a whole batch of cubes. Unset (the default) disables '
          'resumability and restores the usual refuse-to-overwrite guard on '
          '--output-store. Requires an s3:// --output-store -- not supported '
-         'for a local one.'
+         'for a local one. Also gates update-detection: if these markers '
+         'already show --output-store complete, this same command line '
+         'appends any new layers instead of recreating the store.'
    )
    parser.add_argument(
       '--keep-progress-markers',
@@ -1032,7 +1648,6 @@ if __name__ == '__main__':
       args.time_chunk_value_1d,
       args.xy_shard_multiplier,
       args.local_staging_dir,
-      args.keep_local_staging,
       args.num_layers,
       args.num_load_workers,
       args.progress_dir,
