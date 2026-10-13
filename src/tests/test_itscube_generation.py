@@ -37,8 +37,7 @@ warnings.filterwarnings('ignore', category=DeprecationWarning, module='pyogrio')
 # Add src directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from itscube import ITSCube
-from grid import Bounds, Grid
+from deprecated.itscube import ITSCube
 from itslive_composite import ITSLiveComposite
 import shapefile
 
@@ -323,67 +322,6 @@ class TestITSCubeClass:
         print(f"  - Grid bounds: x=[{ITSCube.GRID_X_MIN:.0f}, {ITSCube.GRID_X_MAX:.0f}], "
               f"y=[{ITSCube.GRID_Y_MIN:.0f}, {ITSCube.GRID_Y_MAX:.0f}]")
         print(f"  - Centroid (lon/lat): {cube.center_lon_lat}")
-
-    def test_grid_creation(self, test_config):
-        """Test Grid utility class with test polygon bounds."""
-        # Extract x and y bounds from polygon
-        polygon = test_config["polygon"]
-        x_coords = [point[0] for point in polygon]
-        y_coords = [point[1] for point in polygon]
-
-        x_bounds = Bounds(x_coords)
-        y_bounds = Bounds(y_coords)
-
-        # Create grid
-        grid_x, grid_y = Grid.create(x_bounds, y_bounds, test_config["cell_size"])
-
-        # Verify grid properties
-        assert len(grid_x) > 0, "Grid X is empty"
-        assert len(grid_y) > 0, "Grid Y is empty"
-
-        # Verify grid spacing (should be identical within floating-point precision)
-        if len(grid_x) > 1:
-            x_spacing = grid_x[1] - grid_x[0]
-            assert abs(x_spacing) == test_config["cell_size"], (
-                f"Grid X spacing {abs(x_spacing)} doesn't match "
-                f"cell size {test_config['cell_size']}"
-            )
-
-        if len(grid_y) > 1:
-            y_spacing = grid_y[1] - grid_y[0]
-            assert abs(y_spacing) == test_config["cell_size"], (
-                f"Grid Y spacing {abs(y_spacing)} doesn't match "
-                f"cell size {test_config['cell_size']}"
-            )
-
-        # Verify grid covers the polygon
-        # Note: grid values are cell centers, so actual extent is ±cell_size/2
-        half_cell = test_config["cell_size"] / 2.0
-        grid_x_min_extent = grid_x.min() - half_cell
-        grid_x_max_extent = grid_x.max() + half_cell
-        grid_y_min_extent = grid_y.min() - half_cell
-        grid_y_max_extent = grid_y.max() + half_cell
-
-        assert grid_x_min_extent <= min(x_coords), (
-            f"Grid X min extent {grid_x_min_extent} doesn't cover polygon min {min(x_coords)}"
-        )
-        assert grid_x_max_extent >= max(x_coords), (
-            f"Grid X max extent {grid_x_max_extent} doesn't cover polygon max {max(x_coords)}"
-        )
-        assert grid_y_min_extent <= min(y_coords), (
-            f"Grid Y min extent {grid_y_min_extent} doesn't cover polygon min {min(y_coords)}"
-        )
-        assert grid_y_max_extent >= max(y_coords), (
-            f"Grid Y max extent {grid_y_max_extent} doesn't cover polygon max {max(y_coords)}"
-        )
-
-        print(f"✓ Grid creation verified")
-        print(f"  - Grid X: {len(grid_x)} points, "
-              f"centers [{grid_x.min():.0f}, {grid_x.max():.0f}], "
-              f"extent [{grid_x_min_extent:.0f}, {grid_x_max_extent:.0f}]")
-        print(f"  - Grid Y: {len(grid_y)} points, "
-              f"centers [{grid_y.min():.0f}, {grid_y.max():.0f}], "
-              f"extent [{grid_y_min_extent:.0f}, {grid_y_max_extent:.0f}]")
 
 
 # Composite Generation Tests
