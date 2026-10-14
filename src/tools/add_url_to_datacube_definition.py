@@ -25,7 +25,7 @@ import logging
 import s3fs
 
 from itslive_mosaics_types import GeoJsonVars
-from utils import Coords, File
+from utils import Coords, File, S3_PREFIX
 
 
 def _join_s3_url(location: str, filename: str) -> str:
@@ -142,7 +142,8 @@ class DataCubeGlobalDefinition:
         num_zarr_cubes = 0
         num_icechunk_cubes = 0
 
-        with open(cube_file, 'r') as fhandle:
+        opener = self.s3.open if cube_file.startswith(S3_PREFIX) else open
+        with opener(cube_file, 'r') as fhandle:
             cubes = json.load(fhandle)
 
             logging.info(f'Total number of datacubes: {len(cubes["features"])}')
@@ -263,10 +264,11 @@ if __name__ == '__main__':
         '-c', '--cubeDefinitionFile',
         type=str,
         action='store',
-        required=True,
-        help="GeoJson file that stores cube polygon definitions, with each "
-                "feature's properties already carrying 'icechunk_filename' "
-                "(see define_cube_polygons_chunk_aligned.py)."
+        default='s3://its-live-data/datacubes/definition/datacubes_v2.2.json',
+        help="GeoJson file (local path or s3://) that stores cube polygon "
+                "definitions, with each feature's properties already carrying "
+                "'icechunk_filename' (see define_cube_polygons_chunk_aligned.py) "
+                "[%(default)s]."
     )
     parser.add_argument(
         '--zarrCubesLocation',
