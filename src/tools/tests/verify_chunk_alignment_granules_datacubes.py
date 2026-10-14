@@ -8,8 +8,16 @@ This script:
 3. Verifies EPSG codes match
 4. Verifies x and y grid coordinates align
 
-To run:
-python ./verify_chunk_alignment_granules_datacubes.py ../datacube_catalog_chunk_aligned_July20.json --all
+Usage Examples:
+
+# Verify various LandsatOLI granules (one P055 per each 10x10 region):
+python ./verify_chunk_alignment_granules_datacubes.py --all ../datacube_catalog_chunk_aligned_July21_no.y.min.json  --granules-json landsatOLI_P055_granules.json |& tee test.log
+
+# Verify various Sentinel1 granules (one P097 per each 10x10 region):
+python ./verify_chunk_alignment_granules_datacubes.py --all ../datacube_catalog_chunk_aligned_July21_no.y.min.json  --granules-json s1_P097_granules.json |& tee s1_p097_verify.log
+
+# Verify various Sentinel2 granules (one P097 per each 10x10 region):
+
 """
 import json
 import sys
@@ -32,9 +40,10 @@ CHUNK_LEN = CHUNK_SIZE * PIXEL_SIZE
 
 
 GRANULES = [
-    # 's3://its-live-data/velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_012122_20141028_20200910_02_T2_X_LC08_L1GT_012122_20141113_20201016_02_T2_G0120V02_P082.nc'
-    's3://its-live-data/velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_020121_20231013_20231102_02_T2_X_LC09_L1GT_020121_20231106_20231106_02_T2_G0120V02_P084.nc',
-    's3://its-live-data/velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_020120_20201121_20210315_02_T2_X_LC08_L1GT_020120_20210124_20210305_02_T2_G0120V02_P051.nc'
+    's3://its-live-data/velocity_image_pair/sentinel1/v02/S70W100/S1A_IW_SLC__1SSH_20251223T043633_20251223T043654_062437_07D279_7E42_X_S1A_IW_SLC__1SSH_20260104T043632_20260104T043653_062612_07D939_651F_G0120V02_P030.nc'
+    # For update 's3://its-live-data/velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_012122_20141028_20200910_02_T2_X_LC08_L1GT_012122_20141113_20201016_02_T2_G0120V02_P082.nc'
+    # 's3://its-live-data/velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_020121_20231013_20231102_02_T2_X_LC09_L1GT_020121_20231106_20231106_02_T2_G0120V02_P084.nc',
+    # 's3://its-live-data/velocity_image_pair/landsatOLI/v02/S80W170/LC08_L1GT_020120_20201121_20210315_02_T2_X_LC08_L1GT_020120_20210124_20210305_02_T2_G0120V02_P051.nc'
 ]
 
 s3 = None
@@ -355,6 +364,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
         Examples:
+        # Verify granules from JSON file
+        python %(prog)s catalog.json --granules-json granules.json --all
+
         # Verify granules from S3 (default)
         python %(prog)s catalog.json
 
@@ -390,6 +402,13 @@ def main():
     )
 
     parser.add_argument(
+        '--granules-json',
+        type=str,
+        default=None,
+        help='JSON file containing list of granule URLs (overrides all other granule sources)'
+    )
+
+    parser.add_argument(
         '--tolerance',
         type=float,
         default=0.001,
@@ -411,7 +430,27 @@ def main():
         return 1
 
     # Determine granule sources
-    if args.granule_url:
+    if args.granules_json:
+        # JSON file with list of granules specified
+        granules_json_path = Path(args.granules_json)
+        if not granules_json_path.exists():
+            print(f"Error: Granules JSON file not found: {granules_json_path}")
+            return 1
+
+        with open(granules_json_path) as f:
+            granule_files = json.load(f)
+
+        if not isinstance(granule_files, list):
+            print(f"Error: JSON file must contain a list of granule URLs")
+            return 1
+
+        if not granule_files:
+            print(f"Error: JSON file contains no granules")
+            return 1
+
+        print(f"Loaded {len(granule_files)} granule(s) from {granules_json_path}")
+
+    elif args.granule_url:
         # Single granule URL specified
         granule_files = [args.granule_url]
         print(f"Verifying single granule: {args.granule_url}")

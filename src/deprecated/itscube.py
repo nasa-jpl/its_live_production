@@ -26,6 +26,7 @@ import xarray as xr
 from urllib.parse import urlparse
 
 # Local modules
+import itslive_catalog_utils
 import itslive_utils
 from grid import Bounds, Grid
 from itscube_types import (
@@ -371,7 +372,7 @@ class ITSCube:
             "coordinates": [self.polygon_coords]
         }
 
-        found_urls = itslive_utils.serverless_search(
+        found_urls = itslive_catalog_utils.serverless_search(
             epsg_code=ITSCube.PROJECTION,
             start_date=ITSCube.START_DATE,
             end_date=ITSCube.END_DATE,
