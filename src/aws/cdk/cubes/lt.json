@@ -1,0 +1,15 @@
+{
+    "EbsOptimized": true,
+    "BlockDeviceMappings": [
+        {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+                "Encrypted": true,
+                "DeleteOnTermination": true,
+                "VolumeSize": 1000,
+                "VolumeType": "gp3"
+            }
+        }
+    ],
+    "UserData": ""
+}

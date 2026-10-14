@@ -1,0 +1,15 @@
+# Conda environment for the ITS_LIVE deep-copy Batch CDK app.
+#   conda env create -f cubes.yml
+#   conda activate its-live-cdk
+#   npm ci            # installs the pinned CDK CLI from package.json
+#   npx cdk diff
+name: its-live-cdk
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - nodejs=22
+  - pip
+  - pip:
+      - aws-cdk-lib==2.271.0
+      - constructs==10.8.1

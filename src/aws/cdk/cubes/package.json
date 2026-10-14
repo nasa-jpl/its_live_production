@@ -1,0 +1,8 @@
+{
+   "name": "its-live-deep-copy-batch",
+   "private": true,
+   "description": "Pins the AWS CDK CLI version for this project; run with npx cdk",
+   "devDependencies": {
+      "aws-cdk": "2.1143.0"
+   }
+}
