@@ -303,7 +303,7 @@ def parse_args():
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='its-live-virtual-cube-job',
+        default='its-live-virtual-cube-32Gb-job',
         help="AWS Batch job definition to use for virtual datacube generation"
         "[%(default)s]."
     )
@@ -311,7 +311,7 @@ def parse_args():
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='its-live-virtual-cube-queue-32Gb',
+        default='its-live-virtual-cube-32Gb-queue',
         help="AWS Batch job queue to use for virtual datacube generation [%(default)s]."
     )
     parser.add_argument(

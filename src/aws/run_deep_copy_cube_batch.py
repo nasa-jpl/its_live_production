@@ -367,7 +367,7 @@ def parse_args():
         '-j', '--batchJobDefinition',
         type=str,
         action='store',
-        default='its-live-deep-copy-job',
+        default='its-live-deep-copy-cube-32Gb-job',
         help="AWS Batch job definition to use for deep-copy datacube generation "
         "[%(default)s]."
     )
@@ -375,7 +375,7 @@ def parse_args():
         '-q', '--batchJobQueue',
         type=str,
         action='store',
-        default='its-live-deep-copy-queue',
+        default='its-live-deep-copy-cube-32Gb-queue',
         help="AWS Batch job queue to use for deep-copy datacube generation "
             "when the source icechunk repo's layer count is at or below "
             f"{DeepCopyCubeBatch.NUM_LAYERS_64GB_THRESHOLD} [%(default)s]."
@@ -384,7 +384,7 @@ def parse_args():
         '--batchJobQueue64Gb',
         type=str,
         action='store',
-        default='its-live-deep-copy-64Gb-queue',
+        default='its-live-deep-copy-cube-64Gb-queue',
         help="AWS Batch job queue to use instead of --batchJobQueue when the "
             "source icechunk repo's layer count exceeds "
             f"{DeepCopyCubeBatch.NUM_LAYERS_64GB_THRESHOLD} [%(default)s]."
@@ -393,7 +393,7 @@ def parse_args():
         '--batchJobDefinition64Gb',
         type=str,
         action='store',
-        default='its-live-deep-copy-64Gb-job',
+        default='its-live-deep-copy-cube-64Gb-job',
         help="AWS Batch job definition to use instead of "
             "--batchJobDefinition when the source icechunk repo's layer "
             "count exceeds "
