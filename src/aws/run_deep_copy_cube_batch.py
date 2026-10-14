@@ -44,7 +44,7 @@ import sys
 from deep_copy_cube import get_virtual_cube_num_layers
 from itscube_types import BatchVars
 from itslive_mosaics_types import GeoJsonVars
-from utils import File
+from utils import File, S3_PREFIX
 
 
 def _join_s3_url(location: str, filename: str) -> str:
@@ -155,7 +155,8 @@ class DeepCopyCubeBatch:
         # List of submitted datacubes for processing
         jobs_files = []
 
-        with open(cube_file, 'r') as fhandle:
+        opener = self.s3.open if cube_file.startswith(S3_PREFIX) else open
+        with opener(cube_file, 'r') as fhandle:
             cubes = json.load(fhandle)
 
             # Number of cubes to generate
@@ -333,10 +334,11 @@ def parse_args():
         '-c', '--cubeDefinitionFile',
         type=str,
         action='store',
-        required=True,
-        help="GeoJson file that stores chunk-aligned cube polygon definitions, with "
-            "each feature's properties carrying 'icechunk_filename' (see "
-            "define_cube_polygons_chunk_aligned.py)."
+        default='s3://its-live-data/datacubes/definition/datacubes_v2.2.json',
+        help="GeoJson file (local path or s3://) that stores chunk-aligned cube "
+            "polygon definitions, with each feature's properties carrying "
+            "'icechunk_filename' (see define_cube_polygons_chunk_aligned.py) "
+            "[%(default)s]."
     )
     parser.add_argument(
         '--icechunkCubesLocation',

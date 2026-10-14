@@ -68,7 +68,8 @@ class VirtualDataCubeBatch:
         # List of submitted datacubes for processing
         jobs_files = []
 
-        with open(cube_file, 'r') as fhandle:
+        opener = self.s3.open if cube_file.startswith(utils.S3_PREFIX) else open
+        with opener(cube_file, 'r') as fhandle:
             cubes = json.load(fhandle)
 
             # Number of cubes to generate
@@ -280,8 +281,9 @@ def parse_args():
         '-c', '--cubeDefinitionFile',
         type=str,
         action='store',
-        required=True,
-        help="GeoJson file that stores chunk-aligned cube polygon definitions."
+        default='s3://its-live-data/datacubes/definition/datacubes_v2.2.json',
+        help="GeoJson file (local path or s3://) that stores chunk-aligned cube "
+            "polygon definitions [%(default)s]."
     )
     parser.add_argument(
         '-b', '--bucket',
